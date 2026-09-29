@@ -957,6 +957,25 @@ record legeos.observation.lege-client-links-rusqlite-through-the-shared-index-ty
     derived_from [ @legeos.decision.event-driven-service-authorities ]
 }
 
+record legeos.observation.live-casper-sessiond-namespace-20260911/1 : observation {
+    title "Live USB sessiond failed 226/NAMESPACE because ~/.config/templaros did not exist"
+    state verified
+    scope [
+        path "distro/iso/live/customize.sh",
+        path "session/units/user/templar-sessiond.service"
+    ]
+    statement """
+        Booting the 2026-09-09 TemplarOS live ISO (gc2403fa) on the reference laptop did not install anything: nvme0n1 still has four partitions. The first GRUB entry is a live session. templar-sessiond exited 226/NAMESPACE: Failed to set up mount namespacing: /home/templaros/.config/templaros: No such file or directory, because ProtectHome=read-only bind-mounts ReadWritePaths and casper's user has no such directory. The compositor and shell still started, so Home appeared, but Providers1 was empty (No file-manager is selected), org.templaros.Settings was not activatable, and session.poweroff/reboot were refused. Casper also rewrote the USB GPT (PMBR size mismatch ISO vs 128G stick) and created sda4 labeled writable for install-logs. NVIDIA LRM is absent on the live medium by design.
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    method observation
+    watches [
+        "session/units/user/templar-sessiond.service",
+        "distro/iso/live/customize.sh",
+        "session/templar-session/src/main.rs"
+    ]
+}
+
 record legeos.observation.memory-baseline-before-templaros-20260909/1 : observation {
     title "legeos.observation.memory-baseline-before-templaros-20260909"
     state verified

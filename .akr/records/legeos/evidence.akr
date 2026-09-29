@@ -1148,6 +1148,53 @@ record legeos.evidence.four-sided-resize-20260909/1 : evidence {
         """
 }
 
+record legeos.evidence.gesture-rails-gate-tests-20260928/1 : evidence {
+    title "17 recognizer tests pass: entry from above (straight, diagonal through a side, one segment jumping the gate) opens left/right on sideways travel; low sideways crossings, starts inside, held buttons and exceptions never arm; side latched; re-arm needs above; stale arm expires."
+    state verified
+    result pass
+    method command
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    command "cargo test -p templar-comp gesture_gate"
+    summary """
+        17 recognizer tests pass: entry from above (straight, diagonal through a side, one segment jumping the gate) opens left/right on sideways travel; low sideways crossings, starts inside, held buttons and exceptions never arm; side latched; re-arm needs above; stale arm expires.
+        """
+}
+
+record legeos.evidence.gesture-rails-nested-smoke-20260928/1 : evidence {
+    title "Nested session on X11 (winit), throwaway scripted motion fed through update_gesture_gate: gate armed and opened Right and Left; shell drew the System rail (Settings, Network, Clock, account) right of centre and the Apps rail left of centre, also over a fullscreen kitty via the rail peek; pointer moved away -> shell close_rail after 350 ms -> compositor 'rail closed reason=shell asked', host back to 1x1. Learning outline 240x96 drawn; settings change relayed live. Found and fixed: winit dropped bridge-only wakes (spawn_waker)."
+    state verified
+    result pass
+    method observation
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    summary """
+        Nested session on X11 (winit), throwaway scripted motion fed through update_gesture_gate: gate armed and opened Right and Left; shell drew the System rail (Settings, Network, Clock, account) right of centre and the Apps rail left of centre, also over a fullscreen kitty via the rail peek; pointer moved away -> shell close_rail after 350 ms -> compositor 'rail closed reason=shell asked', host back to 1x1. Learning outline 240x96 drawn; settings change relayed live. Found and fixed: winit dropped bridge-only wakes (spawn_waker).
+        """
+}
+
+record legeos.evidence.gesture-rails-shell-rail-tests-20260928/1 : evidence {
+    title "Rail reveal max-only and lead-ahead; chip rects unchanged as the reveal grows; unrevealed chips take no click; rail_session grace/hold/button tests; templar-shell 413 lib tests pass."
+    state verified
+    result pass
+    method command
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    command "cargo test -p templar-shell rail"
+    summary """
+        Rail reveal max-only and lead-ahead; chip rects unchanged as the reveal grows; unrevealed chips take no click; rail_session grace/hold/button tests; templar-shell 413 lib tests pass.
+        """
+}
+
+record legeos.evidence.gesture-rails-workspace-gate-20260928/1 : evidence {
+    title "All pass. check-packaging fails only because target/preview-codecs artifacts are not built in this tree (unrelated to this change)."
+    state verified
+    result pass
+    method command
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    command "cargo fmt --check; cargo clippy --workspace --all-targets -D warnings; cargo test --workspace; xtask check-interfaces/-signatures/-proxies/-assets/-actions/-wayland-versions, tree-check, deps-check"
+    summary """
+        All pass. check-packaging fails only because target/preview-codecs artifacts are not built in this tree (unrelated to this change).
+        """
+}
+
 record legeos.evidence.grub-entries-carry-deployment-id-20260903/1 : evidence {
     title "GRUB entries carry the deployment id"
     state verified
@@ -2187,6 +2234,18 @@ record legeos.evidence.installer-refuses-failed-preflight-20260907/1 : evidence 
     command "PREFLIGHT_REPORT=<report with a fail line> installer/provision.sh --image /tmp/t.img --apply --user dk"
     summary """
         With a report containing 'fail preflight-network', --apply dies naming the line before any write or the root check; with --ignore-preflight it proceeds to the root requirement.
+        """
+}
+
+record legeos.evidence.iso-native-refresh-1789113275-qemu-sb/1 : evidence {
+    title "iso-qemu: shim to GRUB to kernel with Secure Boot on, live userspace reached, preflight network pass for set 0.1.0~dev1789113275+ge7458c3.dirty (4.5G, sha256 b433f75f). Native refresh of the morning squashfs; provisioner sha 4d80918e matches installer/provision.sh; GRUB has console=tty1 and casper-md5check masked."
+    state verified
+    result pass
+    method command
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    command "TEMPLAR_ISO=/var/tmp/legeos-build/@build/templaros-0.1.0~dev1789113275+ge7458c3.dirty.iso tests/integration/iso-qemu.sh"
+    summary """
+        iso-qemu: shim to GRUB to kernel with Secure Boot on, live userspace reached, preflight network pass for set 0.1.0~dev1789113275+ge7458c3.dirty (4.5G, sha256 b433f75f). Native refresh of the morning squashfs; provisioner sha 4d80918e matches installer/provision.sh; GRUB has console=tty1 and casper-md5check masked.
         """
 }
 
@@ -3520,6 +3579,19 @@ record legeos.evidence.trash1-surfaces-20260831/1 : evidence {
     command "just check"
     summary """
         Files.Trash1 shipped across all four planned stages: the interface XML, service implementation (List sweeps the home trash and every mounted volume's; Restore/DeletePermanently/Empty are thin validating wrappers over the same FileService::start, Empty sweeps server-side including orphaned .trashinfo records; Changed emitted from the one completion site), lege-client proxy, `lege trash list|restore|delete|empty` with --yes on the destructive verbs, the shell Trash drawer listing the real trash with per-row restore and a two-press EMPTY chip, and the Files app trash place with its own columns, toolbar and confirmation rule. Service tests run against fixture trashes through the real FileService; full just check green at the merge commit.
+        """
+}
+
+record legeos.evidence.update-templaros-host-gates-20260911/1 : evidence {
+    title "update-templaros.sh host identity gates"
+    state verified
+    result pass
+    method command
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    command "tests/integration/update-templaros.sh"
+    artifact "tests/integration/update-templaros.sh"
+    summary """
+        ID=ubuntu refused and named reinstall-templaros-desktop.sh; ID=templaros with casper refused as live; ID=templaros without casper accepted.
         """
 }
 

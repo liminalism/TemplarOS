@@ -493,6 +493,17 @@ record legeos.papercut.distro-metapackages-readme-md-promised-a-distro/1 : paper
     created_at 2026-09-03
 }
 
+record legeos.papercut.during-advisor-startup-akr-context-positional/1 : papercut {
+    title "During advisor startup, akr context positional goal failed with…"
+    state verified
+    statement """
+        During advisor startup, akr context positional goal failed with AKR-C003; context requires --goal explicitly, which is not shown in the abbreviated AGENTS command mapping.
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    author "installer-advisor"
+    created_at 2026-09-11
+}
+
 record legeos.papercut.during-final-verification-the-external-path/1 : papercut {
     title "During final verification, the external path dependency…"
     state verified
@@ -625,6 +636,50 @@ record legeos.papercut.inspecting-freshly-built-cargo-deb-archives/1 : papercut 
     about "cargo-deb"
     author "codex"
     created_at 2026-08-23
+}
+
+record legeos.papercut.installer-readme-md-still-shows-free-space-dev/1 : papercut {
+    title "installer/README.md still shows `--free-space /dev/nvme1n1` and…"
+    state verified
+    statement """
+        installer/README.md still shows `--free-space /dev/nvme1n1` and `--esp/--root` on nvme1n1p3/p4 as the reference-laptop commands, and still claims --free-space refuses a hole that is not the tail. AKR revised the install target to nvme0n1 (Windows's leading 537 GiB gap) on 2026-09-09; following the README would partition the data drive. Fixing the examples and the stale tail-only sentence as part of this work.
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    author "grok"
+    created_at 2026-09-11
+}
+
+record legeos.papercut.iso-mmdebstrap-spent-3h-fetching-110-1505-debs/1 : papercut {
+    title "ISO mmdebstrap spent 3h fetching ~110/1505 debs: apt had a CLOSE_WAIT…"
+    state verified
+    statement """
+        ISO mmdebstrap spent 3h fetching ~110/1505 debs: apt had a CLOSE_WAIT IPv6 session to security.ubuntu.com (2620:2d:4000:1::102:80) while snapshot.ubuntu.com is IPv4-only. Acquire::Retries does not unstick that. ForceIPv4 belongs next to Retries in distro/iso/build.sh.
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    author "grok-4.6"
+    created_at 2026-09-11
+}
+
+record legeos.papercut.iso-rebuild-re-fetched-the-whole-resolute/1 : papercut {
+    title "ISO rebuild re-fetched the whole resolute snapshot on a native-only…"
+    state verified
+    statement """
+        ISO rebuild re-fetched the whole resolute snapshot on a native-only change because the only cache was a squashfs keyed on set_id. Wired ubuntu-layer reuse from the previous ISO plus mmdebstrap apt-archives sync-in/out.
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    author "grok-4.6"
+    created_at 2026-09-11
+}
+
+record legeos.papercut.iso-runbook-agent-scratch-iso-rebuild-runbook/1 : papercut {
+    title "ISO runbook .agent/scratch/iso-rebuild/RUNBOOK.md publishes to…"
+    state verified
+    statement """
+        ISO runbook .agent/scratch/iso-rebuild/RUNBOOK.md publishes to /var/lib/templaros/devrepo, which does not exist on the host; the live archive is /var/tmp/legeos-build/@build/archive-templar (private key in its gnupg/), old one at /var/lib/legeos/devrepo.
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    author "claude"
+    created_at 2026-09-29
 }
 
 record legeos.papercut.just-check-failed-because-xtask-s-check-assets/1 : papercut {
@@ -892,6 +947,28 @@ record legeos.papercut.lege-doctor-exited-1-on-every-developer-install/1 : paper
     created_at 2026-08-25
 }
 
+record legeos.papercut.live-text-console-boot-looks-hung-after-casper/1 : papercut {
+    title "Live text-console boot looks hung after casper-md5check FAILED. Boot…"
+    state verified
+    statement """
+        Live text-console boot looks hung after casper-md5check FAILED. Boot already reached multi-user.target; the ISO ships no md5sum.txt so the check always fails. Login is on serial-getty@ttyS0 because grub.cfg uses console=ttyS0/tty0, which does not spawn getty@tty1. Laptop then has no prompt. Mask md5check, pin getty@tty1, console=tty1.
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    author "grok"
+    created_at 2026-09-11
+}
+
+record legeos.papercut.live-usb-session-templar-sessiond-failed-226/1 : papercut {
+    title "Live USB session: templar-sessiond failed 226/NAMESPACE because…"
+    state verified
+    statement """
+        Live USB session: templar-sessiond failed 226/NAMESPACE because ReadWritePaths=%h/.config/templaros does not exist for the casper user. Shell came up with no providers, so Files/Settings/kitty/poweroff all died. ExecStartPre=+mkdir is the unit fix; live greeter also never sets XDG_CURRENT_DESKTOP.
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    author "grok"
+    created_at 2026-09-11
+}
+
 record legeos.papercut.making-the-integration-smoke-hermetic-by/1 : papercut {
     title "Making the integration smoke hermetic by replacing HOME also redirected…"
     state verified
@@ -992,6 +1069,17 @@ record legeos.papercut.partitioning-file-ownership-across-five/1 : papercut {
     created_at 2026-08-21
 }
 
+record legeos.papercut.pixelkit-pixelkit-path-dependency-added/1 : papercut {
+    title "pixelkit (../pixelkit, path dependency) added Modifiers.logo after…"
+    state verified
+    statement """
+        pixelkit (../pixelkit, path dependency) added Modifiers.logo after LegeOS e7458c3, so templar-shell and templar-greeter stopped compiling with no LegeOS change; path deps on a moving sibling repo break the tree silently. Pin a pixelkit rev or add a compile check when pixelkit moves.
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    author "claude"
+    created_at 2026-09-28
+}
+
 record legeos.papercut.planning-mockup-qa-the-cached-playwright-1-52/1 : papercut {
     title "Planning mockup QA: the cached Playwright 1.52 package is installed but…"
     state verified
@@ -1025,6 +1113,29 @@ record legeos.papercut.reconcile-reconcile-unconditionally-called/1 : papercut {
     observed_at git:1ddbd3ff263ebcdcf72944368e0d2e3645340748
     author "claude"
     created_at 2026-09-03
+}
+
+record legeos.papercut.resuming-a-session-limited-resolute-native/1 : papercut {
+    title "Resuming a session-limited Resolute native build: the outer…"
+    state verified
+    statement """
+        Resuming a session-limited Resolute native build: the outer scripts/build-in-resolute.sh process was gone, but just deb had already finished (21 debs + build-set.json at 16:01). Had to inspect chroot mtimes rather than a log, because the killed wrapper left no completion line.
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    about "scripts/build-in-resolute.sh"
+    author "grok-4.6"
+    created_at 2026-09-11
+}
+
+record legeos.papercut.scripts-nested-session-sh-records-of-a/1 : papercut {
+    title "scripts/nested-session.sh records $! of a backgrounded shell FUNCTION…"
+    state verified
+    statement """
+        scripts/nested-session.sh records $! of a backgrounded shell FUNCTION (nested_env ... &), i.e. a subshell pid, so 'stop'/'shell' kill the subshell and leave the real templar-shell/sessiond running; three shells ended up bound to one nested compositor. Use exec inside nested_env or record the child pid.
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    author "claude"
+    created_at 2026-09-28
 }
 
 record legeos.papercut.scripts-nested-session-sh-refuses-to-start/1 : papercut {
@@ -1103,6 +1214,17 @@ record legeos.papercut.taskbar-planning-targeted-reads-guessed-a/1 : papercut {
     observed_at git:1c56b773a0d59b0eda26427f2d086705b28d950e
     author "codex"
     created_at 2026-09-08
+}
+
+record legeos.papercut.templaros-install-free-space-dev-nvme0n1/1 : papercut {
+    title "templaros-install --free-space /dev/nvme0n1 refused: 'is a partition'.…"
+    state verified
+    statement """
+        templaros-install --free-space /dev/nvme0n1 refused: 'is a partition'. lsblk -no PKNAME on a disk lists child partitions' PKNAME, so the check is always true for a partitioned NVMe. Fix: lsblk -dno PKNAME. Live workaround: sudo sed -i 's/lsblk -no PKNAME/lsblk -dno PKNAME/g' /usr/libexec/templaros/provision
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    author "grok"
+    created_at 2026-09-11
 }
 
 record legeos.papercut.tests-integration-nested-session-sh-deleted-its/1 : papercut {
@@ -1573,6 +1695,17 @@ record legeos.papercut.while-proposing-an-assessment-with-an-internal/1 : paperc
     about "akr"
     author "codex"
     created_at 2026-08-31
+}
+
+record legeos.papercut.while-reading-the-completed-installer-advisor/1 : papercut {
+    title "While reading the completed installer advisor packet, a malformed…"
+    state verified
+    statement """
+        While reading the completed installer advisor packet, a malformed functions.exec JavaScript wrapper failed before invoking akr; retrying with a plain exec call. No project command ran.
+        """
+    observed_at git:e7458c3a132ed5ad8cd93f40d808bf2cef9456d4
+    author "Codex"
+    created_at 2026-09-11
 }
 
 record legeos.papercut.while-resuming-the-standalone-file-manager/1 : papercut {

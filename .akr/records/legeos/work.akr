@@ -2624,6 +2624,66 @@ record legeos.work.full-distribution-roadmap/1 : work {
         """
 }
 
+record legeos.work.gesture-rails-20260928/1 : work {
+    title "Gesture rails: a forgiving bottom-centre gate opens the apps and system rails, revealed by the pointer"
+    state active
+    scope [
+        path "apps/templar-settings/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-session-core/src/settings.rs",
+        path "interfaces/wayland/templar-shell-v1.xml",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Implement gesturebars-dev/gesturebars.md: gesture-revealed menu rails replace the bottom bar's
+        edge/hint/peek activation. The compositor owns a forgiving bottom-centre gate (templar_shell_v1
+        v9 set_gesture_gate): the pointer arms it by entering from above, and opens a rail by moving
+        sideways (left or right, latched), with no pointer grab and no input taken. The shell draws the
+        running-apps island as one rail and the machine cluster as the other, laid out stationary from
+        the gate's centre and revealed by a clip that follows the furthest the pointer has travelled,
+        half an item ahead. The shell dismisses a rail after a grace period away from it (close_rail);
+        presses elsewhere, Escape, lock and Taskfield close it too. Buffer-busy presents are reported
+        as Deferred and retried on release. Settings: mode (gesture or classic bar), swapped sides,
+        gate size, a learning outline, and application exceptions. The user's principle: the
+        gestures themselves are very forgiving. Apps are on the left and the system on the right by
+        default, as in gesturebars-dev/gesturebar.png.
+        """
+    note """
+        Implemented 2026-09-28 (uncommitted): protocol v9, compositor gesture_gate.rs + input.rs wiring,
+        shell rail.rs/rail_session.rs, bar/cluster rail modes, PresentOutcome with a two-buffer pool,
+        ShellBridge::spawn_waker (winit dropped wakes that carried only bridge events), shell.rails.*
+        settings and a Rails page. Default mode is gesture. Open: the hands-on run (real mouse,
+        accidental openings in ordinary use), an empty Apps rail shows nothing, one output only.
+        Evidence: @legeos.evidence.gesture-rails-gate-tests-20260928,
+        @legeos.evidence.gesture-rails-shell-rail-tests-20260928,
+        @legeos.evidence.gesture-rails-nested-smoke-20260928,
+        @legeos.evidence.gesture-rails-workspace-gate-20260928.
+        """
+    acceptance {
+        check gate-recognizer-tests {
+            statement """
+                The compositor's gate recognizer arms only on an entry from above, opens on sideways travel in either direction whatever the vertical motion, ignores sideways crossings and button-held entries, catches a motion that jumps across the gate, and re-arms only after the pointer has been above the gate again.
+                """
+            method command
+            command "cargo test -p templar-comp gesture_gate"
+        }
+        check rail-reveal-tests {
+            statement """
+                A rail's items stay where they were laid out while the reveal grows; the reveal never retracts when the pointer goes back; clicks land only on revealed items.
+                """
+            method command
+            command "cargo test -p templar-shell rail"
+        }
+        check workspace-gate {
+            statement """
+                fmt, clippy -D warnings, the workspace tests and the interface checks pass.
+                """
+            method command
+            command "just check"
+        }
+    }
+}
+
 record legeos.work.governor-containment/1 : work {
     title "The resource governor: a served interface, applied protection, a staged containment ladder and recorded traces"
     state completed
@@ -5572,6 +5632,53 @@ record legeos.work.hot-corner-fullscreen-reveal-and-a-centred-island-20260908/1 
         }
     }
     implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+}
+
+record legeos.work.in-os-hotfix-from-templaros-20260911/1 : work {
+    title "A hotfix path that updates installed TemplarOS, not the Lubuntu overlay session"
+    state completed
+    scope [
+        path "cli/templar/src/doctor/checks.rs",
+        path "installer/CHECKLIST.md",
+        path "installer/README.md",
+        path "justfile",
+        path "scripts/update-templaros.sh",
+        path "tests/integration/update-templaros.sh"
+    ]
+    intent """
+        When TemplarOS is the running operating system, a developer can rebuild the native package set from a checkout and install it onto that OS without going through scripts/reinstall-templaros-desktop.sh, which is the Lubuntu overlay tester and must refuse to be confused with an OS update. scripts/update-templaros.sh is that path: it requires ID=templaros, refuses a casper live session, builds with just deb, and deploys through sudo templar dev deploy against /var/lib/templaros/devrepo so the install is one pinned apt transaction with a btrfs root snapshot. Kernel, NVIDIA and inherited Ubuntu packages stay on apt/templar update; this script is native-set hotfixes only.
+        """
+    note """
+        Needed so an install from the 2026-09-09 ISO (gc2403fa, already on the SanDisk Ultra) can catch up to HEAD after first boot without rebuilding the medium.
+        """
+    acceptance {
+        check accepts-installed-os {
+            statement """
+                With ID=templaros and no casper.conf, --check-host exits 0.
+                """
+            method command
+            command "tests/integration/update-templaros.sh"
+            verified_by [ @legeos.evidence.update-templaros-host-gates-20260911/1 ]
+        }
+        check refuses-live {
+            statement """
+                With ID=templaros and a casper.conf present, the same check exits non-zero and says the live medium is ephemeral.
+                """
+            method command
+            command "tests/integration/update-templaros.sh"
+            verified_by [ @legeos.evidence.update-templaros-host-gates-20260911/1 ]
+        }
+        check refuses-lubuntu {
+            statement """
+                On a host whose os-release is not ID=templaros, scripts/update-templaros.sh --check-host exits non-zero and names scripts/reinstall-templaros-desktop.sh as the overlay path.
+                """
+            method command
+            command "tests/integration/update-templaros.sh"
+            verified_by [ @legeos.evidence.update-templaros-host-gates-20260911/1 ]
+        }
+    }
+    after [ @legeos.work.install-onto-the-laptop-partitions-20260909 ]
     part_of [ @legeos.milestone.developer-edition-0-1 ]
 }
 
