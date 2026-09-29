@@ -680,7 +680,10 @@ impl HomeContext {
     /// recorded at different moments are only comparable once they are all read at the same one.
     #[must_use]
     pub fn tree_at(&self, now: GardenMoment, config: &GardenConfig) -> Vec<TreeNode> {
-        self.tree.iter().map(|node| node.aged(now, config)).collect()
+        self.tree
+            .iter()
+            .map(|node| node.aged(now, config))
+            .collect()
     }
 
     /// Distinct `(kind, role)` pairs seen in the last [`BREADTH_WINDOW`] sessions before `now`.
@@ -2271,7 +2274,12 @@ mod tests {
         }
         let total: usize = ledger.contexts[0].tree.iter().map(TreeNode::count).sum();
         assert!(total <= TREE_NODES, "{total}");
-        assert!(ledger.contexts[0].tree.iter().all(|n| depth(n) <= TREE_DEPTH));
+        assert!(
+            ledger.contexts[0]
+                .tree
+                .iter()
+                .all(|n| depth(n) <= TREE_DEPTH)
+        );
     }
 
     /// Evidence ages: a place that was busy long ago and is touched once today comes back at
@@ -2327,7 +2335,10 @@ mod tests {
             for (kind, role) in [
                 (ActivityKind::LaunchedHere, Some(ProviderRole::Terminal)),
                 (ActivityKind::TerminalEntered, Some(ProviderRole::Terminal)),
-                (ActivityKind::DirectoryOpened, Some(ProviderRole::FileManager)),
+                (
+                    ActivityKind::DirectoryOpened,
+                    Some(ProviderRole::FileManager),
+                ),
                 (ActivityKind::ProjectEntered, None),
             ] {
                 for _ in 0..4 {
@@ -2341,7 +2352,8 @@ mod tests {
         }
         let now = at(6, 1.0);
         assert!(
-            ledger.contexts[0].effective(now, &config) >= threshold(Stage::Dominant).promote_effective
+            ledger.contexts[0].effective(now, &config)
+                >= threshold(Stage::Dominant).promote_effective
         );
         for _ in 0..20 {
             ledger.tend(now, &config);
@@ -2434,7 +2446,10 @@ mod tests {
         );
         let config = GardenConfig::default();
         let path = Path::new("/home/dk/projects/templaros/crates/field/src");
-        assert_eq!(attribute_root(path, &[], &probe, &config), Some(repo.clone()));
+        assert_eq!(
+            attribute_root(path, &[], &probe, &config),
+            Some(repo.clone())
+        );
         assert_eq!(
             attribute_root(path, std::slice::from_ref(&umbrella), &probe, &config),
             Some(repo.clone())
@@ -2477,7 +2492,10 @@ mod tests {
         }
         let root = Path::new("/home/dk/Downloads");
         assert_eq!(
-            ledger.context(root).unwrap().earned_form(at(1, 0.0), &config),
+            ledger
+                .context(root)
+                .unwrap()
+                .earned_form(at(1, 0.0), &config),
             Form::Shelf
         );
         // The evidence leads at once; the drawing does not follow until it has held.
@@ -2522,7 +2540,10 @@ mod tests {
         }
         let templaros = Path::new("/home/dk/src/templaros");
         assert_eq!(
-            worked.context(templaros).unwrap().earned_form(at(1, 0.0), &config),
+            worked
+                .context(templaros)
+                .unwrap()
+                .earned_form(at(1, 0.0), &config),
             Form::Branch
         );
         assert_eq!(

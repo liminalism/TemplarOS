@@ -1152,7 +1152,8 @@ mod tests {
             "0.1.0~dev3000+g3333333",
         ];
         for version in versions {
-            repo.publish(&build_set(&scratch, version), version).unwrap();
+            repo.publish(&build_set(&scratch, version), version)
+                .unwrap();
         }
         let before = runner.lines().len();
         let newest = "0.1.0~dev4000+g4444444";

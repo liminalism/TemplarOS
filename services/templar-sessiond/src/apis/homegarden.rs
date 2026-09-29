@@ -1170,7 +1170,11 @@ mod tests {
         assert!(is_repository(&repo));
         let worktree = stray.join("templaros-iso");
         std::fs::create_dir_all(&worktree).unwrap();
-        std::fs::write(worktree.join(".git"), "gitdir: ../templaros/.git/worktrees/iso\n").unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: ../templaros/.git/worktrees/iso\n",
+        )
+        .unwrap();
         assert!(is_repository(&worktree));
     }
 

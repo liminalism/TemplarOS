@@ -706,7 +706,10 @@ mod tests {
                 .notify_idle(true, call.header())
                 .await
                 .expect_err("only the compositor may report idleness");
-            assert!(matches!(error, fdo::Error::AccessDenied(_)), "{unit:?}: {error}");
+            assert!(
+                matches!(error, fdo::Error::AccessDenied(_)),
+                "{unit:?}: {error}"
+            );
         }
         let edges: SessionEdges = broadcast::channel(EDGE_CAPACITY).0;
         let mut seen = edges.subscribe();

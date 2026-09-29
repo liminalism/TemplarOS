@@ -12,9 +12,9 @@ use crate::{
 };
 use pixelkit_raster::{Painter, RasterKernel, Rect, WindowBuffer};
 use pixelkit_shell::{Input, KeyInput, Modifiers, MouseButton, Scale};
-use pixelkit_windowing::{PixelApp, WindowConfig, run_app};
 use pixelkit_text::{Align, Face, FontSet, TextCache};
 use pixelkit_ui::{Dropdown, ScrollState, TextFieldState, Theme, Ui};
+use pixelkit_windowing::{PixelApp, WindowConfig, run_app};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
