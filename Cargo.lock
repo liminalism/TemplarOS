@@ -3793,6 +3793,9 @@ dependencies = [
 [[package]]
 name = "templar-treemap"
 version = "0.1.0"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "templar-types"

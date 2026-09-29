@@ -13,6 +13,10 @@
 //! The algorithm's source: J. J. van Wijk and H. van de Wetering, *Cushion Treemaps:
 //! Visualization of Hierarchical Information*, Proc. INFOVIS 1999; the squarified layout is
 //! Bruls, Huizing and van Wijk, *Squarified Treemaps*, 2000.
+//!
+//! [`garden`] holds the Homegarden Place layouts: the shape of a Place's relevance-weighted
+//! used-structure tree as stable treemaps, Voronoi and circle packings, radial partitions,
+//! grown branches, fractals and folios, all ordered by stable node id rather than weight.
 
 #![forbid(unsafe_code)]
 // Lifted numeric code: many short names and wide signatures are the paper's own.
@@ -27,6 +31,7 @@
 
 pub mod colors;
 pub mod cushion;
+pub mod garden;
 pub mod layout;
 pub mod scan;
 pub mod tree;

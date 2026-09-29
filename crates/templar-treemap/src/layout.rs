@@ -86,7 +86,7 @@ impl Default for LayoutConfig {
 
 /// Add a ridge to the cushion surface coefficients along one axis.
 /// Matches the CTM procedure from van Wijk & van de Wetering 1999.
-fn add_ridge(x1: f32, x2: f32, h: f32, s1: &mut f32, s2: &mut f32) {
+pub(crate) fn add_ridge(x1: f32, x2: f32, h: f32, s1: &mut f32, s2: &mut f32) {
     let denom = x2 - x1;
     if denom.abs() < 1e-6 {
         return;
@@ -489,7 +489,13 @@ fn collapse_single_dir_chain(tree: &FileTree, start: NodeId) -> (NodeId, usize) 
 
 /// Squarified layout following Bruls et al.:
 /// keep adding items to the current row while worst-aspect improves.
-fn squarify(areas: &[f64], mut x: f64, mut y: f64, mut w: f64, mut h: f64) -> Vec<Positioned> {
+pub(crate) fn squarify(
+    areas: &[f64],
+    mut x: f64,
+    mut y: f64,
+    mut w: f64,
+    mut h: f64,
+) -> Vec<Positioned> {
     let mut result = Vec::with_capacity(areas.len());
     let sorted = areas;
 
@@ -624,11 +630,11 @@ fn layout_row(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Positioned {
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
+pub(crate) struct Positioned {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) w: f64,
+    pub(crate) h: f64,
 }
 
 fn worst_aspect_ratio_stats(min_r: f64, max_r: f64, sum: f64, side: f64) -> f64 {
