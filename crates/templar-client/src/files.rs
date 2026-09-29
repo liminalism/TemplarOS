@@ -135,7 +135,6 @@ pub struct FileInfo {
 pub enum PreviewKind {
     Bpg,
     Heic,
-    JpegXl,
     Pdf,
     Raster,
     Video,

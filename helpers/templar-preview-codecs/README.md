@@ -1,10 +1,10 @@
 # templar-preview-codecs
 
-This is the bounded JPEG XL and PDF preview companion for `templar-filed`. It links the user's JPXL
-decoder and Templar PDF renderer directly and emits a private `LPV1` RGBA wire image; it is not a
+This is the bounded PDF preview companion for `templar-filed`. It links the Templar PDF renderer
+directly and emits a private `LPV1` RGBA wire image; it is not a
 general command-line converter and is not installed on `PATH`.
 
-The nested workspace is intentional: it keeps JPXL's and the Templar renderer's heavy dependency graph
+The nested workspace is intentional: it keeps the Templar renderer's heavy dependency graph
 and its own lockfile out of the main TemplarOS workspace. Build, test, stage, and self-check the
 companion with:
 

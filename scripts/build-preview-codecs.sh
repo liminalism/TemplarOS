@@ -24,6 +24,5 @@ cargo "+${TOOLCHAIN}" build --release --locked --manifest-path "$MANIFEST" --tar
 
 install -d "$STAGE_DIR/licenses"
 install -m 0755 "$PREVIEW_TARGET_DIR/release/templar-preview-codecs" "$STAGE_DIR/templar-preview-codecs"
-install -m 0644 "$REPO_ROOT/../jpegXL-rs/JPXL/LICENSE-MIT" "$STAGE_DIR/licenses/JPXL-LICENSE-MIT"
 install -m 0644 "$REPO_ROOT/../Lege-ecosystem/LICENSE" "$STAGE_DIR/licenses/LEGE-PDF-LICENSE"
 "$STAGE_DIR/templar-preview-codecs" --self-check

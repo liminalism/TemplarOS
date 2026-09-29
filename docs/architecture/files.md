@@ -36,7 +36,7 @@ every selection recursively scan a directory.
 ## Previews are bounded service results
 
 `Files.Previews1.Render` returns metadata plus a PNG no larger than the requested edge (clamped to
-32–768 pixels). It accepts BPG, HEIC/HEIF, JPEG XL, PDF, common raster and common video extensions;
+32–768 pixels). It accepts BPG, HEIC/HEIF, PDF, common raster and common video extensions;
 PDF rendering is limited to the first page. Still-image and document sources over 512 MiB are
 rejected before decode, final PNGs are limited to 16 MiB, external processes have wall-clock and
 output limits, and dimensions are checked before bytes cross D-Bus. Videos are seeked and are not
@@ -45,10 +45,11 @@ decodes every returned PNG again and verifies that its dimensions match the meta
 painting it.
 
 The still/PDF routes are first-party Rust code. `bpg-rs` decodes BPG and HEIC/HEIF with dimension,
-pixel and memory limits; image-rs decodes ordinary rasters; JPXL decodes JPEG XL; and the Templar CPU
-renderer compiles and paints page zero of a PDF. JPXL and the Templar renderer declare Rust 1.97, so
-`scripts/build-preview-codecs.sh` compiles them into one bounded `templar-preview-codecs` process and
-stages it beside `templar-filed`; the main workspace now shares their honest Rust 1.97 floor.
+pixel and memory limits; image-rs decodes ordinary rasters; and the Templar CPU renderer compiles and
+paints page zero of a PDF. The Templar renderer declares Rust 1.97, so
+`scripts/build-preview-codecs.sh` compiles it into one bounded `templar-preview-codecs` process and
+stages it beside `templar-filed`; the main workspace now shares its honest Rust 1.97 floor. JPEG XL previews were removed on
+2026-09-29 to drop the `../jpegXL-rs` sibling from the build; `.jxl` files show no preview.
 `TEMPLAROS_PREVIEW_CODECS` selects an alternate development binary.
 
 Video thumbnails intentionally use ffmpeg because it has the broadest reliable container and

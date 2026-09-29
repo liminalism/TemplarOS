@@ -1,8 +1,8 @@
 //! Bounded selected-file previews for file-manager clients.
 //!
 //! Ordinary rasters and the user's BPG/HEIC decoder run directly on a blocking
-//! service worker. JPXL and the Templar PDF renderer live in a packaged companion
-//! because those workspaces require Rust 1.97 while TemplarOS retains its Rust
+//! service worker. The Templar PDF renderer lives in a packaged companion
+//! because its workspace requires Rust 1.97 while TemplarOS retains its Rust
 //! 1.93 archive baseline. Video is the one intentional external-tool route:
 //! ffprobe supplies the duration and ffmpeg seeks to exactly three percent.
 //! ImageMagick and Poppler are not used.
@@ -39,7 +39,6 @@ const WIRE_MAGIC: &[u8; 4] = b"LPV1";
 pub enum PreviewKind {
     Bpg,
     Heic,
-    JpegXl,
     Pdf,
     Raster,
     Video,
@@ -107,7 +106,7 @@ pub fn render(path: &Path, requested_edge: u32) -> Result<Option<RenderedPreview
             let (renderer, raster) = decode_in_process(kind, path)?;
             finish_raster(kind, renderer, raster, edge)?
         }
-        PreviewKind::JpegXl | PreviewKind::Pdf => render_with_companion(kind, path, edge)?,
+        PreviewKind::Pdf => render_with_companion(kind, path, edge)?,
         PreviewKind::Video => render_video(path, edge)?,
     };
     Ok(Some(preview))
@@ -118,7 +117,6 @@ fn classify(path: &Path) -> Option<PreviewKind> {
     match extension.as_str() {
         "bpg" => Some(PreviewKind::Bpg),
         "heic" | "heif" | "hif" => Some(PreviewKind::Heic),
-        "jxl" => Some(PreviewKind::JpegXl),
         "pdf" => Some(PreviewKind::Pdf),
         "bmp" | "dds" | "exr" | "gif" | "hdr" | "ico" | "jpeg" | "jpg" | "png" | "pnm" | "ppm"
         | "qoi" | "tga" | "tif" | "tiff" | "webp" => Some(PreviewKind::Raster),
@@ -139,7 +137,7 @@ fn decode_in_process(kind: PreviewKind, path: &Path) -> Result<(&'static str, De
         PreviewKind::Bpg => decode_bpg(&source).map(|raster| ("bpg-rs", raster)),
         PreviewKind::Heic => decode_heic(&source).map(|raster| ("bpg-rs HEIC", raster)),
         PreviewKind::Raster => decode_image_rs(&source).map(|raster| ("image-rs", raster)),
-        PreviewKind::JpegXl | PreviewKind::Pdf | PreviewKind::Video => {
+        PreviewKind::Pdf | PreviewKind::Video => {
             bail!("internal preview route mismatch for {kind:?}")
         }
     }
@@ -310,7 +308,6 @@ fn companion_spec(
     program: OsString,
 ) -> HelperSpec {
     let (command, renderer) = match kind {
-        PreviewKind::JpegXl => ("jxl", "JPXL"),
         PreviewKind::Pdf => ("pdf", "Templar PDF"),
         _ => unreachable!("only companion preview kinds have a companion spec"),
     };
@@ -639,7 +636,6 @@ mod tests {
         let cases = [
             ("photo.BPG", PreviewKind::Bpg),
             ("photo.HEIC", PreviewKind::Heic),
-            ("photo.jxl", PreviewKind::JpegXl),
             ("report.PDF", PreviewKind::Pdf),
             ("ordinary.webp", PreviewKind::Raster),
             ("movie.MKV", PreviewKind::Video),
@@ -650,13 +646,6 @@ mod tests {
         assert_eq!(classify(Path::new("/notes.txt")), None);
 
         let temp = tempfile::tempdir().unwrap();
-        let jxl = companion_spec(
-            PreviewKind::JpegXl,
-            Path::new("/photo.jxl"),
-            512,
-            temp.path(),
-            OsString::from("/usr/libexec/templar-preview-codecs"),
-        );
         let pdf = companion_spec(
             PreviewKind::Pdf,
             Path::new("/report.pdf"),
@@ -664,15 +653,12 @@ mod tests {
             temp.path(),
             OsString::from("/usr/libexec/templar-preview-codecs"),
         );
-        assert_eq!(jxl.renderer, "JPXL");
         assert_eq!(pdf.renderer, "Templar PDF");
-        for spec in [jxl, pdf] {
-            let program = spec.program.to_string_lossy();
-            assert!(!program.contains("magick"));
-            assert!(!program.contains("ffmpeg"));
-            assert!(!program.contains("poppler"));
-            assert!(!program.contains("pdftoppm"));
-        }
+        let program = pdf.program.to_string_lossy();
+        assert!(!program.contains("magick"));
+        assert!(!program.contains("ffmpeg"));
+        assert!(!program.contains("poppler"));
+        assert!(!program.contains("pdftoppm"));
     }
 
     #[test]

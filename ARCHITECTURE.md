@@ -35,7 +35,7 @@
 | `templar-sessiond` | user | **the** policy daemon: identity/launch, associations, providers/autostart, history, notifications, settings, projects, power, location — one state DB, one crash unit, no cross-daemon races (ADR-0001) |
 | `templar-resourced` | user | must tick while everything else thrashes; no SQLite/fsync/D-Bus on its loop (ADR-0002) |
 | `templar-filed` | user | heavy I/O; a stuck mount must not stall policy |
-| `templar-preview-codecs` | transient child of filed | bounded JPXL/Templar-PDF decode seam; keeps their heavier dependency graph out of the service |
+| `templar-preview-codecs` | transient child of filed | bounded Templar-PDF render seam; keeps its heavier dependency graph out of the service |
 | `templar-hostd` | root, system bus | the one privileged surface, one polkit policy (ADR-0003) |
 | `templar-boot-health` | root, oneshot | gates `boot-complete.target` (ADR-0004) |
 | `xdg-desktop-portal-templar` | user, D-Bus activated | one backend over the same services |
@@ -60,7 +60,7 @@
 | `templar-hwdetect` | hostd, installer, doctor | GPU detection, flavour, modes |
 | `templar-resourced` (lib) | itself | cgroup wrapper, PSI, pure `Governor`, executor, `app.slice` scan |
 | `templar-filed` (lib) | itself | structured browsing, bounded previews, operation journal, storage/reserve, last-dir policy |
-| `templar-preview-codecs` (bin) | transient helper | JPXL decode and first-page Templar PDF CPU rendering behind time, memory and output limits |
+| `templar-preview-codecs` (bin) | transient helper | first-page Templar PDF CPU rendering behind time, memory and output limits |
 | `templar-build` | every long-lived binary, xtask, cli | build identity: one BuildSetId per set, runtime stamps saying what is running, the component matrix, D-Bus signature comparison |
 | `templar` (lib) | cli, tests | `doctor` engine, `templar dev` deployment (convergence, local archive, activation, gates) |
 

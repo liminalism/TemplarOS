@@ -466,35 +466,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a0370574b86f7eca156b9f298392b5e69a23f8c86f3f865add60bbc2e79467a6"
 
 [[package]]
-name = "jpxl-bitstream"
-version = "0.3.0"
-
-[[package]]
-name = "jpxl-core"
-version = "0.3.0"
-dependencies = [
- "jpxl-bitstream",
- "wide",
-]
-
-[[package]]
-name = "jpxl-decode"
-version = "0.3.0"
-dependencies = [
- "jpxl-bitstream",
- "jpxl-core",
- "jpxl-entropy",
-]
-
-[[package]]
-name = "jpxl-entropy"
-version = "0.3.0"
-dependencies = [
- "jpxl-bitstream",
- "jpxl-core",
-]
-
-[[package]]
 name = "jpxl-perceptual"
 version = "0.3.0"
 
@@ -1280,9 +1251,6 @@ name = "templar-preview-codecs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "jpxl-bitstream",
- "jpxl-core",
- "jpxl-decode",
  "lege-pdf-read",
 ]
 

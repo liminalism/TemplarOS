@@ -8,7 +8,7 @@ then launched by `Launcher1`.
 
 The application owns presentation state—selection, navigation history, clipboard intent and
 dialogs—but no filesystem or association policy. Selecting a supported image, PDF or video loads
-a preview into the right rail. BPG, HEIC/HEIF, JPEG XL, PDF first pages, common raster formats and
+a preview into the right rail. BPG, HEIC/HEIF, PDF first pages, common raster formats and
 video thumbnails are decoded by bounded service routes, never on the window thread. Closing the
 application does not stop an operation already accepted by `templar-filed`.
 
@@ -23,9 +23,9 @@ Ctrl+C/X/V (copy/cut/paste), Ctrl+Shift+C (copy path), Alt+Enter (properties), F
 (Trash), Ctrl+Z (undo), F5 (refresh), Enter (open). Every action also has a visible button.
 
 Still-image and document previews use the user's own Rust code: `bpg-rs` handles BPG and
-HEIC/HEIF, image-rs handles ordinary rasters, JPXL handles JPEG XL, and the Templar CPU renderer
-paints the first PDF page. JPXL and the Templar renderer are compiled into the packaged
-`templar-preview-codecs` companion, which keeps their heavy dependency graph and lockfile out of the
+HEIC/HEIF, image-rs handles ordinary rasters, and the Templar CPU renderer paints the first PDF
+page. The Templar renderer is compiled into the packaged `templar-preview-codecs` companion, which
+keeps its heavy dependency graph and lockfile out of the
 main OS workspace. `TEMPLAROS_PREVIEW_CODECS` can select a development build. Video is
 the deliberate ffmpeg route: ffprobe supplies the duration and ffmpeg seeks to 3% before taking
 one bounded frame. No still image or PDF is routed through ffmpeg. `templar-files` depends on

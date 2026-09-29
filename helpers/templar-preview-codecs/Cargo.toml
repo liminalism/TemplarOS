@@ -1,6 +1,6 @@
 [package]
 name = "templar-preview-codecs"
-description = "Bounded JPXL and Templar PDF preview companion for TemplarOS Files"
+description = "Bounded Templar PDF preview companion for TemplarOS Files"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
@@ -8,14 +8,11 @@ license = "AGPL-3.0-only"
 publish = false
 
 # This companion deliberately has a newer toolchain than the TemplarOS archive
-# workspace. JPXL and the Templar renderer both declare Rust 1.97, while TemplarOS
-# itself keeps the lighter dependency graph.
+# workspace. The Templar renderer declares Rust 1.97, while TemplarOS itself keeps
+# the lighter dependency graph.
 [workspace]
 
 [dependencies]
 anyhow = "1"
-jpxl-bitstream = { path = "../../../jpegXL-rs/JPXL/crates/jpxl-bitstream" }
-jpxl-core = { path = "../../../jpegXL-rs/JPXL/crates/jpxl-core", default-features = false }
-jpxl-decode = { path = "../../../jpegXL-rs/JPXL/crates/jpxl-decode" }
 lege-pdf-read = { path = "../../../Lege-ecosystem/lege-pdf/read" }
 

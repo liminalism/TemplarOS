@@ -47,7 +47,6 @@ depends = "$auto, ffmpeg, systemd, udisks2"
 assets = [
     ["target/release/templar-filed", "usr/libexec/templar-filed", "755"],
     ["../../target/preview-codecs/templar-preview-codecs", "usr/libexec/templar-preview-codecs", "755"],
-    ["../../target/preview-codecs/licenses/JPXL-LICENSE-MIT", "usr/share/doc/templaros-filed/preview-codecs/JPXL-LICENSE-MIT", "644"],
     ["../../target/preview-codecs/licenses/LEGE-PDF-LICENSE", "usr/share/doc/templaros-filed/preview-codecs/LEGE-PDF-LICENSE", "644"],
     ["../../session/units/user/templar-filed.service", "usr/lib/systemd/user/templar-filed.service", "644"],
     ["../../interfaces/dbus/org.templaros.Files.Browse1.xml", "usr/share/dbus-1/interfaces/org.templaros.Files.Browse1.xml", "644"],
