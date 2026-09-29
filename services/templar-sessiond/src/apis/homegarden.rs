@@ -15,8 +15,8 @@ use crate::apis::{
 use parking_lot::RwLock;
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    time::Instant,
+    sync::{Arc, Mutex, mpsc},
+    time::{Duration, Instant},
 };
 use templar_field::garden::{ContextView, HomeCorner, garden_tile_id, tend};
 use templar_session_core::{
@@ -36,6 +36,10 @@ struct Inner {
     /// Process-relative monotonic origin: the clock's intervals are never persisted, so the
     /// origin need not be.
     origin: Instant,
+    /// Acts observed since the ledger was last handed to the writer.
+    unsaved: u32,
+    /// `monotonic_ms` when the ledger was last handed to the writer.
+    saved_at_ms: u64,
 }
 
 impl Inner {
@@ -50,6 +54,54 @@ impl Inner {
         let monotonic_ms = self.monotonic_ms();
         advance(&mut self.ledger.clock, monotonic_ms)
     }
+}
+
+/// Observed acts are written in batches rather than one ledger write per act: a prompt hook that
+/// fires on every `cd` would otherwise serialize and commit the whole ledger each time. Every
+/// other change — an edge, a tending, a verb — is written at once, and so is an act that finds
+/// this many unsaved before it or the last write this long ago. Nothing ticks: the check happens
+/// when an act arrives, and sessiond's exit flushes what is left.
+const UNSAVED_ACTS: u32 = 16;
+const UNSAVED_MS: u64 = 5 * 60 * 1000;
+
+/// What the writer thread is asked to do. Saves are coalesced to the latest; a flush answers
+/// once everything before it is on disk.
+enum Write {
+    Save(String),
+    Flush(mpsc::Sender<()>),
+}
+
+/// The one thread that writes the ledger, so no D-Bus handler waits on SQLite and no older
+/// snapshot can land after a newer one (the channel is ordered and only the latest save of a
+/// burst is written).
+fn spawn_writer(store: Store) -> mpsc::Sender<Write> {
+    let (tx, rx) = mpsc::channel::<Write>();
+    let spawned = std::thread::Builder::new()
+        .name("garden-writer".into())
+        .spawn(move || {
+            while let Ok(first) = rx.recv() {
+                let mut latest = None;
+                let mut acks = Vec::new();
+                for request in std::iter::once(first).chain(rx.try_iter()) {
+                    match request {
+                        Write::Save(json) => latest = Some(json),
+                        Write::Flush(ack) => acks.push(ack),
+                    }
+                }
+                if let Some(json) = latest
+                    && let Err(error) = homegarden::save_json(&store, &json)
+                {
+                    tracing::warn!(%error, "failed to persist the Homegarden ledger");
+                }
+                for ack in acks {
+                    let _ = ack.send(());
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::error!(%error, "the Homegarden writer thread did not start; nothing will persist");
+    }
+    tx
 }
 
 /// Fold the open interval into the clock's total and read the moment.
@@ -72,6 +124,7 @@ pub struct HomeGardenApi {
     settings: Arc<RwLock<SettingsValues>>,
     probe: Arc<DaemonProbe>,
     connection: zbus::Connection,
+    writer: mpsc::Sender<Write>,
 }
 
 impl std::fmt::Debug for HomeGardenApi {
@@ -96,8 +149,11 @@ impl HomeGardenApi {
             inner: Arc::new(Mutex::new(Inner {
                 ledger,
                 origin: Instant::now(),
+                unsaved: 0,
+                saved_at_ms: 0,
             })),
             probe: Arc::new(DaemonProbe::new(store.clone())),
+            writer: spawn_writer(store.clone()),
             store,
             history,
             providers,
@@ -126,8 +182,37 @@ impl HomeGardenApi {
         // The clock first: `interval_started` is deliberately not persisted, so an interval that
         // is not folded in here is lost outright when the session ends without a lock edge.
         let _ = inner.now();
-        if let Err(error) = homegarden::save(&self.store, &inner.ledger) {
-            tracing::warn!(%error, "failed to persist the Homegarden ledger");
+        match serde_json::to_string(&inner.ledger) {
+            Ok(json) => {
+                let _ = self.writer.send(Write::Save(json));
+                inner.unsaved = 0;
+                inner.saved_at_ms = inner.monotonic_ms();
+            }
+            Err(error) => tracing::warn!(%error, "failed to serialize the Homegarden ledger"),
+        }
+    }
+
+    /// One act was recorded: write it with the batch it belongs to.
+    fn persist_observed(&self, inner: &mut Inner) {
+        inner.unsaved += 1;
+        if inner.unsaved >= UNSAVED_ACTS
+            || inner.monotonic_ms().saturating_sub(inner.saved_at_ms) >= UNSAVED_MS
+        {
+            self.persist(inner);
+        }
+    }
+
+    /// Write everything now and wait (briefly) until it is on disk: sessiond is exiting, and a
+    /// logout emits no lock edge, so this is what carries the session's garden time and its last
+    /// acts across.
+    pub fn flush(&self) {
+        {
+            let mut inner = self.inner.lock().expect("garden lock");
+            self.persist(&mut inner);
+        }
+        let (ack, done) = mpsc::channel();
+        if self.writer.send(Write::Flush(ack)).is_ok() {
+            let _ = done.recv_timeout(Duration::from_secs(3));
         }
     }
 
@@ -177,7 +262,7 @@ impl HomeGardenApi {
             .observe(&activity, self.probe.as_ref(), &config)
         {
             tracing::info!(kind = kind.as_str(), root = %root.display(), "garden observed");
-            self.persist(&mut inner);
+            self.persist_observed(&mut inner);
         }
     }
 
@@ -214,7 +299,7 @@ impl HomeGardenApi {
                 .associate_instance(&file, instance, self.probe.as_ref(), &config)
         {
             tracing::info!(root = %root.display(), "garden associated a launched instance");
-            self.persist(&mut inner);
+            self.persist_observed(&mut inner);
         }
     }
 
@@ -228,6 +313,7 @@ impl HomeGardenApi {
                     inner.ledger.clock.resume(now);
                 }
                 SessionEdge::Locked | SessionEdge::Sleeping(true) => inner.ledger.clock.pause(now),
+                SessionEdge::Idle(idle) => inner.ledger.clock.set_idle(idle, now),
             }
             self.persist(&mut inner);
         }
@@ -648,11 +734,12 @@ fn context_json(
         "effective": context.effective(now, config),
         "score": context.score,
         "sessions_seen": context.sessions_seen(),
+        "recent_sessions": context.recent_sessions(now),
         "breadth": context.breadth(now),
         "idle_sessions": now.sessions_since(context.last),
         "idle_garden_hours": now.hours_since(context.last),
         "roles": context.roles.iter().map(|r| r.as_str()).collect::<Vec<_>>(),
-        "tree": context.tree,
+        "tree": context.tree_at(now, config),
         "pinned": context.pinned,
         "kept": context.user_span.is_some(),
         "hidden": context.hidden,
@@ -903,6 +990,18 @@ const WORKSPACE_MARKERS: &[&str] = &[
     "justfile",
 ];
 
+/// A real repository root: a `.git` directory that has a `HEAD` (an empty `.git` left in a
+/// projects folder is not one), a worktree's or submodule's `.git` file, or another VCS's
+/// directory.
+fn is_repository(path: &Path) -> bool {
+    let git = path.join(".git");
+    git.join("HEAD").is_file()
+        || git.is_file()
+        || [".hg", ".jj", ".svn"]
+            .iter()
+            .any(|marker| path.join(marker).is_dir())
+}
+
 impl DaemonProbe {
     fn new(store: Store) -> Self {
         let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
@@ -1006,6 +1105,10 @@ impl RootProbe for DaemonProbe {
             .any(|marker| path.join(marker).exists())
     }
 
+    fn has_vcs_marker(&self, path: &Path) -> bool {
+        is_repository(path)
+    }
+
     fn is_mount_point(&self, path: &Path) -> bool {
         use std::os::unix::fs::MetadataExt as _;
         let Some(parent) = path.parent() else {
@@ -1033,6 +1136,43 @@ impl RootProbe for DaemonProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The writer keeps the newest of a burst and a flush answers only once it is stored, so an
+    /// exiting daemon neither loses its last acts nor lets an older snapshot win.
+    #[test]
+    fn the_writer_stores_the_newest_save_before_answering_a_flush() {
+        let store = Store::in_memory().unwrap();
+        let writer = spawn_writer(store.clone());
+        let mut ledger = Ledger::default();
+        for session in 1..=5 {
+            ledger.clock.session = session;
+            writer
+                .send(Write::Save(serde_json::to_string(&ledger).unwrap()))
+                .unwrap();
+        }
+        let (ack, done) = mpsc::channel();
+        writer.send(Write::Flush(ack)).unwrap();
+        done.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(homegarden::load(&store).clock.session, 5);
+    }
+
+    /// An empty `.git` in a projects folder is not a repository; a real one, or a worktree's
+    /// `.git` file, is.
+    #[test]
+    fn only_a_real_repository_is_a_repository() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stray = tmp.path().join("projects");
+        std::fs::create_dir_all(stray.join(".git")).unwrap();
+        assert!(!is_repository(&stray));
+        let repo = stray.join("templaros");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert!(is_repository(&repo));
+        let worktree = stray.join("templaros-iso");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: ../templaros/.git/worktrees/iso\n").unwrap();
+        assert!(is_repository(&worktree));
+    }
 
     #[test]
     fn a_launch_directory_is_read_from_the_common_argument_shapes() {

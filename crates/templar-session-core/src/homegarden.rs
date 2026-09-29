@@ -55,30 +55,60 @@ impl GardenMoment {
 /// The Garden Clock. `interval_started` is a monotonic millisecond reading and is deliberately
 /// not persisted: a daemon that restarts mid-session cannot know how long the interval ran, so
 /// it starts a new one and loses at most the unrecorded tail, never inventing time.
+///
+/// Two independent things stop it: the session being *held* (locked, asleep) and the seat being
+/// *idle* (the compositor turned the screen off because nobody touched anything). An interval is
+/// open only while neither holds, so waking the screen at the lock prompt counts nothing, and
+/// neither does an unlocked laptop left on overnight.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GardenClock {
     pub session: u64,
     pub active_ms: u64,
     #[serde(skip)]
     interval_started: Option<u64>,
+    #[serde(skip)]
+    held: bool,
+    #[serde(skip)]
+    idle: bool,
 }
 
 impl GardenClock {
-    /// A user session started: count it and open an unlocked interval.
+    /// A user session started: count it and open an interval.
     pub fn start_session(&mut self, monotonic_ms: u64) {
         self.session += 1;
+        self.idle = false;
         self.resume(monotonic_ms);
     }
 
-    /// The session became usable again (unlock, resume from sleep): open an interval.
+    /// The session became usable again (unlock, resume from sleep).
     pub fn resume(&mut self, monotonic_ms: u64) {
-        if self.interval_started.is_none() {
+        self.held = false;
+        self.open(monotonic_ms);
+    }
+
+    /// The session stopped being usable (lock, sleep): accumulate the interval.
+    pub fn pause(&mut self, monotonic_ms: u64) {
+        self.held = true;
+        self.close(monotonic_ms);
+    }
+
+    /// The compositor turned the screen off for want of input (`true`), or back on (`false`).
+    pub fn set_idle(&mut self, idle: bool, monotonic_ms: u64) {
+        self.idle = idle;
+        if idle {
+            self.close(monotonic_ms);
+        } else {
+            self.open(monotonic_ms);
+        }
+    }
+
+    fn open(&mut self, monotonic_ms: u64) {
+        if !self.held && !self.idle && self.interval_started.is_none() {
             self.interval_started = Some(monotonic_ms);
         }
     }
 
-    /// The session stopped being usable (lock, sleep, logout): accumulate the interval.
-    pub fn pause(&mut self, monotonic_ms: u64) {
+    fn close(&mut self, monotonic_ms: u64) {
         if let Some(started) = self.interval_started.take() {
             self.active_ms += monotonic_ms.saturating_sub(started);
         }
@@ -224,6 +254,11 @@ pub struct Bucket {
 
 /// One node of a context's activity tree: a path component beneath the root that earned a
 /// mention, with what it earned. Depth ≤ [`TREE_DEPTH`], ≤ [`TREE_NODES`] nodes in all.
+///
+/// `score` is evidence as of `last`, aged by the same half-lives as the place itself at every
+/// act (so a branch nobody has walked for a week is thin, whatever it once carried), and each
+/// node may gain at most [`NODE_SESSION_CAP`] in one session (so forty saves in one directory
+/// are one afternoon's work there, not forty).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TreeNode {
     pub name: String,
@@ -232,6 +267,12 @@ pub struct TreeNode {
     pub last: GardenMoment,
     #[serde(default)]
     pub children: Vec<TreeNode>,
+    /// The session `session_weight` belongs to.
+    #[serde(default)]
+    pub session: u64,
+    /// What this node has gained in `session`, against [`NODE_SESSION_CAP`].
+    #[serde(default)]
+    pub session_weight: f32,
 }
 
 impl TreeNode {
@@ -239,8 +280,44 @@ impl TreeNode {
         1 + self.children.iter().map(TreeNode::count).sum::<usize>()
     }
 
-    fn prune_weakest(&mut self) -> bool {
-        // Drop the weakest leaf anywhere below this node; true if one was dropped.
+    /// The evidence this node carries at `now`.
+    #[must_use]
+    pub fn score_at(&self, now: GardenMoment, config: &GardenConfig) -> f32 {
+        self.score * decay(now, self.last, config)
+    }
+
+    /// Age the evidence to `at`, then add `weight` within this session's cap.
+    fn accrue(&mut self, weight: f32, at: GardenMoment, config: &GardenConfig) {
+        self.score = self.score_at(at, config);
+        if self.session != at.session {
+            self.session = at.session;
+            self.session_weight = 0.0;
+        }
+        let added = weight.min((NODE_SESSION_CAP - self.session_weight).max(0.0));
+        self.session_weight += added;
+        self.score += added;
+        self.last = self.last.max(at);
+    }
+
+    /// This subtree with every score aged to `now`: what a view should draw.
+    fn aged(&self, now: GardenMoment, config: &GardenConfig) -> TreeNode {
+        TreeNode {
+            name: self.name.clone(),
+            is_dir: self.is_dir,
+            score: self.score_at(now, config),
+            last: self.last,
+            children: self
+                .children
+                .iter()
+                .map(|child| child.aged(now, config))
+                .collect(),
+            session: self.session,
+            session_weight: self.session_weight,
+        }
+    }
+
+    /// Drop the weakest leaf (by evidence at `now`) anywhere below this node; true if one was.
+    fn prune_weakest(&mut self, now: GardenMoment, config: &GardenConfig) -> bool {
         if self.children.is_empty() {
             return false;
         }
@@ -249,18 +326,32 @@ impl TreeNode {
             .iter()
             .enumerate()
             .filter(|(_, child)| child.children.is_empty())
-            .min_by(|(_, a), (_, b)| a.score.total_cmp(&b.score))
+            .min_by(|(_, a), (_, b)| a.score_at(now, config).total_cmp(&b.score_at(now, config)))
             .map(|(index, _)| index);
         if let Some(index) = leaf_index {
             self.children.remove(index);
             return true;
         }
-        self.children.iter_mut().any(TreeNode::prune_weakest)
+        self.children
+            .iter_mut()
+            .any(|child| child.prune_weakest(now, config))
     }
 }
 
-pub const TREE_DEPTH: usize = 3;
-pub const TREE_NODES: usize = 32;
+/// Deep enough for a library organised by year and event, or a crate's `src/module/file`; the
+/// view decides how much of it a tile of a given size draws.
+pub const TREE_DEPTH: usize = 5;
+pub const TREE_NODES: usize = 96;
+/// The most one tree node gains in one session: four launches, or six directory opens.
+pub const NODE_SESSION_CAP: f32 = 12.0;
+
+/// How much evidence recorded at `since` is still worth at `now`: halved over
+/// `half_life_hours` of garden time *and* over `half_life_sessions` later sessions.
+#[must_use]
+pub fn decay(now: GardenMoment, since: GardenMoment, config: &GardenConfig) -> f32 {
+    0.5_f32.powf(now.hours_since(since) / config.half_life_hours)
+        * 0.5_f32.powf(now.sessions_since(since) as f32 / config.half_life_sessions)
+}
 
 /// Where a context stands, from nothing shown to a large tile.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -465,7 +556,9 @@ pub enum IndexChange {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HomeContext {
     pub root: PathBuf,
-    /// Raw accumulated score at `last`. Never decayed in storage.
+    /// Evidence as of `last`: aged by [`decay`] at every act before the act's weight is added,
+    /// so a place that was busy a month ago and is touched once today comes back at what the
+    /// month has left of it, not at its lifetime total.
     pub score: f32,
     pub last: GardenMoment,
     #[serde(default)]
@@ -571,6 +664,25 @@ impl HomeContext {
             .len()
     }
 
+    /// Distinct sessions with any activity among the last [`SESSION_WINDOW`] before `now`: the
+    /// session floors a promotion asks for are about *recent* return, not a lifetime tally.
+    #[must_use]
+    pub fn recent_sessions(&self, now: GardenMoment) -> usize {
+        self.buckets
+            .iter()
+            .filter(|bucket| now.session.saturating_sub(bucket.session) < SESSION_WINDOW)
+            .map(|bucket| bucket.session)
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
+    /// The activity tree with every score aged to `now`, which is what a view draws: branches
+    /// recorded at different moments are only comparable once they are all read at the same one.
+    #[must_use]
+    pub fn tree_at(&self, now: GardenMoment, config: &GardenConfig) -> Vec<TreeNode> {
+        self.tree.iter().map(|node| node.aged(now, config)).collect()
+    }
+
     /// Distinct `(kind, role)` pairs seen in the last [`BREADTH_WINDOW`] sessions before `now`.
     #[must_use]
     pub fn breadth(&self, now: GardenMoment) -> usize {
@@ -586,12 +698,8 @@ impl HomeContext {
     /// read, never stored.
     #[must_use]
     pub fn effective(&self, now: GardenMoment, config: &GardenConfig) -> f32 {
-        let idle_hours = now.hours_since(self.last);
-        let idle_sessions = now.sessions_since(self.last) as f32;
-        let recency = 0.5_f32.powf(idle_hours / config.half_life_hours)
-            * 0.5_f32.powf(idle_sessions / config.half_life_sessions);
         let breadth = (self.breadth(now) as f32 / BREADTH_FULL).min(1.0);
-        self.score * recency * (1.0 + BREADTH_BONUS * breadth)
+        self.score * decay(now, self.last, config) * (1.0 + BREADTH_BONUS * breadth)
     }
 
     /// A one-line account of the evidence: `14 opens, 3 terminals, 4 sessions`.
@@ -676,19 +784,26 @@ impl HomeContext {
     /// a place that was looked *at* leaves files, and their names say which of the two flat
     /// forms it is.
     #[must_use]
-    pub fn form_evidence(&self) -> [f32; 3] {
-        fn walk(nodes: &[TreeNode], depth: usize, evidence: &mut [f32; 3]) {
+    pub fn form_evidence(&self, now: GardenMoment, config: &GardenConfig) -> [f32; 3] {
+        fn walk(
+            nodes: &[TreeNode],
+            depth: usize,
+            now: GardenMoment,
+            config: &GardenConfig,
+            evidence: &mut [f32; 3],
+        ) {
             for node in nodes {
+                let score = node.score_at(now, config);
                 if node.is_dir {
-                    evidence[0] += node.score * (1.0 + depth as f32);
-                    walk(&node.children, depth + 1, evidence);
+                    evidence[0] += score * (1.0 + depth as f32);
+                    walk(&node.children, depth + 1, now, config, evidence);
                 } else if let Some(slot) = leaf_evidence(&node.name) {
-                    evidence[slot] += node.score;
+                    evidence[slot] += score;
                 }
             }
         }
         let mut evidence = [0.0; 3];
-        walk(&self.tree, 0, &mut evidence);
+        walk(&self.tree, 0, now, config, &mut evidence);
         // A terminal or an editor is the strongest sign of hierarchy there is — but only where
         // structure was actually recorded, so that a place nobody has been *into* cannot be
         // handed a branch with no branches on it.
@@ -706,8 +821,8 @@ impl HomeContext {
     /// The form the evidence points at right now, before hysteresis: [`Form::Plain`] until one
     /// form clears [`FORM_FLOOR`] and leads the next by [`FORM_MARGIN`].
     #[must_use]
-    pub fn earned_form(&self) -> Form {
-        let evidence = self.form_evidence();
+    pub fn earned_form(&self, now: GardenMoment, config: &GardenConfig) -> Form {
+        let evidence = self.form_evidence(now, config);
         let forms = [Form::Branch, Form::Shelf, Form::Folio];
         let leader = (0..3)
             .max_by(|a, b| evidence[*a].total_cmp(&evidence[*b]))
@@ -726,8 +841,8 @@ impl HomeContext {
 
 /// Settle `context`'s form at a tending moment: a candidate has to have led for
 /// [`FORM_DWELL_SESSIONS`] before the drawing changes under the user.
-fn settle_form(context: &mut HomeContext, now: GardenMoment) {
-    let earned = context.earned_form();
+fn settle_form(context: &mut HomeContext, now: GardenMoment, config: &GardenConfig) {
+    let earned = context.earned_form(now, config);
     if earned != context.form_candidate {
         context.form_candidate = earned;
         context.form_candidate_since = now.session;
@@ -798,6 +913,8 @@ fn plural(kind: ActivityKind, count: u32) -> &'static str {
 const BREADTH_WINDOW: u64 = 6;
 const BREADTH_FULL: f32 = 6.0;
 const BREADTH_BONUS: f32 = 1.0;
+/// How far back a promotion's session floor looks.
+const SESSION_WINDOW: u64 = 12;
 
 fn fnv(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -882,13 +999,18 @@ pub const DEFAULT_IGNORE: &[&str] = &[
     "/run",
 ];
 
-/// The `(effective, sessions, breadth)` floors a stage needs, and the `(sessions idle, garden
-/// hours idle)` both required before stepping down out of it.
+/// The `(effective, sessions, breadth)` floors a stage needs, how long the place must have held
+/// the stage below before it may step into this one, and the `(sessions idle, garden hours idle)`
+/// both required before stepping down out of it.
 #[derive(Clone, Copy, Debug)]
 struct Threshold {
     promote_effective: f32,
     promote_sessions: usize,
     promote_breadth: usize,
+    /// Garden hours at the stage below before this one, unless a later session has begun since.
+    /// Tending runs at every Home reveal, so without this a place that qualified could climb a
+    /// stage per reveal and go from a line to a quarter of the field in a minute.
+    promote_dwell_hours: f32,
     demote_effective: f32,
     demote_idle_sessions: u64,
     demote_idle_hours: f32,
@@ -900,15 +1022,17 @@ fn threshold(stage: Stage) -> Threshold {
             promote_effective: 0.0,
             promote_sessions: 0,
             promote_breadth: 0,
+            promote_dwell_hours: 0.0,
             demote_effective: 0.0,
             demote_idle_sessions: u64::MAX,
             demote_idle_hours: f32::INFINITY,
         },
-        // One launch, or two opens, is enough to leave a trace.
+        // One launch, or two opens, is enough to leave a trace, at once.
         Stage::Trace => Threshold {
             promote_effective: 3.0,
             promote_sessions: 1,
             promote_breadth: 1,
+            promote_dwell_hours: 0.0,
             demote_effective: 1.0,
             demote_idle_sessions: 10,
             demote_idle_hours: 30.0,
@@ -917,6 +1041,7 @@ fn threshold(stage: Stage) -> Threshold {
             promote_effective: 8.0,
             promote_sessions: 2,
             promote_breadth: 1,
+            promote_dwell_hours: 1.0,
             demote_effective: 4.0,
             demote_idle_sessions: 6,
             demote_idle_hours: 15.0,
@@ -925,6 +1050,7 @@ fn threshold(stage: Stage) -> Threshold {
             promote_effective: 20.0,
             promote_sessions: 3,
             promote_breadth: 2,
+            promote_dwell_hours: 2.0,
             demote_effective: 10.0,
             demote_idle_sessions: 3,
             demote_idle_hours: 6.0,
@@ -935,6 +1061,7 @@ fn threshold(stage: Stage) -> Threshold {
             promote_effective: 45.0,
             promote_sessions: 5,
             promote_breadth: 3,
+            promote_dwell_hours: 4.0,
             demote_effective: 22.0,
             demote_idle_sessions: 2,
             demote_idle_hours: 4.0,
@@ -951,6 +1078,11 @@ pub trait RootProbe {
     fn project_root(&self, path: &Path) -> Option<PathBuf>;
     /// `path` is a directory holding a VCS or workspace marker (`.git`, `Cargo.toml`, …).
     fn has_workspace_marker(&self, path: &Path) -> bool;
+    /// `path` is the root of a real repository (a `.git` directory with a `HEAD`, a worktree's
+    /// `.git` file, `.hg`, `.jj`, `.svn`). An empty `.git` is not one.
+    fn has_vcs_marker(&self, _path: &Path) -> bool {
+        false
+    }
     /// `path` is a mount point.
     fn is_mount_point(&self, path: &Path) -> bool;
     /// `path` is an XDG user directory (Downloads, Documents, …).
@@ -1011,29 +1143,47 @@ pub fn attribute_root(
             best_existing = Some(root);
         }
     }
-    if let Some(root) = best_existing {
-        return Some(root.clone());
-    }
     let start = if probe.is_dir(path) {
         path
     } else {
         path.parent()?
     };
+    // The nearest repository root wins over everything above it. A repository is the unit of
+    // work a person names; a directory of repositories — or a stray `.git` in a projects folder,
+    // which on the reference machine once swallowed every repository into one Place — is not.
+    // This also outranks an existing context *above* the repository, so a Place formed by that
+    // mistake stops attracting and recedes.
     let mut candidate = start;
     let mut marked: Option<&Path> = None;
     for _ in 0..ATTRIBUTION_DEPTH {
         if candidate == home || candidate.parent().is_none() {
             break;
         }
+        if best_existing.is_some_and(|root| candidate == root.as_path()) {
+            return Some(candidate.to_path_buf());
+        }
+        if probe.has_vcs_marker(candidate) {
+            return Some(candidate.to_path_buf());
+        }
         if probe.has_workspace_marker(candidate) {
             marked = Some(candidate);
         }
         if probe.is_mount_point(candidate) || probe.is_xdg_user_dir(candidate) {
-            return Some(marked.unwrap_or(candidate).to_path_buf());
+            return Some(
+                best_existing
+                    .map(PathBuf::as_path)
+                    .or(marked)
+                    .unwrap_or(candidate)
+                    .to_path_buf(),
+            );
         }
         candidate = candidate.parent()?;
     }
-    // The highest ancestor with a marker wins (a workspace over a crate inside it).
+    if let Some(root) = best_existing {
+        return Some(root.clone());
+    }
+    // No repository: the highest ancestor with a build marker wins (a workspace over a crate
+    // inside it).
     if let Some(root) = marked {
         return Some(root.to_path_buf());
     }
@@ -1184,7 +1334,7 @@ impl Ledger {
             });
             weight
         };
-        context.score += added;
+        context.score = context.score * decay(activity.at, context.last, config) + added;
         context.last = context.last.max(activity.at);
         if let Some(role) = activity.role {
             context.roles.insert(role);
@@ -1192,7 +1342,7 @@ impl Ledger {
         if activity.kind == ActivityKind::PlacedOnHome {
             context.pinned = true;
         }
-        grow_tree(context, &activity.path, weight, activity.at, probe);
+        grow_tree(context, &activity.path, weight, activity.at, probe, config);
         // Buckets older than the breadth window carry no breadth and their weight is already in
         // `score`; keep a bounded tail so the summary can still count them.
         if context.buckets.len() > 64 {
@@ -1313,7 +1463,7 @@ impl Ledger {
             return changes;
         }
         for context in &mut self.contexts {
-            settle_form(context, now);
+            settle_form(context, now, config);
             // A bloom nobody answered for several later sessions has stopped being news.
             if context
                 .bloom
@@ -1413,7 +1563,7 @@ impl Ledger {
 
 fn next_stage(context: &HomeContext, now: GardenMoment, config: &GardenConfig) -> Stage {
     let effective = context.effective(now, config);
-    let sessions = context.sessions_seen();
+    let sessions = context.recent_sessions(now);
     let breadth = context.breadth(now);
     let current = context.stage;
     // Promotion: the next stage up, if earned. Pinned contexts start at Trace at least.
@@ -1425,9 +1575,12 @@ fn next_stage(context: &HomeContext, now: GardenMoment, config: &GardenConfig) -
         Stage::Dominant => return demoted(context, now, effective),
     };
     let t = threshold(up);
+    let dwelled = now.sessions_since(context.stage_since) >= 1
+        || now.hours_since(context.stage_since) >= t.promote_dwell_hours;
     if effective >= t.promote_effective
         && sessions >= t.promote_sessions
         && breadth >= t.promote_breadth
+        && dwelled
     {
         return up;
     }
@@ -1464,6 +1617,7 @@ fn grow_tree(
     weight: f32,
     at: GardenMoment,
     probe: &dyn RootProbe,
+    config: &GardenConfig,
 ) {
     let Ok(relative) = path.strip_prefix(&context.root) else {
         return;
@@ -1494,12 +1648,13 @@ fn grow_tree(
                 score: 0.0,
                 last: at,
                 children: Vec::new(),
+                session: at.session,
+                session_weight: 0.0,
             });
             level.len() - 1
         };
         let node = &mut level[index];
-        node.score += weight;
-        node.last = node.last.max(at);
+        node.accrue(weight, at, config);
         level = &mut node.children;
     }
     while context.tree.iter().map(TreeNode::count).sum::<usize>() > TREE_NODES {
@@ -1509,8 +1664,10 @@ fn grow_tree(
             score: 0.0,
             last: at,
             children: std::mem::take(&mut context.tree),
+            session: at.session,
+            session_weight: 0.0,
         };
-        let dropped = root.prune_weakest();
+        let dropped = root.prune_weakest(at, config);
         context.tree = root.children;
         if !dropped {
             break;
@@ -1550,6 +1707,13 @@ pub fn load(store: &templar_state::Store) -> Ledger {
 pub fn save(store: &templar_state::Store, ledger: &Ledger) -> anyhow::Result<()> {
     use anyhow::Context as _;
     let json = serde_json::to_string(ledger).context("serializing the Homegarden ledger")?;
+    save_json(store, &json)
+}
+
+/// Persist a ledger already serialized with `serde_json::to_string(&ledger)`: the daemon
+/// serializes under its lock and writes from its own thread.
+pub fn save_json(store: &templar_state::Store, json: &str) -> anyhow::Result<()> {
+    use anyhow::Context as _;
     store.transaction(|tx| {
         tx.execute(
             "INSERT INTO home_garden (key, value_json, updated_ms) VALUES (?1, ?2, ?3)
@@ -1868,7 +2032,9 @@ mod tests {
         );
         let changes = mixed.tend(now, &config);
         assert_eq!(changes.last().map(|c| c.to), Some(Stage::Trace));
-        let changes = mixed.tend(now, &config);
+        // A Trace holds for its dwell before it may become a Tile, however often Home is shown.
+        assert!(mixed.tend(at(2, 3.5), &config).is_empty());
+        let changes = mixed.tend(at(2, 4.1), &config);
         assert_eq!(changes.last().map(|c| c.to), Some(Stage::Tile));
         assert!(
             changes[0].reason.starts_with("grew to tile: "),
@@ -1915,7 +2081,11 @@ mod tests {
         let config = GardenConfig::default();
         let mut ledger = Ledger::default();
         for session in 1..=4 {
-            for kind in [ActivityKind::LaunchedHere, ActivityKind::DirectoryOpened] {
+            for kind in [
+                ActivityKind::LaunchedHere,
+                ActivityKind::DirectoryOpened,
+                ActivityKind::TerminalEntered,
+            ] {
                 ledger.observe(
                     &event(
                         "/home/dk/src/templaros/docs",
@@ -1928,11 +2098,12 @@ mod tests {
                 );
             }
         }
-        let mut now = at(4, 4.5);
-        for _ in 0..3 {
-            ledger.tend(now, &config);
+        // One step per tending moment, each after the stage below has held for its dwell.
+        for hours in [4.5, 5.6, 7.7] {
+            ledger.tend(at(4, hours), &config);
         }
         assert_eq!(ledger.contexts[0].stage, Stage::Expanded);
+        let mut now;
         // One 30-hour marathon elsewhere: sessions did not pass, so nothing recedes.
         now = at(4, 34.0);
         assert!(ledger.tend(now, &config).is_empty());
@@ -2054,6 +2225,9 @@ mod tests {
 
     #[test]
     fn the_activity_tree_records_used_structure_and_stays_bounded() {
+        fn depth(node: &TreeNode) -> usize {
+            1 + node.children.iter().map(depth).max().unwrap_or(0)
+        }
         let probe = Probe::new();
         let config = GardenConfig::default();
         let mut ledger = Ledger::default();
@@ -2097,11 +2271,179 @@ mod tests {
         }
         let total: usize = ledger.contexts[0].tree.iter().map(TreeNode::count).sum();
         assert!(total <= TREE_NODES, "{total}");
-        assert!(ledger.contexts[0].tree.iter().all(|n| {
-            n.children
-                .iter()
-                .all(|c| c.children.iter().all(|g| g.children.is_empty()))
-        }));
+        assert!(ledger.contexts[0].tree.iter().all(|n| depth(n) <= TREE_DEPTH));
+    }
+
+    /// Evidence ages: a place that was busy long ago and is touched once today comes back at
+    /// what the time since has left of it, not at its lifetime total.
+    #[test]
+    fn a_long_idle_place_touched_once_returns_at_its_aged_relevance() {
+        let probe = Probe::new();
+        let config = GardenConfig::default();
+        let mut ledger = Ledger::default();
+        for session in 1..=5 {
+            for kind in [ActivityKind::LaunchedHere, ActivityKind::TerminalEntered] {
+                ledger.observe(
+                    &event(
+                        "/home/dk/src/templaros",
+                        kind,
+                        Some(ProviderRole::Terminal),
+                        at(session, session as f32 * 4.0),
+                    ),
+                    &probe,
+                    &config,
+                );
+            }
+        }
+        let busy = ledger.contexts[0].effective(at(5, 20.0), &config);
+        // Thirty sessions and a hundred garden hours later, one directory open.
+        let later = at(35, 120.0);
+        ledger.observe(
+            &event(
+                "/home/dk/src/templaros",
+                ActivityKind::DirectoryOpened,
+                None,
+                later,
+            ),
+            &probe,
+            &config,
+        );
+        let returned = ledger.contexts[0].effective(later, &config);
+        assert!(
+            returned < threshold(Stage::Tile).promote_effective,
+            "busy {busy}, returned {returned}: one touch must not restore a lifetime"
+        );
+        assert!(returned >= ActivityKind::DirectoryOpened.weight());
+    }
+
+    /// Home is revealed many times a session and each reveal is a tending moment, so a place
+    /// that qualifies for several stages still climbs one per dwell, not one per reveal.
+    #[test]
+    fn a_qualifying_place_climbs_one_stage_per_dwell_not_per_reveal() {
+        let probe = Probe::new();
+        let config = GardenConfig::default();
+        let mut ledger = Ledger::default();
+        for session in 1..=6 {
+            for (kind, role) in [
+                (ActivityKind::LaunchedHere, Some(ProviderRole::Terminal)),
+                (ActivityKind::TerminalEntered, Some(ProviderRole::Terminal)),
+                (ActivityKind::DirectoryOpened, Some(ProviderRole::FileManager)),
+                (ActivityKind::ProjectEntered, None),
+            ] {
+                for _ in 0..4 {
+                    ledger.observe(
+                        &event("/home/dk/src/templaros", kind, role, at(session, 1.0)),
+                        &probe,
+                        &config,
+                    );
+                }
+            }
+        }
+        let now = at(6, 1.0);
+        assert!(
+            ledger.contexts[0].effective(now, &config) >= threshold(Stage::Dominant).promote_effective
+        );
+        for _ in 0..20 {
+            ledger.tend(now, &config);
+        }
+        assert_eq!(ledger.contexts[0].stage, Stage::Trace);
+        ledger.tend(at(6, 2.1), &config);
+        assert_eq!(ledger.contexts[0].stage, Stage::Tile);
+        // A later session counts as having held the stage, whatever the hours.
+        ledger.tend(at(7, 2.2), &config);
+        assert_eq!(ledger.contexts[0].stage, Stage::Expanded);
+    }
+
+    /// A tree node gains at most its session cap in one session, and a branch nobody walks
+    /// thins relative to one that is walked.
+    #[test]
+    fn tree_nodes_are_capped_per_session_and_age() {
+        let probe = Probe::new();
+        let config = GardenConfig::default();
+        let mut ledger = Ledger::default();
+        for _ in 0..40 {
+            ledger.observe(
+                &event(
+                    "/home/dk/src/templaros/docs",
+                    ActivityKind::LaunchedHere,
+                    Some(ProviderRole::Terminal),
+                    at(1, 0.5),
+                ),
+                &probe,
+                &config,
+            );
+        }
+        let docs = &ledger.contexts[0].tree[0];
+        assert_eq!(docs.name, "docs");
+        assert!(docs.score <= NODE_SESSION_CAP, "{}", docs.score);
+        for session in 2..=6 {
+            ledger.observe(
+                &event(
+                    "/home/dk/src/templaros/crates",
+                    ActivityKind::DirectoryOpened,
+                    None,
+                    at(session, session as f32 * 3.0),
+                ),
+                &probe,
+                &config,
+            );
+        }
+        let now = at(6, 18.0);
+        let tree = ledger.contexts[0].tree_at(now, &config);
+        let score = |name: &str| tree.iter().find(|n| n.name == name).unwrap().score;
+        assert!(score("crates") > score("docs"), "{tree:?}");
+    }
+
+    /// The nearest repository is the Place: a stray `.git` in a projects folder does not swallow
+    /// the repositories beneath it, even when an earlier build already made it a context.
+    #[test]
+    fn the_nearest_repository_root_wins_over_an_umbrella() {
+        struct Repos(Probe, Vec<PathBuf>);
+        impl RootProbe for Repos {
+            fn project_root(&self, path: &Path) -> Option<PathBuf> {
+                self.0.project_root(path)
+            }
+            fn has_workspace_marker(&self, path: &Path) -> bool {
+                self.1.iter().any(|repo| repo == path) || self.0.has_workspace_marker(path)
+            }
+            fn has_vcs_marker(&self, path: &Path) -> bool {
+                self.1.iter().any(|repo| repo == path)
+            }
+            fn is_mount_point(&self, path: &Path) -> bool {
+                self.0.is_mount_point(path)
+            }
+            fn is_xdg_user_dir(&self, path: &Path) -> bool {
+                self.0.is_xdg_user_dir(path)
+            }
+            fn home(&self) -> &Path {
+                self.0.home()
+            }
+            fn is_dir(&self, path: &Path) -> bool {
+                self.0.is_dir(path)
+            }
+        }
+        let umbrella = PathBuf::from("/home/dk/projects");
+        let repo = PathBuf::from("/home/dk/projects/templaros");
+        let probe = Repos(
+            Probe {
+                // The umbrella carries a build marker; only the repository is a repository.
+                markers: vec![umbrella.clone()],
+                ..Probe::new()
+            },
+            vec![repo.clone()],
+        );
+        let config = GardenConfig::default();
+        let path = Path::new("/home/dk/projects/templaros/crates/field/src");
+        assert_eq!(attribute_root(path, &[], &probe, &config), Some(repo.clone()));
+        assert_eq!(
+            attribute_root(path, std::slice::from_ref(&umbrella), &probe, &config),
+            Some(repo.clone())
+        );
+        // Outside any repository the old rule stands: the highest build marker.
+        assert_eq!(
+            attribute_root(Path::new("/home/dk/projects/notes"), &[], &probe, &config),
+            Some(umbrella)
+        );
     }
 
     /// A form is *earned*: the evidence has to lead by half again as much, and it has to have
@@ -2134,7 +2476,10 @@ mod tests {
             );
         }
         let root = Path::new("/home/dk/Downloads");
-        assert_eq!(ledger.context(root).unwrap().earned_form(), Form::Shelf);
+        assert_eq!(
+            ledger.context(root).unwrap().earned_form(at(1, 0.0), &config),
+            Form::Shelf
+        );
         // The evidence leads at once; the drawing does not follow until it has held.
         ledger.tend(at(1, 1.0), &config);
         assert_eq!(ledger.context(root).unwrap().form, Form::Plain);
@@ -2177,11 +2522,11 @@ mod tests {
         }
         let templaros = Path::new("/home/dk/src/templaros");
         assert_eq!(
-            worked.context(templaros).unwrap().earned_form(),
+            worked.context(templaros).unwrap().earned_form(at(1, 0.0), &config),
             Form::Branch
         );
         assert_eq!(
-            HomeContext::new(PathBuf::new(), at(1, 0.0)).earned_form(),
+            HomeContext::new(PathBuf::new(), at(1, 0.0)).earned_form(at(1, 0.0), &config),
             Form::Plain
         );
     }
@@ -2209,6 +2554,24 @@ mod tests {
         let reloaded: GardenClock = serde_json::from_str(&json).unwrap();
         assert!(!reloaded.is_active());
         assert_eq!(reloaded.now(9_000_000).active_ms, 60_000);
+    }
+
+    /// An unlocked laptop left on overnight ages nothing once the screen has gone off, and
+    /// waking the screen at a lock prompt does not start the clock either.
+    #[test]
+    fn the_garden_clock_stops_while_the_seat_is_idle_and_idle_does_not_undo_a_lock() {
+        let mut clock = GardenClock::default();
+        clock.start_session(0);
+        clock.set_idle(true, 600_000); // ten minutes of use, then the screen goes off
+        assert_eq!(clock.now(8 * 3_600_000).active_ms, 600_000);
+        clock.set_idle(false, 8 * 3_600_000); // morning: a key press
+        assert_eq!(clock.now(8 * 3_600_000 + 60_000).active_ms, 660_000);
+        clock.pause(8 * 3_600_000 + 60_000); // lock
+        clock.set_idle(true, 9 * 3_600_000);
+        clock.set_idle(false, 10 * 3_600_000); // the lock prompt lights up
+        assert_eq!(clock.now(11 * 3_600_000).active_ms, 660_000);
+        clock.resume(11 * 3_600_000); // unlocked
+        assert_eq!(clock.now(11 * 3_600_000 + 1_000).active_ms, 661_000);
     }
 
     /// A session that ends without a lock or a sleep — a logout, the daemon stopping — emits no

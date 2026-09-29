@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use parking_lot::RwLock;
-use std::{collections::BTreeSet, future::pending, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
 use templar_appd::{
     Registry,
     dbus::{IdentityApi, LauncherApi},
@@ -488,7 +488,7 @@ async fn serve_policy_interfaces(
     system_connection: Option<zbus::Connection>,
     services: &Services,
     backend: LaunchBackend,
-) -> Result<()> {
+) -> Result<apis::homegarden::HomeGardenApi> {
     let object_server = connection.object_server();
     // Homegarden: the ledger behind Home's grown places. Built and subscribed to the session
     // edges and the launch channel here, before `Started` is sent (see `main`), so the Garden
@@ -555,7 +555,7 @@ async fn serve_policy_interfaces(
         .await
         .context("serving HomeField1")?;
     object_server
-        .at(names::HOME_GARDEN_PATH, garden)
+        .at(names::HOME_GARDEN_PATH, garden.clone())
         .await
         .context("serving HomeGarden1")?;
     object_server
@@ -585,7 +585,7 @@ async fn serve_policy_interfaces(
         )
         .await
         .context("serving Location1")?;
-    Ok(())
+    Ok(garden)
 }
 
 /// Serve every `org.templaros.Session` interface, in-process, before the bus name is claimed.
@@ -594,10 +594,9 @@ async fn serve_interfaces(
     system_connection: Option<zbus::Connection>,
     services: &Services,
     backend: LaunchBackend,
-) -> Result<()> {
+) -> Result<apis::homegarden::HomeGardenApi> {
     serve_launch_and_association_interfaces(connection, services, backend).await?;
-    serve_policy_interfaces(connection, system_connection, services, backend).await?;
-    Ok(())
+    serve_policy_interfaces(connection, system_connection, services, backend).await
 }
 
 /// Tell `templar-hostd` the session came up, so `templar-boot-health` can tell "the session never
@@ -816,7 +815,7 @@ async fn main() -> Result<()> {
     let host_connection = system_connection.clone();
     // One match rule on logind, so an hour asleep is not counted as an hour of session time.
     apis::lifecycle::spawn_sleep_watch(system_connection.clone(), services.session_edges.clone());
-    serve_interfaces(&connection, system_connection, &services, backend).await?;
+    let garden = serve_interfaces(&connection, system_connection, &services, backend).await?;
     // Subscribed before anything is sent, so no edge — `Started` included — is emitted into an
     // empty channel and lost.
     apis::lifecycle::spawn_signal_relay(connection.clone(), &services.session_edges);
@@ -851,7 +850,17 @@ async fn main() -> Result<()> {
         .session_edges
         .send(apis::lifecycle::SessionEdge::Started);
 
-    pending::<()>().await;
+    // Run until systemd stops the session. A logout emits no lock edge, so the exit is where
+    // the Garden Clock's last interval and any batched acts are written.
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("installing the SIGTERM handler")?;
+    tokio::select! {
+        _ = terminate.recv() => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
+    tracing::info!("stopping: writing the Homegarden ledger");
+    let flushing = garden.clone();
+    let _ = tokio::task::spawn_blocking(move || flushing.flush()).await;
     Ok(())
 }
 
