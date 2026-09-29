@@ -566,12 +566,16 @@ impl Repo {
         for set in &doomed {
             let _ = fs::remove_dir_all(self.sets().join(set));
         }
-        self.sweep_pool()?;
+        // The index must never name a file the pool no longer has: apt would 404 on it, and
+        // `repo verify` (which regenerates the index) rightly calls the archive incoherent.
+        if self.sweep_pool()? {
+            self.reindex()?;
+        }
         Ok(doomed)
     }
 
-    /// Removes pool files no surviving set's manifest names.
-    fn sweep_pool(&self) -> Result<()> {
+    /// Removes pool files no surviving set's manifest names. True when anything was removed.
+    fn sweep_pool(&self) -> Result<bool> {
         let mut wanted = std::collections::BTreeSet::new();
         for set in self.published_sets()? {
             if let Ok(manifest) = self.manifest(&set) {
@@ -581,15 +585,16 @@ impl Repo {
             }
         }
         let Ok(entries) = fs::read_dir(self.pool()) else {
-            return Ok(());
+            return Ok(false);
         };
+        let mut removed = false;
         for entry in entries.flatten() {
             let name = format!("pool/{}", entry.file_name().to_string_lossy());
-            if !wanted.contains(&name) {
-                let _ = fs::remove_file(entry.path());
+            if !wanted.contains(&name) && fs::remove_file(entry.path()).is_ok() {
+                removed = true;
             }
         }
-        Ok(())
+        Ok(removed)
     }
 
     /// The directory holding exactly one published set's `.deb` files.
@@ -1132,6 +1137,40 @@ mod tests {
                 assert_eq!(call.dir, repo.root, "{call:?}");
             }
         }
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    /// 2026-09-29: a publish that pruned an old set left `Packages` naming its deleted files, so
+    /// `repo verify` failed on a freshly published archive and apt would have 404ed. Whatever the
+    /// prune removed, the index is written again after it.
+    #[test]
+    fn a_publish_that_prunes_an_old_set_indexes_the_pool_again() {
+        let (repo, runner, scratch) = repo("publish-prune");
+        let versions = [
+            "0.1.0~dev1000+g1111111",
+            "0.1.0~dev2000+g2222222",
+            "0.1.0~dev3000+g3333333",
+        ];
+        for version in versions {
+            repo.publish(&build_set(&scratch, version), version).unwrap();
+        }
+        let before = runner.lines().len();
+        let newest = "0.1.0~dev4000+g4444444";
+        repo.publish(&build_set(&scratch, newest), newest).unwrap();
+        let lines = runner.lines();
+        let publish = &lines[before..];
+        let indexed = publish
+            .iter()
+            .filter(|line| *line == "apt-ftparchive packages pool")
+            .count();
+        assert_eq!(indexed, 2, "{publish:#?}");
+        assert!(
+            !fs::read_dir(repo.pool())
+                .unwrap()
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().contains("g1111111")),
+            "the oldest set's files leave the pool"
+        );
         let _ = fs::remove_dir_all(scratch);
     }
 
