@@ -481,6 +481,438 @@ pub(super) fn write_png(path: &Path, buffer: &WindowBuffer) -> Result<()> {
     Ok(())
 }
 
+/// One synthetic Place: fixed root, form, tree and scores. What is under review wherever these
+/// are drawn is the drawing, not the ledger's arithmetic, which has its own tests in
+/// `templar-session-core`.
+pub(crate) struct FixturePlace {
+    pub slug: &'static str,
+    pub root: &'static str,
+    pub form: &'static str,
+    pub tree: Vec<crate::garden::TreeNode>,
+    pub summary: &'static str,
+    /// Arrivals not yet opened, relative to `root`.
+    pub bloomed: &'static [&'static str],
+    pub seed: u64,
+}
+
+fn fixture_dir(
+    name: &str,
+    score: f32,
+    children: Vec<crate::garden::TreeNode>,
+) -> crate::garden::TreeNode {
+    crate::garden::TreeNode {
+        name: name.to_owned(),
+        is_dir: true,
+        score,
+        children,
+    }
+}
+
+fn fixture_leaf(name: &str, score: f32) -> crate::garden::TreeNode {
+    crate::garden::TreeNode {
+        name: name.to_owned(),
+        is_dir: false,
+        score,
+        children: Vec::new(),
+    }
+}
+
+/// The four places the garden is reviewed with: a folder of code projects worked through
+/// (`code`), a photo folder looked at (`photos`), a manuscript's working set (`manuscript`) and a
+/// place that has only just earned a form (`sparse`). Within the daemon's own bounds — three
+/// levels, at most 32 nodes — so nothing here is a tree the ledger could not have served.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn fixture_place(slug: &str) -> FixturePlace {
+    let (dir, leaf) = (fixture_dir, fixture_leaf);
+    match slug {
+        "photos" => FixturePlace {
+            slug: "photos",
+            root: "/home/fixture/Pictures",
+            form: "shelf",
+            tree: vec![
+                dir(
+                    "2026-lisbon",
+                    9.0,
+                    vec![
+                        leaf("alfama.jpg", 3.5),
+                        leaf("tram-28.jpg", 2.6),
+                        leaf("sintra.jpg", 1.8),
+                        leaf("azulejos.jpg", 1.1),
+                    ],
+                ),
+                leaf("sunset.png", 7.0),
+                leaf("workshop.mp4", 6.0),
+                leaf("portrait.webp", 4.0),
+                dir(
+                    "family",
+                    3.2,
+                    vec![leaf("grandma.jpg", 1.6), leaf("garden-party.jpg", 1.2)],
+                ),
+                leaf("scan.avif", 2.0),
+                dir("screenshots", 1.2, vec![leaf("bug-report.png", 0.8)]),
+            ],
+            summary: "21 opens, 5 sessions",
+            bloomed: &["portrait.webp"],
+            seed: 0x51f0_2a77_c3d1_9e04,
+        },
+        "manuscript" => FixturePlace {
+            slug: "manuscript",
+            root: "/home/fixture/Documents/The-Salt-Road",
+            form: "folio",
+            tree: vec![
+                dir(
+                    "chapters",
+                    11.0,
+                    vec![
+                        leaf("01-harbour.md", 2.2),
+                        leaf("02-inland.md", 3.1),
+                        leaf("03-the-salt-road.md", 4.6),
+                        leaf("04-winter.md", 1.4),
+                    ],
+                ),
+                leaf("draft-v3.odt", 8.0),
+                leaf("outline.md", 5.0),
+                leaf("notes.md", 3.5),
+                dir(
+                    "research",
+                    2.8,
+                    vec![leaf("maps.pdf", 1.5), leaf("letters.odt", 0.9)],
+                ),
+                leaf("cover-letter.md", 1.0),
+            ],
+            summary: "46 opens, 9 sessions",
+            bloomed: &[],
+            seed: 0x9a3e_0c55_1b7f_d2e8,
+        },
+        "sparse" => FixturePlace {
+            slug: "sparse",
+            root: "/home/fixture/Music/Field-recordings",
+            form: "branch",
+            tree: vec![
+                dir("2026-09", 1.4, vec![leaf("rain-on-tin.wav", 0.9)]),
+                leaf("index.md", 0.6),
+            ],
+            summary: "4 opens, 2 sessions",
+            bloomed: &["2026-09/rain-on-tin.wav"],
+            seed: 0x0cc4_7d19_e2a0_5b36,
+        },
+        _ => FixturePlace {
+            slug: "code",
+            root: "/home/fixture/Rust-projects",
+            form: "branch",
+            tree: vec![
+                dir(
+                    "templaros",
+                    14.0,
+                    vec![
+                        dir(
+                            "crates",
+                            8.0,
+                            vec![
+                                dir("templar-field", 3.4, Vec::new()),
+                                dir("templar-treemap", 2.2, Vec::new()),
+                                dir("templar-session-core", 1.6, Vec::new()),
+                            ],
+                        ),
+                        dir("shell", 5.0, vec![dir("templar-shell", 4.4, Vec::new())]),
+                        dir(
+                            "docs",
+                            2.0,
+                            vec![leaf("homegarden.md", 1.2), dir("garden", 0.7, Vec::new())],
+                        ),
+                        leaf("Cargo.toml", 1.1),
+                    ],
+                ),
+                dir(
+                    "pixelkit",
+                    6.0,
+                    vec![
+                        dir(
+                            "crates",
+                            3.0,
+                            vec![
+                                dir("pixelkit-raster", 1.8, Vec::new()),
+                                dir("pixelkit-ui", 1.0, Vec::new()),
+                            ],
+                        ),
+                        leaf("README.md", 0.8),
+                    ],
+                ),
+                dir(
+                    "Silvaview-rs",
+                    3.0,
+                    vec![dir("src", 2.1, vec![leaf("cushion.rs", 1.3)])],
+                ),
+                dir("bpg-rs", 1.0, vec![leaf("lib.rs", 0.6)]),
+            ],
+            summary: "34 opens, 11 launches, 7 sessions",
+            bloomed: &[],
+            seed: 0x7e11_c0de_4a5b_0913,
+        },
+    }
+}
+
+/// The places the gallery draws, in the order its contact sheet shows them.
+const GALLERY_PLACES: [&str; 4] = ["code", "photos", "manuscript", "sparse"];
+/// The tile sizes the gallery draws each place at: the first rung that shows a form, and the
+/// largest a place grows to.
+const GALLERY_SIZES: [(&str, u16, u16); 2] = [("wide", 4, 3), ("dominant", 6, 4)];
+/// Ground left around each cropped tile, logical px.
+const GALLERY_MARGIN: i32 = 14;
+
+/// Every Place theme × every fixture place × every gallery size, as
+/// `<theme>-<place>-<size>.png` under `dir`, plus `gallery.png`, a contact sheet of all of them
+/// with one theme per row. Headless and bus-free: the fixture places are grown into an otherwise
+/// empty field by the real tender and drawn by the real `FieldScreen`, then cropped to the tile.
+pub fn render_garden_gallery(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let mut text = pixelkit_text::TextCache::new(fonts::set());
+    let mut kernel = RasterKernel::new();
+    let mut written = Vec::new();
+    let mut rows: Vec<(&str, Vec<(String, WindowBuffer)>)> = Vec::new();
+    for theme in crate::surface::place_styles::THEMES {
+        let mut row = Vec::new();
+        for fixture in GALLERY_PLACES.map(fixture_place) {
+            let slug = fixture.slug;
+            for (size, cols, rows) in GALLERY_SIZES {
+                let frame =
+                    garden_tile_frame(theme.name, &fixture, (cols, rows), &mut text, &mut kernel)
+                        .with_context(|| format!("drawing {} {slug} {size}", theme.name))?;
+                let path = dir.join(format!("{}-{slug}-{size}.png", theme.name));
+                write_png(&path, &frame).with_context(|| format!("writing {}", path.display()))?;
+                written.push(path);
+                row.push((format!("{slug} · {size}"), frame));
+            }
+        }
+        rows.push((theme.name, row));
+    }
+    let sheet = contact_sheet(&rows, &mut text, &mut kernel);
+    let path = dir.join("gallery.png");
+    write_png(&path, &sheet).with_context(|| format!("writing {}", path.display()))?;
+    written.push(path);
+    Ok(written)
+}
+
+/// One fixture place grown at `span` into an empty field and drawn in `theme`, cropped to its
+/// tile with a margin of ground around it.
+#[allow(clippy::too_many_lines)]
+fn garden_tile_frame(
+    theme: &str,
+    fixture: &FixturePlace,
+    (cols, rows): (u16, u16),
+    text: &mut pixelkit_text::TextCache,
+    kernel: &mut RasterKernel,
+) -> Result<WindowBuffer> {
+    let (width, height) = (1280_u32, 832_u32);
+    let (grid_cols, grid_rows) =
+        field_model::grid_for(width as i32, height as i32, field_model::TILE_SIZE);
+    let mut field = templar_field::FieldDocument::new("garden-gallery", grid_cols, grid_rows);
+    let root = std::path::PathBuf::from(fixture.root);
+    let view = templar_field::garden::ContextView {
+        root: root.clone(),
+        wanted: Some(templar_field::Span::new(cols, rows)),
+        landing: Some(templar_field::Cell::new(1, 1)),
+        pinned: false,
+        user_span: None,
+        summary: fixture.summary.to_owned(),
+    };
+    for tended in
+        templar_field::garden::tend(&field, &[view], templar_field::garden::HomeCorner::TopLeft)
+    {
+        field = templar_field::apply(&field, &tended.op)
+            .map_err(|error| anyhow::anyhow!("the gallery field refused a tending: {error:?}"))?
+            .0;
+    }
+    let tile = templar_field::garden::garden_tile_id(&root);
+    anyhow::ensure!(
+        field.location(tile).is_some(),
+        "the tender did not place {}",
+        fixture.root
+    );
+    let mut garden = HashMap::new();
+    garden.insert(
+        root.clone(),
+        crate::garden::GardenPlace {
+            root: root.clone(),
+            stage: "expanded".to_owned(),
+            form: fixture.form.to_owned(),
+            tree: fixture.tree.clone(),
+            material_seed: fixture.seed,
+            summary: fixture.summary.to_owned(),
+            bloom_total: fixture.bloomed.len() as u32,
+            bloomed: fixture.bloomed.iter().map(|path| root.join(path)).collect(),
+            ..crate::garden::GardenPlace::default()
+        },
+    );
+
+    let sources = crate::file_browser::BrowserSources { pinned: Vec::new() };
+    let (feeds, bitmaps, thumbnails, listings, widgets, variants) = (
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    let browser = FileBrowserData {
+        sources: &sources,
+        listing: None,
+        pending: None,
+        error: None,
+        status: None,
+        search_query: None,
+        search_entries: None,
+        search_error: None,
+        feeds: &feeds,
+        thumbnails: &thumbnails,
+        icons: &bitmaps,
+        home: None,
+    };
+    let data = FieldData {
+        notifications: &[],
+        field: &field,
+        toplevels: &[],
+        icons: &bitmaps,
+        previews: &bitmaps,
+        drawer_feeds: &feeds,
+        treemap: None,
+        composition: &[],
+        browser: &browser,
+        folder_listings: &listings,
+        connected: true,
+        home_revealed: true,
+        apps: &[],
+        apps_available: true,
+        widgets: &widgets,
+        variants: &variants,
+        projects: &[],
+        garden: &garden,
+        actions: templar_types::action::MANIFEST,
+        file_search: None,
+        recents: &[],
+        recent_ids: &[],
+        reduced_motion: true,
+        now_ms: 0,
+    };
+
+    let mut buffer = WindowBuffer::new(width, height);
+    let mut input = Input::new();
+    let mut screen = FieldScreen::default();
+    screen.place_styles.set_theme(theme);
+    let mut crop = Rect::new(0, 0, 0, 0);
+    for _ in 0..2 {
+        let mut ui = Ui::new(
+            Painter::new(&mut buffer),
+            text,
+            &mut input,
+            design::theme(),
+            Scale::ONE,
+            kernel,
+        );
+        screen.draw(&mut ui, Rect::new(0, 0, width as i32, height as i32), &data);
+        crop = screen
+            .tile_rect(&field, tile, &ui)
+            .context("the placed tile has a rect")?
+            .inset(-GALLERY_MARGIN)
+            .intersect(Rect::new(0, 0, width as i32, height as i32));
+        input.end_frame();
+    }
+    Ok(cropped(&buffer, crop))
+}
+
+fn cropped(buffer: &WindowBuffer, rect: Rect) -> WindowBuffer {
+    let mut out = WindowBuffer::new(rect.w.max(1) as u32, rect.h.max(1) as u32);
+    for y in 0..rect.h.max(0) {
+        let from = ((rect.y + y) as u32 * buffer.width + rect.x as u32) as usize;
+        let to = (y as u32 * out.width) as usize;
+        out.pixels[to..to + rect.w as usize]
+            .copy_from_slice(&buffer.pixels[from..from + rect.w as usize]);
+    }
+    out
+}
+
+/// The gallery's frames on one sheet: a row per theme, a column per place and size, each
+/// labelled, on the field's own ground.
+fn contact_sheet(
+    rows: &[(&str, Vec<(String, WindowBuffer)>)],
+    text: &mut pixelkit_text::TextCache,
+    kernel: &mut RasterKernel,
+) -> WindowBuffer {
+    let (gutter, caption, side) = (16_i32, 22_i32, 110_i32);
+    let columns = rows.first().map_or(0, |(_, row)| row.len());
+    let column_widths: Vec<i32> = (0..columns)
+        .map(|column| {
+            rows.iter()
+                .filter_map(|(_, row)| row.get(column))
+                .map(|(_, frame)| frame.width as i32)
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let row_heights: Vec<i32> = rows
+        .iter()
+        .map(|(_, row)| {
+            row.iter()
+                .map(|(_, frame)| frame.height as i32)
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let width = side + column_widths.iter().map(|w| w + gutter).sum::<i32>() + gutter;
+    let height = caption + row_heights.iter().map(|h| h + gutter).sum::<i32>() + gutter;
+    let mut sheet = WindowBuffer::new(width as u32, height as u32);
+    let mut input = Input::new();
+    let mut ui = Ui::new(
+        Painter::new(&mut sheet),
+        text,
+        &mut input,
+        design::theme(),
+        Scale::ONE,
+        kernel,
+    );
+    ui.painter.clear(design::ground());
+    let mut y = caption + gutter;
+    for ((theme, row), row_height) in rows.iter().zip(&row_heights) {
+        ui.label_styled(
+            Rect::new(gutter, y, side - gutter, 20),
+            theme,
+            design::title_style(&ui),
+            design::text(),
+            pixelkit_text::Align::Left,
+        );
+        let mut x = side;
+        for ((name, frame), column_width) in row.iter().zip(&column_widths) {
+            if y == caption + gutter {
+                ui.label_styled(
+                    Rect::new(x, gutter / 2, *column_width, caption),
+                    name,
+                    design::state_style(&ui),
+                    design::text_dim(),
+                    pixelkit_text::Align::Left,
+                );
+            }
+            let bitmap = pixelkit_raster::Bitmap {
+                width: frame.width,
+                height: frame.height,
+                pixels: frame
+                    .pixels
+                    .iter()
+                    .map(|pixel| pixel | 0xff00_0000)
+                    .collect(),
+            };
+            ui.painter.blit(
+                &bitmap,
+                Rect::new(x, y, frame.width as i32, frame.height as i32),
+                pixelkit_raster::ScaleFilter::Nearest,
+            );
+            x += column_width + gutter;
+        }
+        y += row_height + gutter;
+    }
+    drop(ui);
+    sheet
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,59 +953,23 @@ mod tests {
         Vec<templar_field::garden::ContextView>,
         HashMap<PathBuf, crate::garden::GardenPlace>,
     ) {
-        fn dir(
-            name: &str,
-            score: f32,
-            children: Vec<crate::garden::TreeNode>,
-        ) -> crate::garden::TreeNode {
-            crate::garden::TreeNode {
-                name: name.to_owned(),
-                is_dir: true,
-                score,
-                children,
-            }
-        }
-        fn leaf(name: &str, score: f32) -> crate::garden::TreeNode {
-            crate::garden::TreeNode {
-                name: name.to_owned(),
-                is_dir: false,
-                score,
-                children: Vec::new(),
-            }
-        }
         // A folder of projects whose branches are the repositories: the shape the activity tree
         // already records, and the one the branch form has to read as at a glance.
-        let (root, tree, summary) = match form {
-            "shelf" => (
-                "/home/fixture/Pictures",
-                vec![
-                    leaf("2026-trip.jpg", 9.0),
-                    leaf("sunset.png", 7.0),
-                    leaf("workshop.mp4", 6.0),
-                    leaf("portrait.webp", 4.0),
-                    leaf("scan.avif", 2.0),
-                ],
-                "21 opens, 5 sessions",
-            ),
-            "plain" => ("/home/fixture/Documents", Vec::new(), "9 opens, 3 sessions"),
-            _ => (
-                "/home/fixture/Rust-projects",
-                vec![
-                    dir(
-                        "templaros",
-                        14.0,
-                        vec![
-                            dir("crates", 8.0, Vec::new()),
-                            dir("shell", 5.0, Vec::new()),
-                        ],
-                    ),
-                    dir("pixelkit", 6.0, vec![dir("crates", 3.0, Vec::new())]),
-                    dir("Silvaview-rs", 3.0, Vec::new()),
-                    dir("bpg-rs", 1.0, Vec::new()),
-                ],
-                "34 opens, 11 launches, 7 sessions",
-            ),
+        let fixture = match form {
+            "shelf" => super::fixture_place("photos"),
+            "folio" => super::fixture_place("manuscript"),
+            "plain" => super::FixturePlace {
+                slug: "documents",
+                root: "/home/fixture/Documents",
+                form: "plain",
+                tree: Vec::new(),
+                summary: "9 opens, 3 sessions",
+                bloomed: &[],
+                seed: 3,
+            },
+            _ => super::fixture_place("code"),
         };
+        let (root, tree, summary) = (fixture.root, fixture.tree, fixture.summary);
         // Fixed landings: the bottom-left of the baseline field is open, and a fixture whose
         // Places land wherever the search happens to reach is a fixture that stops showing the
         // form the day another object moves.

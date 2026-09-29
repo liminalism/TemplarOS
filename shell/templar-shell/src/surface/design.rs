@@ -156,7 +156,7 @@ pub fn with_accent(palette: Palette, accent: u32) -> Palette {
 }
 
 /// `a` and `b` blended, `t` of the way from `a` to `b`, per channel.
-fn mix(a: u32, b: u32, t: f32) -> u32 {
+pub fn mix(a: u32, b: u32, t: f32) -> u32 {
     let t = t.clamp(0.0, 1.0);
     let channel = |shift: u32| {
         let (from, to) = (((a >> shift) & 0xff) as f32, ((b >> shift) & 0xff) as f32);

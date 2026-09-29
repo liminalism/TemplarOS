@@ -58,6 +58,13 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     render_rails: Option<PathBuf>,
 
+    /// Draw every Place theme over a fixed set of synthetic places (a code project, a photo
+    /// folder, a manuscript, a sparse new place) at the Wide and Dominant sizes, as
+    /// `DIR/<theme>-<place>-<size>.png` plus a contact sheet `DIR/gallery.png`, and exit.
+    /// Headless and bus-free, on the light palette.
+    #[arg(long, value_name = "DIR")]
+    garden_gallery: Option<PathBuf>,
+
     /// Size for `--render`, as WIDTHxHEIGHT in logical pixels.
     #[arg(long, value_name = "WxH", default_value = "1600x1000")]
     size: String,
@@ -90,6 +97,13 @@ async fn main() -> Result<()> {
     if cli.list_drawers {
         for drawer in Drawer::DEFAULT {
             println!("{:<12} {}", drawer.name(), drawer.description());
+        }
+        return Ok(());
+    }
+
+    if let Some(dir) = &cli.garden_gallery {
+        for written in templar_shell::surface::offscreen::render_garden_gallery(dir)? {
+            println!("{}", written.display());
         }
         return Ok(());
     }

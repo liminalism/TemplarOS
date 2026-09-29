@@ -1,5 +1,5 @@
 //! What the shell knows about Homegarden's places: the `HomeGarden1.Contexts` snapshot the
-//! Folder tile draws its form from (`crate::surface::place_forms`), and the fetches behind the
+//! Folder tile draws its form from (`crate::surface::place_styles`), and the fetches behind the
 //! tending moments (`@templaros.decision.homegarden-activity-grown-places`). The shell owns no garden
 //! state: it observes, asks for a tending, and draws what the daemon reports.
 
@@ -28,6 +28,10 @@ pub struct GardenPlace {
     pub form: String,
     pub effective: f32,
     pub roles: Vec<String>,
+    /// The place's material identity, deterministic from its root: the theme turns it into the
+    /// grain the body is drawn with, so a place looks like itself whenever it regrows. Texture
+    /// only — never a hue, which is state.
+    pub material_seed: u64,
     pub tree: Vec<TreeNode>,
     pub pinned: bool,
     /// Pinned and frozen at its size (`garden.keep`, or the user's own hand).

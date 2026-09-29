@@ -355,6 +355,22 @@ fn add_home_garden_specs(schema: &mut SettingsSchema) {
             None,
         ),
         (
+            "shell.home-garden.theme",
+            "How grown places are drawn: `mineral` (ink branches, a shelf of books, a pile of \
+             sheets), `orchard` (grown trees and clusters), `cushion` (shaded treemaps), `stone` \
+             (dry-stone cells) or `radial` (rings and strata)",
+            SettingValue::Choice("mineral".into()),
+            vec![
+                "mineral".into(),
+                "orchard".into(),
+                "cushion".into(),
+                "stone".into(),
+                "radial".into(),
+            ],
+            None,
+            None,
+        ),
+        (
             "shell.home-garden.ignore",
             "Directory names (or absolute prefixes) under which activity is machine churn and \
              never grows a place; hidden directories are always ignored",

@@ -1247,6 +1247,9 @@ impl ShellApp {
                     self.field_settings = settings;
                     self.field_screen.drag_cfg.throw_enabled =
                         settings.throw && !settings.reduced_motion;
+                    self.field_screen
+                        .place_styles
+                        .set_theme(settings.garden_theme);
                 }
                 DataUpdate::RailSettings(settings) => {
                     self.rail_settings = settings;

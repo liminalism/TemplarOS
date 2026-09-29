@@ -23,6 +23,8 @@ pub const PREVIEWS_KEY: &str = "shell.home-field.previews";
 pub const PREVIEW_RATE_KEY: &str = "shell.home-field.preview-rate";
 /// `shell.home-field.reduced-motion`.
 pub const REDUCED_MOTION_KEY: &str = "shell.home-field.reduced-motion";
+/// `shell.home-garden.theme` — how grown Places are drawn (`surface::place_styles::themes`).
+pub const GARDEN_THEME_KEY: &str = "shell.home-garden.theme";
 /// `shell.appearance.theme` — `light` or `dark`.
 pub const THEME_KEY: &str = "shell.appearance.theme";
 /// `shell.appearance.accent` — a bundled accent's name, or `default`.
@@ -68,6 +70,9 @@ pub struct HomeFieldSettings {
     pub preview_rate: u32,
     /// Keep the design's state changes but remove projected/expanding motion.
     pub reduced_motion: bool,
+    /// The Place theme's name, already resolved against the themes this build ships: an unknown
+    /// name has become the default here, so everything downstream draws a theme that exists.
+    pub garden_theme: &'static str,
 }
 
 impl Default for HomeFieldSettings {
@@ -78,6 +83,7 @@ impl Default for HomeFieldSettings {
             previews: PreviewMode::Static,
             preview_rate: 1,
             reduced_motion: false,
+            garden_theme: crate::surface::place_styles::DEFAULT_THEME,
         }
     }
 }
@@ -225,12 +231,22 @@ pub async fn home_field(client: &impl SettingsClient) -> HomeFieldSettings {
         .as_deref()
         .and_then(parse_bool)
         .unwrap_or(defaults.reduced_motion);
+    let garden_theme = client
+        .get(GARDEN_THEME_KEY)
+        .await
+        .ok()
+        .as_deref()
+        .and_then(parse_choice)
+        .map_or(defaults.garden_theme, |name| {
+            crate::surface::place_styles::theme_named(&name).name
+        });
     HomeFieldSettings {
         tile_size,
         throw,
         previews,
         preview_rate,
         reduced_motion,
+        garden_theme,
     }
 }
 

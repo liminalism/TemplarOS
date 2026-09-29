@@ -46,7 +46,7 @@ use crate::surface::context_menu::{Chosen, ContextMenu, MenuTarget};
 use crate::surface::design::{self, Elevation};
 use crate::surface::file_browser::FilesBrowseView;
 use crate::surface::file_browser::{FileBrowserData, theme_icon_key};
-use crate::surface::place_forms;
+use crate::surface::place_styles::PlaceStyles;
 use crate::surface::widgets::{self, WidgetSnapshot};
 
 /// One typed file drop, ready for the service. The shell never decides what a conflict, a
@@ -386,6 +386,8 @@ pub struct FieldScreen {
     folder_at: HashMap<TileId, PathBuf>,
     /// Each folder window's scroll position, keyed by its tile.
     folder_scroll: HashMap<TileId, pixelkit_ui::ScrollState>,
+    /// How grown Places are drawn (`shell.home-garden.theme`), and each one's cached body.
+    pub place_styles: PlaceStyles,
 }
 
 /// Naming a window group: which group (by one of its members, which is how every group request is
@@ -439,6 +441,7 @@ impl Default for FieldScreen {
             rename_group: None,
             folder_at: HashMap::new(),
             folder_scroll: HashMap::new(),
+            place_styles: PlaceStyles::default(),
         }
     }
 }
@@ -3835,15 +3838,15 @@ impl FieldScreen {
         if body.h < line {
             return;
         }
-        match place.form.as_str() {
-            "branch" => place_forms::branch(ui, body, path, place, actions),
-            "shelf" => place_forms::shelf(ui, body, path, place, actions),
-            // Plain, and every form this build has not learned: a place with nothing earned is
-            // quiet, and a place with room to be browsed is browsable.
-            _ if rung >= Representation::Large => {
-                self.paint_folder_window(ui, body, tile.id, path, data, actions);
-            }
-            _ => {}
+        let large = rung >= Representation::Large;
+        let drawn = self
+            .place_styles
+            .paint(ui, body, tile.id, path, place, large, actions);
+        // Plain, and every form this build has not learned: a place with nothing earned is
+        // quiet, and a place with room to be browsed is browsable — unless the theme draws even
+        // a plain place's tree, which is `drawn`.
+        if !drawn && large && !matches!(place.form.as_str(), "branch" | "shelf" | "folio") {
+            self.paint_folder_window(ui, body, tile.id, path, data, actions);
         }
     }
 
@@ -4820,16 +4823,6 @@ fn draw_composition_band(ui: &mut Ui<'_>, rect: Rect, composition: &[(u32, f32)]
             x += width;
         }
     }
-}
-
-/// Whether a cached treemap is near enough to `wanted` to blit rather than rasterize again:
-/// within a quarter in each dimension, so a drag's every pixel of resize does not re-scan.
-// No caller while the Files object has no directory of its own to show; the expansion work that
-// gives it one is what asks for a treemap again, and the rule is the same rule.
-#[allow(dead_code)]
-fn close_enough(bitmap: &Bitmap, wanted: (u32, u32)) -> bool {
-    let near = |have: u32, want: u32| have * 4 >= want * 3 && have * 3 <= want * 4;
-    near(bitmap.width, wanted.0) && near(bitmap.height, wanted.1)
 }
 
 /// How one tile is grabbed and where its body starts. See [`FieldScreen::grab_strip`].
