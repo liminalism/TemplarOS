@@ -22,7 +22,9 @@ use smithay::{
     reexports::{calloop::EventLoop, wayland_server::Display},
     utils::Transform,
 };
-use templar_comp_integration::{DbusIdentityCache, GovernorNotifier, ShellStateBroadcaster};
+use templar_comp_integration::{
+    DbusIdentityCache, GovernorNotifier, IdleNotifier, ShellStateBroadcaster,
+};
 
 const OUTPUT_NAME: &str = "winit";
 
@@ -66,6 +68,7 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
     let handle = runtime.handle().clone();
     let identity_cache = DbusIdentityCache::spawn(&handle);
     let governor = GovernorNotifier::spawn(&handle);
+    let idle_notifier = IdleNotifier::spawn(&handle);
     let shell_sink = crate::shell_sink::install(&event_loop.handle());
     let shell_broadcaster = ShellStateBroadcaster::spawn(&handle, shell_sink);
 
@@ -86,6 +89,7 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
         event_loop.get_signal(),
         identity_cache,
         governor,
+        idle_notifier,
         shell_broadcaster,
     )?;
 

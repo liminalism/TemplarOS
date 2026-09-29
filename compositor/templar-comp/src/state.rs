@@ -41,7 +41,9 @@ use smithay::{
     },
     xwayland::X11Wm,
 };
-use templar_comp_integration::{DbusIdentityCache, GovernorNotifier, ShellStateBroadcaster};
+use templar_comp_integration::{
+    DbusIdentityCache, GovernorNotifier, IdleNotifier, ShellStateBroadcaster,
+};
 use templar_window::WindowService;
 
 /// Per-`wl_client` bookkeeping. The one field the rest of this crate cares about is
@@ -183,6 +185,9 @@ pub struct TemplarCompState<B: Backend + 'static> {
     pub window_service: WindowService<DbusIdentityCache>,
     pub identity_cache: DbusIdentityCache,
     pub governor: GovernorNotifier,
+    /// Tells sessiond when the screen blanks for want of input and when it lights again, so
+    /// session time stops while an unlocked session sits untouched.
+    pub idle_notifier: IdleNotifier,
     pub shell_broadcaster: ShellStateBroadcaster,
 
     /// State for the two private protocols (`src/protocols_shell.rs`, `src/protocols_recovery.rs`)
@@ -292,6 +297,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         loop_signal: smithay::reexports::calloop::LoopSignal,
         identity_cache: DbusIdentityCache,
         governor: GovernorNotifier,
+        idle_notifier: IdleNotifier,
         shell_broadcaster: ShellStateBroadcaster,
     ) -> anyhow::Result<Self> {
         use smithay::wayland::{
@@ -372,6 +378,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             window_service: WindowService::new(identity_cache.clone(), Vec::new()),
             identity_cache,
             governor,
+            idle_notifier,
             shell_broadcaster,
 
             shell_protocol: crate::protocols_shell::ShellProtocolState::default(),
@@ -406,6 +413,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         if self.idle.wake() {
             tracing::info!("input after an idle blank; turning the outputs back on");
             B::set_blanked(self, false);
+            self.idle_notifier.set_idle(false);
         }
         self.arm_idle_timer();
     }
@@ -440,6 +448,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 "idle timeout reached; turning the outputs off"
             );
             B::set_blanked(self, true);
+            self.idle_notifier.set_idle(true);
         }
     }
 
@@ -455,6 +464,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         tracing::info!(seconds, "idle screen-off delay set");
         if timeout.is_none() && self.idle.wake() {
             B::set_blanked(self, false);
+            self.idle_notifier.set_idle(false);
         }
         self.arm_idle_timer();
     }

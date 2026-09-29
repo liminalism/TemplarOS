@@ -18,11 +18,13 @@
 pub mod broadcaster;
 pub mod governor;
 pub mod identity;
+pub mod idle;
 mod pid;
 
 pub use broadcaster::{ShellStateBroadcaster, ShellStateSink, ShellStateSnapshot, snapshot};
 pub use governor::GovernorNotifier;
 pub use identity::DbusIdentityCache;
+pub use idle::IdleNotifier;
 
 /// Names and semantics of the private protocols (XML in `interfaces/wayland/`). The
 /// `wayland-scanner`-generated bindings live in the compositor fork; this module is the shared

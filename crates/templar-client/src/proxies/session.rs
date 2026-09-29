@@ -488,6 +488,10 @@ mod lifecycle {
         /// is the only one that knows.
         fn notify_unlocked(&self) -> zbus::Result<()>;
 
+        /// The compositor reporting the screen went off for want of input, or back on. Refused
+        /// for anyone but `templar-comp.service`.
+        fn notify_idle(&self, idle: bool) -> zbus::Result<()>;
+
         fn can_reboot(&self) -> zbus::Result<String>;
 
         fn can_power_off(&self) -> zbus::Result<String>;

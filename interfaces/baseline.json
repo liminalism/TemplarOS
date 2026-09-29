@@ -404,12 +404,14 @@
         "CanSuspend": "()->(s)",
         "Lock": "()->()",
         "Logout": "()->()",
+        "NotifyIdle": "(b)->()",
         "NotifyUnlocked": "()->()",
         "PowerOff": "()->()",
         "Reboot": "()->()",
         "Suspend": "()->()"
       },
       "signals": {
+        "Idle": "(b)",
         "LockRequested": "()",
         "Locked": "()",
         "SessionStarted": "()",

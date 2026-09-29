@@ -69,6 +69,13 @@
       <arg name="going_to_sleep" type="b"/>
     </signal>
 
+    <!-- The compositor turned the screen off for want of input (true) or back on at the next
+         input (false), from NotifyIdle. An unlocked session nobody is touching is not being used,
+         so session time stops here too. Additive in Lifecycle1 version 1. -->
+    <signal name="Idle">
+      <arg name="idle" type="b"/>
+    </signal>
+
     <!-- The session was unlocked. Only the trusted shell may say so.
 
          ext-session-lock-v1's unlock_and_destroy is the only thing that clears the compositor's
@@ -80,6 +87,15 @@
          boundary for Logout and PowerOff, which are unguarded - but a stray caller would corrupt
          the session-time record for everything downstream, and there is no reason to accept one. -->
     <method name="NotifyUnlocked"/>
+
+    <!-- The screen went off for want of input (true), or came back on (false). Only the
+         compositor may say so: templar-comp sees every input event and is the only honest idle
+         source in the session (compositor/templar-comp/src/idle.rs). Restricted to
+         templar-comp.service by the caller's cgroup, for the same correctness reason as
+         NotifyUnlocked. -->
+    <method name="NotifyIdle">
+      <arg name="idle" type="b" direction="in"/>
+    </method>
 
     <!-- "yes" | "no" | "na" | "challenge", straight from logind. -->
     <method name="CanReboot">

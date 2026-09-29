@@ -35,6 +35,9 @@ pub enum SessionEdge {
     Unlocked,
     /// logind's `PrepareForSleep`: `true` on the way down, `false` on the way back.
     Sleeping(bool),
+    /// The compositor turned the screen off for want of input (`true`) or back on (`false`),
+    /// reported through `NotifyIdle`. An unlocked session nobody is touching is not being used.
+    Idle(bool),
 }
 
 impl SessionEdge {
@@ -46,6 +49,7 @@ impl SessionEdge {
             Self::Locked => LifecycleApi::locked(emitter).await,
             Self::Unlocked => LifecycleApi::unlocked(emitter).await,
             Self::Sleeping(going_to_sleep) => LifecycleApi::sleeping(emitter, going_to_sleep).await,
+            Self::Idle(idle) => LifecycleApi::idle(emitter, idle).await,
         }
     }
 }
@@ -265,6 +269,7 @@ impl CallerUnit for PeerCgroupUnit {
 /// The one unit allowed to report an unlock: the trusted shell, which is the only process that
 /// calls `ext_session_lock_v1.unlock_and_destroy` (ADR-0010) and so the only one that knows.
 const SHELL_UNIT: &str = "templar-shell.service";
+const COMPOSITOR_UNIT: &str = "templar-comp.service";
 
 #[derive(Debug)]
 pub struct LifecycleApi {
@@ -471,6 +476,33 @@ impl LifecycleApi {
         }
     }
 
+    /// The compositor reporting that it turned the screen off for want of input (`true`), or
+    /// back on at the next input (`false`). It is the only process that sees the seat, so it is
+    /// the only one that may say so; anything else would stop or start session time at will.
+    async fn notify_idle(
+        &self,
+        idle: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> fdo::Result<()> {
+        let sender = header.sender().map(ToString::to_string).unwrap_or_default();
+        match self.caller.unit_of(&sender).await {
+            Some(unit) if unit == COMPOSITOR_UNIT => {
+                let _ = self.edges.send(SessionEdge::Idle(idle));
+                Ok(())
+            }
+            other => {
+                tracing::warn!(
+                    caller = %sender,
+                    unit = other.as_deref().unwrap_or("<unidentifiable>"),
+                    "refusing NotifyIdle: only {COMPOSITOR_UNIT} sees the seat"
+                );
+                Err(fdo::Error::AccessDenied(format!(
+                    "only {COMPOSITOR_UNIT} may report idleness"
+                )))
+            }
+        }
+    }
+
     async fn can_reboot(&self) -> fdo::Result<String> {
         self.logind.can(Action::Reboot).await.map_err(failed)
     }
@@ -503,6 +535,10 @@ impl LifecycleApi {
     #[zbus(signal)]
     async fn sleeping(signal_emitter: &SignalEmitter<'_>, going_to_sleep: bool)
     -> zbus::Result<()>;
+
+    /// The compositor turned the screen off for want of input (`true`) or back on (`false`).
+    #[zbus(signal)]
+    async fn idle(signal_emitter: &SignalEmitter<'_>, idle: bool) -> zbus::Result<()>;
 }
 
 #[cfg(test)]
@@ -652,6 +688,38 @@ mod tests {
         .await
         .expect("the shell may report an unlock");
         assert_eq!(seen.recv().await.unwrap(), SessionEdge::Unlocked);
+    }
+
+    /// Only `templar-comp.service` sees the seat, so only it may stop or start session time for
+    /// idleness; the shell is refused like anyone else.
+    #[tokio::test]
+    async fn only_the_compositor_may_report_idleness() {
+        let call = call();
+        for unit in [None, Some(SHELL_UNIT)] {
+            let api = LifecycleApi::new(
+                Arc::new(FakeLogind::default()),
+                Arc::new(FakeSession::default()),
+                Arc::new(FakeUnit(unit)),
+                broadcast::channel(EDGE_CAPACITY).0,
+            );
+            let error = api
+                .notify_idle(true, call.header())
+                .await
+                .expect_err("only the compositor may report idleness");
+            assert!(matches!(error, fdo::Error::AccessDenied(_)), "{unit:?}: {error}");
+        }
+        let edges: SessionEdges = broadcast::channel(EDGE_CAPACITY).0;
+        let mut seen = edges.subscribe();
+        let api = LifecycleApi::new(
+            Arc::new(FakeLogind::default()),
+            Arc::new(FakeSession::default()),
+            Arc::new(FakeUnit(Some(COMPOSITOR_UNIT))),
+            edges,
+        );
+        api.notify_idle(true, call.header()).await.unwrap();
+        api.notify_idle(false, call.header()).await.unwrap();
+        assert_eq!(seen.recv().await.unwrap(), SessionEdge::Idle(true));
+        assert_eq!(seen.recv().await.unwrap(), SessionEdge::Idle(false));
     }
 
     /// A method call with a sender, which is all `notify_unlocked` reads out of its header.

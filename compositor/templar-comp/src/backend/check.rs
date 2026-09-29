@@ -16,7 +16,9 @@
 
 use crate::state::{Backend, TemplarCompState};
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
-use templar_comp_integration::{DbusIdentityCache, GovernorNotifier, ShellStateBroadcaster};
+use templar_comp_integration::{
+    DbusIdentityCache, GovernorNotifier, IdleNotifier, ShellStateBroadcaster,
+};
 
 const SEAT_NAME: &str = "check";
 
@@ -51,6 +53,7 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
     // cache/notifier rather than failing, exactly as it does when sessiond has not started yet.
     let identity_cache = DbusIdentityCache::spawn(&handle);
     let governor = GovernorNotifier::spawn(&handle);
+    let idle_notifier = IdleNotifier::spawn(&handle);
     let shell_sink = crate::shell_sink::install(&event_loop.handle());
     let shell_broadcaster = ShellStateBroadcaster::spawn(&handle, shell_sink);
 
@@ -64,6 +67,7 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
         event_loop.get_signal(),
         identity_cache,
         governor,
+        idle_notifier,
         shell_broadcaster,
     )?;
     State::create_private_globals(&dh);
@@ -185,6 +189,7 @@ mod tests {
             let handle = runtime.handle().clone();
             let identity_cache = DbusIdentityCache::spawn(&handle);
             let governor = GovernorNotifier::spawn(&handle);
+            let idle_notifier = IdleNotifier::spawn(&handle);
             let shell_sink = crate::shell_sink::install(&event_loop.handle());
             let shell_broadcaster = ShellStateBroadcaster::spawn(&handle, shell_sink);
             let socket_name =
@@ -197,6 +202,7 @@ mod tests {
                 event_loop.get_signal(),
                 identity_cache,
                 governor,
+                idle_notifier,
                 shell_broadcaster,
             )
             .unwrap();

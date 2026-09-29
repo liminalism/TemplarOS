@@ -63,7 +63,9 @@ use smithay::{
 };
 use smithay_drm_extras::{display_info, drm_scanner::DrmScanner};
 use std::{collections::HashMap, time::Duration};
-use templar_comp_integration::{DbusIdentityCache, GovernorNotifier, ShellStateBroadcaster};
+use templar_comp_integration::{
+    DbusIdentityCache, GovernorNotifier, IdleNotifier, ShellStateBroadcaster,
+};
 
 // The scene this backend hands to `DrmOutput::render_frame` is built by `crate::scene`, which
 // both backends share: whole-output chrome above everything, then each window's own band and
@@ -255,6 +257,7 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
     let handle = runtime.handle().clone();
     let identity_cache = DbusIdentityCache::spawn(&handle);
     let governor = GovernorNotifier::spawn(&handle);
+    let idle_notifier = IdleNotifier::spawn(&handle);
     let shell_sink = crate::shell_sink::install(&event_loop.handle());
     let shell_broadcaster = ShellStateBroadcaster::spawn(&handle, shell_sink);
 
@@ -279,6 +282,7 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
         event_loop.get_signal(),
         identity_cache,
         governor,
+        idle_notifier,
         shell_broadcaster,
     )?;
 
