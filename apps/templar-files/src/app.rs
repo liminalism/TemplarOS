@@ -2,9 +2,8 @@
 
 use anyhow::{Context, Result};
 use pixelkit_raster::WindowBuffer;
-use pixelkit_shell::{
-    KeyInput, Modifiers, MouseButton, PixelApp, Scale, Waker, WindowConfig, run_app,
-};
+use pixelkit_shell::{KeyInput, Modifiers, MouseButton, Scale};
+use pixelkit_windowing::{PixelApp, Waker, WindowConfig, run_app};
 use std::path::{Path, PathBuf};
 
 use crate::{

@@ -95,6 +95,7 @@ pixelkit-raster = { path = "../pixelkit/crates/pixelkit-raster" }
 pixelkit-text = { path = "../pixelkit/crates/pixelkit-text" }
 pixelkit-ui = { path = "../pixelkit/crates/pixelkit-ui" }
 pixelkit-shell = { path = "../pixelkit/crates/pixelkit-shell" }
+pixelkit-windowing = { path = "../pixelkit/crates/pixelkit-windowing" }
 proptest = "1"
 png = "0.17"
 rusqlite = { version = "0.40", features = ["bundled"] }

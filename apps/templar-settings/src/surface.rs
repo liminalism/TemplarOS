@@ -8,9 +8,8 @@ use crate::names::AppNames;
 use crate::providers::{ChoiceOption, RoleChoice};
 use anyhow::{Context, Result};
 use pixelkit_raster::{Painter, RasterKernel, Rect, WindowBuffer};
-use pixelkit_shell::{
-    Input, KeyInput, Modifiers, MouseButton, PixelApp, Scale, Waker, WindowConfig, run_app,
-};
+use pixelkit_shell::{Input, KeyInput, Modifiers, MouseButton, Scale};
+use pixelkit_windowing::{PixelApp, Waker, WindowConfig, run_app};
 use pixelkit_text::{Align, Face, FontSet, TextCache};
 use pixelkit_ui::{Dropdown, ScrollState, Theme, Ui};
 use std::sync::{Arc, Mutex, mpsc};
@@ -23,6 +22,9 @@ const GARDEN_PREFIX: &str = "shell.home-garden.";
 /// The one `shell.home-garden.*` key the typed key form cannot draw: a list of directory names
 /// does not fit a 184-pixel control rectangle, so the Homegarden page gives it a section.
 const GARDEN_IGNORE_KEY: &str = "shell.home-garden.ignore";
+const RAILS_PREFIX: &str = "shell.rails.";
+/// The Rails page's list key, given a section for the same reason as `GARDEN_IGNORE_KEY`.
+const RAILS_EXCEPTIONS_KEY: &str = "shell.rails.exceptions";
 /// `System` is second because it is the page the Home Field's Settings widget opens into: the
 /// widget reports the battery, the volume and the brightness, and this is where they can be set
 /// outright. The rest keep the order they have had, so a person who learned where a tab is does
@@ -31,8 +33,8 @@ const GARDEN_IGNORE_KEY: &str = "shell.home-garden.ignore";
 /// six tabs to make room for it would cost every person who already knows where History is.
 /// Homegarden is appended rather than placed beside Home Field for the same reason Appearance
 /// was: it is new, and moving nine tabs to make room for it would cost every person who already
-/// knows where History is.
-const PAGE_NAMES: [&str; 10] = [
+/// knows where History is. Rails is appended for the same reason again.
+const PAGE_NAMES: [&str; 11] = [
     "Home Field",
     "System",
     "Providers",
@@ -43,6 +45,7 @@ const PAGE_NAMES: [&str; 10] = [
     "Hardware",
     "Appearance",
     "Homegarden",
+    "Rails",
 ];
 /// The index of each page that draws controls rather than rendered text.
 const HOME_PAGE: usize = 0;
@@ -53,6 +56,7 @@ const BACKGROUND_PAGE: usize = 4;
 const HISTORY_PAGE: usize = 6;
 const APPEARANCE_PAGE: usize = 8;
 const GARDEN_PAGE: usize = 9;
+const RAILS_PAGE: usize = 10;
 /// How far one press of a stepper moves a level: the same five points `templar status louder` and
 /// the Home Field's own controls use, so no two surfaces disagree about what one step means.
 const STEP_PERCENT: i32 = 5;
@@ -538,12 +542,16 @@ struct SettingsApp {
     appearance: Vec<SettingRow>,
     /// `shell.home-garden.*`, same rule.
     garden: Vec<SettingRow>,
+    /// `shell.rails.*`, same rule.
+    rails: Vec<SettingRow>,
     /// The places `HomeGarden1` is holding hidden, so a person can put one back.
     hidden_places: Vec<String>,
-    /// What is typed into the Homegarden page's "add an ignored directory" field. It is the only
-    /// text field in this application, so it is always the thing with focus while that page is on
-    /// screen and there is no focus state to keep.
+    /// What is typed into the Homegarden page's "add an ignored directory" field. Each text field
+    /// lives on its own page and only one page is on screen, so the one drawn is always the thing
+    /// with focus and there is no focus state to keep.
     ignore_draft: pixelkit_ui::TextFieldState,
+    /// What is typed into the Rails page's "add an exception" field; same rule.
+    exception_draft: pixelkit_ui::TextFieldState,
     system: crate::system::SystemState,
     background: Vec<BackgroundEntry>,
     history: Vec<Event>,
@@ -577,6 +585,7 @@ impl SettingsApp {
         match page {
             APPEARANCE_PAGE => &self.appearance,
             GARDEN_PAGE => &self.garden,
+            RAILS_PAGE => &self.rails,
             _ => &self.home,
         }
     }
@@ -585,6 +594,7 @@ impl SettingsApp {
         match page {
             APPEARANCE_PAGE => &mut self.appearance,
             GARDEN_PAGE => &mut self.garden,
+            RAILS_PAGE => &mut self.rails,
             _ => &mut self.home,
         }
     }
@@ -793,27 +803,10 @@ impl SettingsApp {
                     }
                 }
                 GardenRow::AddIgnored => {
-                    let button = Rect::new(
-                        rect.right() - ui.px(84),
-                        rect.y + ui.px(2),
-                        ui.px(84),
-                        ui.px(34),
-                    );
-                    let field = Rect::new(
-                        rect.x,
-                        button.y,
-                        (button.x - rect.x - ui.px(8)).max(ui.px(80)),
-                        button.h,
-                    );
-                    ui.text_field(
-                        draft,
-                        field,
-                        "a directory name, or an absolute path",
-                        true,
-                        false,
-                    );
-                    if ui.button(button, "Add") && !draft.text().trim().is_empty() {
-                        wanted = Some(GardenAction::AddIgnored(draft.text().trim().to_owned()));
+                    if let Some(entry) =
+                        add_row(ui, rect, draft, "a directory name, or an absolute path")
+                    {
+                        wanted = Some(GardenAction::AddIgnored(entry));
                     }
                 }
                 GardenRow::Hidden(path) => {
@@ -852,6 +845,103 @@ impl SettingsApp {
                     .backend
                     .commands
                     .send(Command::Garden(GardenCommand::Unhide(path)));
+            }
+        }
+    }
+
+    /// The Rails page: how the rails are revealed, which side is which, the gate's size, and the
+    /// applications under which the gate stays disarmed.
+    ///
+    /// The exceptions are a list section after the typed keys, for the reason the Homegarden
+    /// ignore list is: a list of ids does not fit the key form's control rectangle.
+    fn draw_rails(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        let rows = self.rails.clone();
+        let list_index = rows
+            .iter()
+            .position(|row| row.spec.key == RAILS_EXCEPTIONS_KEY);
+        let exceptions: Vec<String> = list_index
+            .and_then(|index| match &rows[index].value {
+                SettingValue::StrList(list) => Some(list.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        let mut plan: Vec<RailsRow> = (0..rows.len())
+            .filter(|index| Some(*index) != list_index)
+            .map(RailsRow::Key)
+            .collect();
+        if list_index.is_some() {
+            plan.push(RailsRow::Heading);
+            plan.extend((0..exceptions.len()).map(RailsRow::Exception));
+            plan.push(RailsRow::AddException);
+        }
+        let heights: Vec<i32> = plan
+            .iter()
+            .map(|row| match row {
+                RailsRow::Key(_) => ui.px(88),
+                RailsRow::Heading | RailsRow::Exception(_) | RailsRow::AddException => ui.px(44),
+            })
+            .collect();
+
+        let mut wanted: Option<RailsAction> = None;
+        let mut scroll = self.scroll[RAILS_PAGE];
+        let draft = &mut self.exception_draft;
+        let names = &self.names;
+        ui.scroll_list(&mut scroll, area, &heights, |ui, index, rect| {
+            match &plan[index] {
+                RailsRow::Key(key) => match key_form_row(ui, &rows[*key], rect, RAILS_PREFIX) {
+                    Some(KeyEdit::Set(value)) => wanted = Some(RailsAction::Set(*key, value)),
+                    Some(KeyEdit::Reset) => wanted = Some(RailsAction::Reset(*key)),
+                    None => {}
+                },
+                RailsRow::Heading => {
+                    ui.label(
+                        Rect::new(rect.x, rect.y + ui.px(14), rect.w, ui.px(24)),
+                        "Never reveal the rails over",
+                        ui.theme.text,
+                        Align::Left,
+                    );
+                }
+                RailsRow::Exception(entry) => {
+                    // The id is what the compositor matches; the name is what a person knows.
+                    let row = list_row(ui, rect, &names.qualified(&exceptions[*entry]));
+                    if ui.button(row, "Remove") {
+                        wanted = Some(RailsAction::Remove(*entry));
+                    }
+                }
+                RailsRow::AddException => {
+                    if let Some(entry) = add_row(
+                        ui,
+                        rect,
+                        draft,
+                        "an application id, e.g. org.templaros.Files",
+                    ) {
+                        wanted = Some(RailsAction::Add(entry));
+                    }
+                }
+            }
+        });
+        self.scroll[RAILS_PAGE] = scroll;
+
+        let Some(action) = wanted else { return };
+        match action {
+            RailsAction::Set(index, value) => self.change(RAILS_PAGE, index, value),
+            RailsAction::Reset(index) => self.reset(RAILS_PAGE, index),
+            RailsAction::Add(entry) => {
+                let Some(index) = list_index else { return };
+                let mut list = exceptions;
+                if !list.contains(&entry) {
+                    list.push(entry);
+                    list.sort();
+                }
+                self.exception_draft.clear();
+                self.change(RAILS_PAGE, index, SettingValue::StrList(list));
+            }
+            RailsAction::Remove(entry) => {
+                let Some(index) = list_index else { return };
+                let mut list = exceptions;
+                list.remove(entry);
+                self.change(RAILS_PAGE, index, SettingValue::StrList(list));
             }
         }
     }
@@ -1338,9 +1428,8 @@ fn approval_colours(theme: Theme, approval: crate::background::Approval) -> (u32
 /// the page applies it once the list is done.
 /// One row of a typed-key form: the name, the sentence under it, its control and a Reset.
 ///
-/// `None` is a frame in which nothing was clicked. Shared by the Home Field, Appearance and
-/// Homegarden pages so all three read the same, and so a fourth page costs a call rather than a
-/// copy.
+/// `None` is a frame in which nothing was clicked. Shared by every page of typed keys so they all
+/// read the same, and so another page costs a call rather than a copy.
 fn key_form_row(ui: &mut Ui<'_>, row: &SettingRow, rect: Rect, prefix: &str) -> Option<KeyEdit> {
     let row_area = Rect::new(rect.x, rect.y, rect.w, ui.px(78));
     ui.painter
@@ -1441,6 +1530,50 @@ enum GardenAction {
     AddIgnored(String),
     RemoveIgnored(usize),
     Unhide(String),
+}
+
+/// One row of the Rails page: a typed key, the exceptions heading, one exception, or the field
+/// that adds one.
+#[derive(Clone, Debug)]
+enum RailsRow {
+    Key(usize),
+    Heading,
+    Exception(usize),
+    AddException,
+}
+
+/// What a frame's input asked of the Rails page.
+#[derive(Clone, Debug)]
+enum RailsAction {
+    Set(usize, SettingValue),
+    Reset(usize),
+    Add(String),
+    Remove(usize),
+}
+
+/// The last row of an editable list: a text field and an Add button. Returns the trimmed entry
+/// when Add is pressed with something typed, so an empty click adds nothing.
+fn add_row(
+    ui: &mut Ui<'_>,
+    rect: Rect,
+    draft: &mut pixelkit_ui::TextFieldState,
+    placeholder: &str,
+) -> Option<String> {
+    let button = Rect::new(
+        rect.right() - ui.px(84),
+        rect.y + ui.px(2),
+        ui.px(84),
+        ui.px(34),
+    );
+    let field = Rect::new(
+        rect.x,
+        button.y,
+        (button.x - rect.x - ui.px(8)).max(ui.px(80)),
+        button.h,
+    );
+    ui.text_field(draft, field, placeholder, true, false);
+    let entry = draft.text().trim();
+    (ui.button(button, "Add") && !entry.is_empty()).then(|| entry.to_owned())
 }
 
 fn home_control(ui: &mut Ui<'_>, row: &SettingRow, controls: Rect) -> Option<SettingValue> {
@@ -1723,6 +1856,7 @@ impl PixelApp for SettingsApp {
                 HISTORY_PAGE => self.draw_history(&mut ui, content),
                 APPEARANCE_PAGE => self.draw_appearance(&mut ui, content),
                 GARDEN_PAGE => self.draw_garden(&mut ui, content),
+                RAILS_PAGE => self.draw_rails(&mut ui, content),
                 _ => self.draw_text_page(&mut ui, content),
             }
             // Last, so nothing the page drew afterwards covers the open list.
@@ -1803,7 +1937,7 @@ fn fonts() -> &'static FontSet {
 
 /// Which page of typed controls a schema key belongs on, or `None` for a key no page shows.
 ///
-/// The three prefixes are disjoint by construction, and this is where that is stated once: a key
+/// The prefixes are disjoint by construction, and this is where that is stated once: a key
 /// appearing on two pages, or on none, is a control a person either sees twice or cannot find at
 /// all. `shell.home-garden.*` used to fall through to `None`, which is why Home's default-on
 /// automation had no graphical settings at all.
@@ -1814,6 +1948,8 @@ fn page_for(key: &str) -> Option<usize> {
         Some(APPEARANCE_PAGE)
     } else if key.starts_with(GARDEN_PREFIX) {
         Some(GARDEN_PAGE)
+    } else if key.starts_with(RAILS_PREFIX) {
+        Some(RAILS_PAGE)
     } else {
         None
     }
@@ -1824,12 +1960,14 @@ async fn load() -> Result<SettingsApp> {
     let connection = zbus::Connection::session().await.context("session bus")?;
     let proxy = SettingsProxy::new(&connection).await?;
     let values: std::collections::HashMap<_, _> = proxy.list().await?.into_iter().collect();
-    let (mut home, mut appearance, mut garden) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut home, mut appearance, mut garden, mut rails) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for json in proxy.schema_details().await? {
         let spec: SettingSpec = serde_json::from_str(&json)?;
         let list = match page_for(&spec.key) {
             Some(APPEARANCE_PAGE) => &mut appearance,
             Some(GARDEN_PAGE) => &mut garden,
+            Some(RAILS_PAGE) => &mut rails,
             Some(_) => &mut home,
             None => continue,
         };
@@ -1840,7 +1978,7 @@ async fn load() -> Result<SettingsApp> {
             .unwrap_or_else(|| spec.default.clone());
         list.push(SettingRow { spec, value });
     }
-    for list in [&mut home, &mut appearance, &mut garden] {
+    for list in [&mut home, &mut appearance, &mut garden, &mut rails] {
         list.sort_by(|left, right| left.spec.key.cmp(&right.spec.key));
     }
 
@@ -1863,6 +2001,7 @@ async fn load() -> Result<SettingsApp> {
             .lines()
             .map(str::to_owned)
             .collect(),
+        Vec::new(),
         Vec::new(),
         Vec::new(),
     ];
@@ -1917,8 +2056,10 @@ async fn load() -> Result<SettingsApp> {
         home,
         appearance,
         garden,
+        rails,
         hidden_places,
         ignore_draft: pixelkit_ui::TextFieldState::new(),
+        exception_draft: pixelkit_ui::TextFieldState::new(),
         system,
         background,
         history,
@@ -1962,11 +2103,13 @@ mod tests {
         let mut appearance = Vec::new();
         let mut home = Vec::new();
         let mut garden = Vec::new();
+        let mut rails = Vec::new();
         for key in schema.specs.keys() {
             match page_for(key) {
                 Some(APPEARANCE_PAGE) => appearance.push(key.as_str()),
                 Some(HOME_PAGE) => home.push(key.as_str()),
                 Some(GARDEN_PAGE) => garden.push(key.as_str()),
+                Some(RAILS_PAGE) => rails.push(key.as_str()),
                 Some(other) => panic!("{key} claims page {other}, which draws no key form"),
                 None => {}
             }
@@ -1982,7 +2125,7 @@ mod tests {
         }
         // Every key either page shows has to be a real schema key with a default, or its Reset
         // has nothing to reset to.
-        for key in appearance.iter().chain(&home).chain(&garden) {
+        for key in appearance.iter().chain(&home).chain(&garden).chain(&rails) {
             assert!(schema.specs.contains_key(*key));
         }
     }
@@ -2016,6 +2159,41 @@ mod tests {
         );
     }
 
+    /// Every `shell.rails.*` key reaches the Rails page, and the exceptions list the page draws
+    /// by hand is a real key holding the type that section edits.
+    #[test]
+    fn every_rails_key_reaches_the_rails_page() {
+        let schema = templar_session_core::settings::baseline_schema();
+        let rails: Vec<&str> = schema
+            .specs
+            .keys()
+            .filter(|key| key.starts_with(RAILS_PREFIX))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            rails,
+            vec![
+                "shell.rails.exceptions",
+                "shell.rails.gate-height",
+                "shell.rails.gate-width",
+                "shell.rails.learning",
+                "shell.rails.mode",
+                "shell.rails.swap",
+            ],
+            "the Rails page shows the wrong set of keys"
+        );
+        for key in &rails {
+            assert_eq!(page_for(key), Some(RAILS_PAGE), "{key} has no page");
+        }
+        assert!(
+            matches!(
+                schema.specs[RAILS_EXCEPTIONS_KEY].default,
+                SettingValue::StrList(_)
+            ),
+            "the exceptions section assumes a string list"
+        );
+    }
+
     /// The tab list and the page indices are two halves of one thing; a page index past the end
     /// of the names is a tab a person can never reach.
     #[test]
@@ -2029,10 +2207,12 @@ mod tests {
             HISTORY_PAGE,
             APPEARANCE_PAGE,
             GARDEN_PAGE,
+            RAILS_PAGE,
         ] {
             assert!(page < PAGE_NAMES.len(), "page {page} has no tab");
         }
         assert_eq!(PAGE_NAMES[APPEARANCE_PAGE], "Appearance");
         assert_eq!(PAGE_NAMES[GARDEN_PAGE], "Homegarden");
+        assert_eq!(PAGE_NAMES[RAILS_PAGE], "Rails");
     }
 }

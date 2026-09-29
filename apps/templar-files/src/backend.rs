@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use pixelkit_shell::Waker;
+use pixelkit_windowing::Waker;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},

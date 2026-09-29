@@ -34,6 +34,7 @@ pixelkit-raster = { workspace = true }
 pixelkit-text = { workspace = true }
 pixelkit-ui = { workspace = true }
 pixelkit-shell = { workspace = true }
+pixelkit-windowing = { workspace = true }
 
 [lints]
 workspace = true
