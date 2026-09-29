@@ -47,6 +47,10 @@ pub const BUTTON_SELECTED_COLOR: u32 = pixelkit_raster::color::from_rgb(0x4E, 0x
 /// Deliberately not one of the group accents — the target may already have one, and "you are
 /// about to drop something here" is a state of the gesture, not of a group.
 pub const BAND_DROP_TARGET_COLOR: u32 = pixelkit_raster::color::from_rgb(0x35, 0x47, 0x63);
+/// The gesture gate's learning outline (`chrome::collect_gesture_gate`): barely there while idle,
+/// the focus accent while the gate is armed on that output.
+pub const GESTURE_GATE_COLOR: u32 = pixelkit_raster::color::from_rgb(0x3A, 0x3F, 0x4B);
+pub const GESTURE_GATE_ARMED_COLOR: u32 = pixelkit_raster::color::from_rgb(0x4E, 0x9A, 0xE8);
 
 /// Scale a *logical* rectangle up to the physical pixel space a widget's own buffer is drawn in
 /// (`chrome/cache.rs`'s `buffer_scale`) — used for anything laid out once in logical coordinates

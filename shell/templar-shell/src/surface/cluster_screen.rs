@@ -42,6 +42,7 @@ use pixelkit_ui::Ui;
 use crate::surface::bar_screen::{BAR_HEIGHT, BarAction, CHIP_GAP, CHIP_H, CHIP_PAD, chip};
 use crate::surface::design::{self, Elevation};
 use crate::surface::field_screen::FieldAction;
+use crate::surface::rail::{self, RAIL_GAP, RailSide, RailView};
 
 /// The Settings chip — the whole of Settings, not one corner of it. It took the readings chip's
 /// place in the cluster.
@@ -239,6 +240,9 @@ pub struct ClusterData<'a> {
     /// Charge, volume and backlight, as the services last reported them.
     pub machine: &'a crate::data::MachineReadings,
     pub now_ms: u64,
+    /// Draw as a gesture rail rather than at the corner (`surface::rail`). `None` is the corner
+    /// cluster, unchanged.
+    pub rail: Option<RailView>,
 }
 
 /// Where each chip and the popover are, in the surface's own coordinates.
@@ -250,6 +254,17 @@ struct Layout {
     account: Rect,
     /// The account popover, when it is open and the host has made room.
     popover: Option<Popover>,
+    /// In rail mode, the revealed columns `[x0, x1)` in physical pixels. `None` at the corner.
+    revealed: Option<(i32, i32)>,
+}
+
+impl Layout {
+    /// Whether `chip` is on screen enough to hover and click: always at the corner, and on a rail
+    /// once the reveal has passed its centre.
+    fn live(&self, chip: Rect) -> bool {
+        self.revealed
+            .is_none_or(|interval| rail::centre_revealed(chip, interval))
+    }
 }
 
 /// The account popover's parts.
@@ -297,6 +312,28 @@ pub fn wanted_size(account_open: bool, full_width: i32) -> (i32, i32) {
     (cluster_width().min(full_width.max(1)), BAR_HEIGHT + band)
 }
 
+/// How long the system rail is, in logical pixels: the gap at the origin, the four chips and the
+/// gaps between them, and a margin at the far end.
+#[must_use]
+pub fn rail_length() -> i32 {
+    RAIL_GAP + cluster_width() - CHIP_PAD
+}
+
+/// How much of the system rail is shown the moment it opens: the whole Settings chip, which is
+/// the one nearest the origin.
+#[must_use]
+pub fn rail_initial() -> i32 {
+    RAIL_GAP + SETTINGS_WIDTH
+}
+
+/// The surface size the host asks for while the system rail is open: the output's whole width,
+/// and the popover's band above the bar when it is open.
+#[must_use]
+pub fn rail_wanted_size(account_open: bool, full_width: i32) -> (i32, i32) {
+    let band = if account_open { popover_band() } else { 0 };
+    (full_width.max(1), BAR_HEIGHT + band)
+}
+
 impl ClusterScreen {
     /// The shapes this frame painted solid. Empty before the first draw, which the host reads as
     /// "no coverage yet" and answers with an opaque present.
@@ -311,24 +348,57 @@ impl ClusterScreen {
         self.account_open
     }
 
-    fn layout(ui: &Ui<'_>, area: Rect, account_open: bool) -> Layout {
+    /// Close the popover and drop whatever it was doing — an armed session row, a drag, the leave
+    /// timer. The host calls it when a rail closes, so the next opening starts closed.
+    pub fn reset(&mut self) {
+        self.account_open = false;
+        self.confirming = None;
+        self.left_at = None;
+        self.drag = None;
+    }
+
+    fn layout(ui: &Ui<'_>, area: Rect, account_open: bool, rail: Option<RailView>) -> Layout {
         let bar_height = ui.px(BAR_HEIGHT).min(area.h);
         let bar = Rect::new(area.x, area.bottom() - bar_height, area.w, bar_height);
         let chip_h = ui.px(CHIP_H).min(bar.h);
         let chip_y = bar.y + (bar.h - chip_h) / 2;
         let gap = ui.px(CHIP_GAP);
 
-        // Right to left, because the right-hand end of the screen is what this is anchored to.
-        let mut right = bar.right() - ui.px(CHIP_PAD);
-        let mut place = |width: i32| {
-            let rect = Rect::new(right - width, chip_y, width, chip_h);
-            right = rect.x - gap;
-            rect
+        let (settings, network, clock, account) = if let Some(view) = rail {
+            // Outward from the origin: Settings first, because it is the one place the rest of
+            // the machine is reached from, then the network, the clock, and the account at the
+            // far end — the same order the corner reads in, mirrored on a left rail. Laid once;
+            // the reveal is a clip over them, never a move.
+            let origin = area.x + ui.px(view.origin);
+            let mut at = ui.px(RAIL_GAP);
+            let mut place = |width: i32| {
+                let x = match view.side {
+                    RailSide::Right => origin + at,
+                    RailSide::Left => origin - at - width,
+                };
+                at += width + gap;
+                Rect::new(x, chip_y, width, chip_h)
+            };
+            let settings = place(ui.px(SETTINGS_WIDTH));
+            let network = place(ui.px(NETWORK_WIDTH));
+            let clock = place(ui.px(CLOCK_WIDTH));
+            let account = place(ui.px(ACCOUNT_WIDTH));
+            (settings, network, clock, account)
+        } else {
+            // Right to left, because the right-hand end of the screen is what this is anchored to.
+            let mut right = bar.right() - ui.px(CHIP_PAD);
+            let mut place = |width: i32| {
+                let rect = Rect::new(right - width, chip_y, width, chip_h);
+                right = rect.x - gap;
+                rect
+            };
+            let account = place(ui.px(ACCOUNT_WIDTH));
+            let clock = place(ui.px(CLOCK_WIDTH));
+            let network = place(ui.px(NETWORK_WIDTH));
+            let settings = place(ui.px(SETTINGS_WIDTH));
+            (settings, network, clock, account)
         };
-        let account = place(ui.px(ACCOUNT_WIDTH));
-        let clock = place(ui.px(CLOCK_WIDTH));
-        let network = place(ui.px(NETWORK_WIDTH));
-        let settings = place(ui.px(SETTINGS_WIDTH));
+        let revealed = rail.map(|view| view.physical_interval(area.x, |logical| ui.px(logical)));
 
         let popover = (account_open && area.h > bar_height).then(|| {
             let width = ui.px(POPOVER_WIDTH).min(area.w);
@@ -343,8 +413,14 @@ impl ClusterScreen {
                 + divider_h
                 + i32::try_from(SESSION_ROWS.len()).unwrap_or(5) * row_h;
             let height = (2 * pad + content).min(area.h - bar_height);
+            // Over the account chip, flush with its outer end — its right edge at the corner and
+            // on a right rail, its left edge on a left rail — and never off the surface.
+            let x = match rail.map(|view| view.side) {
+                Some(RailSide::Left) => account.x,
+                _ => account.right() - width,
+            };
             let frame = Rect::new(
-                (account.right() - width).max(area.x),
+                x.min(area.right() - width).max(area.x),
                 bar.y - ui.px(POPOVER_GAP) - height,
                 width,
                 height,
@@ -380,6 +456,7 @@ impl ClusterScreen {
             clock,
             account,
             popover,
+            revealed,
         }
     }
 
@@ -636,20 +713,25 @@ impl ClusterScreen {
     #[allow(clippy::too_many_lines)]
     pub fn draw(&mut self, ui: &mut Ui<'_>, area: Rect, data: &ClusterData<'_>) -> Vec<BarAction> {
         let mut actions = Vec::new();
-        let layout = Self::layout(ui, area, self.account_open);
+        let layout = Self::layout(ui, area, self.account_open, data.rail);
 
         // The ground first, for the opaque fallback; the chips are the coverage, so everything
         // between and around them is desktop. The same bargain the island makes.
         ui.painter.fill_rect(area, design::ground());
         let radius = ui.px(design::CHIP_RADIUS);
         self.opaque.clear();
-        for shape in [
+        let chips = [
             layout.settings,
             layout.network,
             layout.clock,
             layout.account,
-        ] {
-            self.opaque.push((shape, radius));
+        ]
+        .map(|shape| (shape, radius));
+        match layout.revealed {
+            // On a rail the row is as solid as the curtain is drawn; the popover above it is not
+            // part of the curtain and stays whole.
+            Some(interval) => self.opaque.extend(rail::clipped_shapes(chips, interval)),
+            None => self.opaque.extend(chips),
         }
 
         // The account popover first, for the same reason the row is early: it floats over what is
@@ -748,7 +830,10 @@ impl ClusterScreen {
         // The label comes from the action manifest for the same reason the network's does.
         let settings_label = templar_types::action::action("settings.open")
             .map_or("Settings", |declaration| declaration.label);
-        let settings_hovered = ui.input.hovering(layout.settings);
+        // On a rail a chip the reveal has not reached is painted (the mask hides it) but not
+        // there to the pointer: no hover, no click.
+        let settings_live = layout.live(layout.settings);
+        let settings_hovered = settings_live && ui.input.hovering(layout.settings);
         chip(
             ui,
             layout.settings,
@@ -765,7 +850,7 @@ impl ClusterScreen {
             design::TAG_INK,
             Align::Centre,
         );
-        if ui.input.take_click(layout.settings) {
+        if settings_live && ui.input.take_click(layout.settings) {
             actions.push(BarAction::Field(FieldAction::RunAction("settings.open")));
         }
 
@@ -773,7 +858,8 @@ impl ClusterScreen {
         // cannot call the same capability two different things.
         let network_label = templar_types::action::action("network.open-control")
             .map_or("Network", |declaration| declaration.label);
-        let network_hovered = data.network_control_available && ui.input.hovering(layout.network);
+        let network_live = data.network_control_available && layout.live(layout.network);
+        let network_hovered = network_live && ui.input.hovering(layout.network);
         chip(
             ui,
             layout.network,
@@ -794,7 +880,7 @@ impl ClusterScreen {
             },
             Align::Centre,
         );
-        if data.network_control_available && ui.input.take_click(layout.network) {
+        if network_live && ui.input.take_click(layout.network) {
             actions.push(BarAction::Field(FieldAction::RunAction(
                 "network.open-control",
             )));
@@ -802,7 +888,8 @@ impl ClusterScreen {
 
         // The clock opens the installed calendar. Dimmed when none is installed, the way the
         // network chip is: a chip that looks live and does nothing is worse than one that says so.
-        let clock_hovered = data.calendar_available && ui.input.hovering(layout.clock);
+        let clock_live = data.calendar_available && layout.live(layout.clock);
+        let clock_hovered = clock_live && ui.input.hovering(layout.clock);
         chip(
             ui,
             layout.clock,
@@ -823,7 +910,7 @@ impl ClusterScreen {
             },
             Align::Centre,
         );
-        if data.calendar_available && ui.input.take_click(layout.clock) {
+        if clock_live && ui.input.take_click(layout.clock) {
             actions.push(BarAction::Field(FieldAction::RunAction(
                 "clock.open-calendar",
             )));
@@ -831,7 +918,8 @@ impl ClusterScreen {
 
         // The account chip: the machine's two levels and the session actions, in one place,
         // because there is one of each of them on this desktop.
-        let account_hovered = ui.input.hovering(layout.account);
+        let account_live = layout.live(layout.account);
+        let account_hovered = account_live && ui.input.hovering(layout.account);
         chip(
             ui,
             layout.account,
@@ -848,7 +936,7 @@ impl ClusterScreen {
             design::TAG_INK,
             Align::Centre,
         );
-        if ui.input.take_click(layout.account) {
+        if account_live && ui.input.take_click(layout.account) {
             self.account_open = !self.account_open;
             self.confirming = None;
         }
@@ -988,5 +1076,164 @@ mod tests {
                 "{id} is not in the manifest"
             );
         }
+    }
+
+    const RAIL_W: i32 = 1920;
+
+    fn rail_tallest() -> i32 {
+        BAR_HEIGHT + popover_band()
+    }
+
+    /// The cluster drawn as a rail, in a surface the host would size, at the bottom of one buffer
+    /// tall enough for the popover — the bar's `Harness`, cut down.
+    struct Rail {
+        screen: ClusterScreen,
+        view: RailView,
+        text: pixelkit_text::TextCache,
+        kernel: pixelkit_raster::RasterKernel,
+        buffer: pixelkit_raster::WindowBuffer,
+        input: pixelkit_shell::Input,
+        machine: crate::data::MachineReadings,
+        height: i32,
+    }
+
+    impl Rail {
+        fn new(side: RailSide, revealed: i32) -> Self {
+            Self {
+                screen: ClusterScreen::default(),
+                view: RailView {
+                    origin: RAIL_W / 2,
+                    side,
+                    revealed,
+                },
+                text: pixelkit_text::TextCache::new(crate::surface::fonts::set()),
+                kernel: pixelkit_raster::RasterKernel::new(),
+                buffer: pixelkit_raster::WindowBuffer::new(RAIL_W as u32, rail_tallest() as u32),
+                input: pixelkit_shell::Input::new(),
+                machine: crate::data::MachineReadings::default(),
+                height: BAR_HEIGHT,
+            }
+        }
+
+        fn area(&self) -> Rect {
+            Rect::new(0, rail_tallest() - self.height, RAIL_W, self.height)
+        }
+
+        fn layout(&mut self) -> Layout {
+            let area = self.area();
+            let ui = Ui::new(
+                pixelkit_raster::Painter::new(&mut self.buffer),
+                &mut self.text,
+                &mut self.input,
+                design::theme(),
+                pixelkit_shell::Scale::ONE,
+                &mut self.kernel,
+            );
+            ClusterScreen::layout(&ui, area, self.screen.account_open, Some(self.view))
+        }
+
+        fn frame(&mut self) -> Vec<BarAction> {
+            let area = self.area();
+            let data = ClusterData {
+                clock_label: "10:00",
+                network_control_available: true,
+                calendar_available: true,
+                account_label: "templar",
+                machine: &self.machine,
+                now_ms: 0,
+                rail: Some(self.view),
+            };
+            let mut ui = Ui::new(
+                pixelkit_raster::Painter::new(&mut self.buffer),
+                &mut self.text,
+                &mut self.input,
+                design::theme(),
+                pixelkit_shell::Scale::ONE,
+                &mut self.kernel,
+            );
+            let actions = self.screen.draw(&mut ui, area, &data);
+            drop(ui);
+            self.input.end_frame();
+            self.height = rail_wanted_size(self.screen.account_open, RAIL_W).1;
+            actions
+        }
+
+        fn click(&mut self, rect: Rect) -> Vec<BarAction> {
+            let (x, y) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
+            self.input.cursor_moved(x as f32, y as f32);
+            self.input.mouse(pixelkit_shell::MouseButton::Left, true);
+            self.input.mouse(pixelkit_shell::MouseButton::Left, false);
+            self.frame()
+        }
+    }
+
+    #[test]
+    fn rail_cluster_runs_outward_from_the_origin_settings_first() {
+        let origin = RAIL_W / 2;
+        let right = Rail::new(RailSide::Right, 0).layout();
+        assert_eq!(right.settings.x, origin + RAIL_GAP);
+        assert!(right.network.x > right.settings.right());
+        assert!(right.clock.x > right.network.right());
+        assert!(right.account.x > right.clock.right());
+        assert_eq!(right.account.right() + CHIP_PAD - origin, rail_length());
+
+        let left = Rail::new(RailSide::Left, 0).layout();
+        assert_eq!(left.settings.right(), origin - RAIL_GAP);
+        assert!(left.network.right() < left.settings.x);
+        assert!(left.clock.right() < left.network.x);
+        assert!(left.account.right() < left.clock.x);
+        assert_eq!(origin - (left.account.x - CHIP_PAD), rail_length());
+    }
+
+    #[test]
+    fn rail_cluster_chips_stay_put_while_the_reveal_grows() {
+        let mut rail = Rail::new(RailSide::Right, rail_initial());
+        let early = rail.layout();
+        rail.view.revealed = rail_length();
+        let late = rail.layout();
+        assert_eq!(
+            (early.settings, early.network, early.clock, early.account),
+            (late.settings, late.network, late.clock, late.account)
+        );
+    }
+
+    #[test]
+    fn rail_cluster_click_on_an_unrevealed_chip_does_nothing_until_revealed() {
+        let mut rail = Rail::new(RailSide::Left, rail_initial());
+        let clock = rail.layout().clock;
+        assert!(rail.click(clock).is_empty());
+        rail.view.revealed = rail_length();
+        assert_eq!(
+            rail.click(clock),
+            vec![BarAction::Field(FieldAction::RunAction(
+                "clock.open-calendar"
+            ))]
+        );
+    }
+
+    #[test]
+    fn rail_cluster_coverage_is_clipped_but_the_popover_is_whole() {
+        let mut rail = Rail::new(RailSide::Left, rail_initial());
+        rail.frame();
+        let (x0, x1) = rail.view.interval();
+        let shapes = rail.screen.opaque_shapes().to_vec();
+        assert_eq!(shapes.len(), 1, "only Settings is revealed: {shapes:?}");
+        assert!(shapes[0].0.x >= x0 && shapes[0].0.right() <= x1);
+
+        rail.view.revealed = rail_length();
+        let account = rail.layout().account;
+        rail.click(account);
+        assert!(rail.screen.account_open(), "the toggle opens the popover");
+        rail.frame();
+        let popover = rail.layout().popover.expect("room was made").frame;
+        assert!(popover.x >= 0 && popover.right() <= RAIL_W, "{popover:?}");
+        let account = rail.layout().account;
+        assert!(popover.bottom() <= account.y);
+        assert!(
+            rail.screen
+                .opaque_shapes()
+                .iter()
+                .any(|(rect, _)| *rect == popover)
+        );
     }
 }

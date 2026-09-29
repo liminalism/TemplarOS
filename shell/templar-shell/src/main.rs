@@ -52,6 +52,12 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     render_bar: Option<PathBuf>,
 
+    /// Draw both gesture rails, half and fully revealed, to PNGs with the mask as alpha and exit:
+    /// `PATH-apps-half.png`, `PATH-apps-full.png`, `PATH-system-half.png`,
+    /// `PATH-system-full.png`, on a 1920-pixel output at scale 1.
+    #[arg(long, value_name = "PATH")]
+    render_rails: Option<PathBuf>,
+
     /// Size for `--render`, as WIDTHxHEIGHT in logical pixels.
     #[arg(long, value_name = "WxH", default_value = "1600x1000")]
     size: String,
@@ -101,6 +107,16 @@ async fn main() -> Result<()> {
         templar_shell::surface::offscreen::render_bar(path, 1.0)?;
         templar_shell::surface::offscreen::render_bar(&at_2x, 2.0)?;
         println!("{}\n{}", path.display(), at_2x.display());
+        return Ok(());
+    }
+
+    if let Some(path) = &cli.render_rails {
+        templar_shell::surface::design::set_palette(
+            templar_shell::settings::load_appearance().await,
+        );
+        for written in templar_shell::surface::offscreen::render_rails(path)? {
+            println!("{}", written.display());
+        }
         return Ok(());
     }
 

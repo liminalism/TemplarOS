@@ -74,6 +74,7 @@ use templar_window::WindowId;
 
 use crate::surface::design::{self, Elevation};
 use crate::surface::field_screen::FieldAction;
+use crate::surface::rail::{self, RAIL_GAP, RailSide, RailView};
 use crate::taskbar::{Entry, EntryWindow};
 
 /// The bar's thickness. It reserves nothing: the exclusive zone is 0.
@@ -200,6 +201,10 @@ pub struct BarData<'a> {
     /// Whether a "go home" reveal is in effect, so the Home chip can show that it is.
     pub home_revealed: bool,
     pub now_ms: u64,
+    /// Draw as a gesture rail rather than as the island (`surface::rail`). `None` is the island
+    /// and everything the module documentation says about presence; `Some` skips all of that —
+    /// the host opened the rail on a gesture and is the one that dismisses it.
+    pub rail: Option<RailView>,
 }
 
 #[derive(Debug, Default)]
@@ -240,6 +245,17 @@ struct Layout {
     /// hit-testing runs forwards so the first rectangle a point is in is the card a person can
     /// actually see there.
     fan: Vec<Rect>,
+    /// In rail mode, the revealed columns `[x0, x1)` in physical pixels: only a cell whose centre
+    /// is inside them answers the pointer. `None` for the island, where every cell does.
+    revealed: Option<(i32, i32)>,
+}
+
+impl Layout {
+    /// Whether `cell` is on screen enough to hover and click.
+    fn live(&self, cell: Rect) -> bool {
+        self.revealed
+            .is_none_or(|interval| rail::centre_revealed(cell, interval))
+    }
 }
 
 /// How many full-width chips fit in `bar_width`, and whether the rest need an overflow chip.
@@ -290,16 +306,63 @@ pub fn wanted_size(
         let cards = i32::try_from(cards).unwrap_or(1).max(1);
         2 * CHIP_PAD + FAN_CARD_W + (cards - 1) * FAN_OFFSET
     });
-    let band = if fan_cards.is_some() {
+    let band = band_above(fan_cards, tooltip);
+    (
+        island_width(entries).max(fan).min(widest(full_width)),
+        BAR_HEIGHT + band,
+    )
+}
+
+/// How much room above the bar an open fan or a chip's name needs.
+fn band_above(fan_cards: Option<usize>, tooltip: bool) -> i32 {
+    if fan_cards.is_some() {
         FAN_BAND
     } else if tooltip {
         TOOLTIP_HEIGHT + TOOLTIP_GAP
     } else {
         0
-    };
+    }
+}
+
+/// The room one side of a rail has for chips, origin to the corner, less the gap at the origin.
+/// Both corners stay clear for the same reason [`widest`] gives: they are the compositor's.
+fn rail_room(full_width: i32) -> i32 {
+    (full_width / 2 - CORNER_CLEARANCE - RAIL_GAP).max(0)
+}
+
+/// How many chips a rail of `entries` shows, the overflow chip included.
+fn rail_chips(entries: usize, room: i32, cell: i32, gap: i32) -> usize {
+    let (shown, overflow) = chip_slots(room, entries, cell, gap, 0);
+    shown + usize::from(overflow)
+}
+
+/// How long the apps rail is, in logical pixels: from the origin (`full_width / 2`) to the far
+/// end of the last chip it shows, plus a margin. What [`rail::RailReveal`] clamps to.
+#[must_use]
+pub fn rail_length(entries: usize, full_width: i32) -> i32 {
+    let room = rail_room(full_width);
+    let chips = i32::try_from(rail_chips(entries, room, CELL, CHIP_GAP)).unwrap_or(0);
+    if chips == 0 {
+        return 0;
+    }
+    (RAIL_GAP + chips * CELL + (chips - 1) * CHIP_GAP + CHIP_PAD).min(full_width / 2)
+}
+
+/// How much of the apps rail is shown the moment it opens: the whole of the first chip, so
+/// something is under the pointer's path at once.
+#[must_use]
+pub fn rail_initial() -> i32 {
+    RAIL_GAP + CELL
+}
+
+/// The surface size the host asks for while the apps rail is open: the output's whole width,
+/// because the rail runs from its centre to either edge and the mask makes the rest desktop, and
+/// the bar plus whatever band an open fan or name needs.
+#[must_use]
+pub fn rail_wanted_size(fan_cards: Option<usize>, tooltip: bool, full_width: i32) -> (i32, i32) {
     (
-        island_width(entries).max(fan).min(widest(full_width)),
-        BAR_HEIGHT + band,
+        full_width.max(1),
+        BAR_HEIGHT + band_above(fan_cards, tooltip),
     )
 }
 
@@ -580,48 +643,57 @@ impl BarScreen {
 
     fn layout(ui: &Ui<'_>, area: Rect, data: &BarData<'_>, open_fan: Option<usize>) -> Layout {
         let bar_height = ui.px(BAR_HEIGHT).min(area.h);
-        let bar = Rect::new(area.x, area.bottom() - bar_height, area.w, bar_height);
-        let chip_h = ui.px(CHIP_H).min(bar.h);
-        let chip_y = bar.y + (bar.h - chip_h) / 2;
+        let row = Rect::new(area.x, area.bottom() - bar_height, area.w, bar_height);
+        let chip_h = ui.px(CHIP_H).min(row.h);
+        let chip_y = row.y + (row.h - chip_h) / 2;
         let gap = ui.px(CHIP_GAP);
-
-        // The chips are centred *inside* the surface, not laid from its left edge. That matters
-        // because an open row makes the surface wider than the island, and the surface is centred
-        // on the output — so laying the chips from its left edge slid every one of them sideways
-        // the moment a row opened, out from under the pointer that opened it. The row would then
-        // close, the surface shrink, the chip come back, and the whole thing cycle. Centring the
-        // strip means a change of surface width moves nothing the pointer is on.
-        //
-        // Each chip is still clipped to whatever room is left rather than dropped: a half-width
-        // chip shows an icon. The machine's own chips are not here at all — they are the
-        // cluster's, on its own surface at the right-hand end of the screen.
-        let strip = ui.px(island_width(data.entries.len())).min(bar.w);
-        let origin = bar.x + ((bar.w - strip) / 2).max(0);
-        let limit = origin + strip - ui.px(CHIP_PAD);
-        let mut x = origin + ui.px(CHIP_PAD);
-        let mut chip = |width: i32| {
-            let rect = Rect::new(x, chip_y, width.min((limit - x).max(0)), chip_h);
-            x += width + gap;
-            rect
-        };
-        // Every entry is one square, active or not. A wide button carrying the active window's
-        // title is the Windows taskbar's signature, and it is also the redundancy this desktop
-        // spent a campaign removing: the window itself wears its name on its own tag, so a second
-        // copy of it down here says nothing new and costs 220 pixels of the switcher's room.
-        //
-        // When the surface is narrower than the chips, later cells used to clip to width 0 with
-        // no way to reach them. An overflow chip takes the last slot and opens the overview.
         let cell_w = ui.px(CELL);
-        let (shown, has_overflow) =
-            chip_slots(bar.w, data.entries.len(), cell_w, gap, ui.px(CHIP_PAD));
-        let cells: Vec<Rect> = data
-            .entries
-            .iter()
-            .take(shown)
-            .map(|_| chip(cell_w))
-            .collect();
-        let overflow = has_overflow.then(|| chip(cell_w));
-        let overflow_count = data.entries.len().saturating_sub(shown);
+
+        let (bar, cells, overflow, overflow_count, revealed) = if let Some(view) = data.rail {
+            Self::rail_cells(ui, area, row, view, data.entries.len(), chip_y, chip_h)
+        } else {
+            // The chips are centred *inside* the surface, not laid from its left edge. That
+            // matters because an open row makes the surface wider than the island, and the
+            // surface is centred on the output — so laying the chips from its left edge slid
+            // every one of them sideways the moment a row opened, out from under the pointer
+            // that opened it. The row would then close, the surface shrink, the chip come back,
+            // and the whole thing cycle. Centring the strip means a change of surface width moves
+            // nothing the pointer is on.
+            //
+            // Each chip is still clipped to whatever room is left rather than dropped: a
+            // half-width chip shows an icon. The machine's own chips are not here at all — they
+            // are the cluster's, on its own surface at the right-hand end of the screen.
+            let bar = row;
+            let strip = ui.px(island_width(data.entries.len())).min(bar.w);
+            let origin = bar.x + ((bar.w - strip) / 2).max(0);
+            let limit = origin + strip - ui.px(CHIP_PAD);
+            let mut x = origin + ui.px(CHIP_PAD);
+            let mut chip = |width: i32| {
+                let rect = Rect::new(x, chip_y, width.min((limit - x).max(0)), chip_h);
+                x += width + gap;
+                rect
+            };
+            // Every entry is one square, active or not. A wide button carrying the active
+            // window's title is the Windows taskbar's signature, and it is also the redundancy
+            // this desktop spent a campaign removing: the window itself wears its name on its own
+            // tag, so a second copy of it down here says nothing new and costs 220 pixels of the
+            // switcher's room.
+            //
+            // When the surface is narrower than the chips, later cells used to clip to width 0
+            // with no way to reach them. An overflow chip takes the last slot and opens the
+            // overview.
+            let (shown, has_overflow) =
+                chip_slots(bar.w, data.entries.len(), cell_w, gap, ui.px(CHIP_PAD));
+            let cells: Vec<Rect> = data
+                .entries
+                .iter()
+                .take(shown)
+                .map(|_| chip(cell_w))
+                .collect();
+            let overflow = has_overflow.then(|| chip(cell_w));
+            let overflow_count = data.entries.len().saturating_sub(shown);
+            (bar, cells, overflow, overflow_count, None)
+        };
 
         let fan =
             match open_fan.and_then(|index| Some((cells.get(index)?, data.entries.get(index)?))) {
@@ -650,13 +722,77 @@ impl BarScreen {
             overflow,
             overflow_count,
             fan,
+            revealed,
         }
+    }
+
+    /// The rail's chips: laid once from the origin outward toward the rail's side, entry 0
+    /// nearest the origin, so the first thing the pointer meets is the first thing in the list.
+    ///
+    /// Nothing here reads `view.revealed` except the returned interval: the chips are where they
+    /// are for the whole opening and the reveal only moves a clip over them. A chip that moved
+    /// with the pointer would be a target running away from the hand aiming at it.
+    #[allow(clippy::type_complexity)]
+    fn rail_cells(
+        ui: &Ui<'_>,
+        area: Rect,
+        row: Rect,
+        view: RailView,
+        entries: usize,
+        chip_y: i32,
+        chip_h: i32,
+    ) -> (Rect, Vec<Rect>, Option<Rect>, usize, Option<(i32, i32)>) {
+        let cell_w = ui.px(CELL);
+        let gap = ui.px(CHIP_GAP);
+        let origin = area.x + ui.px(view.origin);
+        let lead = ui.px(RAIL_GAP);
+        let clearance = ui.px(CORNER_CLEARANCE);
+        // The shorter of the two halves, so both rails of one output hold the same count and
+        // agree with `rail_length`, which only knows the output's width.
+        let room = (origin - lead - (area.x + clearance))
+            .min(area.right() - clearance - (origin + lead))
+            .max(0);
+        let (shown, has_overflow) = chip_slots(room, entries, cell_w, gap, 0);
+        let place = |slot: usize| {
+            let step = i32::try_from(slot).unwrap_or(0) * (cell_w + gap);
+            let x = match view.side {
+                RailSide::Right => origin + lead + step,
+                RailSide::Left => origin - lead - step - cell_w,
+            };
+            Rect::new(x, chip_y, cell_w, chip_h)
+        };
+        let cells: Vec<Rect> = (0..shown).map(place).collect();
+        let overflow = has_overflow.then(|| place(shown));
+        // The plate: the origin to the far end of the last chip and its margin. Nothing is
+        // painted on it; it is what a press between chips lands on.
+        let far = cells
+            .iter()
+            .chain(&overflow)
+            .fold(origin, |far, cell| match view.side {
+                RailSide::Right => far.max(cell.right() + ui.px(CHIP_PAD)),
+                RailSide::Left => far.min(cell.x - ui.px(CHIP_PAD)),
+            });
+        let bar = Rect::new(origin.min(far), row.y, (far - origin).abs(), row.h);
+        let revealed = view.physical_interval(area.x, |logical| ui.px(logical));
+        (
+            bar,
+            cells,
+            overflow,
+            entries.saturating_sub(shown),
+            Some(revealed),
+        )
     }
 
     fn update_hover(&mut self, ui: &Ui<'_>, layout: &Layout, data: &BarData<'_>) {
         let cursor = ui.input.cursor();
-        let over_cell =
-            cursor.and_then(|(x, y)| layout.cells.iter().position(|c| c.contains(x, y)));
+        // A cell the rail has not revealed yet is not there to the pointer either: a dwell on a
+        // chip nobody can see would open a fan out of nowhere.
+        let over_cell = cursor.and_then(|(x, y)| {
+            layout
+                .cells
+                .iter()
+                .position(|c| c.contains(x, y) && layout.live(*c))
+        });
         let over_fan = cursor.is_some_and(|(x, y)| layout.fan.iter().any(|r| r.contains(x, y)));
         match over_cell {
             Some(index) => {
@@ -751,7 +887,10 @@ impl BarScreen {
         // Presence first: while a window covers the strip the surface is a few pixels tall, and
         // nothing of the bar exists — no rectangle to paint, and none to hit-test either, so a
         // click at the bottom of a covering window can never activate a chip that is not there.
-        if self.update_presence(ui, area, data) == Presence::Hint {
+        //
+        // A rail has no presence at all: the host opened it on a gesture, and the host dismisses
+        // it. No hint, no covered strip, no collapse on the pointer leaving the surface.
+        if data.rail.is_none() && self.update_presence(ui, area, data) == Presence::Hint {
             self.draw_hint(ui, area);
             return actions;
         }
@@ -773,8 +912,21 @@ impl BarScreen {
         // chips read as sitting on Home rather than on a black block.
         let radius = ui.px(design::CHIP_RADIUS);
         self.opaque.clear();
-        self.opaque
-            .extend(layout.cells.iter().map(|cell| (*cell, radius)));
+        match layout.revealed {
+            // A rail's row is only as solid as it is revealed: the chips are all laid out, and
+            // the coverage is the curtain drawn over them. The overflow chip is part of the row.
+            Some(interval) => self.opaque.extend(rail::clipped_shapes(
+                layout
+                    .cells
+                    .iter()
+                    .chain(&layout.overflow)
+                    .map(|cell| (*cell, radius)),
+                interval,
+            )),
+            None => self
+                .opaque
+                .extend(layout.cells.iter().map(|cell| (*cell, radius))),
+        }
 
         // The fan next: it floats over whatever is above the bar and claims its clicks before
         // the bar's own cells can.
@@ -841,7 +993,8 @@ impl BarScreen {
         // The taskbar: one chip per entry, in the same colours the compositor gives that window's
         // own name tag, so the two read as the same object.
         for (index, (cell, entry)) in layout.cells.iter().zip(data.entries).enumerate() {
-            let hovered = ui.input.hovering(*cell) || self.open_fan == Some(index);
+            let live = layout.live(*cell);
+            let hovered = (live && ui.input.hovering(*cell)) || self.open_fan == Some(index);
             let (fill, ink) = match (entry.active, hovered) {
                 (true, _) => (design::accent_soft(), design::text()),
                 (false, true) => (design::accent(), design::TAG_INK),
@@ -928,7 +1081,7 @@ impl BarScreen {
                     accent,
                 );
             }
-            if ui.input.take_click(*cell) {
+            if live && ui.input.take_click(*cell) {
                 match templar_window::task::chip_action(&entry.unit) {
                     // Nothing to choose between. A chip whose windows are all parked is this case
                     // too: the click brings the most recent of them back, which is the only thing
@@ -968,7 +1121,7 @@ impl BarScreen {
                 design::TAG_INK,
                 Align::Centre,
             );
-            if ui.input.take_click(cell) {
+            if layout.live(cell) && ui.input.take_click(cell) {
                 actions.push(BarAction::Overview);
                 self.open_fan = None;
                 self.left_at = None;
@@ -1034,12 +1187,26 @@ impl BarScreen {
         // it, and the activated window is the one that should have it. Reachable only where the
         // input region is, which is the chips — so in practice this is a press that landed on a
         // chip's rounded corner.
-        if ui.input.take_click(layout.bar)
+        //
+        // On a rail the ground is the plate under the chips, and only as much of it as is shown.
+        let ground = match layout.revealed {
+            Some(interval) => rail::clip_to(layout.bar, interval),
+            None => Some(layout.bar),
+        };
+        if let Some(ground) = ground
+            && ui.input.take_click(ground)
             && let Some(window) = data.activated
         {
             actions.push(BarAction::Activate(window));
         }
         actions
+    }
+
+    /// Close the fan, the tooltip and the hover — everything the pointer opened. The host calls
+    /// it when a rail closes, so the next opening starts from bare chips rather than from a fan
+    /// left hanging off the last one.
+    pub fn reset(&mut self) {
+        self.collapse();
     }
 }
 
@@ -1097,6 +1264,8 @@ mod tests {
         now: u64,
         width: i32,
         height: i32,
+        /// Draw as a rail rather than the island.
+        rail: Option<RailView>,
     }
 
     impl Harness {
@@ -1115,6 +1284,7 @@ mod tests {
                 now: 0,
                 width: W,
                 height: BAR_HEIGHT,
+                rail: None,
             }
         }
 
@@ -1128,11 +1298,17 @@ mod tests {
         /// The surface the host would give the bar this frame — width included, exactly as
         /// `app.rs` computes it, so a test never clicks somewhere the real surface does not have.
         fn wanted(&self) -> (i32, i32) {
+            let entries = taskbar::entries(&self.toplevels);
+            let fan = self.screen.fan_cards(&entries);
+            let tooltip = self.screen.tooltip_open(self.now);
+            if self.rail.is_some() {
+                return rail_wanted_size(fan, tooltip, W);
+            }
             wanted_size(
                 self.screen.presence(self.covered),
-                self.screen.fan_cards(&taskbar::entries(&self.toplevels)),
-                self.screen.tooltip_open(self.now),
-                taskbar::entries(&self.toplevels).len(),
+                fan,
+                tooltip,
+                entries.len(),
                 W,
             )
         }
@@ -1168,6 +1344,7 @@ mod tests {
                 peeked: self.peeked,
                 home_revealed: false,
                 now_ms: self.now,
+                rail: self.rail,
             };
             let (width, height) = (self.width, self.height);
             let mut ui = Ui::new(
@@ -1212,6 +1389,7 @@ mod tests {
                 peeked: self.peeked,
                 home_revealed: false,
                 now_ms: self.now,
+                rail: self.rail,
             };
             let ui = Ui::new(
                 Painter::new(&mut self.buffer),
@@ -1973,6 +2151,127 @@ mod tests {
             Presence::Revealed,
             "it reveals now"
         );
+    }
+
+    /// Three applications, one window each, on a rail of this side revealed this far.
+    fn rail_harness(side: RailSide, revealed: i32) -> Harness {
+        let mut h = Harness::new(vec![
+            window(1, "org.example.Editor", "notes", true, false),
+            window(2, "org.example.Terminal", "~", false, false),
+            window(3, "org.example.Browser", "news", false, false),
+        ]);
+        h.rail = Some(RailView {
+            origin: W / 2,
+            side,
+            revealed,
+        });
+        h.width = W;
+        h
+    }
+
+    fn set_revealed(h: &mut Harness, revealed: i32) {
+        if let Some(view) = h.rail.as_mut() {
+            view.revealed = revealed;
+        }
+    }
+
+    #[test]
+    fn rail_chips_stay_put_while_the_reveal_grows() {
+        for side in [RailSide::Left, RailSide::Right] {
+            let mut h = rail_harness(side, 4);
+            let early = h.cells();
+            set_revealed(&mut h, rail_length(3, W));
+            assert_eq!(h.cells(), early, "{side:?}");
+            assert_eq!(early.len(), 3);
+        }
+    }
+
+    #[test]
+    fn rail_first_chip_sits_just_past_the_origin_on_its_side() {
+        let origin = W / 2;
+        let right = rail_harness(RailSide::Right, 0).cells();
+        assert_eq!(right[0].x, origin + RAIL_GAP);
+        assert!(right.windows(2).all(|pair| pair[1].x > pair[0].right()));
+        let left = rail_harness(RailSide::Left, 0).cells();
+        assert_eq!(left[0].right(), origin - RAIL_GAP);
+        assert!(left.windows(2).all(|pair| pair[1].right() < pair[0].x));
+    }
+
+    #[test]
+    fn rail_coverage_follows_the_reveal_and_ends_at_the_last_chip() {
+        for side in [RailSide::Left, RailSide::Right] {
+            let length = rail_length(3, W);
+            let mut h = rail_harness(side, 0);
+            let cells = h.cells();
+            let far = cells.last().unwrap();
+            // The length is exactly the last chip's far edge and a margin, from the origin.
+            let reach = match side {
+                RailSide::Right => far.right() + CHIP_PAD - W / 2,
+                RailSide::Left => W / 2 - (far.x - CHIP_PAD),
+            };
+            assert_eq!(reach, length, "{side:?}");
+            let mut last = 0;
+            for revealed in (0..=length + 40).step_by(10) {
+                set_revealed(&mut h, revealed);
+                h.frame();
+                let shapes = h.screen.opaque_shapes().to_vec();
+                let covered: i32 = shapes.iter().map(|(rect, _)| rect.w).sum();
+                assert!(covered >= last, "{side:?} shrank at {revealed}");
+                last = covered;
+                let (x0, x1) = RailView {
+                    origin: W / 2,
+                    side,
+                    revealed,
+                }
+                .interval();
+                for (rect, _) in &shapes {
+                    assert!(
+                        rect.x >= x0 && rect.right() <= x1,
+                        "{rect:?} outside {x0}..{x1}"
+                    );
+                    assert!(
+                        cells
+                            .iter()
+                            .any(|cell| cell.x <= rect.x && rect.right() <= cell.right())
+                    );
+                }
+            }
+            assert_eq!(
+                last,
+                cells.iter().map(|cell| cell.w).sum::<i32>(),
+                "{side:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rail_click_on_an_unrevealed_chip_does_nothing_until_it_is_revealed() {
+        let mut h = rail_harness(RailSide::Right, rail_initial());
+        let third = h.cells()[2];
+        let target = taskbar::entries(&h.toplevels)[2].most_recent().unwrap();
+        let (x, y) = Harness::centre(third);
+        let actions = h.click(x, y);
+        assert!(actions.is_empty(), "unrevealed chip answered: {actions:?}");
+        set_revealed(&mut h, rail_length(3, W));
+        let actions = h.click(x, y);
+        assert_eq!(actions, vec![BarAction::Activate(target)]);
+    }
+
+    #[test]
+    fn rail_ignores_covered_and_never_collapses_itself() {
+        let mut h = rail_harness(RailSide::Left, rail_length(3, W));
+        h.covered = true;
+        h.frame();
+        assert_eq!(h.screen.opaque_shapes().len(), 3, "no hint on a rail");
+        h.input.cursor_left();
+        h.now += 10 * HINT_CLOSE_MS;
+        h.frame();
+        assert_eq!(
+            h.screen.opaque_shapes().len(),
+            3,
+            "the host dismisses a rail"
+        );
+        assert_eq!(h.wanted(), (W, BAR_HEIGHT));
     }
 }
 

@@ -92,6 +92,8 @@ pub struct ChromeState {
     switcher_heading: CachedWidget,
     /// The two-pixel corner mark that says where Peek is (`peek_affordance`).
     peek: CachedWidget,
+    /// The four bars of the gesture gate's learning outline (`collect_gesture_gate`).
+    gate_outline: Vec<CachedWidget>,
     /// The four bars of one group's outline, kept against the member that draws them.
     outlines: HashMap<WindowId, Vec<CachedWidget>>,
 }
@@ -137,6 +139,7 @@ impl ChromeState {
             switcher_rows: HashMap::new(),
             switcher_heading: CachedWidget::new(),
             peek: CachedWidget::new(),
+            gate_outline: Vec::new(),
             outlines: HashMap::new(),
         }
     }
@@ -179,6 +182,9 @@ pub struct ChromeInputs<'a> {
     /// target, which is the whole visible difference between "moving a window over another" and
     /// "about to group them" (`src/input.rs`, planning doc §2 rule 6).
     pub drop_target: Option<WindowId>,
+    /// The bottom-centre gesture gate: whether Peek's mark is drawn at all, and the learning
+    /// outline (`src/gesture_gate.rs`).
+    pub gesture_gate: &'a crate::gesture_gate::GestureGate,
 }
 
 /// The window-independent chrome to draw over `output` this frame, front-to-back (index 0
@@ -278,6 +284,17 @@ pub fn collect_output_chrome(
     collect_peek_affordance(
         chrome,
         inputs.window_service,
+        inputs.gesture_gate,
+        output_rect,
+        local_rect,
+        output_scale,
+        renderer,
+        &mut elements,
+    );
+    collect_gesture_gate(
+        chrome,
+        inputs.window_service,
+        inputs.gesture_gate,
         output_rect,
         local_rect,
         output_scale,
@@ -319,18 +336,21 @@ fn screen_filled_by_a_window(
 /// anything at all. Drawn *only* then: on an ordinary desktop the island is right there, and a
 /// permanent mark under it would be furniture for a route nobody needs. It also goes while the
 /// window's own chrome is showing (that strip covers this corner) and while a peek is already up
-/// (the island is what is being reached for now, not the mark).
+/// (the island is what is being reached for now, not the mark). And never while the gesture gate
+/// is enabled: Peek itself is off then, and a mark for it would point at nothing.
 #[allow(clippy::too_many_arguments)]
 fn collect_peek_affordance(
     chrome: &mut ChromeState,
     window_service: &WindowService<DbusIdentityCache>,
+    gesture_gate: &crate::gesture_gate::GestureGate,
     output_rect: Rect,
     local_rect: Rect,
     output_scale: f64,
     renderer: &mut GlesRenderer,
     elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
 ) {
-    if window_service.covering_chrome().is_some()
+    if gesture_gate.config().enabled
+        || window_service.covering_chrome().is_some()
         || window_service.peek_output().is_some()
         || !screen_filled_by_a_window(window_service, output_rect)
     {
@@ -353,6 +373,82 @@ fn collect_peek_affordance(
         },
     ) {
         elements.push(element);
+    }
+}
+
+/// The gesture gate's outline, in learning mode only: one logical pixel just inside the gate on
+/// every output, faint while idle and in the focus accent while it is armed (or has a rail open)
+/// on this output — so what arms and what does not can be seen while the gesture is being
+/// learnt. Opaque like every chrome widget, so "faint" is a dim colour rather than alpha.
+#[allow(clippy::too_many_arguments)]
+fn collect_gesture_gate(
+    chrome: &mut ChromeState,
+    window_service: &WindowService<DbusIdentityCache>,
+    gesture_gate: &crate::gesture_gate::GestureGate,
+    output_rect: Rect,
+    local_rect: Rect,
+    output_scale: f64,
+    renderer: &mut GlesRenderer,
+    elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
+) {
+    let config = gesture_gate.config();
+    if !config.enabled || !config.learning {
+        chrome.gate_outline.clear();
+        return;
+    }
+    // The recognizer names outputs by their index in `WindowService::outputs`, which is also
+    // what the pointer paths feed it.
+    let this_output = window_service
+        .outputs()
+        .iter()
+        .position(|output| output.logical == output_rect);
+    let active = match gesture_gate.phase() {
+        crate::gesture_gate::Phase::Idle => None,
+        crate::gesture_gate::Phase::Armed { output, .. }
+        | crate::gesture_gate::Phase::Open { output, .. } => Some(output),
+    };
+    let colour = if active.is_some() && active == this_output {
+        paint::GESTURE_GATE_ARMED_COLOR
+    } else {
+        paint::GESTURE_GATE_COLOR
+    };
+    let area = gesture_gate.area(crate::gesture_gate::Area {
+        x: f64::from(local_rect.x),
+        y: f64::from(local_rect.y),
+        width: f64::from(local_rect.width),
+        height: f64::from(local_rect.height),
+    });
+    // `outline_bars` draws outside the rectangle it is given; shrinking it by the thickness puts
+    // the outline on the gate's own edge, the bottom one included, rather than off the screen.
+    let thickness = 1;
+    let inner = Rect::new(
+        area.x.round() as i32 + thickness,
+        area.y.round() as i32 + thickness,
+        area.width.round() as i32 - 2 * thickness,
+        area.height.round() as i32 - 2 * thickness,
+    );
+    if inner.width <= 0 || inner.height <= 0 {
+        return;
+    }
+    chrome.gate_outline.resize_with(4, CachedWidget::new);
+    for (widget, bar) in chrome
+        .gate_outline
+        .iter_mut()
+        .zip(layout::outline_bars(inner, thickness))
+    {
+        if let Some(element) = widget.ensure(
+            WidgetKey::new("gesture-gate", colour),
+            (bar.width, bar.height),
+            output_scale,
+            local_physical(bar, output_scale),
+            &mut chrome.scratch,
+            renderer,
+            move |painter, pixel_w, pixel_h| {
+                paint::group_outline_bar(painter, pixel_w, pixel_h, colour);
+            },
+        ) {
+            elements.push(element);
+        }
     }
 }
 

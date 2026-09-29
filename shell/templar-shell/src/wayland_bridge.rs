@@ -24,9 +24,10 @@
 //! system exists for): reading bytes off the socket is coordinated inside libwayland-client itself
 //! for every queue on a display, so whichever party reads first — in practice winit's own event
 //! loop, since it polls the fd continuously — distributes incoming messages to the right queue
-//! regardless of who created it. This module's queue is pumped once per frame
-//! ([`ShellBridge::pump`]) from [`crate::surface::app`]'s tick, which is enough: nothing here
-//! needs sub-frame latency.
+//! regardless of who created it. This module's queue is pumped from [`crate::surface::app`]'s
+//! `about_to_wait` ([`ShellBridge::pump`]), and [`ShellBridge::spawn_waker`] makes sure there is
+//! an `about_to_wait` whenever something arrives for it — winit would otherwise sleep through
+//! events that are not its own.
 //!
 //! Reconstructing the `wl_surface` itself needs one more unsafe call,
 //! `wayland_backend::client::ObjectId::from_ptr`, which validates the raw pointer's interface name
@@ -95,7 +96,7 @@ use templar_window::{
 /// group requests below check `self.manager.version()` and not `toplevel.version()` — against a
 /// version-4 compositor the latter also reads 4, which is `>= 3` and would happily send a request
 /// that compositor has never heard of.
-const SHELL_PROTOCOL_VERSION: u32 = 8;
+const SHELL_PROTOCOL_VERSION: u32 = 9;
 
 /// The manager version that carries `set_edge_alignment`. A version-5 compositor has never heard
 /// of it, so the shell asks only when the manager it actually bound is new enough — the same rule
@@ -109,11 +110,32 @@ const GROUP_SINCE: u32 = 5;
 /// `launcher_focus`, and `presentation` as a layer.
 const TASKFIELD_SINCE: u32 = 8;
 
+/// The manager version that carries gesture rails: `set_gesture_gate`, `close_rail`, `rail` and
+/// `rail_pointer`.
+const GESTURE_SINCE: u32 = 9;
+
+/// How many masked buffers one surface may hold. Two is the smallest pool in which the frame
+/// after one the compositor is still reading has a buffer to go to; more would only pay for a
+/// compositor that holds buffers for several frames, which this one does not.
+const MASKED_POOL: usize = 2;
+
+/// What [`ShellBridge::present_masked`] did with a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum PresentOutcome {
+    /// Attached and committed.
+    Submitted,
+    /// Every buffer of this surface's pool is still held by the compositor, so nothing was
+    /// written. The frame is still owed: retry once [`ShellBridge::can_present`] says so.
+    Deferred,
+}
+
 use crate::protocol::templar_shell_v1::{
     templar_shell_manager_v1::{self, TemplarShellManagerV1},
     templar_shell_toplevel_list_v1::{self, TemplarShellToplevelListV1},
     templar_shell_toplevel_v1::{self, TemplarShellToplevelV1},
 };
+use crate::surface::rail::RailSide;
 
 /// One toplevel as tracked from the wire, plus the object that lets the shell act on it.
 ///
@@ -342,6 +364,19 @@ pub struct BridgeState {
     /// Bumped on every toplevel or reveal event, so a host can redraw when the window list
     /// changed and only then, instead of on a timer.
     generation: u64,
+    /// `templar_shell_manager_v1.rail`'s last word (version 9): which opening, the output it is
+    /// on and the side the pointer went. `None` is no rail. The mapping of side to rail is the
+    /// shell's. The opening number tells a new rail from the one the shell just dismissed, whose
+    /// last `rail_pointer` can still arrive before the compositor's answering `rail`.
+    rail: Option<(u64, String, RailSide)>,
+    /// How many rails have opened on this connection; the source of the opening numbers.
+    rail_openings: u64,
+    /// `rail_pointer`'s latest position, output-local logical. Only the newest matters.
+    rail_pointer: Option<(f64, f64)>,
+    /// Bumped on every `rail` and `rail_pointer`, and deliberately *not* `generation`: pointer
+    /// progress along a rail is the rail host's business, and bumping the shared counter would
+    /// redraw Home, the bar and Taskfield on every motion.
+    rail_generation: u64,
     /// Window previews over the standard capture protocols (`crate::previews`).
     pub(crate) previews: crate::previews::PreviewState,
     /// `ext-session-lock-v1` (`crate::session_lock`): what actually locks the session.
@@ -717,6 +752,29 @@ impl Dispatch<TemplarShellManagerV1, ()> for BridgeState {
             templar_shell_manager_v1::Event::LauncherFocus => {
                 state.launcher_focus = state.launcher_focus.saturating_add(1);
             }
+            // Version 9: the gate opened a rail, or the open one closed. Kept apart from
+            // `generation` on purpose — see `rail_generation`.
+            templar_shell_manager_v1::Event::Rail { output, side } => {
+                let side = match side {
+                    WEnum::Value(templar_shell_manager_v1::RailSide::Left) => Some(RailSide::Left),
+                    WEnum::Value(templar_shell_manager_v1::RailSide::Right) => {
+                        Some(RailSide::Right)
+                    }
+                    _ => None,
+                };
+                // Either way the old position belongs to the old opening; a new one is followed
+                // at once by its own `rail_pointer`.
+                state.rail_pointer = None;
+                state.rail = side.map(|side| {
+                    state.rail_openings = state.rail_openings.wrapping_add(1);
+                    (state.rail_openings, output, side)
+                });
+                state.rail_generation = state.rail_generation.wrapping_add(1);
+            }
+            templar_shell_manager_v1::Event::RailPointer { x, y } => {
+                state.rail_pointer = Some((x, y));
+                state.rail_generation = state.rail_generation.wrapping_add(1);
+            }
         }
     }
 }
@@ -919,11 +977,11 @@ pub struct ShellBridge {
     queue: EventQueue<BridgeState>,
     manager: TemplarShellManagerV1,
     state: BridgeState,
-    /// The `Argb8888` buffer behind [`Self::present_masked`], one per surface, reused while its
-    /// size holds. Per surface rather than one shared: the bar and the cluster are never the same
-    /// size, so a single buffer meant every frame of either destroyed a `wl_buffer` still attached
-    /// to the other and allocated a fresh pool.
-    masked: HashMap<ObjectId, crate::previews::ShmBuffer>,
+    /// The `Argb8888` buffers behind [`Self::present_masked`], a small pool per surface, reused
+    /// while their size holds. Per surface rather than one shared: the bar and the cluster are
+    /// never the same size, so a shared buffer meant every frame of either destroyed a
+    /// `wl_buffer` still attached to the other and allocated a fresh pool.
+    masked: HashMap<ObjectId, Vec<crate::previews::ShmBuffer>>,
 }
 
 impl std::fmt::Debug for ShellBridge {
@@ -1057,11 +1115,77 @@ impl ShellBridge {
     }
 
     /// Process whatever has already arrived on this connection's own event queue, without
-    /// blocking. Call once per frame/tick; see the module doc for why that cadence is enough.
+    /// blocking. Called from every `about_to_wait`; [`Self::spawn_waker`] is what makes sure there
+    /// is one when something arrives.
     pub fn pump(&mut self) -> Result<()> {
         self.queue
             .dispatch_pending(&mut self.state)
             .context("dispatching the trusted-shell connection's event queue")?;
+        Ok(())
+    }
+
+    /// Wake the shell's event loop whenever events arrive for this connection's queue, by calling
+    /// `wake` from a thread of its own.
+    ///
+    /// winit's Wayland loop drops a wake-up that dispatched none of *its own* events when the
+    /// control flow is `Wait` — its "reduce spurious wake-ups" rule — so data for this second queue
+    /// on the shared socket is read into it and then sits there, undispatched, until something
+    /// else happens to wake the loop. A rail opening, the pointer travelling along it and a
+    /// buffer being released are exactly the events nothing else accompanies.
+    ///
+    /// The thread is a reader in libwayland's multi-reader protocol, not a second consumer of the
+    /// socket: it `prepare_read`s this connection's queue, waits for the fd, and `read`s, which is
+    /// coordinated with winit's own reader inside libwayland — neither can consume data the other
+    /// is waiting on. The events it reads are moved into this queue's buffer (thread-safe in
+    /// `wayland-client`) and dispatched on the main thread by [`Self::pump`], as before; the only
+    /// thing this thread adds is the wake. It blocks in `poll` with no timeout, so an idle
+    /// connection costs no wake-ups at all.
+    pub fn spawn_waker(&self, wake: impl Fn() + Send + 'static) -> Result<()> {
+        use std::os::fd::AsRawFd;
+        let connection = self.connection.clone();
+        std::thread::Builder::new()
+            .name("shell-bridge-waker".into())
+            .spawn(move || {
+                loop {
+                    let dispatched = if let Some(guard) = connection.prepare_read() {
+                        let mut fd = libc::pollfd {
+                            fd: guard.connection_fd().as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        };
+                        // SAFETY: one live `pollfd`, borrowed for the duration of the call; the
+                        // fd stays open because `guard` holds the connection.
+                        if unsafe { libc::poll(&raw mut fd, 1, -1) } < 0 {
+                            if std::io::Error::last_os_error().kind()
+                                == std::io::ErrorKind::Interrupted
+                            {
+                                continue;
+                            }
+                            break;
+                        }
+                        match guard.read() {
+                            Ok(count) => count,
+                            Err(wayland_backend::client::WaylandError::Io(error))
+                                if error.kind() == std::io::ErrorKind::WouldBlock =>
+                            {
+                                0
+                            }
+                            Err(_) => break,
+                        }
+                    } else {
+                        // Events already in the queue: hand them to the main thread's buffer.
+                        match connection.backend().dispatch_inner_queue() {
+                            Ok(count) => count,
+                            Err(_) => break,
+                        }
+                    };
+                    if dispatched > 0 {
+                        wake();
+                    }
+                }
+                tracing::warn!("the trusted-shell connection's waker stopped");
+            })
+            .context("starting the trusted-shell connection's waker")?;
         Ok(())
     }
 
@@ -1417,6 +1541,69 @@ impl ShellBridge {
         self.connection.flush().context("flushing set_idle_timeout")
     }
 
+    /// Configure the bottom-centre gesture gate (version 9). `enabled` false is the classic bar
+    /// and its peek; `exceptions` are canonical app ids under whose windows the gate never arms.
+    ///
+    /// Like [`Self::set_idle_timeout`], the shell is only the relay: the setting is sessiond's,
+    /// and recognition is the compositor's because it is the only process that always sees the
+    /// pointer.
+    pub fn set_gesture_gate(
+        &self,
+        enabled: bool,
+        width: u32,
+        height: u32,
+        learning: bool,
+        exceptions: &[String],
+    ) -> Result<()> {
+        if self.manager.version() < GESTURE_SINCE {
+            bail!("the compositor speaks templar_shell_v1 < 9, which has no set_gesture_gate");
+        }
+        self.manager.set_gesture_gate(
+            u32::from(enabled),
+            width,
+            height,
+            u32::from(learning),
+            exceptions.join("\n"),
+        );
+        self.connection.flush().context("flushing set_gesture_gate")
+    }
+
+    /// Dismiss the open rail (version 9). The compositor answers with `rail` naming no side;
+    /// the shell does not wait for it before tidying its own surface.
+    pub fn close_rail(&self) -> Result<()> {
+        if self.manager.version() < GESTURE_SINCE {
+            bail!("the compositor speaks templar_shell_v1 < 9, which has no close_rail");
+        }
+        self.manager.close_rail();
+        self.connection.flush().context("flushing close_rail")
+    }
+
+    /// Whether the compositor has gesture rails at all. An older one has no gate, so a shell set
+    /// to gesture mode against it keeps the classic bar rather than hiding it for good.
+    pub fn gestures_available(&self) -> bool {
+        self.manager.version() >= GESTURE_SINCE
+    }
+
+    /// The rail the compositor last said is open: which opening, its output and side. `None` is
+    /// none.
+    pub fn rail(&self) -> Option<(u64, &str, RailSide)> {
+        self.state
+            .rail
+            .as_ref()
+            .map(|(opening, output, side)| (*opening, output.as_str(), *side))
+    }
+
+    /// The pointer's latest output-local logical position while a rail is open.
+    pub fn rail_pointer(&self) -> Option<(f64, f64)> {
+        self.state.rail_pointer
+    }
+
+    /// A counter that moves on every `rail` and `rail_pointer`, and on nothing else — see
+    /// `BridgeState::rail_generation` for why it is not [`Self::generation`].
+    pub fn rail_generation(&self) -> u64 {
+        self.state.rail_generation
+    }
+
     /// Tell the compositor which application is the drop-down terminal (version 5): the
     /// canonical id of the selected `terminal` provider, or the empty string when none is.
     ///
@@ -1587,6 +1774,30 @@ impl ShellBridge {
             .and_then(|(_, tracked)| tracked.state.identifier.as_deref())
     }
 
+    /// Drop the masked buffers for `window`, if any. Called when the host destroys a surface so
+    /// the shm file/pool/buffer does not leak across repeated Taskfield/cluster windows.
+    pub fn forget_surface(&mut self, window: &winit::window::Window) {
+        let Ok(surface) = self.wrap_surface(window) else {
+            return;
+        };
+        for old in self.masked.remove(&surface.id()).unwrap_or_default() {
+            old.destroy();
+        }
+    }
+
+    /// Whether [`Self::present_masked`] on `window` would find a buffer it may write: one the
+    /// compositor has released, or room in the pool for another. A host whose last present was
+    /// [`PresentOutcome::Deferred`] asks this after every [`Self::pump`] and redraws once it
+    /// says yes — the release is the wake, not the next pointer motion, which may never come.
+    pub fn can_present(&self, window: &winit::window::Window) -> bool {
+        let Ok(surface) = self.wrap_surface(window) else {
+            return false;
+        };
+        self.masked.get(&surface.id()).is_none_or(|pool| {
+            pool.len() < MASKED_POOL || pool.iter().any(crate::previews::ShmBuffer::released)
+        })
+    }
+
     /// Attach an `Argb8888` buffer of `colour`, with its alpha taken from `coverage`, to
     /// `window`'s own surface, so a shell surface can be a shape rather than a rectangle.
     ///
@@ -1601,21 +1812,12 @@ impl ShellBridge {
     /// skip everything behind the surface, which is precisely the desktop the transparency is
     /// there to show.
     ///
-    // ponytail: one buffer, reused by size, attached without waiting for `wl_buffer.release` —
-    // the same simplification `session_lock` makes, and the same reason (one surface, one frame
-    // in flight, redrawn only when something changed). A double buffer is the upgrade if a
-    // frame ever tears.
-    /// Drop the masked buffer for `window`, if any. Called when the host destroys a surface so
-    /// the shm file/pool/buffer does not leak across repeated Taskfield/cluster windows.
-    pub fn forget_surface(&mut self, window: &winit::window::Window) {
-        let Ok(surface) = self.wrap_surface(window) else {
-            return;
-        };
-        if let Some(old) = self.masked.remove(&surface.id()) {
-            old.destroy();
-        }
-    }
-
+    /// Each surface has a pool of up to [`MASKED_POOL`] buffers, so the frame after one the
+    /// compositor still holds usually has somewhere to go. When every buffer is still held the
+    /// frame is not written — rewriting a held buffer is a protocol error and a torn frame — and
+    /// the answer is [`PresentOutcome::Deferred`], never a silent `Ok`: the caller must keep the
+    /// frame dirty and try again once [`Self::can_present`] says a buffer came back, because a
+    /// pointer that has stopped moving sends nothing else that would.
     pub fn present_masked(
         &mut self,
         window: &winit::window::Window,
@@ -1624,7 +1826,7 @@ impl ShellBridge {
         shapes: &[(i32, i32, i32, i32)],
         width: u32,
         height: u32,
-    ) -> Result<()> {
+    ) -> Result<PresentOutcome> {
         if width == 0 || height == 0 {
             bail!("a surface with no pixels");
         }
@@ -1636,44 +1838,47 @@ impl ShellBridge {
             .shm()
             .cloned()
             .ok_or_else(|| anyhow!("the compositor offers no wl_shm on this connection"))?;
-        let key = surface.id();
-        let reuse = self
-            .masked
-            .get(&key)
-            .is_some_and(|buffer| buffer.width == width && buffer.height == height);
-        if !reuse {
-            if let Some(old) = self.masked.remove(&key) {
+        let pool = self.masked.entry(surface.id()).or_default();
+        // A resize retires the whole pool. A held buffer of the old size is destroyed too: the
+        // surface is about to be given a new one, which is all the protocol asks of it.
+        if pool
+            .iter()
+            .any(|buffer| buffer.width != width || buffer.height != height)
+        {
+            for old in pool.drain(..) {
                 old.destroy();
             }
-            self.masked.insert(
-                key.clone(),
-                crate::previews::allocate(
-                    &shm,
-                    width,
-                    height,
-                    wayland_client::protocol::wl_shm::Format::Argb8888,
-                    &qh,
-                )
-                .context("allocating the masked surface buffer")?,
-            );
         }
-        let buffer = self.masked.get(&key).expect("allocated above");
-        if !buffer.released() {
-            // The compositor still holds the attached buffer; rewriting it is a protocol error
-            // and the frame would tear. Skip this present — the next one after `wl_buffer.release`
-            // will go out.
-            return Ok(());
-        }
+        let index = match pool.iter().position(crate::previews::ShmBuffer::released) {
+            Some(index) => index,
+            None if pool.len() < MASKED_POOL => {
+                pool.push(
+                    crate::previews::allocate(
+                        &shm,
+                        width,
+                        height,
+                        wayland_client::protocol::wl_shm::Format::Argb8888,
+                        &qh,
+                    )
+                    .context("allocating the masked surface buffer")?,
+                );
+                pool.len() - 1
+            }
+            None => return Ok(PresentOutcome::Deferred),
+        };
+        let buffer = &pool[index];
         buffer.mark_busy();
         buffer.write_masked(colour, coverage)?;
+        let wl_buffer = buffer.buffer.clone();
         surface.set_opaque_region(None);
         self.declare_input_region(&surface, &qh, shapes);
-        surface.attach(Some(&buffer.buffer), 0, 0);
+        surface.attach(Some(&wl_buffer), 0, 0);
         surface.damage_buffer(0, 0, width as i32, height as i32);
         surface.commit();
         self.connection
             .flush()
-            .context("flushing a masked surface frame")
+            .context("flushing a masked surface frame")?;
+        Ok(PresentOutcome::Submitted)
     }
 
     /// Say which parts of `window` take the pointer, on a frame that is not floating.

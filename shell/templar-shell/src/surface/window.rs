@@ -48,6 +48,10 @@ pub struct HostedWindow {
     pub buffer: WindowBuffer,
     pub scale: Scale,
     pub input: Input,
+    /// A masked present was deferred because every buffer was still held by the compositor
+    /// (`wayland_bridge::PresentOutcome::Deferred`). The frame is still owed: the host redraws
+    /// this window once the bridge reports a buffer released, whether or not any input arrives.
+    pub pending: bool,
 }
 
 impl std::fmt::Debug for HostedWindow {
@@ -70,6 +74,7 @@ impl HostedWindow {
             buffer: WindowBuffer::new(1, 1),
             scale,
             input: Input::new(),
+            pending: false,
         })
     }
 
@@ -179,6 +184,7 @@ pub fn modifiers_of(modifiers: winit::event::Modifiers) -> Modifiers {
         shift: state.shift_key(),
         control: state.control_key(),
         alt: state.alt_key(),
+        logo: state.super_key(),
     }
 }
 

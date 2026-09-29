@@ -164,6 +164,7 @@ pub fn modifiers_of(modifiers: winit::event::Modifiers) -> Modifiers {
         shift: state.shift_key(),
         control: state.control_key(),
         alt: state.alt_key(),
+        logo: state.super_key(),
     }
 }
 

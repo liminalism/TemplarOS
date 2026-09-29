@@ -942,6 +942,9 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             self.window_service.presentation(),
             templar_window::Presentation::Taskfield(_)
         );
+        // Escape closes an open rail and still goes wherever it was going: the rail takes no
+        // keyboard, so whatever has focus may well be waiting for this key too.
+        let mut escape_pressed = false;
         let action = keyboard.input::<Option<crate::keybindings::RecoveryAction>, _>(
             self,
             event.key_code(),
@@ -950,6 +953,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             time,
             |state, modifiers, handle| {
                 let keysym = handle.modified_sym();
+                escape_pressed = event.state() == smithay::backend::input::KeyState::Pressed
+                    && keysym.raw() == smithay::input::keyboard::keysyms::KEY_Escape;
                 // The switcher walks a list frozen for the length of the hold; this is where the
                 // release that ends it is seen. Read from the modifier state rather than matched
                 // by keysym, so either Alt (or either Super) ending the walk cannot be missed.
@@ -1011,6 +1016,10 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             self.reveal_home(reveal);
         }
 
+        if escape_pressed && self.rail.is_some() {
+            self.close_rail("escape");
+        }
+
         if let Some(Some(action)) = action {
             // Any reserved action other than another switcher step ends the walk;
             // `run_recovery_action` itself repopulates the ring and the HUD for a step.
@@ -1057,12 +1066,14 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             },
         );
 
-        let outputs: Vec<Rectangle<i32, Logical>> = self
-            .space
-            .outputs()
-            .filter_map(|output| self.space.output_geometry(output))
-            .collect();
-        let position = clamp_to_outputs(current + event.delta(), &outputs);
+        // Walked twice at most (once to test containment, once to find the nearest), and never
+        // collected: this runs for every relative motion report there is.
+        let space = &self.space;
+        let position = clamp_to_outputs(current + event.delta(), || {
+            space
+                .outputs()
+                .filter_map(|output| space.output_geometry(output))
+        });
         let under = self.surface_under(position);
         pointer.motion(
             self,
@@ -1076,6 +1087,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         pointer.frame(self);
         self.update_perimeter_cursor(to_templar_point(position));
         self.update_dwell(to_templar_point(position));
+        self.update_gesture_gate(current, position);
     }
 
     /// Apply one pressure-overlay keyboard step (`src/keybindings.rs::overlay_action`) — move the
@@ -1114,6 +1126,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer();
         let Some(pointer) = pointer else { return };
+        let previous = pointer.current_location();
         let under = self.surface_under(pos);
         pointer.motion(
             self,
@@ -1127,6 +1140,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         pointer.frame(self);
         self.update_perimeter_cursor(to_templar_point(pos));
         self.update_dwell(to_templar_point(pos));
+        self.update_gesture_gate(previous, pos);
     }
 
     fn on_pointer_button<I: InputBackend>(&mut self, event: &I::PointerButtonEvent) {
@@ -1136,6 +1150,16 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let serial = SERIAL_COUNTER.next_serial();
         let button = event.button_code();
         let button_state = event.state();
+
+        // A press on anything that is not the shell's ends an open rail — the person has moved on
+        // to something else. A press on the rail itself (or any shell surface) is the rail's to
+        // act on, and the shell decides whether that closes it. The press is delivered either way.
+        if button_state == ButtonState::Pressed
+            && self.rail.is_some()
+            && !self.press_lands_on_shell(pointer.current_location())
+        {
+            self.close_rail("press outside the shell");
+        }
 
         // Same modality as `on_keyboard`'s overlay branch: a click while the overlay is up picks
         // a button (or does nothing, on a miss) and is never forwarded to a client underneath.
@@ -1355,8 +1379,13 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         // A peek ends the moment the pointer walks away from it — no dwell on the way out, the
         // same asymmetry the shell's own reveal has. A *reveal* of Home does not end here: it is
         // a deliberate act, and `WindowService::set_home_revealed` (a click, `Super+H`, a window
-        // being activated) is what decides when Home goes away again.
+        // being activated) is what decides when Home goes away again. Nor does the peek an open
+        // rail holds: that one lasts exactly as long as the rail (`close_rail`).
         if let Some(peeked) = self.window_service.peek_output().map(str::to_owned)
+            && self
+                .rail
+                .as_ref()
+                .is_none_or(|(output, _)| *output != peeked)
             && !self.holding_peek(&peeked, pos)
         {
             self.dwell = None;
@@ -1541,6 +1570,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             }
             return covering.map(DwellIntent::CoveringChrome);
         }
+        // Gesture rails replace Peek outright: two activators for the same surfaces would open
+        // and close them over each other (`src/gesture_gate.rs`). The corners above stay.
+        if self.gesture_gate.config().enabled {
+            return None;
+        }
         // The strip a covering window's chrome puts on screen is `TAG_HEIGHT` tall and the peek
         // band is its bottom ten pixels, so without this, resting on the close tag long enough to
         // aim at it opens the switcher underneath the thing being aimed at.
@@ -1614,6 +1648,156 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 && self.window_service.is_visible(window.id)
                 && rect_contains(window.geometry, pos)
         })
+    }
+
+    /// Feed the gesture gate one motion segment (`src/gesture_gate.rs`) — `from` and `to` are the
+    /// pointer before and after the report, global logical — and, while a rail is open, tell the
+    /// shell where the pointer went instead. Both motion paths call this after `update_dwell`.
+    ///
+    /// The gate is fed on the output under `to`, in that output's own rectangle, so leaving the
+    /// output an arm started on is seen as the output changing.
+    fn update_gesture_gate(&mut self, from: Point<f64, Logical>, to: Point<f64, Logical>) {
+        if self.rail.is_some() {
+            self.send_rail_pointer(to);
+            return;
+        }
+        // Nothing arms under the lock, the window overview or the pressure overlay: each owns the
+        // pointer outright, and a rail opening under one would be a menu nobody can see.
+        if !self.gesture_gate.config().enabled
+            || self.session_lock.locked
+            || self.recovery_protocol.pressure_overlay.is_some()
+            || matches!(
+                self.window_service.presentation(),
+                templar_window::Presentation::Taskfield(_)
+            )
+        {
+            return;
+        }
+        let point = to_templar_point(to);
+        let Some((index, screen)) = self
+            .window_service
+            .outputs()
+            .iter()
+            .enumerate()
+            .find(|(_, output)| rect_contains(output.logical, point))
+            .map(|(index, output)| (index, output.logical))
+        else {
+            return;
+        };
+        let sample = crate::gesture_gate::Sample {
+            output: index,
+            screen: crate::gesture_gate::Area {
+                x: f64::from(screen.x),
+                y: f64::from(screen.y),
+                width: f64::from(screen.width),
+                height: f64::from(screen.height),
+            },
+            from: crate::gesture_gate::Pos {
+                x: from.x,
+                y: from.y,
+            },
+            to: crate::gesture_gate::Pos { x: to.x, y: to.y },
+            now_ms: crate::window_bridge::now_monotonic_ns(&self.clock) / 1_000_000,
+            // `is_grabbed` covers a held button (smithay's click grab) as well as our own move
+            // and resize grabs — the same "a drag is not a request" rule `update_dwell` uses.
+            button_held: self.pointer_gesture_active(),
+        };
+        let window_service = &self.window_service;
+        let Some(transition) = self.gesture_gate.feed(sample, |config| {
+            !under_gate_exception(window_service, config, point)
+        }) else {
+            return;
+        };
+        match transition {
+            crate::gesture_gate::Transition::Armed => {
+                tracing::debug!(output = index, x = to.x, y = to.y, "gesture gate armed");
+            }
+            crate::gesture_gate::Transition::Disarmed(reason) => {
+                tracing::debug!(?reason, "gesture gate disarmed");
+            }
+            crate::gesture_gate::Transition::Opened(side) => {
+                let output = self.window_service.outputs()[index].name.clone();
+                tracing::debug!(%output, ?side, "gesture gate opened a rail");
+                self.open_rail(output, side, to);
+            }
+        }
+        // The learning outline brightens while armed; nothing else on screen changed, so a
+        // damage-driven backend has to be asked for the frame.
+        if self.gesture_gate.config().learning {
+            B::request_redraw(self);
+        }
+    }
+
+    /// The gate opened `side` on `output`: peek that output (which raises the shell's overlay over
+    /// a fullscreen window) and tell the shell, then where the pointer is.
+    fn open_rail(
+        &mut self,
+        output: String,
+        side: crate::gesture_gate::Side,
+        pointer: Point<f64, Logical>,
+    ) {
+        self.rail = Some((output.clone(), side));
+        if self.window_service.set_peek_output(Some(output)) {
+            crate::space_sync::sync_after_change(self);
+        }
+        crate::protocols_shell::send_rail(self);
+        self.send_rail_pointer(pointer);
+    }
+
+    /// `rail_pointer`, in the rail's output's own coordinates. An output that has gone away takes
+    /// its rail with it.
+    fn send_rail_pointer(&mut self, pointer: Point<f64, Logical>) {
+        let Some((name, _)) = &self.rail else {
+            return;
+        };
+        let Some(origin) = self
+            .window_service
+            .outputs()
+            .iter()
+            .find(|output| output.name == *name)
+            .map(|output| (output.logical.x, output.logical.y))
+        else {
+            self.close_rail("output gone");
+            return;
+        };
+        crate::protocols_shell::send_rail_pointer(
+            self,
+            pointer.x - f64::from(origin.0),
+            pointer.y - f64::from(origin.1),
+        );
+    }
+
+    /// End the rail, whoever ended it — the shell's `close_rail`, a press on anything not the
+    /// shell's, Escape, the session locking, Taskfield opening, the gate being disabled, the shell
+    /// going away. The one close path, so every one of them lowers the rail's peek, tells the shell
+    /// (`rail` with no side) and leaves the gate needing a fresh approach from above. Also drops
+    /// a pending arm, so it is safe to call with no rail open.
+    pub(crate) fn close_rail(&mut self, reason: &'static str) {
+        let was_armed = self.gesture_gate.phase() != crate::gesture_gate::Phase::Idle;
+        self.gesture_gate.close();
+        let Some((output, side)) = self.rail.take() else {
+            if was_armed && self.gesture_gate.config().learning {
+                B::request_redraw(self);
+            }
+            return;
+        };
+        tracing::debug!(reason, %output, ?side, "rail closed");
+        if self.window_service.peek_output() == Some(output.as_str())
+            && self.window_service.set_peek_output(None)
+        {
+            crate::space_sync::sync_after_change(self);
+        }
+        crate::protocols_shell::send_rail(self);
+        if self.gesture_gate.config().learning {
+            B::request_redraw(self);
+        }
+    }
+
+    /// Whether a press at `location` lands on one of the trusted shell's surfaces.
+    fn press_lands_on_shell(&self, location: Point<f64, Logical>) -> bool {
+        self.surface_under(location)
+            .and_then(|(surface, _)| self.display_handle.get_client(surface.id()).ok())
+            .is_some_and(|client| crate::state::client_is_trusted_shell(&client))
     }
 
     /// Show `shape` (a `cursor-spec` name) as the compositor's own cursor, or `None` to give the
@@ -1977,18 +2161,17 @@ fn log_input_device<I: InputBackend>(event: &str, device: &I::Device) {
 }
 
 /// Keep a relative pointer on the nearest real output, including negative-origin layouts.
-fn clamp_to_outputs(
+///
+/// `outputs` yields the output rectangles afresh each call, so the caller can walk its own
+/// geometry twice without collecting it.
+fn clamp_to_outputs<I: Iterator<Item = Rectangle<i32, Logical>>>(
     position: Point<f64, Logical>,
-    outputs: &[Rectangle<i32, Logical>],
+    outputs: impl Fn() -> I,
 ) -> Point<f64, Logical> {
-    if outputs
-        .iter()
-        .any(|geometry| geometry.to_f64().contains(position))
-    {
+    if outputs().any(|geometry| geometry.to_f64().contains(position)) {
         return position;
     }
-    outputs
-        .iter()
+    outputs()
         .map(|geometry| {
             let left = f64::from(geometry.loc.x);
             let top = f64::from(geometry.loc.y);
@@ -2006,6 +2189,27 @@ fn clamp_to_outputs(
 
 fn rect_contains(rect: templar_window::Rect, point: TemplarPoint) -> bool {
     point.x >= rect.x && point.x < rect.right() && point.y >= rect.y && point.y < rect.bottom()
+}
+
+/// Whether the gate must not arm at `point` because the topmost visible client window there is
+/// one of the configured exceptions. The *resolved* identity, as `keybindings::terminal_window`
+/// reads it: what a client calls itself does not get it out of — or into — the list.
+fn under_gate_exception(
+    window_service: &templar_window::WindowService<templar_comp_integration::DbusIdentityCache>,
+    config: &crate::gesture_gate::GateConfig,
+    point: TemplarPoint,
+) -> bool {
+    if config.exceptions.is_empty() {
+        return false;
+    }
+    window_service
+        .stacking_order()
+        .into_iter()
+        .filter(|id| window_service.is_client_window(*id) && window_service.is_visible(*id))
+        .filter_map(|id| window_service.window(id))
+        .find(|window| rect_contains(window.geometry, point))
+        .and_then(|window| window.identity.app_id.as_ref())
+        .is_some_and(|app_id| config.is_exception(app_id.as_str()))
 }
 
 /// The side of each of the three corner squares an output reserves, in logical pixels: Home at the
@@ -2763,20 +2967,24 @@ mod tests {
         assert_eq!(press_target_at(&[], at(10, 10)), PressTarget::Nothing);
     }
 
+    fn clamp(
+        position: Point<f64, Logical>,
+        outputs: &[Rectangle<i32, Logical>],
+    ) -> Point<f64, Logical> {
+        clamp_to_outputs(position, || outputs.iter().copied())
+    }
+
     #[test]
     fn relative_pointer_positions_inside_an_output_are_unchanged() {
         let position = Point::from((42.5, 18.25));
-        assert_eq!(
-            clamp_to_outputs(position, &[output(0, 0, 100, 100)]),
-            position
-        );
+        assert_eq!(clamp(position, &[output(0, 0, 100, 100)]), position);
     }
 
     #[test]
     fn relative_pointer_clamping_handles_negative_origin_outputs() {
         let outputs = [output(-200, -100, 100, 100), output(0, 0, 100, 100)];
         assert_eq!(
-            clamp_to_outputs(Point::from((-250.0, -50.0)), &outputs),
+            clamp(Point::from((-250.0, -50.0)), &outputs),
             Point::from((-200.0, -50.0))
         );
     }
@@ -2785,7 +2993,7 @@ mod tests {
     fn relative_pointer_clamping_chooses_the_nearest_output_across_a_gap() {
         let outputs = [output(0, 0, 100, 100), output(200, 0, 100, 100)];
         assert_eq!(
-            clamp_to_outputs(Point::from((180.0, 50.0)), &outputs),
+            clamp(Point::from((180.0, 50.0)), &outputs),
             Point::from((200.0, 50.0))
         );
     }
@@ -2793,6 +3001,6 @@ mod tests {
     #[test]
     fn no_outputs_leaves_the_relative_pointer_position_unchanged() {
         let position = Point::from((-12.0, 300.0));
-        assert_eq!(clamp_to_outputs(position, &[]), position);
+        assert_eq!(clamp(position, &[]), position);
     }
 }

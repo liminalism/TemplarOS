@@ -159,6 +159,7 @@ pub fn baseline_schema() -> SettingsSchema {
     add_appearance_specs(&mut schema);
     add_home_field_specs(&mut schema);
     add_home_garden_specs(&mut schema);
+    add_rails_specs(&mut schema);
     schema.add(SettingSpec {
         key: "shell.launcher.recent-apps".into(),
         description: "Recently launched applications, newest first, shown under Home's search"
@@ -380,6 +381,74 @@ fn add_home_garden_specs(schema: &mut SettingsSchema) {
     }
 }
 
+/// The gesture rails' keys (`shell.rails.*`): read by `templar-shell` for what the rails show and
+/// by the compositor for where the gate is, so both agree on one box without a second protocol.
+fn add_rails_specs(schema: &mut SettingsSchema) {
+    for (key, description, default, choices, min, max) in [
+        (
+            "shell.rails.mode",
+            "`gesture` keeps the screen clear until the bottom-centre gesture reveals the rails; \
+             `bar` keeps the classic island bar and cluster always on screen",
+            SettingValue::Choice("gesture".into()),
+            vec!["gesture".into(), "bar".into()],
+            None,
+            None,
+        ),
+        (
+            "shell.rails.swap",
+            "Running apps on the right rail and system icons on the left, instead of the reverse",
+            SettingValue::Bool(false),
+            vec![],
+            None,
+            None,
+        ),
+        (
+            "shell.rails.gate-width",
+            "Width, in logical pixels, of the invisible box at the bottom centre that the reveal \
+             gesture starts in",
+            SettingValue::Int(240),
+            vec![],
+            Some(120),
+            Some(800),
+        ),
+        (
+            "shell.rails.gate-height",
+            "Height, in logical pixels, of that box, measured up from the bottom edge",
+            SettingValue::Int(96),
+            vec![],
+            Some(40),
+            Some(300),
+        ),
+        (
+            "shell.rails.learning",
+            "Outline the gate on screen, so a person can learn where the gesture starts",
+            SettingValue::Bool(false),
+            vec![],
+            None,
+            None,
+        ),
+        (
+            "shell.rails.exceptions",
+            "Application ids under whose windows the gate never arms, for apps that use the \
+             bottom edge themselves",
+            SettingValue::StrList(Vec::new()),
+            vec![],
+            None,
+            None,
+        ),
+    ] {
+        schema.add(SettingSpec {
+            key: key.into(),
+            description: description.into(),
+            default,
+            choices,
+            min,
+            max,
+            privileged: false,
+        });
+    }
+}
+
 /// Values that override the schema's defaults; absent keys fall back to `spec.default`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SettingsValues(BTreeMap<String, SettingValue>);
@@ -578,6 +647,57 @@ mod tests {
             ),
             Ok(())
         );
+    }
+
+    /// The rails' keys are read by two processes (shell and compositor) that each fall back to
+    /// the default on a value they cannot use, so the schema is what keeps a stored value usable.
+    #[test]
+    fn rails_keys_default_to_the_gesture_and_bound_the_gate() {
+        let schema = baseline_schema();
+        let values = SettingsValues::default();
+        for (key, default) in [
+            ("shell.rails.mode", SettingValue::Choice("gesture".into())),
+            ("shell.rails.swap", SettingValue::Bool(false)),
+            ("shell.rails.gate-width", SettingValue::Int(240)),
+            ("shell.rails.gate-height", SettingValue::Int(96)),
+            ("shell.rails.learning", SettingValue::Bool(false)),
+            ("shell.rails.exceptions", SettingValue::StrList(Vec::new())),
+        ] {
+            assert_eq!(
+                values.effective(&schema, key),
+                Some(default.clone()),
+                "{key}"
+            );
+            assert_eq!(schema.validate(key, &default), Ok(()), "{key} default");
+        }
+        assert_eq!(
+            schema.validate("shell.rails.mode", &SettingValue::Choice("bar".into())),
+            Ok(())
+        );
+        assert!(matches!(
+            schema.validate("shell.rails.mode", &SettingValue::Choice("hidden".into())),
+            Err(SettingError::InvalidChoice { .. })
+        ));
+        for (key, min, max) in [
+            ("shell.rails.gate-width", 120, 800),
+            ("shell.rails.gate-height", 40, 300),
+        ] {
+            assert_eq!(schema.validate(key, &SettingValue::Int(min)), Ok(()));
+            assert_eq!(schema.validate(key, &SettingValue::Int(max)), Ok(()));
+            for outside in [min - 1, max + 1] {
+                assert!(
+                    matches!(
+                        schema.validate(key, &SettingValue::Int(outside)),
+                        Err(SettingError::OutOfRange { .. })
+                    ),
+                    "{key} accepted {outside}"
+                );
+            }
+        }
+        assert!(matches!(
+            schema.validate("shell.rails.exceptions", &SettingValue::Str("org.a".into())),
+            Err(SettingError::WrongType { .. })
+        ));
     }
 
     #[test]

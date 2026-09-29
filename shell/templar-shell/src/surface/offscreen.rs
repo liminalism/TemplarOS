@@ -179,45 +179,7 @@ pub(super) fn bar_frame(
         BarData, BarScreen, HINT_OPEN_MS, HOVER_OPEN_MS, Presence, wanted_size,
     };
 
-    // Built from toplevels rather than from `Entry` literals: `taskbar::entries` is a projection
-    // of `templar_window::task::units`, so a fixture that hand-wrote the entries would be drawing
-    // a grouping the running shell cannot produce.
-    let toplevel = |id: u64, app: &str, title: &str, group: Option<(u64, &str, u32)>| {
-        templar_window::ShellToplevel {
-            window_id: templar_window::WindowId(id),
-            canonical_app_id: Some(app.parse().expect("a fixture's app id")),
-            instance_id: None,
-            title: title.to_owned(),
-            verified_identity: true,
-            activated: id == 1,
-            mru_rank: u32::try_from(id).unwrap_or(u32::MAX),
-            fullscreen: false,
-            // A parked window exists only on the bar now that Home holds no window tiles.
-            shelved: id == 4,
-            maximized: false,
-            geometry: templar_window::Rect::new(0, 0, 800, 600),
-            layer: templar_window::Layer::Normal,
-            group: group.map(|(group_id, name, accent)| templar_window::GroupInfo {
-                group_id,
-                name: name.to_owned(),
-                accent,
-            }),
-        }
-    };
-    let group = Some((7, "Notes and sources", 0x00e0_7b39));
-    let entries = crate::taskbar::entries(&[
-        toplevel(1, "org.templaros.Notes", "Notes", group),
-        toplevel(2, "org.templaros.Notes", "Sources", group),
-        // A terminal whose title is a path: the case that put a chip reading "/" on the bar. The
-        // chip is named for the application now, so the path is only ever on the fan.
-        toplevel(
-            3,
-            "desktop-import.kitty.desktop",
-            "/mnt/Samsung980_1TB/Rust-projects/TemplarOS",
-            None,
-        ),
-        toplevel(4, "org.templaros.Settings", "Appearance", None),
-    ]);
+    let entries = crate::taskbar::entries(&fixture_toplevels());
     let logical = wanted_size(
         presence,
         open_fan.then(|| entries[0].visible()),
@@ -250,6 +212,7 @@ pub(super) fn bar_frame(
         peeked: false,
         home_revealed: false,
         now_ms: 0,
+        rail: None,
     };
     // Open: the pointer over the last chip, so one entry is drawn hovered. The dwell has not
     // elapsed (`now_ms` is 0), so no row opens and the strip stays its resting height.
@@ -307,6 +270,179 @@ pub(super) fn bar_frame(
     };
     paint(&mut buffer, &mut input, &now);
     buffer
+}
+
+/// The windows every bar fixture draws: a group of two (active, one with a capture), a terminal
+/// whose title is a path, and a parked window.
+///
+/// Built from toplevels rather than from `Entry` literals: `taskbar::entries` is a projection of
+/// `templar_window::task::units`, so a fixture that hand-wrote the entries would be drawing a
+/// grouping the running shell cannot produce.
+fn fixture_toplevels() -> Vec<templar_window::ShellToplevel> {
+    let toplevel = |id: u64, app: &str, title: &str, group: Option<(u64, &str, u32)>| {
+        templar_window::ShellToplevel {
+            window_id: templar_window::WindowId(id),
+            canonical_app_id: Some(app.parse().expect("a fixture's app id")),
+            instance_id: None,
+            title: title.to_owned(),
+            verified_identity: true,
+            activated: id == 1,
+            mru_rank: u32::try_from(id).unwrap_or(u32::MAX),
+            fullscreen: false,
+            // A parked window exists only on the bar now that Home holds no window tiles.
+            shelved: id == 4,
+            maximized: false,
+            geometry: templar_window::Rect::new(0, 0, 800, 600),
+            layer: templar_window::Layer::Normal,
+            group: group.map(|(group_id, name, accent)| templar_window::GroupInfo {
+                group_id,
+                name: name.to_owned(),
+                accent,
+            }),
+        }
+    };
+    let group = Some((7, "Notes and sources", 0x00e0_7b39));
+    vec![
+        toplevel(1, "org.templaros.Notes", "Notes", group),
+        toplevel(2, "org.templaros.Notes", "Sources", group),
+        // A terminal whose title is a path: the case that put a chip reading "/" on the bar. The
+        // chip is named for the application now, so the path is only ever on the fan.
+        toplevel(
+            3,
+            "desktop-import.kitty.desktop",
+            "/mnt/Samsung980_1TB/Rust-projects/TemplarOS",
+            None,
+        ),
+        toplevel(4, "org.templaros.Settings", "Appearance", None),
+    ]
+}
+
+/// The output width the rail renders assume, in logical pixels.
+const RAIL_OUTPUT_WIDTH: i32 = 1920;
+
+/// Render both gesture rails half and fully revealed, as the compositor would show them: the
+/// apps rail running left from the centre and the system rail running right, on a 1920-pixel
+/// output at scale 1, with the surface's mask as the PNG's alpha so whatever the rail has not
+/// revealed is transparent. Writes `PATH-apps-half.png`, `PATH-apps-full.png`,
+/// `PATH-system-half.png` and `PATH-system-full.png`, and returns their paths.
+///
+/// The rails are the one surface whose look depends on the pointer's path, so an image of each
+/// end of that path is the review a person can do without making the gesture.
+pub fn render_rails(path: &Path) -> Result<Vec<std::path::PathBuf>> {
+    use crate::surface::rail::{RailSide, RailView};
+    use crate::surface::{bar_screen, cluster_screen};
+
+    let width = RAIL_OUTPUT_WIDTH;
+    let origin = width / 2;
+    let entries = crate::taskbar::entries(&fixture_toplevels());
+    let icons = HashMap::new();
+    let previews = HashMap::new();
+    let machine = crate::data::MachineReadings::default();
+    let mut text = pixelkit_text::TextCache::new(fonts::set());
+    let mut kernel = RasterKernel::new();
+    let mut written = Vec::new();
+
+    for (name, length) in [
+        ("apps", bar_screen::rail_length(entries.len(), width)),
+        ("system", cluster_screen::rail_length()),
+    ] {
+        for (extent, revealed) in [("half", length / 2), ("full", length)] {
+            let (w, h) = (width, bar_screen::BAR_HEIGHT);
+            let area = Rect::new(0, 0, w, h);
+            let mut buffer = WindowBuffer::new(w as u32, h as u32);
+            let mut input = Input::new();
+            let mut ui = Ui::new(
+                Painter::new(&mut buffer),
+                &mut text,
+                &mut input,
+                design::theme(),
+                Scale::ONE,
+                &mut kernel,
+            );
+            let shapes = if name == "apps" {
+                let rail = RailView {
+                    origin,
+                    side: RailSide::Left,
+                    revealed,
+                };
+                let mut screen = bar_screen::BarScreen::default();
+                let data = bar_screen::BarData {
+                    entries: &entries,
+                    icons: &icons,
+                    previews: &previews,
+                    activated: Some(templar_window::WindowId(1)),
+                    covered: false,
+                    peeked: false,
+                    home_revealed: false,
+                    now_ms: 0,
+                    rail: Some(rail),
+                };
+                screen.draw(&mut ui, area, &data);
+                screen.opaque_shapes().to_vec()
+            } else {
+                let rail = RailView {
+                    origin,
+                    side: RailSide::Right,
+                    revealed,
+                };
+                let mut screen = cluster_screen::ClusterScreen::default();
+                let data = cluster_screen::ClusterData {
+                    // A fixed clock, as the bar baseline has: an image that changes every minute
+                    // is not one anybody can compare.
+                    clock_label: "Mon 28 Sep 10:00",
+                    network_control_available: true,
+                    calendar_available: true,
+                    account_label: "templar",
+                    machine: &machine,
+                    now_ms: 0,
+                    rail: Some(rail),
+                };
+                screen.draw(&mut ui, area, &data);
+                screen.opaque_shapes().to_vec()
+            };
+            drop(ui);
+            let mut mask = WindowBuffer::new(w as u32, h as u32);
+            let mut painter = Painter::new(&mut mask);
+            for (rect, radius) in &shapes {
+                painter.fill_rounded_rect_aa(
+                    &mut kernel,
+                    *rect,
+                    *radius as f32,
+                    0x00ff_ffff,
+                    u8::MAX,
+                );
+            }
+            drop(painter);
+            let out = std::path::PathBuf::from(format!("{}-{name}-{extent}.png", path.display()));
+            write_png_masked(&out, &buffer, &mask)
+                .with_context(|| format!("writing {}", out.display()))?;
+            written.push(out);
+        }
+    }
+    Ok(written)
+}
+
+/// Like [`write_png`], with `mask`'s coverage (any channel of it; the host paints it white) as
+/// each pixel's alpha — what the compositor blends, rather than the opaque fallback.
+fn write_png_masked(path: &Path, buffer: &WindowBuffer, mask: &WindowBuffer) -> Result<()> {
+    let mut rgba = Vec::with_capacity(buffer.pixels.len() * 4);
+    for (pixel, coverage) in buffer.pixels.iter().zip(&mask.pixels) {
+        rgba.extend_from_slice(&[
+            (pixel >> 16) as u8,
+            (pixel >> 8) as u8,
+            *pixel as u8,
+            *coverage as u8,
+        ]);
+    }
+    let file = std::fs::File::create(path)?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), buffer.width, buffer.height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()?
+        .write_image_data(&rgba)
+        .context("encoding a rail as PNG")?;
+    Ok(())
 }
 
 /// A stand-in for a captured window: a gradient, so a preview in a render is unmistakably a

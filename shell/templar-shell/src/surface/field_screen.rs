@@ -5437,9 +5437,8 @@ mod tests {
     fn a_modified_letter_is_a_chord_and_never_opens_the_search() {
         let mut h = Harness::new();
         h.input.modifiers_changed(pixelkit_shell::Modifiers {
-            shift: false,
             control: true,
-            alt: false,
+            ..pixelkit_shell::Modifiers::default()
         });
         h.key(KeyInput::Character('c'));
         assert!(!h.screen.search_focused);

@@ -32,15 +32,17 @@ use crate::files_surface::FilesLocation;
 use crate::home_surface::Drawer;
 use crate::icons::{self, SystemIconRoots};
 use crate::omnibox::Scope;
-use crate::settings::{self, HomeFieldSettings, PreviewMode};
+use crate::settings::{self, HomeFieldSettings, PreviewMode, RailSettings};
 use crate::surface::design;
 use crate::surface::field_screen::{FieldAction, FieldData, FieldScreen};
 use crate::surface::file_browser::{FileBrowserData, FileRequest, FileVerb};
 use crate::surface::fonts;
+use crate::surface::rail::{RailReveal, RailSide, action_keeps_rail_open};
+use crate::surface::rail_session::RailSession;
 use crate::surface::window::{
     HostedWindow, key_pressed, modifiers_of, scroll_pixels, translate_button, translate_keys,
 };
-use crate::wayland_bridge::ShellBridge;
+use crate::wayland_bridge::{PresentOutcome, ShellBridge};
 
 /// The one user event: something arrived off the event loop's own thread (a fetch, a search
 /// result) and a redraw should reconsider it. Carries nothing on purpose — see
@@ -69,6 +71,8 @@ enum DataUpdate {
     /// `HomeGarden1.Contexts` by root.
     Garden(HashMap<PathBuf, crate::garden::GardenPlace>),
     HomeFieldSettings(HomeFieldSettings),
+    /// `shell.rails.*`: gesture rails or the classic bar, and the gate the compositor watches.
+    RailSettings(RailSettings),
     /// The session's screen-off delay in seconds, from `Power1` (0 = never). Relayed straight to
     /// the compositor, which is the only process that can see the seat go idle.
     IdleTimeout(u32),
@@ -334,6 +338,92 @@ const LAUNCHER_ICON_LOOKAHEAD: usize = 24;
 /// How many *new* icon resolutions one frame may start. See `ShellApp::ensure_launcher_icons`.
 const ICON_BUDGET_PER_FRAME: usize = 6;
 
+/// Which of the shell's two surfaces a rail is drawn on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RailHost {
+    /// The island: running applications.
+    Apps,
+    /// The cluster: settings, network, clock, account.
+    System,
+}
+
+/// Which rail the pointer's direction opens. The compositor only knows sides; which rail sits on
+/// which is the person's (`shell.rails.swap`): apps to the left and the machine to the right,
+/// unless they asked otherwise.
+fn rail_host(side: RailSide, swap: bool) -> RailHost {
+    match (side, swap) {
+        (RailSide::Left, false) | (RailSide::Right, true) => RailHost::Apps,
+        (RailSide::Right, false) | (RailSide::Left, true) => RailHost::System,
+    }
+}
+
+/// One rail the compositor opened and the shell is drawing.
+#[derive(Debug)]
+struct OpenRail {
+    /// The bridge's opening number, so the shell can tell this rail from the next.
+    opening: u64,
+    host: RailHost,
+    reveal: RailReveal,
+    session: RailSession,
+}
+
+/// Present a rail host whose rail is closed as nothing at all: one fully transparent frame at
+/// the size it is, an *empty* input region, and a request to shrink to 1×1.
+///
+/// Never the opaque fallback the classic bar takes when it has no shapes: that would be a grey
+/// strip across the bottom of the screen taking every click in it. A surface that cannot float
+/// here declares its empty region and draws nothing.
+///
+/// `idle` remembers the buffer size last presented this way, so the machine readings and the
+/// window list changing do not re-present an unchanged nothing.
+fn present_nothing(
+    bridge: Option<&mut ShellBridge>,
+    hosted: &mut HostedWindow,
+    mask: &mut WindowBuffer,
+    wanted: &mut (i32, i32),
+    idle: &mut Option<(u32, u32)>,
+    what: &str,
+) {
+    if *wanted != (1, 1) {
+        *wanted = (1, 1);
+        let _ = hosted.window.request_inner_size(LogicalSize::new(1.0, 1.0));
+    }
+    if !hosted.prepare() {
+        return;
+    }
+    let size = (hosted.buffer.width, hosted.buffer.height);
+    if *idle == Some(size) && !hosted.pending {
+        return;
+    }
+    let Some(bridge) = bridge else {
+        return;
+    };
+    if mask.width != size.0 || mask.height != size.1 {
+        *mask = WindowBuffer::new(size.0, size.1);
+    }
+    mask.pixels.fill(MASK_CLEAR);
+    match bridge.present_masked(
+        &hosted.window,
+        &hosted.buffer.pixels,
+        &mask.pixels,
+        &[],
+        size.0,
+        size.1,
+    ) {
+        Ok(PresentOutcome::Submitted) => {
+            hosted.pending = false;
+            *idle = Some(size);
+        }
+        Ok(PresentOutcome::Deferred) => hosted.pending = true,
+        Err(error) => {
+            tracing::debug!(%error, "{what} could not float; drawing nothing");
+            if let Err(error) = bridge.declare_input_shapes(&hosted.window, &[]) {
+                tracing::debug!(%error, "clearing {what}'s input region");
+            }
+        }
+    }
+}
+
 /// Run the graphical Home Surface. Blocks until the user closes it.
 pub fn run() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Handle::current();
@@ -496,6 +586,26 @@ struct ShellApp {
     cluster_screen: crate::surface::cluster_screen::ClusterScreen,
     cluster_mask: WindowBuffer,
     cluster_wanted: (i32, i32),
+    /// `shell.rails.*` as last read. Defaults (gesture rails) until the first read lands.
+    rail_settings: RailSettings,
+    /// The gate last relayed to the compositor, so an unchanged reading costs nothing — the
+    /// `DataUpdate::IdleTimeout` rule. `None` until the first relay.
+    rail_gate_relayed: Option<RailSettings>,
+    /// The mode the bar and cluster surfaces were built for: `true` for gesture rails (edge
+    /// start, persistent, 1×1 and transparent while closed), `false` for the classic bar. A
+    /// change of mode rebuilds both, because their alignment is fixed at creation.
+    hosts_gesture: bool,
+    /// The rail open right now, if any.
+    rail: Option<OpenRail>,
+    /// The opening this shell dismissed itself, until the compositor answers with no rail. Its
+    /// late `rail_pointer` events must not reopen it.
+    rail_dismissed: Option<u64>,
+    /// The bridge's `rail_generation` last acted on: pointer progress along a rail has its own
+    /// dirty path, and never redraws Home, the bar in general or Taskfield.
+    rail_generation: u64,
+    /// The buffer size each rail host last presented as nothing (`present_nothing`).
+    bar_idle: Option<(u32, u32)>,
+    cluster_idle: Option<(u32, u32)>,
     /// The window overview's labels, on `Layer::Presentation` (manager v8).
     ///
     /// Created when `taskfield_state` says the mode opened and dropped when it says it closed,
@@ -609,6 +719,14 @@ impl ShellApp {
             cluster_screen: crate::surface::cluster_screen::ClusterScreen::default(),
             cluster_mask: WindowBuffer::new(0, 0),
             cluster_wanted: (0, 0),
+            rail_settings: RailSettings::default(),
+            rail_gate_relayed: None,
+            hosts_gesture: false,
+            rail: None,
+            rail_dismissed: None,
+            rail_generation: 0,
+            bar_idle: None,
+            cluster_idle: None,
             taskfield: None,
             taskfield_sections: None,
             taskfield_screen: crate::surface::taskfield_screen::TaskfieldScreen::default(),
@@ -1130,6 +1248,10 @@ impl ShellApp {
                     self.field_screen.drag_cfg.throw_enabled =
                         settings.throw && !settings.reduced_motion;
                 }
+                DataUpdate::RailSettings(settings) => {
+                    self.rail_settings = settings;
+                    self.relay_gesture_gate();
+                }
                 DataUpdate::IdleTimeout(seconds) => {
                     // Only on a change, and only over a live connection: the compositor keeps
                     // whatever it was last told, so re-sending the same number would be a
@@ -1630,7 +1752,8 @@ impl ShellApp {
             .inner_size()
             .to_logical::<f64>(home.window.scale_factor());
         // The bar covers the bottom strip of the output, on Home too; the field ends above it.
-        let bar_inset = if self.bar.is_some() {
+        // Rails do not: they are there only while asked for, and the field keeps the whole screen.
+        let bar_inset = if self.bar.is_some() && !self.hosts_gesture {
             crate::surface::bar_screen::BAR_HEIGHT
         } else {
             0
@@ -2686,13 +2809,18 @@ impl ShellApp {
         let Some(bridge) = &self.bridge else {
             return;
         };
-        let wanted = crate::surface::bar_screen::wanted_size(
-            crate::surface::bar_screen::Presence::Open,
-            None,
-            false,
-            crate::taskbar::entries(toplevels).len(),
-            self.output_width(),
-        );
+        // A rail host starts as nothing: 1×1, transparent, no input, until a rail opens on it.
+        let wanted = if self.hosts_gesture {
+            (1, 1)
+        } else {
+            crate::surface::bar_screen::wanted_size(
+                crate::surface::bar_screen::Presence::Open,
+                None,
+                false,
+                crate::taskbar::entries(toplevels).len(),
+                self.output_width(),
+            )
+        };
         let (width, height) = (f64::from(wanted.0), f64::from(wanted.1));
         let window = match event_loop.create_window(
             Window::default_attributes()
@@ -2731,14 +2859,22 @@ impl ShellApp {
         // compositor suppresses the hot corner while a shell overlay is under the pointer, and the
         // island's collapsed hint tab is 72×6 at exactly that corner, so an island left at the
         // start of its edge would sit on the corner and stop it firing at all.
+        //
+        // A rail is the exception: it is drawn outward from the output's centre across the whole
+        // width, so its surface starts at the edge's start and its x is the output's x.
+        let alignment = if self.hosts_gesture {
+            templar_window::geometry::Alignment::Start
+        } else {
+            templar_window::geometry::Alignment::Centre
+        };
         self.bar_centred = match bridge.set_edge_alignment(
             &window,
             templar_window::geometry::Edge::Bottom,
-            templar_window::geometry::Alignment::Centre,
+            alignment,
         ) {
-            Ok(centred) => centred,
+            Ok(aligned) => aligned && !self.hosts_gesture,
             Err(error) => {
-                tracing::warn!(%error, "centring the bar on the bottom edge");
+                tracing::warn!(%error, "aligning the bar on the bottom edge");
                 false
             }
         };
@@ -2747,6 +2883,7 @@ impl ShellApp {
                 hosted.request_redraw();
                 self.bar = Some(hosted);
                 self.bar_wanted = wanted;
+                self.bar_idle = None;
             }
             Err(error) => tracing::warn!(%error, "presenting the bar"),
         }
@@ -2757,6 +2894,26 @@ impl ShellApp {
     /// most.
     #[allow(clippy::too_many_lines)]
     fn redraw_bar(&mut self) {
+        let gesture = self.hosts_gesture;
+        let rail = self
+            .rail
+            .as_ref()
+            .filter(|rail| rail.host == RailHost::Apps)
+            .map(|rail| rail.reveal.view());
+        if gesture && rail.is_none() {
+            if let Some(bar) = &mut self.bar {
+                present_nothing(
+                    self.bridge.as_mut(),
+                    bar,
+                    &mut self.bar_mask,
+                    &mut self.bar_wanted,
+                    &mut self.bar_idle,
+                    "the bar",
+                );
+            }
+            return;
+        }
+        self.bar_idle = None;
         let toplevels = self
             .bridge
             .as_ref()
@@ -2771,8 +2928,10 @@ impl ShellApp {
         let now_ms = self.started.elapsed().as_millis() as u64;
         let home_revealed = self.bridge.as_ref().is_some_and(ShellBridge::home_revealed);
         let output_width = self.output_width();
-        let covered = bar_covered(home_revealed, &toplevels);
-        let peeked = self.bridge.as_ref().is_some_and(ShellBridge::bar_peeked);
+        // Neither the cover nor the peek means anything to a rail: it is there because the
+        // pointer asked for it, over whatever is on the screen.
+        let covered = !gesture && bar_covered(home_revealed, &toplevels);
+        let peeked = !gesture && self.bridge.as_ref().is_some_and(ShellBridge::bar_peeked);
         let Some(bar) = &mut self.bar else {
             return;
         };
@@ -2790,6 +2949,7 @@ impl ShellApp {
             peeked,
             home_revealed,
             now_ms,
+            rail,
         };
         let actions = {
             let mut ui = Ui::new(
@@ -2810,11 +2970,14 @@ impl ShellApp {
         // Every failure here falls back to the opaque present, which is the bar as it was before
         // any of this: no wl_shm, an older compositor, a window that is not on Wayland at all.
         // A bar that cannot float is still a bar.
+        //
+        // A rail always floats, even with nothing solid on it yet: an opaque rail would be a grey
+        // band across the whole width of the screen.
         if self.bar_mask.width != bar.buffer.width || self.bar_mask.height != bar.buffer.height {
             self.bar_mask = WindowBuffer::new(bar.buffer.width, bar.buffer.height);
         }
         let shapes = self.bar_screen.opaque_shapes();
-        let floated = !shapes.is_empty();
+        let floated = gesture || !shapes.is_empty();
         if floated {
             let mut painter = Painter::new(&mut self.bar_mask);
             painter.fill_rect(pixelkit_raster::Rect::new(0, 0, area.w, area.h), MASK_CLEAR);
@@ -2847,7 +3010,12 @@ impl ShellApp {
                     bar.buffer.width,
                     bar.buffer.height,
                 ) {
-                    Ok(()) => true,
+                    Ok(outcome) => {
+                        // Deferred still counts as presented: the frame is owed, not failed,
+                        // and `about_to_wait` redraws it once a buffer comes back.
+                        bar.pending = outcome == PresentOutcome::Deferred;
+                        true
+                    }
                     Err(error) => {
                         tracing::debug!(%error, "the bar could not float; presenting it opaque");
                         false
@@ -2870,13 +3038,21 @@ impl ShellApp {
         // just settled on asks for: the hint under a window, the bar over Home, plus whatever
         // band an open hover row or the account popover needs. The exclusive zone is 0 through
         // all of it, so no size this surface takes reflows anything.
-        let wanted = crate::surface::bar_screen::wanted_size(
-            self.bar_screen.presence(covered),
-            self.bar_screen.fan_cards(&entries),
-            self.bar_screen.tooltip_open(now_ms),
-            entries.len(),
-            output_width,
-        );
+        let wanted = if gesture {
+            crate::surface::bar_screen::rail_wanted_size(
+                self.bar_screen.fan_cards(&entries),
+                self.bar_screen.tooltip_open(now_ms),
+                output_width,
+            )
+        } else {
+            crate::surface::bar_screen::wanted_size(
+                self.bar_screen.presence(covered),
+                self.bar_screen.fan_cards(&entries),
+                self.bar_screen.tooltip_open(now_ms),
+                entries.len(),
+                output_width,
+            )
+        };
         if wanted != self.bar_wanted {
             self.bar_wanted = wanted;
             if let Some(bar) = &self.bar {
@@ -2885,7 +3061,12 @@ impl ShellApp {
                     .request_inner_size(LogicalSize::new(f64::from(wanted.0), f64::from(wanted.1)));
             }
         }
-        self.perform_bar(actions);
+        if gesture {
+            self.feed_rail_shapes(RailHost::Apps);
+            self.perform_rail(RailHost::Apps, actions);
+        } else {
+            self.perform_bar(actions);
+        }
     }
 
     /// Create, resize or destroy the cluster's surface.
@@ -2903,10 +3084,14 @@ impl ShellApp {
         event_loop: &ActiveEventLoop,
         toplevels: &[templar_window::ShellToplevel],
     ) {
-        let wanted_gone = bar_covered(
-            self.bridge.as_ref().is_some_and(ShellBridge::home_revealed),
-            toplevels,
-        ) && !self.bridge.as_ref().is_some_and(ShellBridge::bar_peeked);
+        // A rail host is persistent: it is 1×1 and transparent while its rail is closed, and a
+        // screen-filling window is exactly where a rail is wanted most, so nothing here applies.
+        let wanted_gone = !self.hosts_gesture
+            && bar_covered(
+                self.bridge.as_ref().is_some_and(ShellBridge::home_revealed),
+                toplevels,
+            )
+            && !self.bridge.as_ref().is_some_and(ShellBridge::bar_peeked);
         if wanted_gone {
             if let (Some(bridge), Some(hosted)) = (&mut self.bridge, self.cluster.take()) {
                 bridge.forget_surface(&hosted.window);
@@ -2924,7 +3109,11 @@ impl ShellApp {
         let Some(bridge) = &self.bridge else {
             return;
         };
-        let wanted = crate::surface::cluster_screen::wanted_size(false, self.output_width());
+        let wanted = if self.hosts_gesture {
+            (1, 1)
+        } else {
+            crate::surface::cluster_screen::wanted_size(false, self.output_width())
+        };
         let window = match event_loop.create_window(
             Window::default_attributes()
                 .with_title("Cluster")
@@ -2946,18 +3135,26 @@ impl ShellApp {
         {
             tracing::warn!(%error, "anchoring the cluster to the bottom edge");
         }
-        // The *end* of the edge, where the island asks for the middle of it.
-        if let Err(error) = bridge.set_edge_alignment(
-            &window,
-            templar_window::geometry::Edge::Bottom,
-            templar_window::geometry::Alignment::End,
-        ) {
-            tracing::warn!(%error, "anchoring the cluster to the right-hand end");
+        // The *end* of the edge, where the island asks for the middle of it — or, as a rail, the
+        // start: the rail spans the output and draws outward from its centre.
+        let alignment = if self.hosts_gesture {
+            templar_window::geometry::Alignment::Start
+        } else {
+            templar_window::geometry::Alignment::End
+        };
+        if let Err(error) =
+            bridge.set_edge_alignment(&window, templar_window::geometry::Edge::Bottom, alignment)
+        {
+            tracing::warn!(%error, "aligning the cluster on the bottom edge");
         }
         match HostedWindow::new(window) {
             Ok(hosted) => {
+                if self.hosts_gesture {
+                    hosted.request_redraw();
+                }
                 self.cluster = Some(hosted);
                 self.cluster_wanted = wanted;
+                self.cluster_idle = None;
             }
             Err(error) => tracing::warn!(%error, "hosting the cluster window"),
         }
@@ -2966,6 +3163,26 @@ impl ShellApp {
     /// Paint the cluster and act on what it returns.
     #[allow(clippy::too_many_lines)]
     fn redraw_cluster(&mut self) {
+        let gesture = self.hosts_gesture;
+        let rail = self
+            .rail
+            .as_ref()
+            .filter(|rail| rail.host == RailHost::System)
+            .map(|rail| rail.reveal.view());
+        if gesture && rail.is_none() {
+            if let Some(cluster) = &mut self.cluster {
+                present_nothing(
+                    self.bridge.as_mut(),
+                    cluster,
+                    &mut self.cluster_mask,
+                    &mut self.cluster_wanted,
+                    &mut self.cluster_idle,
+                    "the cluster",
+                );
+            }
+            return;
+        }
+        self.cluster_idle = None;
         let network_control_available = self.providers.contains_key(&ProviderRole::NetworkStatusUi);
         let calendar_available = calendar_app(&self.apps).is_some();
         let account_label = std::env::var("USER")
@@ -2993,6 +3210,7 @@ impl ShellApp {
             account_label: &account_label,
             machine: &self.machine,
             now_ms,
+            rail,
         };
         let actions = {
             let mut ui = Ui::new(
@@ -3012,7 +3230,8 @@ impl ShellApp {
             self.cluster_mask = WindowBuffer::new(cluster.buffer.width, cluster.buffer.height);
         }
         let shapes = self.cluster_screen.opaque_shapes();
-        let floated = !shapes.is_empty();
+        // A rail always floats — see `redraw_bar`.
+        let floated = gesture || !shapes.is_empty();
         if floated {
             let mut painter = Painter::new(&mut self.cluster_mask);
             painter.fill_rect(Rect::new(0, 0, area.w, area.h), MASK_CLEAR);
@@ -3041,7 +3260,10 @@ impl ShellApp {
                 cluster.buffer.width,
                 cluster.buffer.height,
             ) {
-                Ok(()) => true,
+                Ok(outcome) => {
+                    cluster.pending = outcome == PresentOutcome::Deferred;
+                    true
+                }
                 Err(error) => {
                     tracing::debug!(%error, "the cluster could not float; presenting it opaque");
                     false
@@ -3057,10 +3279,17 @@ impl ShellApp {
             );
             cluster.present();
         }
-        let wanted = crate::surface::cluster_screen::wanted_size(
-            self.cluster_screen.account_open(),
-            self.output_width(),
-        );
+        let wanted = if gesture {
+            crate::surface::cluster_screen::rail_wanted_size(
+                self.cluster_screen.account_open(),
+                self.output_width(),
+            )
+        } else {
+            crate::surface::cluster_screen::wanted_size(
+                self.cluster_screen.account_open(),
+                self.output_width(),
+            )
+        };
         if wanted != self.cluster_wanted {
             self.cluster_wanted = wanted;
             if let Some(cluster) = &self.cluster {
@@ -3069,7 +3298,12 @@ impl ShellApp {
                     .request_inner_size(LogicalSize::new(f64::from(wanted.0), f64::from(wanted.1)));
             }
         }
-        self.perform_bar(actions);
+        if gesture {
+            self.feed_rail_shapes(RailHost::System);
+            self.perform_rail(RailHost::System, actions);
+        } else {
+            self.perform_bar(actions);
+        }
     }
 
     /// Create the Taskfield surface when the compositor says the overview opened, and destroy it
@@ -3218,17 +3452,20 @@ impl ShellApp {
         }
         // No input region at all. A label band that took the pointer would swallow the click
         // meant for the window under it, and the mode's input belongs to the compositor.
-        if let Some(bridge) = self.bridge.as_mut()
-            && let Err(error) = bridge.present_masked(
+        if let Some(bridge) = self.bridge.as_mut() {
+            match bridge.present_masked(
                 &taskfield.window,
                 &taskfield.buffer.pixels,
                 &self.taskfield_mask.pixels,
                 &[],
                 taskfield.buffer.width,
                 taskfield.buffer.height,
-            )
-        {
-            tracing::debug!(%error, "Taskfield could not float; drawing nothing");
+            ) {
+                Ok(outcome) => taskfield.pending = outcome == PresentOutcome::Deferred,
+                Err(error) => {
+                    tracing::debug!(%error, "Taskfield could not float; drawing nothing");
+                }
+            }
         }
     }
 
@@ -3252,12 +3489,261 @@ impl ShellApp {
         }
     }
 
+    /// Act on what a rail host returned, then get out of the way: a rail closes on anything done
+    /// from it except the level controls (`rail::action_keeps_rail_open`), which a person
+    /// adjusts in several goes while watching.
+    fn perform_rail(
+        &mut self,
+        host: RailHost,
+        actions: Vec<crate::surface::bar_screen::BarAction>,
+    ) {
+        let dismiss = !actions.is_empty()
+            && self.rail.as_ref().is_some_and(|rail| rail.host == host)
+            && !actions.iter().all(action_keeps_rail_open);
+        self.perform_bar(actions);
+        if dismiss {
+            self.dismiss_rail(true);
+        }
+    }
+
+    /// Tell the compositor the gate's shape and whether it is on, if that changed since it was
+    /// last told. Called on connect and on every settings reading; mode "bar" is `enabled` 0.
+    fn relay_gesture_gate(&mut self) {
+        let Some(bridge) = &self.bridge else {
+            return;
+        };
+        if !bridge.gestures_available()
+            || self.rail_gate_relayed.as_ref() == Some(&self.rail_settings)
+        {
+            return;
+        }
+        let gate = &self.rail_settings;
+        match bridge.set_gesture_gate(
+            gate.gesture,
+            gate.gate_width,
+            gate.gate_height,
+            gate.learning,
+            &gate.exceptions,
+        ) {
+            Ok(()) => self.rail_gate_relayed = Some(gate.clone()),
+            Err(error) => tracing::warn!(%error, "relaying the gesture gate to the compositor"),
+        }
+    }
+
+    /// Whether the bottom of the screen should be gesture rails right now: the person asked for
+    /// them, and the compositor is new enough to have a gate. Against an older one the classic
+    /// bar stays, rather than two surfaces waiting for a gesture nothing will ever recognise.
+    fn gesture_mode(&self) -> bool {
+        self.rail_settings.gesture
+            && self
+                .bridge
+                .as_ref()
+                .is_some_and(ShellBridge::gestures_available)
+    }
+
+    /// Rebuild the bar and the cluster when the mode changes. Their edge alignment is fixed when
+    /// they are created, and a rail host and a classic one differ in exactly that, so the old
+    /// surfaces go and `ensure_bar`/`ensure_cluster` make new ones on this same pass.
+    fn sync_rail_mode(&mut self) {
+        let gesture = self.gesture_mode();
+        if gesture == self.hosts_gesture {
+            return;
+        }
+        self.hosts_gesture = gesture;
+        // Leaving gesture mode relays `enabled` 0, and the compositor closes whatever was open.
+        self.rail = None;
+        self.rail_dismissed = None;
+        for hosted in [self.bar.take(), self.cluster.take()].into_iter().flatten() {
+            if let Some(bridge) = &mut self.bridge {
+                bridge.forget_surface(&hosted.window);
+            }
+        }
+        self.bar_screen.reset();
+        self.cluster_screen = crate::surface::cluster_screen::ClusterScreen::default();
+        self.bar_wanted = (0, 0);
+        self.cluster_wanted = (0, 0);
+        self.bar_idle = None;
+        self.cluster_idle = None;
+    }
+
+    /// Follow the compositor's rail: open one when it says so, reveal it as the pointer travels,
+    /// close it when it closes, and dismiss it when the pointer has wandered off for longer than
+    /// the grace. Only the rail's own host is ever asked to redraw from here.
+    fn sync_rail(&mut self, entries: usize) {
+        let now = Instant::now();
+        if !self.hosts_gesture {
+            return;
+        }
+        let Some(bridge) = &self.bridge else {
+            return;
+        };
+        let generation = bridge.rail_generation();
+        if generation != self.rail_generation {
+            self.rail_generation = generation;
+            let opened = bridge.rail().map(|(opening, _, side)| (opening, side));
+            let pointer = bridge.rail_pointer();
+            match opened {
+                // Closed, whoever closed it. Idempotent: a rail this shell dismissed itself is
+                // already gone, and this is only the compositor agreeing.
+                None => {
+                    self.rail_dismissed = None;
+                    self.dismiss_rail(false);
+                }
+                Some((opening, side)) => {
+                    let known = self.rail.as_ref().map(|rail| rail.opening) == Some(opening);
+                    if !known && self.rail_dismissed != Some(opening) {
+                        self.dismiss_rail(false);
+                        self.open_rail(opening, side, entries);
+                    }
+                    if let (Some(rail), Some((x, y))) = (&mut self.rail, pointer) {
+                        rail.session.pointer(x, y, now);
+                        if rail.reveal.advance(x) {
+                            let host = rail.host;
+                            self.request_rail_redraw(host);
+                        }
+                    }
+                }
+            }
+        }
+        if self
+            .rail
+            .as_ref()
+            .is_some_and(|rail| rail.session.expired(now))
+        {
+            self.dismiss_rail(true);
+        }
+    }
+
+    /// Start drawing a rail the compositor just opened. Laid out once, here: the reveal's length
+    /// is fixed for the opening, and only its clip moves after this.
+    fn open_rail(&mut self, opening: u64, side: RailSide, entries: usize) {
+        let host = rail_host(side, self.rail_settings.swap);
+        let (width, height) = self.output_size();
+        let (length, initial, wanted) = match host {
+            RailHost::Apps => (
+                crate::surface::bar_screen::rail_length(entries, width),
+                crate::surface::bar_screen::rail_initial(),
+                crate::surface::bar_screen::rail_wanted_size(None, false, width),
+            ),
+            RailHost::System => (
+                crate::surface::cluster_screen::rail_length(),
+                crate::surface::cluster_screen::rail_initial(),
+                crate::surface::cluster_screen::rail_wanted_size(false, width),
+            ),
+        };
+        let gate = (
+            i32::try_from(self.rail_settings.gate_width).unwrap_or(i32::MAX),
+            i32::try_from(self.rail_settings.gate_height).unwrap_or(i32::MAX),
+        );
+        self.rail = Some(OpenRail {
+            opening,
+            host,
+            reveal: RailReveal::new(width / 2, side, length, initial),
+            session: RailSession::new(side, (width, height), gate),
+        });
+        let (hosted, wanted_now, idle) = match host {
+            RailHost::Apps => {
+                self.bar_screen.reset();
+                (&self.bar, &mut self.bar_wanted, &mut self.bar_idle)
+            }
+            RailHost::System => {
+                self.cluster_screen.reset();
+                (
+                    &self.cluster,
+                    &mut self.cluster_wanted,
+                    &mut self.cluster_idle,
+                )
+            }
+        };
+        *idle = None;
+        if let Some(hosted) = hosted {
+            if *wanted_now != wanted {
+                *wanted_now = wanted;
+                let _ = hosted
+                    .window
+                    .request_inner_size(LogicalSize::new(f64::from(wanted.0), f64::from(wanted.1)));
+            }
+            hosted.request_redraw();
+        }
+    }
+
+    /// Put the open rail away: tell the compositor if this shell is the one deciding, collapse
+    /// whatever was open on the screen, and let the host's next frame shrink it back to nothing.
+    fn dismiss_rail(&mut self, tell_compositor: bool) {
+        let Some(rail) = self.rail.take() else {
+            return;
+        };
+        if tell_compositor {
+            self.rail_dismissed = Some(rail.opening);
+            self.bridge_call("closing the rail", ShellBridge::close_rail);
+        }
+        match rail.host {
+            RailHost::Apps => self.bar_screen.reset(),
+            RailHost::System => self.cluster_screen.reset(),
+        }
+        self.request_rail_redraw(rail.host);
+    }
+
+    fn request_rail_redraw(&self, host: RailHost) {
+        let hosted = match host {
+            RailHost::Apps => &self.bar,
+            RailHost::System => &self.cluster,
+        };
+        if let Some(hosted) = hosted {
+            hosted.request_redraw();
+        }
+    }
+
+    /// Hand the open rail's session the shapes its screen just drew, in output coordinates, so a
+    /// fan of cards or the account popover standing above the row holds the rail open.
+    ///
+    /// The screens record shapes in buffer pixels; the surface is anchored to the output's
+    /// bottom-left corner (edge alignment Start), so x is already the output's and y only needs
+    /// the surface's own offset from the top.
+    fn feed_rail_shapes(&mut self, host: RailHost) {
+        let (_, output_height) = self.output_size();
+        let (hosted, shapes) = match host {
+            RailHost::Apps => (&self.bar, self.bar_screen.opaque_shapes()),
+            RailHost::System => (&self.cluster, self.cluster_screen.opaque_shapes()),
+        };
+        let Some(hosted) = hosted else {
+            return;
+        };
+        let scale = hosted.window.scale_factor().max(f64::EPSILON);
+        let height = hosted.window.inner_size().to_logical::<f64>(scale).height;
+        let top = f64::from(output_height) - height;
+        let logical = |value: i32| f64::from(value) / scale;
+        let shapes: Vec<(i32, i32, i32, i32)> = shapes
+            .iter()
+            .map(|(rect, _)| {
+                (
+                    logical(rect.x).round() as i32,
+                    (top + logical(rect.y)).round() as i32,
+                    logical(rect.w).round() as i32,
+                    logical(rect.h).round() as i32,
+                )
+            })
+            .collect();
+        if let Some(rail) = self.rail.as_mut().filter(|rail| rail.host == host) {
+            rail.session.set_shapes(shapes, Instant::now());
+        }
+    }
+
+    /// A button went down or up on a rail host. A held button holds the rail: a slider dragged
+    /// off its track is still being dragged.
+    fn note_rail_button(&mut self, host: RailHost, held: bool) {
+        if let Some(rail) = self.rail.as_mut().filter(|rail| rail.host == host) {
+            rail.session.set_button_held(held, Instant::now());
+        }
+    }
+
     /// The cluster's window events: pointer and redraw, exactly as the bar's.
     fn cluster_event(&mut self, event: &WindowEvent) {
         match event {
             WindowEvent::RedrawRequested => self.redraw_cluster(),
             WindowEvent::CloseRequested => self.cluster = None,
             _ => {
+                self.note_rail_pointer_event(RailHost::System, event);
                 let Some(cluster) = &mut self.cluster else {
                     return;
                 };
@@ -3299,6 +3785,7 @@ impl ShellApp {
             WindowEvent::RedrawRequested => self.redraw_bar(),
             WindowEvent::CloseRequested => self.bar = None,
             _ => {
+                self.note_rail_pointer_event(RailHost::Apps, event);
                 let Some(bar) = &mut self.bar else {
                     return;
                 };
@@ -3328,6 +3815,38 @@ impl ShellApp {
                     }
                     _ => {}
                 }
+            }
+        }
+    }
+
+    /// The part of a rail host's pointer events the dismissal needs: whether the left button is
+    /// down on it. A leave ends any press, as it does for `pixelkit_shell::Input`.
+    fn note_rail_pointer_event(&mut self, host: RailHost, event: &WindowEvent) {
+        match event {
+            WindowEvent::MouseInput {
+                state,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => self.note_rail_button(host, *state == ElementState::Pressed),
+            WindowEvent::CursorLeft { .. } => self.note_rail_button(host, false),
+            _ => {}
+        }
+    }
+
+    /// Redraw every masked surface whose last frame was deferred, once the bridge says one of
+    /// its buffers came back. The release is a bridge event, so `ShellBridge::spawn_waker` is
+    /// what brings the loop here for it.
+    fn retry_deferred_presents(&self) {
+        let Some(bridge) = &self.bridge else {
+            return;
+        };
+        for hosted in [&self.bar, &self.cluster, &self.taskfield]
+            .into_iter()
+            .flatten()
+            .filter(|hosted| hosted.pending)
+        {
+            if bridge.can_present(&hosted.window) {
+                hosted.request_redraw();
             }
         }
     }
@@ -3680,14 +4199,16 @@ impl ShellApp {
                 return;
             };
             loop {
-                let (field, recents) = tokio::join!(
+                let (field, recents, rails) = tokio::join!(
                     fetch_home_field_settings(),
                     crate::settings::load_recent_apps(&settings),
+                    crate::settings::rails(&settings),
                 );
                 if tx.send(DataUpdate::HomeFieldSettings(field)).is_err() {
                     return;
                 }
                 let _ = tx.send(DataUpdate::RecentApps(recents));
+                let _ = tx.send(DataUpdate::RailSettings(rails));
                 let _ = tx.send(DataUpdate::IdleTimeout(
                     crate::data::fetch_idle_timeout().await,
                 ));
@@ -4733,7 +5254,16 @@ impl ApplicationHandler<Wake> for ShellApp {
                     Ok(()) => tracing::info!("Home Surface declared onto Layer::HomeSurface"),
                     Err(error) => tracing::warn!(%error, "declaring the Home Surface layer"),
                 }
+                let proxy = self.wake_proxy.clone();
+                if let Err(error) = bridge.spawn_waker(move || {
+                    let _ = proxy.send_event(Wake);
+                }) {
+                    tracing::warn!(%error, "the compositor's events will wait for the next input");
+                }
                 self.bridge = Some(bridge);
+                // The gate as the defaults have it until the settings reading lands; it is
+                // relayed again then if the person chose otherwise.
+                self.relay_gesture_gate();
             }
             Err(error) => {
                 tracing::warn!(
@@ -4943,9 +5473,19 @@ impl ApplicationHandler<Wake> for ShellApp {
             .as_ref()
             .map(ShellBridge::toplevels)
             .unwrap_or_default();
+        self.sync_rail_mode();
         self.ensure_bar(event_loop, &toplevels);
         self.ensure_cluster(event_loop, &toplevels);
         self.sync_taskfield(event_loop);
+        self.sync_rail(crate::taskbar::entries(&toplevels).len());
+        // A masked frame deferred because the compositor still held every buffer is owed, and
+        // the pointer that asked for it may have stopped: the buffer coming back is the wake.
+        self.retry_deferred_presents();
+        let rail_open = |host: RailHost| {
+            !self.hosts_gesture || self.rail.as_ref().is_some_and(|rail| rail.host == host)
+        };
+        let bar_live = rail_open(RailHost::Apps);
+        let cluster_live = rail_open(RailHost::System);
         // The window list moved: Home's session tiles and the bar both show it, so both redraw
         // now rather than on the next slow sweep.
         let generation = self.bridge.as_ref().map_or(0, ShellBridge::generation);
@@ -4954,7 +5494,8 @@ impl ApplicationHandler<Wake> for ShellApp {
             if let Some(home) = &self.home {
                 home.request_redraw();
             }
-            if let Some(bar) = &self.bar {
+            // A closed rail shows no window list, so it has nothing to redraw for.
+            if let Some(bar) = self.bar.as_ref().filter(|_| bar_live) {
                 bar.request_redraw();
             }
             // Every `taskfield_state` bumps the generation too: the query, the selection and the
@@ -4984,7 +5525,7 @@ impl ApplicationHandler<Wake> for ShellApp {
             }
             // The bar too: an arriving capture is the row's whole content, and without this it
             // would keep its icon fallback until the pointer happened to move.
-            if let Some(bar) = &self.bar {
+            if let Some(bar) = self.bar.as_ref().filter(|_| bar_live) {
                 bar.request_redraw();
             }
         }
@@ -5008,11 +5549,13 @@ impl ApplicationHandler<Wake> for ShellApp {
         // bottom strip — the dwell that reveals the bar out from under it and the grace that
         // collapses it again. `covered` has to be recomputed here because it decides which of
         // those two pairs is running.
-        let bar_covered = bar_covered(
-            self.bridge.as_ref().is_some_and(ShellBridge::home_revealed),
-            &toplevels,
-        ) && !self.bridge.as_ref().is_some_and(ShellBridge::bar_peeked);
-        let bar_deadline = self.bar.as_ref().and_then(|bar| {
+        let bar_covered = !self.hosts_gesture
+            && bar_covered(
+                self.bridge.as_ref().is_some_and(ShellBridge::home_revealed),
+                &toplevels,
+            )
+            && !self.bridge.as_ref().is_some_and(ShellBridge::bar_peeked);
+        let bar_deadline = self.bar.as_ref().filter(|_| bar_live).and_then(|bar| {
             let entries = crate::taskbar::entries(&toplevels);
             let deadline_ms = self.bar_screen.next_deadline_ms(
                 &entries,
@@ -5027,21 +5570,32 @@ impl ApplicationHandler<Wake> for ShellApp {
         });
         // The cluster's own two: a popover the pointer has left, and the next minute — it draws
         // the clock, so it has to wake for one whether or not anything else happens.
-        let cluster_deadline = self.cluster.as_ref().map(|cluster| {
-            let popover = self
-                .cluster_screen
-                .next_deadline_ms()
-                .map(|ms| self.started + Duration::from_millis(ms));
-            let minute = next_minute();
-            if popover.is_some_and(|at| at <= Instant::now()) {
-                cluster.request_redraw();
-            }
-            popover.map_or(minute, |at| at.min(minute))
-        });
-        let deadline = [toast_deadline, bar_deadline, cluster_deadline]
-            .into_iter()
-            .flatten()
-            .min();
+        let cluster_deadline = self
+            .cluster
+            .as_ref()
+            .filter(|_| cluster_live)
+            .map(|cluster| {
+                let popover = self
+                    .cluster_screen
+                    .next_deadline_ms()
+                    .map(|ms| self.started + Duration::from_millis(ms));
+                let minute = next_minute();
+                if popover.is_some_and(|at| at <= Instant::now()) {
+                    cluster.request_redraw();
+                }
+                popover.map_or(minute, |at| at.min(minute))
+            });
+        // An open rail's grace: the pointer is away from it, and it goes when that runs out.
+        let rail_deadline = self.rail.as_ref().and_then(|rail| rail.session.deadline());
+        let deadline = [
+            toast_deadline,
+            bar_deadline,
+            cluster_deadline,
+            rail_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         match deadline {
             Some(deadline) => {
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline.max(Instant::now())));

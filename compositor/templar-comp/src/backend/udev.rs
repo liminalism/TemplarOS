@@ -874,6 +874,7 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
             session_lock: &state.session_lock,
             switcher: state.switcher.as_ref(),
             drop_target: state.drop_target,
+            gesture_gate: &state.gesture_gate,
         },
         output,
         renderer,

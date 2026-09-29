@@ -37,6 +37,8 @@ impl<B: Backend + 'static> SessionLockHandler for TemplarCompState<B> {
 
     fn lock(&mut self, confirmation: SessionLocker) {
         self.session_lock.locked = true;
+        // Nothing of the session shows through the lock, a rail included.
+        self.close_rail("session locked");
         // Smithay's contract: confirm only once a cleared frame has actually been presented on
         // every output. We have no in-flight-frame tracking to gate this on yet, so we confirm
         // immediately — the lock state (and the input-isolation guards in `src/input.rs`) is

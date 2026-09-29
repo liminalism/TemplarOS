@@ -34,7 +34,7 @@ use templar_window::{
 /// Both peers ship from this repository, so a version bump is a pair of edits, not a
 /// compatibility matrix — but every `since="2"` event below is still guarded on the bound
 /// object's version rather than assumed.
-pub const SHELL_PROTOCOL_VERSION: u32 = 8;
+pub const SHELL_PROTOCOL_VERSION: u32 = 9;
 
 /// The value of `templar_shell_manager_v1.group_cycle_binding` this compositor sends: 0 is
 /// `Super+Tab`, the only binding there is (planning doc §2.1 — one chord, always the same, no
@@ -106,6 +106,10 @@ impl<B: Backend + 'static> GlobalDispatch2<TemplarShellManagerV1, TemplarCompSta
             let (active, filter, key, query, selected) = taskfield_wire(state);
             manager.taskfield_state(active, filter, key, query, selected);
         }
+        if manager.version() >= 9 {
+            let (output, side) = rail_wire(state);
+            manager.rail(output, side);
+        }
         state.shell_protocol.managers.push(manager);
     }
 
@@ -115,6 +119,9 @@ impl<B: Backend + 'static> GlobalDispatch2<TemplarShellManagerV1, TemplarCompSta
 }
 
 impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>> for () {
+    // One arm per request of the protocol, each already a call or a few lines; splitting the
+    // dispatcher itself would only hide which request goes where.
+    #[allow(clippy::too_many_lines)]
     fn request(
         &self,
         state: &mut TemplarCompState<B>,
@@ -230,6 +237,18 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
                     "the drop-down terminal's application id"
                 );
             }
+            templar_shell_manager_v1::Request::SetGestureGate {
+                enabled,
+                width,
+                height,
+                learning,
+                exceptions,
+            } => handle_set_gesture_gate(state, enabled, width, height, learning, &exceptions),
+            templar_shell_manager_v1::Request::CloseRail => {
+                if state.rail.is_some() {
+                    state.close_rail("shell asked");
+                }
+            }
         }
     }
 
@@ -247,10 +266,56 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
             .shell_protocol
             .managers
             .retain(|manager| manager != resource);
-        if state.shell_protocol.managers.is_empty() && state.window_service.home_revealed() {
-            state.reveal_home(RevealHome::Hide);
+        if state.shell_protocol.managers.is_empty() {
+            if state.window_service.home_revealed() {
+                state.reveal_home(RevealHome::Hide);
+            }
+            // Nobody is left to draw a rail or dismiss one: back to the classic bottom edge,
+            // which works with the shell dead.
+            state.close_rail("shell gone");
+            state
+                .gesture_gate
+                .configure(crate::gesture_gate::GateConfig::default());
         }
     }
+}
+
+/// `set_gesture_gate`: take the shell's gate configuration (`src/gesture_gate.rs`). Disabling it
+/// closes an open rail first, so the shell hears `rail` with no side before the bar comes back.
+fn handle_set_gesture_gate<B: Backend + 'static>(
+    state: &mut TemplarCompState<B>,
+    enabled: u32,
+    width: u32,
+    height: u32,
+    learning: u32,
+    exceptions: &str,
+) {
+    let config = crate::gesture_gate::GateConfig {
+        enabled: enabled != 0,
+        width,
+        height,
+        learning: learning != 0,
+        exceptions: exceptions
+            .lines()
+            .map(str::trim)
+            .filter(|app_id| !app_id.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    };
+    tracing::info!(
+        enabled = config.enabled,
+        width,
+        height,
+        learning = config.learning,
+        exceptions = config.exceptions.len(),
+        "gesture gate configured"
+    );
+    if !config.enabled {
+        state.close_rail("gate disabled");
+    }
+    state.gesture_gate.configure(config);
+    // The learning outline and the Peek corner mark both follow the configuration.
+    B::request_redraw(state);
 }
 
 /// The wire enum's values match `templar_window::ArrangementPreset`'s declaration order
@@ -1019,6 +1084,41 @@ pub fn send_launcher_focus<B: Backend + 'static>(state: &mut TemplarCompState<B>
     for manager in &state.shell_protocol.managers {
         if manager.version() >= 8 {
             manager.launcher_focus();
+        }
+    }
+}
+
+/// `rail`'s arguments for what is open right now: the output and side, or `""` and `none`.
+fn rail_wire<B: Backend + 'static>(
+    state: &TemplarCompState<B>,
+) -> (String, templar_shell_manager_v1::RailSide) {
+    match &state.rail {
+        Some((output, side)) => (
+            output.clone(),
+            match side {
+                crate::gesture_gate::Side::Left => templar_shell_manager_v1::RailSide::Left,
+                crate::gesture_gate::Side::Right => templar_shell_manager_v1::RailSide::Right,
+            },
+        ),
+        None => (String::new(), templar_shell_manager_v1::RailSide::None),
+    }
+}
+
+/// Tell the shell a rail opened or closed (`TemplarCompState::open_rail`/`close_rail`).
+pub fn send_rail<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
+    let (output, side) = rail_wire(state);
+    for manager in &state.shell_protocol.managers {
+        if manager.version() >= 9 {
+            manager.rail(output.clone(), side);
+        }
+    }
+}
+
+/// Where the pointer is while a rail is open, in the rail's output's logical coordinates.
+pub fn send_rail_pointer<B: Backend + 'static>(state: &mut TemplarCompState<B>, x: f64, y: f64) {
+    for manager in &state.shell_protocol.managers {
+        if manager.version() >= 9 {
+            manager.rail_pointer(x, y);
         }
     }
 }

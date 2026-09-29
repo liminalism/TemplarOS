@@ -859,6 +859,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         self.switcher = None;
         self.switch_ring = None;
         self.taskfield_press = None;
+        // The overview replaces what a rail was offering, and takes the pointer with it.
+        self.close_rail("taskfield");
         crate::protocols_shell::send_taskfield_state(self);
         // Entering and leaving change *only* where windows are drawn — no `Space` membership, no
         // geometry, no client commit — so a damage-tracked backend has nothing else to notice.

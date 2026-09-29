@@ -6,6 +6,7 @@ mod backend;
 mod chrome;
 mod cursor;
 mod foreign_toplevel;
+mod gesture_gate;
 mod handlers;
 mod idle;
 mod input;

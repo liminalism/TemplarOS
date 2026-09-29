@@ -32,6 +32,21 @@ pub const ACCENT_KEY: &str = "shell.appearance.accent";
 /// page does not offer it as a control.
 pub const RECENT_APPS_KEY: &str = "shell.launcher.recent-apps";
 
+/// `shell.rails.mode` — `gesture` (the bottom-centre gate reveals the rails) or `bar` (the
+/// classic always-there island and cluster).
+pub const RAILS_MODE_KEY: &str = "shell.rails.mode";
+/// `shell.rails.swap` — `false` puts running applications on the left rail, the system on the
+/// right; `true` exchanges them.
+pub const RAILS_SWAP_KEY: &str = "shell.rails.swap";
+/// `shell.rails.gate-width`, logical px.
+pub const RAILS_GATE_WIDTH_KEY: &str = "shell.rails.gate-width";
+/// `shell.rails.gate-height`, logical px.
+pub const RAILS_GATE_HEIGHT_KEY: &str = "shell.rails.gate-height";
+/// `shell.rails.learning` — the compositor outlines the gate.
+pub const RAILS_LEARNING_KEY: &str = "shell.rails.learning";
+/// `shell.rails.exceptions` — app ids under whose windows the gate never arms.
+pub const RAILS_EXCEPTIONS_KEY: &str = "shell.rails.exceptions";
+
 /// What a parked-session tile shows of its window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewMode {
@@ -64,6 +79,79 @@ impl Default for HomeFieldSettings {
             preview_rate: 1,
             reduced_motion: false,
         }
+    }
+}
+
+/// How the bottom of the screen is reached: gesture rails, or the classic bar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RailSettings {
+    /// `true` for gesture rails (`shell.rails.mode` = `gesture`), `false` for the classic bar.
+    pub gesture: bool,
+    pub swap: bool,
+    pub gate_width: u32,
+    pub gate_height: u32,
+    pub learning: bool,
+    pub exceptions: Vec<String>,
+}
+
+impl Default for RailSettings {
+    fn default() -> Self {
+        Self {
+            gesture: true,
+            swap: false,
+            gate_width: 240,
+            gate_height: 96,
+            learning: false,
+            exceptions: Vec::new(),
+        }
+    }
+}
+
+/// The rails' settings, each falling back to its schema default on its own.
+pub async fn rails(client: &impl SettingsClient) -> RailSettings {
+    let defaults = RailSettings::default();
+    let read = |key: &'static str| async move { client.get(key).await.ok() };
+    let gesture = read(RAILS_MODE_KEY)
+        .await
+        .as_deref()
+        .and_then(parse_choice)
+        .map_or(defaults.gesture, |mode| mode != "bar");
+    let swap = read(RAILS_SWAP_KEY)
+        .await
+        .as_deref()
+        .and_then(parse_bool)
+        .unwrap_or(defaults.swap);
+    let gate_width = read(RAILS_GATE_WIDTH_KEY)
+        .await
+        .as_deref()
+        .and_then(parse_int)
+        .map_or(defaults.gate_width, |width| width.clamp(120, 800) as u32);
+    let gate_height = read(RAILS_GATE_HEIGHT_KEY)
+        .await
+        .as_deref()
+        .and_then(parse_int)
+        .map_or(defaults.gate_height, |height| height.clamp(40, 300) as u32);
+    let learning = read(RAILS_LEARNING_KEY)
+        .await
+        .as_deref()
+        .and_then(parse_bool)
+        .unwrap_or(defaults.learning);
+    let exceptions = read(RAILS_EXCEPTIONS_KEY)
+        .await
+        .as_deref()
+        .and_then(parse_str_list)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|id| id.trim().to_owned())
+        .filter(|id| !id.is_empty())
+        .collect();
+    RailSettings {
+        gesture,
+        swap,
+        gate_width,
+        gate_height,
+        learning,
+        exceptions,
     }
 }
 
@@ -353,6 +441,35 @@ mod tests {
                 "org.templaros.Terminal".to_owned()
             ])
         );
+    }
+
+    /// An unreadable schema is the schema's defaults: gesture rails, apps on the left.
+    #[tokio::test]
+    async fn rail_settings_fall_back_to_the_schema_defaults() {
+        assert_eq!(rails(&Fake(Err(()))).await, RailSettings::default());
+        assert!(RailSettings::default().gesture);
+    }
+
+    #[tokio::test]
+    async fn rail_settings_read_the_mode_and_clamp_the_gate() {
+        let mut pairs = std::collections::HashMap::new();
+        pairs.insert(
+            RAILS_MODE_KEY,
+            r#"{"type":"choice","value":"bar"}"#.to_owned(),
+        );
+        pairs.insert(
+            RAILS_GATE_WIDTH_KEY,
+            r#"{"type":"int","value":5000}"#.to_owned(),
+        );
+        pairs.insert(
+            RAILS_EXCEPTIONS_KEY,
+            r#"{"type":"str-list","value":[" org.mpv.Mpv ",""]}"#.to_owned(),
+        );
+        let settings = rails(&Keyed(pairs)).await;
+        assert!(!settings.gesture);
+        assert_eq!(settings.gate_width, 800);
+        assert_eq!(settings.gate_height, 96);
+        assert_eq!(settings.exceptions, vec!["org.mpv.Mpv".to_owned()]);
     }
 
     #[tokio::test]

@@ -238,6 +238,14 @@ pub struct TemplarCompState<B: Backend + 'static> {
     /// callback reschedules itself (`TimeoutAction::ToDuration`) when the pointer settled again
     /// mid-flight, rather than a fresh source per motion event of a sweep.
     pub dwell_timer_pending: bool,
+    /// The bottom-centre gesture gate (`src/gesture_gate.rs`): its configuration from the shell
+    /// (`set_gesture_gate`) and the recognizer both pointer paths feed (`input::update_gesture_gate`).
+    pub gesture_gate: crate::gesture_gate::GestureGate,
+    /// The rail the gate opened, while it is open: the output's name and the side the pointer
+    /// went. The peek on that output is the rail's (`input::update_dwell` leaves it alone), and
+    /// every motion is reported to the shell as `rail_pointer` until it closes
+    /// (`TemplarCompState::close_rail`, the one way it ends).
+    pub rail: Option<(String, crate::gesture_gate::Side)>,
     /// The pointer scene last applied to `Space` — stacking order and client rectangles, top
     /// first. `space_sync::sync_after_change` compares this to the scene it is about to apply,
     /// because snapshotting `WindowService` *after* the caller already mutated it made the
@@ -380,6 +388,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             home_mapped: None,
             dwell: None,
             dwell_timer_pending: false,
+            gesture_gate: crate::gesture_gate::GestureGate::default(),
+            rail: None,
             last_pointer_scene: Vec::new(),
             swallowing_press: false,
             chrome: crate::chrome::ChromeState::new(),

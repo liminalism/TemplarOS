@@ -19,6 +19,8 @@ pub mod lock_screen;
 pub mod offscreen;
 pub mod omnibox_screen;
 pub mod place_forms;
+pub mod rail;
+pub mod rail_session;
 pub mod taskfield_screen;
 pub mod widgets;
 pub mod window;

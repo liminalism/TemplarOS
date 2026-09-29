@@ -6,7 +6,7 @@
 <protocol name="templar_shell_v1">
   <copyright>Copyright 2026 TemplarOS contributors. AGPL-3.0-only.</copyright>
 
-  <interface name="templar_shell_manager_v1" version="8">
+  <interface name="templar_shell_manager_v1" version="9">
     <description summary="shell control entry point">
       Bound only by the client the compositor itself launched as the shell.
     </description>
@@ -297,6 +297,82 @@
       <entry name="unit" value="1" summary="one application or window group, named by key"/>
       <entry name="windows" value="2" summary="an explicit list, in the windows array"/>
       <entry name="shelved" value="3" summary="parked windows only"/>
+    </enum>
+    <request name="set_gesture_gate" since="9">
+      <description summary="the bottom-centre gate that opens the shell's rails">
+        Gesture rails replace the bottom bar's own activation. The island (running applications)
+        and the machine cluster (settings, network, clock, account) stay hidden until the pointer
+        asks for one of them; the pointer is the compositor's to see — under a window filling the
+        screen the shell never learns where it is — so the compositor recognises the request and
+        the shell draws what was asked for.
+
+        The gate is a rectangle `width` logical pixels wide, centred on each output's bottom edge
+        and reaching `height` logical pixels up from it. It is compositor state, not a surface:
+        nothing in it takes input, and a pointer passing over it is delivered to whatever is
+        underneath exactly as it would be without it. Recognition is deliberately forgiving:
+
+        - the pointer arms the gate by entering it (through any edge, or by a motion that jumps
+          across it) having been above the gate's top edge moments before. Crossing it sideways
+          low on the screen, or starting inside it, arms nothing.
+        - an armed gate opens a rail as soon as the pointer has travelled a short way sideways from
+          where it entered, whatever it does vertically: `left` or `right`, never both, and never
+          switched later in the same opening. Going back up out of the gate, pressing a button,
+          or waiting a few seconds without moving sideways disarms it.
+        - a button held while entering (a drag, a window being moved, text being selected) never
+          arms it.
+        - under a window whose resolved application id is one of `exceptions` the gate never arms.
+
+        While a rail is open the compositor also peeks the output (`bar_peeked` names it), which
+        is what raises the shell's overlay over a fullscreen window; a gesture-mode shell ignores
+        `bar_peeked` itself. The classic bottom-edge dwell (Peek, and the second dwell that opens
+        Taskfield) and its corner mark are off while the gate is enabled; the top-left Home corner
+        and a screen-filling window's own controls in the bottom-right corner are not affected.
+
+        `learning` 1 draws the gate's outline on every output, brighter while it is armed, so
+        what arms and what does not can be seen. Sent on connect and again whenever a setting
+        changes. `enabled` 0 is the classic bar, and is also what the compositor assumes for a
+        shell that never sends this request and after the shell disconnects.
+      </description>
+      <arg name="enabled" type="uint" summary="1 for gesture rails, 0 for the classic bar and its peek"/>
+      <arg name="width" type="uint" summary="the gate's width in logical pixels, centred on the bottom edge"/>
+      <arg name="height" type="uint" summary="how far up from the bottom edge the gate reaches, logical pixels"/>
+      <arg name="learning" type="uint" summary="1 to draw the gate's outline"/>
+      <arg name="exceptions" type="string" summary="newline-separated canonical application ids; empty for none"/>
+    </request>
+    <request name="close_rail" since="9">
+      <description summary="the shell dismissed the open rail">
+        The pointer left the rail and its popovers for the shell's grace period, or the person
+        acted on something in it. The compositor ends the opening, lowers the peek, and answers
+        with `rail` naming no side. Ignored when no rail is open. The gate cannot arm again until
+        the pointer has been above it.
+      </description>
+    </request>
+    <event name="rail" since="9">
+      <description summary="a rail opened or closed">
+        Sent when the gate opens a rail and when that rail closes, whoever closed it: the shell's
+        `close_rail`, a press on anything that is not the shell's, Escape, the session locking,
+        Taskfield opening, or the gate being disabled. `side` is the direction the pointer
+        travelled; which rail is on which side is the shell's setting, not the compositor's.
+        `none` with an empty `output` means no rail is open. Sent on bind as well.
+      </description>
+      <arg name="output" type="string" summary="the output the rail is on, or empty"/>
+      <arg name="side" type="uint" enum="rail_side"/>
+    </event>
+    <event name="rail_pointer" since="9">
+      <description summary="where the pointer is while a rail is open">
+        In the rail's output's own logical coordinates (0,0 at its top-left). Sent right after
+        `rail` opens and on every pointer motion until it closes, wherever the pointer is — over
+        the shell's surfaces or not — because the rail is revealed by how far the pointer has
+        travelled along it and dismissed by where the pointer has gone. Only the latest position
+        matters; a shell keeps the last one and draws at its own frame pace.
+      </description>
+      <arg name="x" type="fixed"/>
+      <arg name="y" type="fixed"/>
+    </event>
+    <enum name="rail_side" since="9">
+      <entry name="none" value="0" summary="no rail is open"/>
+      <entry name="left" value="1" summary="the pointer went left from the gate"/>
+      <entry name="right" value="2" summary="the pointer went right from the gate"/>
     </enum>
     <enum name="edge">
       <entry name="top" value="0"/>

@@ -174,6 +174,7 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
                                         session_lock: &state.session_lock,
                                         switcher: state.switcher.as_ref(),
                                         drop_target: state.drop_target,
+                                        gesture_gate: &state.gesture_gate,
                                     },
                                     &output_for_loop,
                                     renderer,
