@@ -11,5 +11,6 @@ echo "== smoke";      tests/integration/run.sh
 echo "== nested";     if command -v xvfb-run >/dev/null; then xvfb-run -a tests/integration/nested-session.sh; else echo "  (xvfb-run not installed)"; fi
 echo "== greeter";    tests/integration/greeter.sh
 echo "== packages";   if command -v cargo-deb >/dev/null; then tests/integration/package-install.sh; else echo "  (cargo-deb not installed)"; fi
+echo "== os-update";  tests/integration/update-templaros.sh
 echo "== source";      ci/source-build.sh   # prints NOT EXECUTED where mmdebstrap/podman are absent
 echo "ci: ok"

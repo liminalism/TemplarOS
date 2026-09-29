@@ -496,6 +496,21 @@ impl Check for RunningMatchesInstalled {
 /// A source checkout has none of these packages installed at all, which is not a broken install —
 /// it is not an install — so that case is `Skipped`, not `Fail`.
 struct PackageAgesConsistent;
+
+/// Which rebuild command to name when packages are mixed-age.
+///
+/// On an installed TemplarOS (`ID=templaros`) that is `scripts/update-templaros.sh`. On a
+/// Lubuntu/Ubuntu overlay host it is `scripts/reinstall-templaros-desktop.sh`. A missing
+/// os-release is treated as the overlay: that is the development-host case this check was
+/// written for, and the existing fixtures do not ship an os-release.
+fn rebuild_advice(context: &Context) -> &'static str {
+    let text = fs::read_to_string(context.path("/etc/os-release")).unwrap_or_default();
+    if text.lines().any(|line| line == "ID=templaros") {
+        "scripts/update-templaros.sh"
+    } else {
+        "scripts/reinstall-templaros-desktop.sh"
+    }
+}
 impl Check for PackageAgesConsistent {
     fn id(&self) -> &'static str {
         "package-ages"
@@ -579,7 +594,7 @@ impl Check for PackageAgesConsistent {
         }
         lagging.sort_by_key(|(_, time)| *time);
         let detail = format!(
-            "{} — newest is {newest_package} ({}); re-run scripts/reinstall-templaros-desktop.sh to \
+            "{} — newest is {newest_package} ({}); re-run {} to \
              rebuild the rest",
             lagging
                 .iter()
@@ -587,6 +602,7 @@ impl Check for PackageAgesConsistent {
                 .collect::<Vec<_>>()
                 .join(", "),
             format_date(newest),
+            rebuild_advice(context),
         );
         finding(
             self,
@@ -2139,6 +2155,35 @@ mod tests {
                 .contains("newest is templaros-shell (2026-08-25)")
         );
         assert!(finding.detail.contains("reinstall-templaros-desktop.sh"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn package_ages_consistent_on_templaros_names_the_os_update_script() {
+        let root = fixture_root("package-ages-templaros");
+        fs::create_dir_all(root.join("etc")).unwrap();
+        fs::write(
+            root.join("etc/os-release"),
+            "ID=templaros\nID_LIKE=\"ubuntu debian\"\n",
+        )
+        .unwrap();
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        let newest = 1_787_616_000;
+        let three_days_earlier = newest - 3 * 24 * 60 * 60;
+        install_package(&root, "templaros-shell", "/usr/bin/templar-shell", newest);
+        install_package(
+            &root,
+            "templaros-cli",
+            "/usr/bin/templar",
+            three_days_earlier,
+        );
+        let finding = PackageAgesConsistent.run(&context);
+        assert_eq!(finding.outcome, Outcome::Fail);
+        assert!(finding.detail.contains("update-templaros.sh"));
+        assert!(!finding.detail.contains("reinstall-templaros-desktop.sh"));
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -60,6 +60,10 @@ provision-test:
     tests/integration/provision-plan.sh
     tests/integration/provision-qemu.sh
 
+# Hotfix the installed operating system (refuses Lubuntu and the live ISO).
+update-os *args:
+    ./scripts/update-templaros.sh {{args}}
+
 # Stage-1 packages via cargo-deb (target/debian/)
 preview-codecs:
     ./scripts/build-preview-codecs.sh

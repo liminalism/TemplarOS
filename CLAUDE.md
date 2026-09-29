@@ -54,7 +54,8 @@ scripts/nested-session.sh launch <app-id>   # exercise the real launch chain
 scripts/nested-session.sh logs              # every process's output, in files
 cargo run -p templar-shell -- --render out.png # the Home Field as a PNG, no compositor needed
 just deb                                    # cargo-deb packages into target/debian/
-scripts/reinstall-templaros-desktop.sh         # build + reinstall + reload the desktop packages on this host
+scripts/reinstall-templaros-desktop.sh         # Lubuntu overlay: build + reinstall desktop packages on this host
+scripts/update-templaros.sh                    # installed TemplarOS only: native-set hotfix via templar dev deploy
 ```
 
 ## Toolchain
@@ -100,7 +101,7 @@ a Debian package.
 
 - **Sibling-repo path dependencies.** `pixelkit-*`, `bpg-decode` and the preview codecs
   resolve to sibling directories outside this repo (`../pixelkit`, `../bpg-rs`,
-  `../jpegXL-rs`, `../Lege-ecosystem`). A missing sibling breaks the workspace build. These
+  `../Lege-ecosystem`). A missing sibling breaks the workspace build. These
   must become pinned git deps before packaging.
 - **Preview codecs are a separate toolchain.** `helpers/templar-preview-codecs` builds under
   Rust 1.97 via `scripts/build-preview-codecs.sh` (`just preview-codecs`, a prerequisite of
