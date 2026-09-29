@@ -114,6 +114,8 @@ pub struct BootEntry {
     pub id: String,
     /// What a human reads in the menu.
     pub title: String,
+    /// Btrfs subvolume mounted as `/` for this deployment.
+    pub subvolume: String,
     /// Recorded as a comment, the same way the systemd-boot entry does it: not a kernel argument,
     /// but the one place a person looking at a boot entry can see which module build goes with it.
     pub nvidia_modules: Option<String>,
@@ -129,16 +131,23 @@ impl BootEntry {
             } else {
                 format!("TemplarOS ({})", deployment.id)
             },
+            subvolume: deployment.subvolume.clone(),
             nvidia_modules: deployment.nvidia_modules.clone(),
         }
     }
 
     /// The entry for a deployment known only by id — the known-good deployment recorded by an
     /// earlier promotion, whose full record belongs to the registry, not to the boot backend.
+    #[cfg(test)]
     pub fn known_good(id: &str) -> Self {
+        Self::known_good_at(id, "@")
+    }
+
+    fn known_good_at(id: &str, subvolume: &str) -> Self {
         Self {
             id: id.to_owned(),
             title: format!("TemplarOS ({id}) — known good"),
+            subvolume: subvolume.to_owned(),
             nvidia_modules: None,
         }
     }
@@ -172,11 +181,12 @@ pub fn render(entries: &[BootEntry], root: &RootSpec) -> String {
             out,
             "\nmenuentry '{title}' --id '{id}' {{\n    \
              search --no-floppy --set=root --file {dir}/{id}/vmlinuz\n    \
-             linux {dir}/{id}/vmlinuz {root} rw {key}{id}\n    \
+             linux {dir}/{id}/vmlinuz {root} rootflags=subvol={subvolume} rw {key}{id}\n    \
              initrd {dir}/{id}/initrd.img\n",
             title = entry.title,
             dir = ESP_DEPLOYMENT_DIR,
             root = root.cmdline_arg(),
+            subvolume = entry.subvolume,
             key = CMDLINE_KEY,
         );
         if let Some(modules) = &entry.nvidia_modules {
@@ -198,6 +208,15 @@ pub fn write_entries(boot_root: &Path, entries: &[BootEntry], root: &RootSpec) -
                 "refusing to write a GRUB entry for invalid deployment id {:?}",
                 entry.id
             );
+        }
+        if entry.subvolume.is_empty()
+            || !entry.subvolume.starts_with('@')
+            || !entry
+                .subvolume
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '/' | '.' | '_' | '-'))
+        {
+            bail!("refusing unsafe root subvolume {:?}", entry.subvolume);
         }
     }
     let path = boot_root.join(ENTRIES_FILE);
@@ -229,26 +248,35 @@ impl Grub {
     }
 
     /// The known-good deployment id, if one has been recorded.
-    pub fn known_good_id(&self) -> Option<String> {
-        let id = fs::read_to_string(self.known_good_path()).ok()?;
-        let id = id.trim();
-        (!id.is_empty() && is_valid_deployment_id(id)).then(|| id.to_owned())
+    fn known_good_entry(&self) -> Option<BootEntry> {
+        let text = fs::read_to_string(self.known_good_path()).ok()?;
+        let mut lines = text.lines();
+        let id = lines.next()?.trim();
+        let subvolume = lines
+            .next()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("@");
+        (is_valid_deployment_id(id)).then(|| BootEntry::known_good_at(id, subvolume))
     }
 
-    /// Remember `id` as the deployment to fall back to.
-    pub fn record_known_good(&self, id: &str) -> Result<()> {
+    /// Remember the deployment and its boot-root subvolume together.
+    pub fn record_known_good(&self, deployment: &Deployment) -> Result<()> {
         fs::create_dir_all(&self.state_dir)
             .with_context(|| format!("creating {}", self.state_dir.display()))?;
-        fs::write(self.known_good_path(), format!("{id}\n"))
-            .with_context(|| format!("recording known-good deployment {id}"))
+        fs::write(
+            self.known_good_path(),
+            format!("{}\n{}\n", deployment.id, deployment.subvolume),
+        )
+        .with_context(|| format!("recording known-good deployment {}", deployment.id))
     }
 
     /// Regenerate the entries file: the known-good deployment first, so a person reading the menu
     /// sees the safe choice at the top, then `candidate` when one is staged.
     pub fn refresh_entries(&self, candidate: Option<&Deployment>) -> Result<()> {
         let mut entries = Vec::new();
-        if let Some(id) = self.known_good_id() {
-            entries.push(BootEntry::known_good(&id));
+        if let Some(entry) = self.known_good_entry() {
+            entries.push(entry);
         }
         if let Some(candidate) = candidate
             && entries.iter().all(|e| e.id != candidate.id)
@@ -304,7 +332,7 @@ mod tests {
         let rendered = render(&[BootEntry::known_good("install-20260907T000000Z")], &spec);
         assert!(
             rendered.contains(
-                "root=UUID=7f3c1e2a-0b44-4d19-9a75-2c8e6f0d1b53 rw \
+                "root=UUID=7f3c1e2a-0b44-4d19-9a75-2c8e6f0d1b53 rootflags=subvol=@ rw \
                  templaros.deployment=install-20260907T000000Z"
             ),
             "{rendered}"
@@ -346,7 +374,9 @@ mod tests {
             &[BootEntry::known_good("install-1")],
             &RootSpec::read(dir.path()),
         );
-        assert!(rendered.contains("root=LABEL=templaros-root rw templaros.deployment=install-1"));
+        assert!(rendered.contains(
+            "root=LABEL=templaros-root rootflags=subvol=@ rw templaros.deployment=install-1"
+        ));
     }
 
     #[test]
@@ -386,6 +416,10 @@ mod tests {
             assert!(
                 body.contains(&format!("linux {ESP_DEPLOYMENT_DIR}/{id}/vmlinuz")),
                 "no kernel line for {id} in:\n{body}"
+            );
+            assert!(
+                body.contains(&format!("rootflags=subvol=@deployments/{id}")),
+                "no deployment-specific root subvolume for {id} in:\n{body}"
             );
         }
         // The known-good entry comes first, and the file is regenerated rather than appended to.
@@ -453,7 +487,7 @@ mod tests {
         );
         assert_eq!(
             deployment["cmdline"]["template"].as_str().unwrap(),
-            format!("root=LABEL={ROOT_FS_LABEL} rw {CMDLINE_KEY}{{id}}")
+            format!("root=LABEL={ROOT_FS_LABEL} rootflags=subvol=@ rw {CMDLINE_KEY}{{id}}")
         );
         assert_eq!(
             layout["boot"]["grub"]["entries_file"].as_str().unwrap(),

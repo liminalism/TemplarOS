@@ -18,7 +18,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
-projects="$(cd "$root/.." && pwd)"   # ../pixelkit, ../bpg-rs, ../jpegXL-rs, ../Lege-ecosystem live here
+projects="$(cd "$root/.." && pwd)"   # ../pixelkit, ../bpg-rs, ../Lege-ecosystem live here
 
 work="${TEMPLAROS_BUILD_DIR:-/var/tmp/templaros-build/@build}"
 keep_target=0

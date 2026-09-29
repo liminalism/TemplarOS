@@ -17,3 +17,4 @@ distro/policy/systemd/user/session.slice.d usr/lib/systemd/user/
 distro/policy/systemd/user/app.slice.d usr/lib/systemd/user/
 distro/policy/systemd/user/background.slice.d usr/lib/systemd/user/
 distro/policy/environment.d/60-templaros.conf usr/lib/environment.d/
+session/skel/.config/templaros/.keep etc/skel/.config/templaros/

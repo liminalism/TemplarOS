@@ -56,7 +56,14 @@ DEVREPO_MARKER="${DEVREPO_MARKER:-current}"   # current | previous. `staged` is 
 # --- Ubuntu base ---------------------------------------------------------------------------------
 UBUNTU_SUITE="${UBUNTU_SUITE:-resolute}"
 UBUNTU_MIRROR="${UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}"
+UBUNTU_SECURITY_MIRROR="${UBUNTU_SECURITY_MIRROR:-http://security.ubuntu.com/ubuntu}"
 UBUNTU_COMPONENTS="${UBUNTU_COMPONENTS:-main universe restricted}"
+bootstrap_backend="${TEMPLAROS_BOOTSTRAP_BACKEND:-auto}"
+case "$bootstrap_backend" in
+    auto) command -v mmdebstrap >/dev/null 2>&1 && bootstrap_backend=mmdebstrap || bootstrap_backend=debootstrap ;;
+    mmdebstrap|debootstrap) ;;
+    *) die "TEMPLAROS_BOOTSTRAP_BACKEND must be auto, mmdebstrap or debootstrap" ;;
+esac
 
 layout="$data_layout"
 target=""
@@ -64,6 +71,8 @@ target_kind=""          # image | device | free-space | partitions
 esp_arg=""
 root_arg=""
 username=""
+read_password=0
+expire_password=0
 apply=0
 i_mean_it=0
 step_no=0
@@ -79,6 +88,23 @@ PREFLIGHT_REPORT="${PREFLIGHT_REPORT:-/run/templaros/preflight.txt}"
 
 die() { printf 'provision: %s\n' "$*" >&2; exit 1; }
 note() { printf '  %s\n' "$*"; }
+
+block_type() { lsblk -dnro TYPE -- "$1" 2>/dev/null | head -1; }
+canonical_device() { readlink -f -- "$1" 2>/dev/null || printf '%s' "$1"; }
+parent_disk() {
+    local parent
+    parent="$(lsblk -dnro PKNAME -- "$1" 2>/dev/null | head -1)"
+    [ -n "$parent" ] && printf '/dev/%s' "$parent" || canonical_device "$1"
+}
+
+# Test seam for the safety-critical lsblk query. It exits before argument parsing or any target
+# observation, and lets integration tests inject a topology-only lsblk fixture without devices.
+if [ -n "${TEMPLAROS_PROVISION_TEST_BLOCK_TYPES:-}" ]; then
+    for test_device in $TEMPLAROS_PROVISION_TEST_BLOCK_TYPES; do
+        printf '%s=%s\n' "$test_device" "$(block_type "$test_device")"
+    done
+    exit 0
+fi
 
 usage() {
     cat <<'USAGE'
@@ -99,8 +125,10 @@ usage: provision.sh --image PATH [--apply] [options]
                       medium, /var/lib/templaros/devrepo otherwise). Copied to the target.
   --apply             actually do it. Without this, the run prints the plan and changes nothing.
   --user NAME         the account to create. No password is baked in; see --password-stdin.
-  --password-stdin    read the new user's password from stdin. Otherwise the account is created
-                      with an expired password and the first login has to set one.
+  --password-stdin    read the new user's password from stdin during apply. Required with --apply;
+                      the password is never put in argv, the plan, or a file.
+  --expire-password   the password read above is provisional: the first login must replace it.
+                      What an unattended install uses, so no chosen secret sits on a medium.
   --nvidia PACKAGE    the NVIDIA metapackage variant (default: $TEMPLAROS_NVIDIA).
   --set ID            install a specific TemplarOS build set instead of the `current` marker.
   --layout PATH       an alternative layout declaration (testing).
@@ -129,6 +157,7 @@ while [ $# -gt 0 ]; do
         --apply) apply=1; shift ;;
         --user) username="${2:?--user needs a name}"; shift 2 ;;
         --password-stdin) read_password=1; shift ;;
+        --expire-password) expire_password=1; shift ;;
         --nvidia) TEMPLAROS_NVIDIA="${2:?--nvidia needs a package}"; shift 2 ;;
         --set) DEVREPO_MARKER="${2:?--set needs an id}"; shift 2 ;;
         --layout) layout="${2:?--layout needs a path}"; shift 2 ;;
@@ -180,6 +209,11 @@ for required in ESP_FORMAT ESP_LABEL ROOT_FORMAT ROOT_LABEL SUBVOLUMES CMDLINE_T
 done
 
 deployment_id="${ID_PREFIX}$(date -u +%Y%m%dT%H%M%SZ)"
+if [ -n "$plan_in" ]; then
+    [ -f "$plan_in" ] || die "no plan at $plan_in"
+    deployment_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["deployment"])' "$plan_in" 2>/dev/null)" \
+        || die "$plan_in is not a valid provision plan"
+fi
 esp_dir="${ESP_DIR_TEMPLATE/\{id\}/$deployment_id}"
 cmdline="${CMDLINE_TEMPLATE/\{id\}/$deployment_id}"
 
@@ -215,24 +249,28 @@ case "$target_kind" in
         ;;
     device)
         [ "$i_mean_it" = 1 ] || die "--device destroys every partition on $target. Add --i-mean-it if that is what you want."
+        [ -b "$target" ] || die "$target is not a block device"
+        [ "$(block_type "$target")" = disk ] || die "$target is not TYPE=disk; --device takes a whole disk"
+        target="$(canonical_device "$target")"
         root_source="$(findmnt -no SOURCE / 2>/dev/null || true)"
-        root_disk="$(lsblk -no PKNAME "$root_source" 2>/dev/null | head -1 || true)"
-        case "$target" in
-            *"${root_disk:-__none__}"*) die "$target is the disk this system booted from. Refusing." ;;
-        esac
+        root_source="${root_source%%\[*}"
+        root_disk="$(parent_disk "$root_source")"
+        [ "$target" != "$root_disk" ] || die "$target is the disk this system booted from. Refusing."
         ;;
     free-space)
         # Not destructive to what exists, but it still writes a partition table; a regular file
         # (a fixture, or an image with partitions on it already) is the way to rehearse it.
         [ -e "$target" ] || die "$target does not exist"
         if [ -b "$target" ]; then
-            [ -n "$(lsblk -no PKNAME "$target" 2>/dev/null)" ] && die "$target is a partition; --free-space takes the whole disk it is on"
+            [ "$(block_type "$target")" = disk ] \
+                || die "$target is TYPE=$(block_type "$target"); --free-space requires TYPE=disk"
+            target="$(canonical_device "$target")"
         fi
         ;;
     partitions)
         for part in "$esp_arg" "$root_arg"; do
             [ -b "$part" ] || die "$part is not a block device"
-            [ -n "$(lsblk -no PKNAME "$part" 2>/dev/null)" ] || die "$part is a whole disk, not a partition. --esp/--root format partitions; --device takes a disk."
+            [ "$(block_type "$part")" = part ] || die "$part is TYPE=$(block_type "$part"); --esp/--root require partitions"
             findmnt -S "$part" >/dev/null 2>&1 && die "$part is mounted. Refusing to format a filesystem that is in use."
         done
         [ "$esp_arg" != "$root_arg" ] || die "--esp and --root name the same partition"
@@ -246,12 +284,47 @@ if [ -n "$data_arg" ]; then
         [ -n "$other" ] && [ "$data_arg" = "$other" ] && die "--data names the same partition as --esp or --root"
     done
 fi
+[ "$apply" = 0 ] || { [ -n "$username" ] && [ "$read_password" = 1 ]; } \
+    || die "--apply requires --user NAME and --password-stdin; a locked installation account cannot log in"
 [ "$format_data" = 1 ] && [ -z "$data_arg" ] && die "--format-data without --data formats nothing"
 if [ "$reuse" = 1 ]; then
     [ "$target_kind" = partitions ] \
         || die "--reuse preserves filesystems that already exist, so it goes with --esp/--root; \
 --image, --device and --free-space create them"
     [ "$format_data" = 1 ] && die "--reuse and --format-data contradict each other"
+fi
+
+# A disk with a mounted descendant or active swap is in use. Device names and root-source string
+# prefixes are not an identity boundary, so refuse the whole ownership tree.
+if [ -b "${target:-}" ] && [ "$target_kind" != partitions ]; then
+    in_use="$(lsblk -nrpo NAME,MOUNTPOINTS -- "$target" 2>/dev/null | awk 'NF > 1 { print }')"
+    [ -z "$in_use" ] || die "$target or one of its partitions is mounted. Refusing:\n$in_use"
+    if command -v swapon >/dev/null 2>&1; then
+        while IFS= read -r swapdev; do
+            [ -n "$swapdev" ] || continue
+            lsblk -nrpo NAME -- "$target" 2>/dev/null | grep -Fxq "$(canonical_device "$swapdev")" \
+                && die "$target contains active swap $swapdev. Refusing."
+        done < <(swapon --noheadings --raw --output NAME 2>/dev/null || true)
+    fi
+fi
+
+# Freeze a mutable archive marker to an immutable set before planning. The archive digest below is
+# compared again by --apply --plan, so a republished marker or index invalidates the review.
+case "$DEVREPO_MARKER" in
+    current|previous) selected_set="$(sed -n '1p' "$DEVREPO_ROOT/$DEVREPO_MARKER" 2>/dev/null || true)" ;;
+    *) selected_set="$DEVREPO_MARKER" ;;
+esac
+case "$selected_set" in
+    *[!A-Za-z0-9._~+-]*) die "archive set id contains unsafe characters: $selected_set" ;;
+esac
+archive_digest=missing
+if [ -n "$selected_set" ] && [ -d "$DEVREPO_ROOT/sets/$selected_set" ]; then
+    archive_digest="$({
+        for f in "$DEVREPO_ROOT/sets/$selected_set/manifest.json" \
+                 "$DEVREPO_ROOT/Packages" "$DEVREPO_ROOT/Release" "$DEVREPO_ROOT/InRelease"; do
+            [ -f "$f" ] && sha256sum "$f"
+        done
+    } | sha256sum | awk '{print $1}')"
 fi
 
 # Two filesystems with the same label are two filesystems the boot path cannot tell apart, and
@@ -281,6 +354,8 @@ if [ "$real_disk" = 1 ] && [ "${TEMPLAROS_PROVISION_ALLOW_DEVICE:-0}" != 1 ]; th
     die "writing to a real disk also needs TEMPLAROS_PROVISION_ALLOW_DEVICE=1 in the environment.
      That second switch exists so a copied-and-pasted command line cannot reach a disk on its own."
 fi
+[ "$apply" = 0 ] || [ -n "$plan_in" ] \
+    || die "--apply requires --plan PATH. Run the dry plan, read it, then apply that exact reviewed request."
 # The privilege check is deliberately *not* here, above the plan comparison: a stale plan is a
 # stale plan whoever is running it, and being told "needs root" when the real problem is that the
 # disk has changed underneath the review sends a person to sudo instead of to a re-read. It runs
@@ -319,11 +394,15 @@ observe() {
             [ -n "$device" ] || continue
             [ -e "$device" ] || { printf 'topology:%s=absent\n' "$device"; continue; }
             local disk="$device"
-            if [ -b "$device" ] && [ -n "$(lsblk -no PKNAME "$device" 2>/dev/null)" ]; then
-                disk="/dev/$(lsblk -no PKNAME "$device")"
+            [ -b "$device" ] && disk="$(parent_disk "$device")"
+            if [ -b "$disk" ]; then
+                printf 'disk:%s=%s\n' "$disk" \
+                    "$(lsblk -dnro 'MAJ:MIN,TYPE,SIZE,MODEL,SERIAL,WWN' -- "$disk" 2>/dev/null | xargs)"
+                printf 'children:%s=%s\n' "$disk" \
+                    "$(lsblk -nrpo 'NAME,TYPE,SIZE,FSTYPE,LABEL,PARTUUID,UUID,MOUNTPOINTS' -- "$disk" 2>/dev/null | tr '\n' '|')"
             fi
             printf 'topology:%s=%s\n' "$disk" \
-                "$(sgdisk -p "$disk" 2>/dev/null | sed -n 's/^ *\([0-9]\+\) *\([0-9]\+\) *\([0-9]\+\).*/\1:\2:\3/p' | tr '\n' ',')"
+                "$(sgdisk -p "$disk" 2>/dev/null | sed -n -e 's/^Disk identifier (GUID): /guid:/p' -e 's/^ *\([0-9]\+\) *\([0-9]\+\) *\([0-9]\+\).*/\1:\2:\3/p' | tr '\n' ',')"
         done
         # Identity: the UUID and label of every filesystem this run names.
         for part in "$esp_arg" "$root_arg" "$data_arg"; do
@@ -336,6 +415,19 @@ observe() {
                 "$(findmnt -no TARGET -S "$part" 2>/dev/null | tr '\n' ',')"
         done
     } | LC_ALL=C sort
+}
+
+request_state() {
+    printf '%s\n' \
+        "target=$target" "target_kind=$target_kind" "esp=$esp_arg" "root=$root_arg" \
+        "data=$data_arg" "reuse=$reuse" "format_data=$format_data" "username=$username" \
+        "password_stdin=$read_password" "expire_password=$expire_password" "nvidia=$TEMPLAROS_NVIDIA" "suite=$UBUNTU_SUITE" \
+        "mirror=$UBUNTU_MIRROR" "security_mirror=$UBUNTU_SECURITY_MIRROR" \
+        "components=$UBUNTU_COMPONENTS" "bootstrap_backend=$bootstrap_backend" \
+        "layout_sha256=$(sha256sum "$layout" | awk '{print $1}')" \
+        "provisioner_sha256=$(sha256sum "$0" | awk '{print $1}')" \
+        "archive=$(canonical_device "$DEVREPO_ROOT")" "archive_set=$selected_set" \
+        "archive_digest=$archive_digest" "mount=$mnt"
 }
 
 # --- Plan / apply --------------------------------------------------------------------------------
@@ -382,14 +474,63 @@ run() {
 }
 in_target() { run chroot "$mnt" "$@"; }
 
+owned_mounts=()
+loop=""
+mnt_created=0
+cleanup_enabled=0
+mount_owned() {
+    local mountpoint="${*: -1}"
+    record mount "$@"
+    if [ "$apply" = 1 ]; then
+        mount "$@"
+        owned_mounts+=("$mountpoint")
+    else
+        printf '     $ mount %s\n' "$*"
+    fi
+}
+unmount_owned() {
+    local mountpoint="$1" i
+    run umount "$mountpoint"
+    if [ "$apply" = 1 ]; then
+        for ((i=${#owned_mounts[@]}-1; i>=0; i--)); do
+            [ "${owned_mounts[$i]}" = "$mountpoint" ] && unset 'owned_mounts[i]' && break
+        done
+    fi
+}
+cleanup() {
+    local status=$? i cleanup_failed=0
+    [ "$cleanup_enabled" = 1 ] || return "$status"
+    trap - EXIT INT TERM
+    set +e
+    for ((i=${#owned_mounts[@]}-1; i>=0; i--)); do
+        mountpoint -q "${owned_mounts[$i]}" && umount "${owned_mounts[$i]}" || true
+        mountpoint -q "${owned_mounts[$i]}" && cleanup_failed=1
+    done
+    if [ -n "$loop" ] && [ "$loop" != '${loop}' ]; then
+        losetup "$loop" >/dev/null 2>&1 && losetup -d "$loop" || true
+        losetup "$loop" >/dev/null 2>&1 && cleanup_failed=1
+    fi
+    [ "$mnt_created" = 1 ] && rmdir "$mnt" 2>/dev/null || true
+    [ "$cleanup_failed" = 0 ] || printf 'provision: cleanup left a mount or loop attached; inspect before retrying\n' >&2
+    return "$status"
+}
+
 write_plan() {
     {
-        printf '{\n  \"version\": 1,\n'
+        printf '{\n  \"version\": 2,\n'
         printf '  \"target\": \"%s\",\n  \"target_kind\": \"%s\",\n' "$(json_escape "$target")" "$target_kind"
         printf '  \"deployment\": \"%s\",\n  \"cmdline\": \"%s\",\n' "$deployment_id" "$(json_escape "$cmdline")"
         printf '  \"reuse\": %s,\n  \"format_data\": %s,\n' \
             "$([ "$reuse" = 1 ] && echo true || echo false)" \
             "$([ "$format_data" = 1 ] && echo true || echo false)"
+        printf '  \"request\": ['
+        local request_first=1
+        while IFS= read -r line; do
+            [ $request_first -eq 1 ] || printf ','
+            request_first=0
+            printf '\n    \"%s\"' "$(json_escape "$line")"
+        done <<< "$request"
+        printf '\n  ],\n'
         printf '  \"observed\": ['
         local first=1
         while IFS= read -r line; do
@@ -403,7 +544,13 @@ write_plan() {
     } > "$plan_out"
 }
 
+mnt="${TEMPLAROS_PROVISION_MOUNT:-/mnt/templaros-provision}"
+case "$mnt" in /*) ;; *) die "TEMPLAROS_PROVISION_MOUNT must be absolute" ;; esac
+[ ! -L "$mnt" ] || die "$mnt is a symlink; refusing it as a provisioning mount root"
+[ ! -e "$mnt" ] || ! mountpoint -q "$mnt" || die "$mnt is already mounted"
+
 observed="$(observe)"
+request="$(request_state)"
 
 # `--apply --plan` is the only path that mutates something a person has already reviewed. Observe
 # the machine again and refuse on any difference: a plan made against one disk must not be applied
@@ -411,7 +558,16 @@ observed="$(observe)"
 if [ -n "$plan_in" ]; then
     [ "$apply" = 1 ] || die "--plan is for --apply; a dry run makes a plan rather than consuming one"
     [ -f "$plan_in" ] || die "no plan at $plan_in"
-    reviewed="$(sed -n '/"observed": \[/,/\]/p' "$plan_in" | sed -n 's/^ *"\(.*\)",\?$/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g')"
+    reviewed_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version", 0))' "$plan_in")"
+    [ "$reviewed_version" = 2 ] || die "$plan_in is not a current version 2 plan"
+    reviewed_request="$(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["request"]))' "$plan_in")"
+    if [ "$reviewed_request" != "$request" ]; then
+        printf 'provision: the requested operation is not the one this plan reviewed.\n\n' >&2
+        diff <(printf '%s\n' "$reviewed_request") <(printf '%s\n' "$request") \
+            | sed 's/^/    /' >&2 || true
+        die "refusing to apply. Use the exact reviewed options and inputs."
+    fi
+    reviewed="$(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["observed"]))' "$plan_in")"
     if [ "$reviewed" != "$observed" ]; then
         printf 'provision: the machine is not what this plan was reviewed against.\n\n' >&2
         diff <(printf '%s\n' "$reviewed") <(printf '%s\n' "$observed") \
@@ -426,8 +582,37 @@ fi
 if [ "$apply" = 1 ] && [ "$(id -u)" != 0 ]; then
     die "--apply needs root (loop devices, mkfs, mount, chroot). Run it in a disposable VM or with sudo, never on a machine you are using."
 fi
+if [ "$apply" = 1 ]; then
+    [ -n "$selected_set" ] && [ -d "$DEVREPO_ROOT/sets/$selected_set" ] \
+        || die "cannot resolve archive marker $DEVREPO_MARKER at $DEVREPO_ROOT"
+    [ -f "$DEVREPO_ROOT/Packages" ] && [ -f "$DEVREPO_ROOT/templaros-dev.gpg" ] \
+        || die "$DEVREPO_ROOT is not a signed apt archive"
+    templar dev --repo "$DEVREPO_ROOT" repo verify --set "$selected_set"
+fi
 
-mnt="${TEMPLAROS_PROVISION_MOUNT:-/mnt/templaros-provision}"
+# The target is bootstrapped from the Ubuntu mirror and its packages come from there too, so an
+# install with no route to it would partition and format and then fail at the bootstrap, leaving a
+# half-written disk. Ask the mirror for this suite's Release file *before* the first write: the same
+# DNS, route and HTTP path the bootstrap takes, through apt's own client (the medium has no curl).
+# On the reference laptop the network is wired (a USB-C adapter: r8152/ax88179/cdc_ncm are in
+# linux-modules, their firmware in linux-firmware-realtek) — WiFi needs a desktop to join.
+mirror_reachable() {
+    local probe
+    probe="$(mktemp)"
+    /usr/lib/apt/apt-helper -o Acquire::ForceIPv4=true -o Acquire::Retries=2 \
+        download-file "$UBUNTU_MIRROR/dists/$UBUNTU_SUITE/Release" "$probe" >/dev/null 2>&1
+    local status=$?
+    rm -f "$probe"
+    return "$status"
+}
+if [ "$apply" = 1 ] && [ "${TEMPLAROS_PROVISION_SKIP_NETWORK_CHECK:-0}" != 1 ]; then
+    mirror_reachable || die "cannot reach $UBUNTU_MIRROR/dists/$UBUNTU_SUITE/Release, and the install
+downloads Ubuntu from there. Nothing has been written. Connect a network first:
+  nmcli device            # the wired adapter should say 'connected'
+  ip -br addr             # it should have an address
+then run this again."
+    note "the Ubuntu mirror $UBUNTU_MIRROR answers for $UBUNTU_SUITE"
+fi
 
 printf 'TemplarOS Developer Edition provisioner\n'
 printf '  layout      %s\n' "$layout"
@@ -435,6 +620,22 @@ printf '  target      %s (%s)\n' "$target" "$target_kind"
 printf '  mode        %s\n' "$([ "$apply" = 1 ] && echo APPLY || echo 'dry run — nothing is written')"
 printf '  deployment  %s\n' "$deployment_id"
 printf '  cmdline     %s\n' "$cmdline"
+if [ "$real_disk" = 1 ]; then
+    display_disk="${target}"
+    [ "$target_kind" = partitions ] && display_disk="$(parent_disk "$esp_arg")"
+    printf '\nINSTALL TARGET\n'
+    lsblk -dnro 'PATH,MODEL,SERIAL,SIZE,TYPE' -- "$display_disk" 2>/dev/null \
+        | awk '{ print "  path/model/serial/size/type: " $0 }'
+    printf '\nEXISTING PARTITIONS PRESERVED\n'
+    lsblk -nrpo 'NAME,SIZE,FSTYPE,LABEL,PARTLABEL,MOUNTPOINTS' -- "$display_disk" 2>/dev/null \
+        | sed '1d; s/^/  /'
+    printf '\nOTHER PHYSICAL DISKS — WILL NOT BE TOUCHED\n'
+    while IFS= read -r other; do
+        case "$other" in "$display_disk "*|"$display_disk") continue ;; esac
+        printf '  %s\n' "$other"
+    done < <(lsblk -dnro 'PATH,SIZE,MODEL,SERIAL' --nodeps 2>/dev/null)
+    printf '\n'
+fi
 
 # The partition node for number $2 on disk $1: nvme0n1p3, mmcblk0p3, but sda3.
 part_node() {
@@ -442,6 +643,7 @@ part_node() {
 }
 attach_loop() { # a regular file gets a loop device; the plan shows the placeholder
     if [ "$apply" = 1 ]; then
+        record losetup --find --partscan --show "$target"
         loop="$(losetup --find --partscan --show "$target")"
     else
         note "the file is attached with losetup --partscan; its partitions are \${loop}p<n>"
@@ -450,7 +652,12 @@ attach_loop() { # a regular file gets a loop device; the plan shows the placehol
     fi
 }
 
-loop=""
+if [ "$apply" = 1 ]; then
+    cleanup_enabled=1
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+fi
 case "$target_kind" in
 image|device)
     step "Partition $target: GPT, ESP ($ESP_FORMAT, up to $ESP_SIZE_MAX, label $ESP_LABEL) + root ($ROOT_FORMAT, label $ROOT_LABEL)"
@@ -493,8 +700,14 @@ free-space)
     printf '%s\n' "$existing" | while read -r num start end _ _ _; do
         [ -n "$num" ] && note "  partition $num (sectors $start..$end)"
     done
-    run sgdisk --new="$n_esp:0:+${ESP_SIZE_MAX}" --typecode="$n_esp:ef00" --change-name="$n_esp:TEMPLAR_ESP" "$target"
-    run sgdisk --new="$n_root:0:0" --typecode="$n_root:8304" --change-name="$n_root:templaros-root" "$target"
+    esp_sectors=$(( $(numfmt --from=iec "$ESP_SIZE_MAX") / ${sector:-512} ))
+    esp_first="$free_first"
+    esp_last=$((esp_first + esp_sectors - 1))
+    root_first=$(( ((esp_last + 1 + 2047) / 2048) * 2048 ))
+    root_last="$free_last"
+    [ "$root_first" -le "$root_last" ] || die "the reviewed free block cannot fit aligned ESP and root partitions"
+    run sgdisk --new="$n_esp:$esp_first:$esp_last" --typecode="$n_esp:ef00" --change-name="$n_esp:TEMPLAR_ESP" "$target"
+    run sgdisk --new="$n_root:$root_first:$root_last" --typecode="$n_root:8304" --change-name="$n_root:templaros-root" "$target"
     if [ -b "$target" ]; then
         run partx --update "$target"
         esp_part="$(part_node "$target" "$n_esp")"; root_part="$(part_node "$target" "$n_root")"
@@ -521,8 +734,8 @@ partitions)
         done
     else
         step "Use the existing partitions $esp_arg (ESP) and $root_arg (root); the partition table is not touched"
-        run sgdisk --typecode="$(lsblk -no PARTN "$esp_arg" 2>/dev/null || echo N):ef00" "/dev/$(lsblk -no PKNAME "$esp_arg" 2>/dev/null || echo DISK)"
-        run sgdisk --typecode="$(lsblk -no PARTN "$root_arg" 2>/dev/null || echo N):8304" "/dev/$(lsblk -no PKNAME "$root_arg" 2>/dev/null || echo DISK)"
+        run sgdisk --typecode="$(lsblk -no PARTN "$esp_arg" 2>/dev/null || echo N):ef00" "/dev/$(lsblk -dno PKNAME "$esp_arg" 2>/dev/null || echo DISK)"
+        run sgdisk --typecode="$(lsblk -no PARTN "$root_arg" 2>/dev/null || echo N):8304" "/dev/$(lsblk -dno PKNAME "$root_arg" 2>/dev/null || echo DISK)"
     fi
     ;;
 esac
@@ -535,28 +748,44 @@ else
     run mkfs.btrfs -f -L "$ROOT_LABEL" "$root_part"
 fi
 
+data_fs_type=""
 if [ -n "$data_arg" ]; then
     if [ "$format_data" = 1 ]; then
         step "Make the data filesystem on $data_arg ($DATA_FORMAT, label $DATA_LABEL) — you asked for this with --format-data"
         run "mkfs.$DATA_FORMAT" -f -L "$DATA_LABEL" "$data_arg"
+        data_fs_type="$DATA_FORMAT"
     else
         step "Reuse the data filesystem on $data_arg; it is never assumed expendable"
         found="$(blkid -s TYPE -o value "$data_arg" 2>/dev/null || true)"
         [ -n "$found" ] || die "$data_arg holds no filesystem. Add --format-data to make one, deliberately."
+        [ "$found" = "$DATA_FORMAT" ] || die "$data_arg is $found; the declared data role requires $DATA_FORMAT"
+        data_fs_type="$found"
         reused "$data_arg" data "$found"
         note "  reusing the $found filesystem already on $data_arg (--format-data would replace it)"
     fi
 fi
 
 step "Create the declared subvolumes: $SUBVOLUMES"
-run mount "$root_part" "$mnt"
+[ -e "$mnt" ] || mnt_created=1
+run mkdir -p "$mnt"
+mount_owned -o subvolid=5 "$root_part" "$mnt"
 for subvol in $SUBVOLUMES; do
-    run btrfs subvolume create "$mnt/${subvol#/}"
+    subvol_path="$mnt/${subvol#/}"
+    if [ "$apply" = 1 ] && btrfs subvolume show "$subvol_path" >/dev/null 2>&1; then
+        [ "$reuse" = 1 ] || die "$subvol already exists on a newly formatted root"
+        note "  reusing existing subvolume $subvol"
+        record __reuse__ "$subvol_path" subvolume btrfs
+    else
+        run btrfs subvolume create "$subvol_path"
+    fi
 done
-run umount "$mnt"
+if [ "$apply" = 1 ] && [ "$reuse" = 1 ] && find "$mnt/@" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    die "--reuse found a populated @ root; resuming an interrupted installation is not supported"
+fi
+unmount_owned "$mnt"
 
 step "Mount the target at $mnt"
-run mount -o "subvol=@,$(layout_value root mount_options)" "$root_part" "$mnt"
+mount_owned -o "subvol=@,$(layout_value root mount_options)" "$root_part" "$mnt"
 for subvol in $SUBVOLUMES; do
     case "$subvol" in
         /@) continue ;;
@@ -567,13 +796,24 @@ for subvol in $SUBVOLUMES; do
         *) dir="${subvol#/@}" ;;
     esac
     run mkdir -p "$mnt/$dir"
-    run mount -o "subvol=${subvol#/}" "$root_part" "$mnt/$dir"
+    mount_owned -o "subvol=${subvol#/}" "$root_part" "$mnt/$dir"
 done
 run mkdir -p "$mnt$ESP_MOUNT"
-run mount "$esp_part" "$mnt$ESP_MOUNT"
+mount_owned "$esp_part" "$mnt$ESP_MOUNT"
 if [ -n "$data_arg" ]; then
     run mkdir -p "$mnt$DATA_MOUNT"
-    run mount ${DATA_MOUNT_OPTIONS:+-o "$DATA_MOUNT_OPTIONS"} "$data_arg" "$mnt$DATA_MOUNT"
+    mount_owned ${DATA_MOUNT_OPTIONS:+-o "$DATA_MOUNT_OPTIONS"} "$data_arg" "$mnt$DATA_MOUNT"
+fi
+
+# Bootstrap owns its own temporary /dev, /proc, /sys and resolver setup. The target contains only
+# the intentional Btrfs/ESP mountpoints at this point; target-owned files and host binds come later.
+step "Bootstrap Ubuntu $UBUNTU_SUITE ($UBUNTU_COMPONENTS) from $UBUNTU_MIRROR"
+if [ "$bootstrap_backend" = mmdebstrap ]; then
+    run mmdebstrap --skip=check/empty --components="${UBUNTU_COMPONENTS// /,}" \
+        "$UBUNTU_SUITE" "$mnt" "$UBUNTU_MIRROR"
+else
+    note "mmdebstrap is absent; falling back to debootstrap"
+    run debootstrap --components="${UBUNTU_COMPONENTS// /,}" "$UBUNTU_SUITE" "$mnt" "$UBUNTU_MIRROR"
 fi
 
 # --- Identity: /etc/fstab and /etc/templaros/install.toml, both by UUID ----------------------------
@@ -597,6 +837,8 @@ data_uuid=""
 [ -n "$data_arg" ] && data_uuid="$(uuid_of "$data_arg")" || true
 if [ "$apply" = 1 ]; then
     [ -n "$root_uuid" ] || die "the root filesystem has no UUID; blkid could not read $root_part"
+    [ -n "$esp_partuuid" ] || die "the ESP has no PARTUUID; blkid could not read $esp_part"
+    [ -z "$data_arg" ] || [ -n "$data_uuid" ] || die "the data filesystem has no UUID"
 fi
 note "root=UUID=${root_uuid:-<read at apply>}  esp PARTUUID=${esp_partuuid:-<read at apply>}"
 note "writing $mnt/etc/fstab"
@@ -620,8 +862,8 @@ if [ "$apply" = 1 ]; then
                 "$root_uuid" "$dir" "$ROOT_FORMAT" "$(layout_value root mount_options)" "${subvol#/}"
         done
         printf 'PARTUUID=%s  %s  vfat  umask=0077  0 2\n' "$esp_partuuid" "$ESP_MOUNT"
-        [ -n "$data_uuid" ] && printf 'UUID=%s  %s  %s  %s  0 2\n' \
-            "$data_uuid" "$DATA_MOUNT" "$DATA_FORMAT" "${DATA_MOUNT_OPTIONS:-defaults}"
+        [ -n "$data_uuid" ] && printf 'UUID=%s  %s  %s  %s,nofail  0 2\n' \
+            "$data_uuid" "$DATA_MOUNT" "$data_fs_type" "${DATA_MOUNT_OPTIONS:-defaults}"
     } > "$mnt/etc/fstab"
 fi
 note "writing $mnt/etc/templaros/install.toml — what templar-hostd reads to build a boot entry"
@@ -642,38 +884,60 @@ if [ -n "$root_uuid" ]; then
     note "boot command line: $cmdline"
 fi
 
-step "Lend the target the host's /dev, /proc, /sys and DNS for the chroot steps"
-for dir in dev dev/pts proc sys sys/firmware/efi/efivars; do
+step "Lend the bootstrapped target the host's /dev, /proc, /sys and temporary DNS for chroot steps"
+for dir in dev dev/pts proc sys; do
     run mkdir -p "$mnt/$dir"
-    run mount --bind "/$dir" "$mnt/$dir"
+    mount_owned --bind "/$dir" "$mnt/$dir"
 done
-run install -D -m 0644 /etc/resolv.conf "$mnt/etc/resolv.conf"
-
-step "Debootstrap Ubuntu $UBUNTU_SUITE ($UBUNTU_COMPONENTS) from $UBUNTU_MIRROR"
-if command -v mmdebstrap >/dev/null 2>&1; then
-    run mmdebstrap --components="${UBUNTU_COMPONENTS// /,}" "$UBUNTU_SUITE" "$mnt" "$UBUNTU_MIRROR"
-else
-    note "mmdebstrap is absent; falling back to debootstrap"
-    run debootstrap --components="${UBUNTU_COMPONENTS// /,}" "$UBUNTU_SUITE" "$mnt" "$UBUNTU_MIRROR"
+if [ -d /sys/firmware/efi/efivars ]; then
+    run mkdir -p "$mnt/sys/firmware/efi/efivars"
+    mount_owned --bind /sys/firmware/efi/efivars "$mnt/sys/firmware/efi/efivars"
 fi
+run touch "$mnt/etc/resolv.conf"
+mount_owned --bind /etc/resolv.conf "$mnt/etc/resolv.conf"
 
-step "Sources: Canonical archive plus the TemplarOS archive ($DEVREPO_ROOT, marker $DEVREPO_MARKER)"
+step "Sources: Canonical archive plus TemplarOS set $selected_set from $DEVREPO_ROOT"
 note "the TemplarOS archive is signed; the target trusts it through its key and nothing else"
-run templar dev --repo "$DEVREPO_ROOT" repo verify --set "$DEVREPO_MARKER"
+run templar dev --repo "$DEVREPO_ROOT" repo verify --set "$selected_set"
 note "the whole archive is copied to $TARGET_DEVREPO on the target: the set it installs from is"
 note "the set its own \`templar dev status\` will report, and \`templar dev rollback\` has something to go to"
-run mkdir -p "$mnt$(dirname "$TARGET_DEVREPO")"
-run cp -a "$DEVREPO_ROOT" "$mnt$TARGET_DEVREPO"
+run mkdir -p "$mnt$TARGET_DEVREPO"
+if [ -d "$DEVREPO_ROOT" ]; then
+    for entry in "$DEVREPO_ROOT"/*; do
+        [ -e "$entry" ] || continue
+        [ "$(basename "$entry")" = gnupg ] && continue
+        run cp -a "$entry" "$mnt$TARGET_DEVREPO/"
+    done
+else
+    note "archive is absent during this dry run; apply will refuse before touching storage"
+fi
 run install -D -m 0644 "$DEVREPO_ROOT/templaros-dev.gpg" \
     "$mnt/usr/share/keyrings/templaros-archive-keyring.gpg"
-note "writing $mnt/etc/apt/sources.list.d/templaros.sources"
+note "writing canonical Ubuntu sources, an immutable set pin, and the signed archive-root source"
 if [ "$apply" = 1 ]; then
+    mkdir -p "$mnt/etc/apt/sources.list.d" "$mnt/etc/apt/preferences.d"
+    cat > "$mnt/etc/apt/sources.list.d/ubuntu.sources" <<EOF
+Types: deb
+URIs: $UBUNTU_MIRROR
+Suites: $UBUNTU_SUITE $UBUNTU_SUITE-updates
+Components: $UBUNTU_COMPONENTS
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: $UBUNTU_SECURITY_MIRROR
+Suites: $UBUNTU_SUITE-security
+Components: $UBUNTU_COMPONENTS
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF
     cat > "$mnt/etc/apt/sources.list.d/templaros.sources" <<EOF
 Types: deb
-URIs: file://$TARGET_DEVREPO/sets/$DEVREPO_MARKER
+URIs: file://$TARGET_DEVREPO
 Suites: ./
 Signed-By: /usr/share/keyrings/templaros-archive-keyring.gpg
 EOF
+    printf 'Package: templaros-* templar-files\nPin: version %s\nPin-Priority: 1001\n' \
+        "$selected_set" > "$mnt/etc/apt/preferences.d/templaros-set"
+    printf '%s\n' "$selected_set" > "$mnt$TARGET_DEVREPO/current"
 fi
 
 step "Install the TemplarOS package set (contract C1)"
@@ -694,22 +958,28 @@ fi
 step "OS identity"
 run install -D -m 0644 "$data_os_release" "$mnt/usr/lib/os-release"
 
+step "Network: NetworkManager manages every device, wired included"
+note "Ubuntu's network-manager leaves ethernet unmanaged (10-globally-managed-devices.conf) unless netplan"
+note "names NetworkManager as the renderer; without this a USB-C ethernet adapter never gets an address."
+in_target sh -c 'install -d -m 0755 /etc/netplan && umask 077 && printf "network:\n  version: 2\n  renderer: NetworkManager\n" > /etc/netplan/01-network-manager-all.yaml'
+
 step "Account: ${username:-<--user was not given>}"
 [ -n "$username" ] || note "no --user given; the plan stops short of creating an account"
 if [ -n "$username" ]; then
     in_target useradd --create-home --shell /bin/bash --groups sudo,video,render "$username"
-    if [ "${read_password:-0}" = 1 ]; then
-        note "reading the new password from stdin: never echoed, never written to a file, and"
-        note "never part of an argument list another process could read out of /proc."
-        if [ "$apply" = 1 ]; then
-            IFS= read -r new_password
-            printf '%s:%s\n' "$username" "$new_password" | chroot "$mnt" chpasswd
-            unset new_password
-        fi
-    else
-        note "no password given: the account is created with an expired password and the first"
-        note "login must set one. Nothing here bakes in a release password."
-        in_target passwd --expire "$username"
+    note "reading the new password from stdin during apply; it is never echoed, planned, logged or placed in argv"
+    record __password_stdin__ "$username"
+    [ "$apply" = 1 ] || printf '     $ __password_stdin__ %s\n' "$username"
+    if [ "$apply" = 1 ]; then
+        IFS= read -rs new_password
+        printf '\n'
+        [ -n "$new_password" ] || die "the initial password may not be empty"
+        printf '%s:%s\n' "$username" "$new_password" | chroot "$mnt" chpasswd
+        unset new_password
+    fi
+    if [ "$expire_password" = 1 ]; then
+        note "the password is provisional: the first login must replace it"
+        in_target chage -d 0 "$username"
     fi
 fi
 note "root is locked either way: this machine is administered through sudo, not a root login."
@@ -749,14 +1019,23 @@ in_target grub-install --target=x86_64-efi --efi-directory="$ESP_MOUNT" \
 if [ "$target_kind" = image ] || [ -n "$loop" ]; then
     note "no firmware entry for a file: the QEMU harness boots it through OVMF's menu (EFI/TemplarOS/shimx64.efi)"
 else
-    esp_disk="/dev/$(lsblk -no PKNAME "$esp_part" 2>/dev/null || echo DISK)"
+    esp_disk="/dev/$(lsblk -dno PKNAME "$esp_part" 2>/dev/null || echo DISK)"
     esp_partn="$(lsblk -no PARTN "$esp_part" 2>/dev/null || echo N)"
+    before_entries=""
+    [ "$apply" = 0 ] || before_entries="$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\).*/\1/p' | sort)"
     run efibootmgr --create-only --disk "$esp_disk" --part "$esp_partn" --label TemplarOS \
         --loader '\EFI\TemplarOS\shimx64.efi'
     if [ "$apply" = 1 ]; then
-        entry="$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\)\*\{0,1\} TemplarOS.*/\1/p' | tail -1)"
+        after_entries="$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\).*/\1/p' | sort)"
+        entry="$(comm -13 <(printf '%s\n' "$before_entries") <(printf '%s\n' "$after_entries"))"
+        [ "$(printf '%s\n' "$entry" | grep -c .)" = 1 ] \
+            || die "cannot identify the one firmware entry this invocation created"
+        created="$(efibootmgr -v | grep -i "^Boot${entry}" || true)"
+        printf '%s' "$created" | grep -Fqi '\\EFI\\TemplarOS\\shimx64.efi' \
+            || die "new Boot$entry does not point at the TemplarOS shim"
+        printf '%s' "$created" | grep -Fqi "$esp_partuuid" \
+            || die "new Boot$entry does not identify the target ESP $esp_partuuid"
         order="$(efibootmgr | sed -n 's/^BootOrder: //p')"
-        [ -n "$entry" ] || die "efibootmgr created no TemplarOS entry"
         case ",$order," in *",$entry,"*) ;; *) efibootmgr --bootorder "${order:+$order,}$entry" >/dev/null ;; esac
         note "firmware entry Boot$entry appended to the boot order: $order,$entry"
     else
@@ -775,15 +1054,27 @@ step "Seed deployment $deployment_id"
 note "kernel and initramfs are copied into the ESP directory hostd owns, so Ubuntu's initramfs"
 note "hooks cannot rewrite this deployment's boot files: $esp_dir"
 run mkdir -p "$mnt$ESP_MOUNT$esp_dir"
-run sh -c "cp \"$mnt\"/boot/vmlinuz-* \"$mnt$ESP_MOUNT$esp_dir/vmlinuz\""
-run sh -c "cp \"$mnt\"/boot/initrd.img-* \"$mnt$ESP_MOUNT$esp_dir/initrd.img\""
+record __copy_kernel_pair__ "$mnt/boot" "$mnt$ESP_MOUNT$esp_dir"
+if [ "$apply" = 1 ]; then
+    kernel_version="$(find "$mnt/boot" -maxdepth 1 -type f -name 'vmlinuz-*' -printf '%f\n' \
+        | sed 's/^vmlinuz-//' | sort -V | tail -1)"
+    [ -n "$kernel_version" ] || die "the target has no installed kernel image"
+    [ -f "$mnt/boot/initrd.img-$kernel_version" ] \
+        || die "kernel $kernel_version has no matching initramfs"
+    cp "$mnt/boot/vmlinuz-$kernel_version" "$mnt$ESP_MOUNT$esp_dir/vmlinuz"
+    cp "$mnt/boot/initrd.img-$kernel_version" "$mnt$ESP_MOUNT$esp_dir/initrd.img"
+    note "selected kernel/initramfs pair $kernel_version"
+else
+    printf '     $ __copy_kernel_pair__ %s %s\n' "$mnt/boot" "$mnt$ESP_MOUNT$esp_dir"
+    note "select the newest installed kernel with its exact matching initramfs; globs never overwrite one destination"
+fi
 note "record it as known-good so hostd's first staged candidate does not replace the only entry"
 run mkdir -p "$mnt/var/lib/templaros/hostd/grub"
 note "writing $GRUB_ENTRIES, in the exact shape templar-hostd regenerates it:"
 note "    menuentry 'TemplarOS ($deployment_id) — known good' --id '$deployment_id'"
 note "    linux $esp_dir/vmlinuz $cmdline"
 if [ "$apply" = 1 ]; then
-    printf '%s\n' "$deployment_id" > "$mnt/var/lib/templaros/hostd/grub/known-good"
+    printf '%s\n@\n' "$deployment_id" > "$mnt/var/lib/templaros/hostd/grub/known-good"
     mkdir -p "$mnt$(dirname "$GRUB_ENTRIES")"
     cat > "$mnt$GRUB_ENTRIES" <<EOF
 # GENERATED by installer/provision.sh — templar-hostd rewrites this file from here on.
@@ -803,10 +1094,8 @@ note "Secure Boot, module-trust and rollback checks that only a person at the ma
 
 if [ "$apply" = 1 ]; then
     step "Unmount"
-    run umount -R "$mnt"
-    if [ -n "$loop" ]; then
-        run losetup -d "$loop"
-    fi
+    cleanup
+    cleanup_enabled=0
     write_plan
     printf '\nprovisioned %s as deployment %s\n' "$target" "$deployment_id"
     printf 'the sequence that was performed: %s\n' "$plan_out"

@@ -9,6 +9,11 @@ Requires=dbus.socket
 Type=notify
 BusName=org.templaros.Session
 ExecStart=/usr/libexec/templar-sessiond
+# Casper live accounts and a first installed login have no ~/.config/templaros yet.
+# ProtectHome=read-only bind-mounts every ReadWritePaths entry; a missing one is
+# 226/NAMESPACE and sessiond never starts, so the shell has no providers, no
+# launcher and no poweroff. '+' runs mkdir as the user, outside the sandbox.
+ExecStartPre=+/usr/bin/mkdir -p %h/.config/templaros %h/.local/share/applications
 Restart=on-failure
 RestartSec=1
 WatchdogSec=30

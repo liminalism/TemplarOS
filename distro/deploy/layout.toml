@@ -94,7 +94,7 @@ esp_dir_template = "/EFI/templaros/{id}"
 # The one thing that distinguishes deployments after the fact. Read by
 # `state::booted_deployment_from_cmdline`; written identically by both boot backends.
 key = "templaros.deployment="
-template = "root=LABEL=templaros-root rw templaros.deployment={id}"
+template = "root=LABEL=templaros-root rootflags=subvol=@ rw templaros.deployment={id}"
 
 # --- Boot managers ------------------------------------------------------------------------------
 

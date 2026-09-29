@@ -28,6 +28,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+archive="$work/devrepo"
+mkdir -p "$archive/sets/test-set"
+printf 'test-set\n' > "$archive/current"
+printf '{}\n' > "$archive/sets/test-set/manifest.json"
+: > "$archive/Packages"; : > "$archive/Release"; : > "$archive/InRelease"; : > "$archive/templaros-dev.gpg"
+export DEVREPO_ROOT="$archive"
+
 fail() { echo "provision-qemu: FAILED — $*" >&2; exit 1; }
 not_executed() { echo "provision-qemu: NOT EXECUTED: $*"; }
 
@@ -38,7 +45,7 @@ not_executed() { echo "provision-qemu: NOT EXECUTED: $*"; }
 
 image="$work/disposable.img"
 plan="$work/plan.txt"
-"$provision" --image "$image" --user provisiontest > "$plan" 2>&1 \
+"$provision" --image "$image" --user provisiontest --password-stdin > "$plan" 2>&1 \
     || fail "the dry run exited non-zero:\n$(cat "$plan")"
 
 [ -e "$image" ] && fail "the dry run created $image — it must write nothing"
@@ -61,8 +68,9 @@ grep -q "shim-signed grub-efi-amd64-signed" "$plan" \
     || fail "the plan does not install the Canonical-signed shim and GRUB (ADR-0004)"
 grep -q "repo verify" "$plan" \
     || fail "the plan installs from the local archive without verifying the set"
-grep -q "cp -a .*devrepo /.*var/lib/templaros/devrepo" "$plan" \
-    || fail "the plan does not hand the archive over to the target"
+grep -q "cp -a .*Packages /.*var/lib/templaros/devrepo/" "$plan" \
+    || fail "the plan does not hand the signed archive root over to the target"
+grep -q 'TemplarOS set test-set' "$plan" || fail "the plan does not freeze the current archive marker"
 grep -q "grub-install .*--no-nvram" "$plan" \
     || fail "grub-install would write this host's firmware variables from inside the chroot"
 for package in templaros-archive-keyring templaros-desktop templaros-kernel; do
@@ -70,8 +78,8 @@ for package in templaros-archive-keyring templaros-desktop templaros-kernel; do
 done
 # No fixed password, no autologin, root locked: the three things the dev image has and a
 # provisioned machine must not.
-grep -qi 'passwd --expire provisiontest' "$plan" \
-    || fail "the account is not created with an expired password"
+grep -qi '__password_stdin__ provisiontest' "$plan" \
+    || fail "the account does not require an initial password over stdin"
 grep -q 'passwd --lock root' "$plan" || fail "the plan does not lock the root account"
 grep -qiE 'RootPassword|Autologin|password=' "$plan" \
     && fail "the plan mentions a baked-in credential"
@@ -92,23 +100,22 @@ if command -v sgdisk >/dev/null 2>&1; then
     "$provision" --free-space "$fixture" --user provisiontest > "$free_plan" 2>&1 \
         || fail "the free-space dry run exited non-zero:\n$(cat "$free_plan")"
     [ "$before" = "$(sgdisk -p "$fixture")" ] || fail "the free-space dry run changed the partition table"
-    grep -q 'sgdisk --new=4:0:+1G --typecode=4:ef00' "$free_plan" || fail "the ESP is not partition 4"
-    grep -q 'sgdisk --new=5:0:0 --typecode=5:8304' "$free_plan" || fail "the root is not partition 5"
+    grep -q 'sgdisk --new=4:[0-9].*:[0-9].* --typecode=4:ef00' "$free_plan" || fail "the ESP is not partition 4 with explicit reviewed geometry"
+    grep -q 'sgdisk --new=5:[0-9].*:[0-9].* --typecode=5:8304' "$free_plan" || fail "the root is not partition 5 with explicit reviewed geometry"
     grep -q 'sgdisk --zap-all' "$free_plan" && fail "the free-space plan zaps the disk"
     for kept in 1 2 3; do
         grep -q "partition $kept (sectors" "$free_plan" || fail "the plan does not name kept partition $kept"
     done
     grep -q 'mkfs.btrfs -f -L templaros-root .*p5' "$free_plan" || fail "the root filesystem is not made on partition 5"
     grep -q '\$ efibootmgr' "$free_plan" && fail "a file target must not touch the firmware"
-    # A hole between partitions is not a tail: fill the tail and leave a gap in the middle.
+    # A hole between partitions is valid when both new partitions stay inside it.
     holed="$work/holed.img"
     truncate -s 20G "$holed"
     sgdisk --zap-all "$holed" >/dev/null
     sgdisk --new=1:0:+1G --typecode=1:ef00 --new=2:12G:0 --typecode=2:8300 "$holed" >/dev/null
-    if "$provision" --free-space "$holed" --user t >"$work/holed.txt" 2>&1; then
-        fail "free space in the middle of a disk was accepted as a tail"
-    fi
-    grep -q 'not the tail' "$work/holed.txt" || fail "the hole was refused for the wrong reason"
+    "$provision" --free-space "$holed" --user t >"$work/holed.txt" 2>&1 \
+        || fail "a large unallocated middle extent was refused"
+    grep -q 'free block: sectors' "$work/holed.txt" || fail "the middle-gap plan named no reviewed extent"
     echo "provision-qemu: the free-space plan adds two partitions and keeps three"
 else
     not_executed "sgdisk is not installed; the free-space plan was not checked"
@@ -132,7 +139,8 @@ refuses "--free-space on a missing disk" --free-space "$work/does-not-exist" --u
 echo "provision-qemu: destructive targets are refused as designed"
 
 # `--apply` as a non-root user must refuse rather than start and fail halfway.
-if "$provision" --image "$image" --user t --apply >"$work/apply.txt" 2>&1; then
+if "$provision" --image "$image" --user provisiontest --password-stdin --apply \
+        --plan "$image.plan.json" >"$work/apply.txt" 2>&1; then
     fail "provision.sh --apply ran as an unprivileged user"
 fi
 grep -q 'needs root' "$work/apply.txt" || fail "--apply as non-root failed for the wrong reason"

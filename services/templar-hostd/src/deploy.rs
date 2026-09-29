@@ -68,10 +68,12 @@ pub fn place_boot_files(candidate_root: &Path, esp_root: &Path, id: &str) -> Res
     let dest = esp_root.join("EFI/templaros").join(id);
     fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
     let boot = candidate_root.join("boot");
-    let kernel = find_entry_matching(&boot, "vmlinuz")
-        .with_context(|| format!("candidate has no kernel image under {}", boot.display()))?;
-    let initrd = find_entry_matching(&boot, "initrd.img")
-        .with_context(|| format!("candidate has no initramfs under {}", boot.display()))?;
+    let (kernel, initrd) = matching_kernel_pair(&boot).with_context(|| {
+        format!(
+            "candidate has no matching kernel/initramfs pair under {}",
+            boot.display()
+        )
+    })?;
     fs::copy(&kernel, dest.join("vmlinuz")).context("copying kernel image")?;
     fs::copy(&initrd, dest.join("initrd.img")).context("copying initramfs")?;
     Ok(dest)
@@ -80,19 +82,25 @@ pub fn place_boot_files(candidate_root: &Path, esp_root: &Path, id: &str) -> Res
 /// Whether `dir` has both a kernel image and an initramfs — the minimum for a bootable
 /// deployment, checked during transaction verification.
 pub fn has_bootable_files(dir: &Path) -> bool {
-    find_entry_matching(dir, "vmlinuz").is_some()
-        && find_entry_matching(dir, "initrd.img").is_some()
+    matching_kernel_pair(dir).is_some()
 }
 
-fn find_entry_matching(dir: &Path, prefix: &str) -> Option<PathBuf> {
-    fs::read_dir(dir)
+fn matching_kernel_pair(dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut pairs = fs::read_dir(dir)
         .ok()?
         .filter_map(Result::ok)
-        .map(|e| e.path())
-        .find(|p| {
-            p.file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with(prefix))
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            let version = name.strip_prefix("vmlinuz-")?;
+            let initrd = dir.join(format!("initrd.img-{version}"));
+            initrd
+                .is_file()
+                .then_some((version.to_owned(), path, initrd))
         })
+        .collect::<Vec<_>>();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs.pop().map(|(_, kernel, initrd)| (kernel, initrd))
 }
 
 /// systemd-boot backend: Boot Loader Spec "automatic boot assessment" — the entry filename
@@ -133,8 +141,9 @@ impl BootManager for SystemdBoot {
         // `RootSpec::read(&self.sysroot)` the GRUB backend does, and `SystemdBoot` needs a
         // `sysroot` to read it from.
         let mut body = format!(
-            "title TemplarOS ({id})\nlinux /EFI/templaros/{id}/vmlinuz\ninitrd /EFI/templaros/{id}/initrd.img\noptions root=LABEL=templaros-root rw templaros.deployment={id}\n",
+            "title TemplarOS ({id})\nlinux /EFI/templaros/{id}/vmlinuz\ninitrd /EFI/templaros/{id}/initrd.img\noptions root=LABEL=templaros-root rootflags=subvol={subvolume} rw templaros.deployment={id}\n",
             id = candidate.id,
+            subvolume = candidate.subvolume,
         );
         if let Some(modules) = &candidate.nvidia_modules {
             use std::fmt::Write as _;
@@ -230,7 +239,7 @@ impl BootManager for Grub {
         fs::create_dir_all(&self.state_dir)?;
         fs::write(
             self.counter_path(),
-            format!("{}\n{}\n", candidate.id, tries),
+            format!("{}\n{}\n{}\n", candidate.id, tries, candidate.subvolume),
         )?;
         // The entries have to exist before `grub-reboot` names one of them: `GRUB_DEFAULT=saved`
         // selects a menu entry by id, and an id GRUB cannot find is a boot into whatever the
@@ -245,7 +254,19 @@ impl BootManager for Grub {
         let Some((id, _)) = self.staged()? else {
             bail!("no candidate is staged to promote");
         };
-        self.record_known_good(&id)?;
+        let subvolume = fs::read_to_string(self.counter_path())?
+            .lines()
+            .nth(2)
+            .unwrap_or("@")
+            .to_owned();
+        self.record_known_good(&Deployment {
+            id: id.clone(),
+            subvolume,
+            esp_dir: String::new(),
+            kernel: None,
+            nvidia_modules: None,
+            known_good: true,
+        })?;
         self.refresh_entries(None)?;
         self.commands.run("grub-set-default", &[&id])?;
         let _ = fs::remove_file(self.counter_path());
@@ -255,7 +276,7 @@ impl BootManager for Grub {
     fn rollback(&self, previous: &Deployment) -> Result<()> {
         // The candidate's entry goes away with the candidate: leaving it in the menu invites a
         // person at the console to hand-pick the deployment that just failed its health gate.
-        self.record_known_good(&previous.id)?;
+        self.record_known_good(previous)?;
         self.refresh_entries(None)?;
         self.commands.run("grub-set-default", &[&previous.id])?;
         let _ = fs::remove_file(self.counter_path());
@@ -535,6 +556,7 @@ mod tests {
         assert!(entry.exists());
         let body = fs::read_to_string(&entry).unwrap();
         assert!(body.contains("linux /EFI/templaros/cand1/vmlinuz"));
+        assert!(body.contains("rootflags=subvol=@deployments/cand1"));
 
         let calls = commands.calls();
         assert_eq!(calls[0].program, "bootctl");
@@ -613,6 +635,26 @@ mod tests {
         fs::create_dir_all(dir.path().join("candidate/boot")).unwrap();
         let esp = dir.path().join("esp");
         assert!(place_boot_files(&dir.path().join("candidate"), &esp, "cand1").is_err());
+    }
+
+    #[test]
+    fn place_boot_files_selects_one_matching_kernel_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let boot = dir.path().join("candidate/boot");
+        fs::create_dir_all(&boot).unwrap();
+        fs::write(boot.join("vmlinuz-7.1"), b"old-kernel").unwrap();
+        fs::write(boot.join("initrd.img-7.1"), b"old-initrd").unwrap();
+        fs::write(boot.join("vmlinuz-7.2"), b"new-kernel").unwrap();
+        fs::write(boot.join("initrd.img-9.9"), b"mismatched").unwrap();
+
+        let dest = place_boot_files(
+            &dir.path().join("candidate"),
+            &dir.path().join("esp"),
+            "cand1",
+        )
+        .unwrap();
+        assert_eq!(fs::read(dest.join("vmlinuz")).unwrap(), b"old-kernel");
+        assert_eq!(fs::read(dest.join("initrd.img")).unwrap(), b"old-initrd");
     }
 
     #[test]

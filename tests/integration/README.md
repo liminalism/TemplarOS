@@ -12,7 +12,9 @@ with `xvfb-run -a`; CI uses Xvfb.
 `greeter.sh` covers the greetd framed-JSON conversation with the crate's fake peer and verifies the
 compositor preserves `GREETD_SOCK` and supplies `WAYLAND_DISPLAY`. `package-install.sh` builds the six
 login/session-facing packages and extracts them into an empty root, then checks their executable,
-unit, session, greetd, sysusers, and tmpfiles contracts.
+unit, session, greetd, sysusers, and tmpfiles contracts. `update-templaros.sh` checks that
+`scripts/update-templaros.sh` refuses a Lubuntu overlay host and a casper live session, and accepts
+an `ID=templaros` os-release without casper.
 
 `task-system.sh` runs the Task System's three doc acceptances against a nested session of its own:
 `from-fullscreen-every-time` (enter and leave Taskfield over a fullscreen client N times, and the

@@ -19,13 +19,25 @@ systemd-tmpfiles --create /usr/lib/tmpfiles.d/templaros-greeter.conf
 systemctl disable getty@tty1.service 2>/dev/null || true
 systemctl enable greetd.service 2>/dev/null || true
 
+# Ubuntu's network-manager ships 10-globally-managed-devices.conf, which leaves every device but
+# WiFi and modems unmanaged unless netplan names NetworkManager as the renderer (Ubuntu's installers
+# write this file; mmdebstrap does not). Without it a wired or USB-C ethernet adapter never gets an
+# address — on the live medium that is the only network a text-console install can use.
+install -d -m 0755 /etc/netplan
+printf 'network:\n  version: 2\n  renderer: NetworkManager\n' > /etc/netplan/01-network-manager-all.yaml
+chmod 0600 /etc/netplan/01-network-manager-all.yaml
+
 # Flatpak applications (ADR-0011). The browser is a Flatpak, so apt installs nothing for it and
 # something has to add the remote and pull the refs `cargo xtask seeds` generated. Doing it here
 # rather than in a first-boot unit keeps the image self-contained and keeps the file list owned by
 # packages — but it needs a network, so every step tolerates failure and says so. An image built
 # offline still boots; it just has no browser until `flatpak install` is run once.
-refs=""
-for candidate in /usr/share/templaros/flatpak-refs.list /work/src/distro/seeds/flatpak-refs.list; do
+# A native-set refresh keeps the already-seeded Flatpaks and must not hit the network.
+if [ "${TEMPLAROS_SKIP_FLATPAK:-}" = 1 ]; then
+    echo "postinst: skipping Flatpak seed (native refresh)"
+else
+    refs=""
+    for candidate in /usr/share/templaros/flatpak-refs.list /work/src/distro/seeds/flatpak-refs.list; do
     [ -f "$candidate" ] && { refs="$candidate"; break; }
 done
 if [ -z "$refs" ]; then
@@ -42,4 +54,5 @@ else
         flatpak install -y --noninteractive --system "$remote" "$ref" ||
             echo "postinst: could not install $ref from $remote; it will have to be installed later"
     done
+fi
 fi

@@ -31,11 +31,42 @@ cleanup() {
 }
 trap cleanup EXIT
 
+archive="$work/devrepo"
+mkdir -p "$archive/sets/test-set"
+printf 'test-set\n' > "$archive/current"
+printf '{}\n' > "$archive/sets/test-set/manifest.json"
+: > "$archive/Packages"; : > "$archive/Release"; : > "$archive/InRelease"; : > "$archive/templaros-dev.gpg"
+export DEVREPO_ROOT="$archive"
+export TEMPLAROS_PROVISION_MOUNT="$work/missing/templaros-provision"
+
 fail() { echo "provision-plan: FAILED — $*" >&2; exit 1; }
 not_executed() { echo "provision-plan: NOT EXECUTED: $*"; }
 ok() { echo "provision-plan: $*"; }
 
 [ -x "$provision" ] || fail "installer/provision.sh is missing or not executable"
+
+# Whole-device detection must query the named row (`lsblk -d ... TYPE`), not infer from PKNAME rows
+# emitted for its descendants. The fixture includes every Linux naming family used by the installer.
+mkdir -p "$work/fake-bin"
+cat > "$work/fake-bin/lsblk" <<'SH'
+#!/bin/sh
+last=""
+for arg in "$@"; do last="$arg"; done
+case "$last" in
+    /dev/nvme0n1|/dev/nvme1n1|/dev/sda|/dev/mmcblk0) echo disk ;;
+    /dev/nvme0n1p1|/dev/nvme0n1p2|/dev/sda1|/dev/mmcblk0p1) echo part ;;
+    *) exit 1 ;;
+esac
+SH
+chmod +x "$work/fake-bin/lsblk"
+devices='/dev/nvme0n1 /dev/nvme1n1 /dev/nvme0n1p1 /dev/nvme0n1p2 /dev/sda /dev/sda1 /dev/mmcblk0 /dev/mmcblk0p1'
+types="$(PATH="$work/fake-bin:$PATH" TEMPLAROS_PROVISION_TEST_BLOCK_TYPES="$devices" "$provision")"
+for expected in \
+    '/dev/nvme0n1=disk' '/dev/nvme1n1=disk' '/dev/nvme0n1p1=part' '/dev/nvme0n1p2=part' \
+    '/dev/sda=disk' '/dev/sda1=part' '/dev/mmcblk0=disk' '/dev/mmcblk0p1=part'; do
+    printf '%s\n' "$types" | grep -Fxq "$expected" || fail "device classifier missed $expected"
+done
+ok "whole disks and partitions are classified from the named lsblk row across NVMe, sd and mmc"
 
 # `python3 -c` rather than jq: jq is not in the seeds, python3 is (and every other check in this
 # repository already assumes it).
@@ -45,10 +76,11 @@ json() { python3 -c "$1" "$2"; }
 
 image="$work/target.img"
 plan="$work/target.img.plan.json"
-"$provision" --image "$image" --user plantest > "$work/dry.txt" 2>&1 \
+"$provision" --image "$image" --user plantest --password-stdin > "$work/dry.txt" 2>&1 \
     || fail "the dry run exited non-zero:$(printf '\n'; cat "$work/dry.txt")"
 
 [ -e "$image" ] && fail "the dry run created $image — a plan writes nothing but the plan"
+[ -e "$TEMPLAROS_PROVISION_MOUNT" ] && fail "the dry run created the missing mount directory"
 [ -f "$plan" ] || fail "the dry run wrote no plan.json"
 
 python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$plan" \
@@ -70,6 +102,36 @@ raise SystemExit(0 if any(o['op'] == '$required' for o in ops) else 1)" "$plan" 
 done
 ok "the dry run recorded all $operations operations it printed, and wrote nothing else"
 
+json "import json,sys
+ops = json.load(open(sys.argv[1]))['operations']
+def pos(pred): return next(i for i,o in enumerate(ops) if pred(o))
+mkdir_mount = pos(lambda o: o['argv'][:2] == ['mkdir', '-p'] and o['argv'][-1].endswith('/missing/templaros-provision'))
+first_mount = pos(lambda o: o['argv'] and o['argv'][0] == 'mount')
+bootstrap = pos(lambda o: o['argv'] and o['argv'][0] == 'mmdebstrap')
+host_bind = pos(lambda o: o['argv'][:2] == ['mount', '--bind'])
+first_chroot = pos(lambda o: o['argv'] and o['argv'][0] == 'chroot')
+assert mkdir_mount < first_mount < bootstrap < host_bind < first_chroot
+assert '--skip=check/empty' in ops[bootstrap]['argv']
+assert not any(o['argv'][:2] == ['mount', '--bind'] for o in ops[:bootstrap])" "$plan" \
+    || fail "mountpoint/bootstrap/bind/chroot lifecycle is out of order"
+grep -q 'trap cleanup EXIT' "$provision" && grep -q 'owned_mounts' "$provision" \
+    || fail "the provisioner has no owned EXIT cleanup"
+ok "a missing mount root is planned first; bootstrap precedes host binds and chroot; cleanup is installed"
+
+fallback_image="$work/fallback.img"
+TEMPLAROS_BOOTSTRAP_BACKEND=debootstrap "$provision" --image "$fallback_image" --user plantest \
+    --password-stdin > "$work/fallback.txt" 2>&1 \
+    || fail "the debootstrap fallback dry run failed"
+fallback_plan="$fallback_image.plan.json"
+json "import json,sys
+ops = json.load(open(sys.argv[1]))['operations']
+names = [o['argv'][0] for o in ops if o['argv']]
+assert 'debootstrap' in names and 'mmdebstrap' not in names
+bootstrap = names.index('debootstrap')
+assert not any(o['argv'][:2] == ['mount', '--bind'] for o in ops[:next(i for i,o in enumerate(ops) if o['argv'][0] == 'debootstrap')])" "$fallback_plan" \
+    || fail "the debootstrap fallback does not share the clean pre-bootstrap lifecycle"
+ok "the debootstrap fallback uses the same clean target lifecycle"
+
 # The plan says what it was reviewed against.
 json "import json,sys
 plan = json.load(open(sys.argv[1]))
@@ -79,17 +141,23 @@ assert plan['reuse'] is False and plan['format_data'] is False" "$plan" \
     || fail "the plan does not record what it was reviewed against"
 ok "the plan records the state it was reviewed against"
 
+json "import json,sys
+request = set(json.load(open(sys.argv[1]))['request'])
+assert 'archive_set=test-set' in request
+assert any(x.startswith('archive_digest=') and not x.endswith('missing') for x in request)" "$plan" \
+    || fail "the plan does not bind the immutable archive set and its digest"
+
 # --- 2. Apply refuses a plan the machine no longer matches ----------------------------------------
 
 # `--apply` as an unprivileged user refuses before it can reach the drift check, so the refusal
 # below is checked on the argument path instead: a plan is only for an apply.
-if "$provision" --image "$image" --user plantest --plan "$plan" > "$work/planless.txt" 2>&1; then
+if "$provision" --image "$image" --user plantest --password-stdin --plan "$plan" > "$work/planless.txt" 2>&1; then
     fail "a dry run accepted --plan; a plan is consumed by an apply, not produced by one"
 fi
 grep -q 'plan is for --apply' "$work/planless.txt" \
     || fail "--plan on a dry run was refused for the wrong reason:$(printf '\n'; cat "$work/planless.txt")"
 
-if "$provision" --image "$image" --user plantest --apply --plan "$work/nonexistent.json" \
+if "$provision" --image "$image" --user plantest --password-stdin --apply --plan "$work/nonexistent.json" \
         > "$work/noplan.txt" 2>&1; then
     fail "--apply accepted a plan file that does not exist"
 fi
@@ -108,15 +176,25 @@ if [ "$(id -u)" = 0 ]; then
 fi
 # As an ordinary user the apply refuses for lack of privilege, which happens *after* the drift
 # check — so a drifted plan must produce the drift message, not the privilege one.
-"$provision" --image "$image" --user plantest --apply --plan "$drifted" > "$work/drift.txt" 2>&1 \
+"$provision" --image "$image" --user plantest --password-stdin --apply --plan "$drifted" > "$work/drift.txt" 2>&1 \
     && fail "--apply accepted a plan reviewed against a different machine"
 if grep -q 'not what this plan was reviewed against' "$work/drift.txt"; then
-    ok "apply refuses a plan the machine no longer matches, and prints the difference"
+ok "apply refuses a plan the machine no longer matches, and prints the difference"
 else
     grep -q 'needs root' "$work/drift.txt" \
         && fail "the privilege refusal fired before the drift check; drift would go unnoticed on a real apply"
     fail "a drifted plan was refused for the wrong reason:$(printf '\n'; cat "$work/drift.txt")"
 fi
+
+
+# An unchanged disk observation is not enough: options and source inputs are part of the review.
+if "$provision" --image "$image" --user another-user --password-stdin --apply --plan "$plan" \
+        > "$work/request-drift.txt" 2>&1; then
+    fail "apply accepted different account/options against the reviewed plan"
+fi
+grep -q 'requested operation is not the one' "$work/request-drift.txt" \
+    || fail "request drift was refused for the wrong reason"
+ok "apply binds target options, provisioner/layout digests and the immutable archive set"
 
 # --- 3, 4. Preservation, on real filesystems made in sparse files ---------------------------------
 
@@ -169,9 +247,9 @@ ok "--reuse and --format-data refuse the combinations that would mean nothing"
 
 grep -q 'Filesystem identity: /etc/fstab and /etc/templaros/install.toml, both by UUID' "$work/dry.txt" \
     || fail "the plan never writes /etc/fstab — a provisioned machine would not know how to mount itself"
-grep -q 'writing /mnt/templaros-provision/etc/fstab' "$work/dry.txt" \
+grep -Fq "writing $TEMPLAROS_PROVISION_MOUNT/etc/fstab" "$work/dry.txt" \
     || fail "the plan does not name the fstab it writes"
-grep -q 'writing /mnt/templaros-provision/etc/templaros/install.toml' "$work/dry.txt" \
+grep -Fq "writing $TEMPLAROS_PROVISION_MOUNT/etc/templaros/install.toml" "$work/dry.txt" \
     || fail "the plan does not write the installation identity templar-hostd reads"
 grep -q 'root=UUID=' "$work/dry.txt" || grep -q 'root=UUID=\${\|read at apply' "$work/dry.txt" \
     || fail "the plan does not say the boot command line will name the root by UUID"
@@ -192,7 +270,8 @@ sgdisk -n 1:25000000:25200000 -t 1:0700 -c 1:recovery "$gap" >/dev/null 2>&1
 sgdisk -n 2:25200000:60000000 -t 2:8300 -c 2:other-root "$gap" >/dev/null 2>&1
 before="$(sgdisk -p "$gap" 2>/dev/null | grep -E '^ +[0-9]+ ')"
 
-"$provision" --free-space "$gap" --user dev > "$work/gap.txt" 2>&1 \
+gap_plan="$work/gap-plan.json"
+"$provision" --free-space "$gap" --user dev --plan-out "$gap_plan" > "$work/gap.txt" 2>&1 \
     || fail "--free-space refused a disk whose largest free block is at the front: $(tail -3 "$work/gap.txt")"
 grep -q 'free block: sectors 2048\.\.' "$work/gap.txt" \
     || fail "the plan did not choose the leading gap: $(grep -i 'free block' "$work/gap.txt" || echo 'no free-block line at all')"
@@ -201,8 +280,15 @@ grep -q 'free block: sectors 2048\.\.' "$work/gap.txt" \
 after_dry="$(sgdisk -p "$gap" 2>/dev/null | grep -E '^ +[0-9]+ ')"
 [ "$before" = "$after_dry" ] || fail "the dry run altered the partition table"
 
-sgdisk --new=3:0:+1G --typecode=3:ef00 --change-name=3:TEMPLAR_ESP "$gap" >/dev/null 2>&1
-sgdisk --new=4:0:0 --typecode=4:8304 --change-name=4:templaros-root "$gap" >/dev/null 2>&1
+python3 - "$gap_plan" "$gap" <<'PY'
+import json, subprocess, sys
+plan = json.load(open(sys.argv[1]))
+target = sys.argv[2]
+for op in plan["operations"]:
+    argv = op["argv"]
+    if argv and argv[0] == "sgdisk" and argv[-1] == target and any(a.startswith("--new=") for a in argv):
+        subprocess.run(argv, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+PY
 after="$(sgdisk -p "$gap" 2>/dev/null | grep -E '^ +[12] ')"
 [ "$(printf '%s\n' "$before" | grep -E '^ +[12] ')" = "$after" ] \
     || fail "creating the two partitions in the gap moved an existing one"

@@ -11,14 +11,20 @@ or is a package name it takes as a variable. Installed by `templaros-cli` as `te
 installer/provision.sh --image /var/tmp/templaros.img --user dev
 
 # Do it, to an image file, as root, in a disposable VM or container.
-sudo installer/provision.sh --image /var/tmp/templaros.img --user dev --apply
+sudo installer/provision.sh --image /var/tmp/templaros.img --user dev --password-stdin
+sudo installer/provision.sh --image /var/tmp/templaros.img --user dev --password-stdin \
+    --apply --plan /var/tmp/templaros.img.plan.json
 
-# The reference laptop: two new partitions in the unallocated tail of a disk that keeps every
-# partition it already has. The plan names what it creates and what it leaves alone.
-sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 templaros-install --free-space /dev/nvme1n1 --user dk [--apply]
+# The reference laptop: first identify the OS drive by model, serial, the lubuntu_2504
+# label and partition layout. NVMe numbers can swap. The disk containing label Second
+# is the data drive and must never be passed here.
+sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 templaros-install --free-space /dev/OS_DISK \
+    --user dk --password-stdin --plan-out /tmp/templaros-install.json
+sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 templaros-install --free-space /dev/OS_DISK \
+    --user dk --password-stdin --apply --plan /tmp/templaros-install.json
 
 # Two partitions somebody already made (formatted; the table is not touched).
-sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 templaros-install --esp /dev/nvme1n1p3 --root /dev/nvme1n1p4 --user dk
+sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 templaros-install --esp /dev/ESP_PART --root /dev/ROOT_PART --user dk
 
 # A whole disk. Three separate acknowledgements, because it destroys one.
 sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 \
@@ -38,8 +44,10 @@ The refusals are checked before the first destructive step, not scattered among 
 - `--device` without `--i-mean-it` **and** `TEMPLAROS_PROVISION_ALLOW_DEVICE=1` in the environment. Two
   switches in two places, so that a command line copied out of a document cannot reach a disk;
 - `--device` naming the disk this system booted from, under any combination of flags;
-- `--free-space` whose largest free block is a hole between partitions rather than the tail, or a
-  tail smaller than the layout's minimum (ESP `size_max` + root `size_min`);
+- `--free-space` whose largest free block is smaller than the layout's minimum (ESP `size_max` +
+  root `size_min`). A gap anywhere on the disk is accepted — a leading hole left by a deleted OS
+  is the reference-laptop case; the new partitions are confined to that block and cannot reach a
+  neighbour;
 - `--esp`/`--root` naming a whole disk, or a partition that is mounted;
 - `--apply` as a non-root user, which would fail halfway through and leave a half-made target.
 

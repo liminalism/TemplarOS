@@ -27,21 +27,23 @@ const START_STEPS: &[Step] = &[
         program: "systemctl",
         args: &["--user", "unset-environment", "DISPLAY", "WAYLAND_DISPLAY"],
     },
+    // greetd's live [initial_session] launches this binary without the wayland-session
+    // desktop file, so XDG_CURRENT_DESKTOP is unset and `import-environment` would
+    // ignore it. Set the session identity here; import only the seat/VT greetd does own.
     Step {
         program: "systemctl",
         args: &[
             "--user",
-            "import-environment",
-            "XDG_SESSION_TYPE",
-            "XDG_CURRENT_DESKTOP",
-            "XDG_SESSION_DESKTOP",
-            "XDG_SEAT",
-            "XDG_VTNR",
+            "set-environment",
+            "XDG_CURRENT_DESKTOP=TemplarOS",
+            "XDG_SESSION_DESKTOP=templaros",
+            "XDG_SESSION_TYPE=wayland",
+            "WAYLAND_DISPLAY=wayland-0",
         ],
     },
     Step {
         program: "systemctl",
-        args: &["--user", "set-environment", "WAYLAND_DISPLAY=wayland-0"],
+        args: &["--user", "import-environment", "XDG_SEAT", "XDG_VTNR"],
     },
     // Autostart is arbitrated by sessiond (one provider per role); mask the generic runner.
     Step {
@@ -142,11 +144,31 @@ mod tests {
             ["--user", "unset-environment", "DISPLAY", "WAYLAND_DISPLAY"]
         );
         assert_eq!(
-            START_STEPS[2].args,
-            ["--user", "set-environment", "WAYLAND_DISPLAY=wayland-0"]
+            START_STEPS[1].args,
+            [
+                "--user",
+                "set-environment",
+                "XDG_CURRENT_DESKTOP=TemplarOS",
+                "XDG_SESSION_DESKTOP=templaros",
+                "XDG_SESSION_TYPE=wayland",
+                "WAYLAND_DISPLAY=wayland-0",
+            ]
         );
-        assert!(!START_STEPS[1].args.contains(&"DISPLAY"));
-        assert!(!START_STEPS[1].args.contains(&"WAYLAND_DISPLAY"));
+        assert!(!START_STEPS[2].args.contains(&"DISPLAY"));
+        assert!(!START_STEPS[2].args.contains(&"WAYLAND_DISPLAY"));
+        assert!(START_STEPS[2].args.contains(&"XDG_SEAT"));
+    }
+
+    #[test]
+    fn sessiond_creates_its_config_dir_before_the_home_sandbox() {
+        let sessiond = include_str!("../../units/user/templar-sessiond.service");
+        assert!(
+            sessiond.contains(
+                "ExecStartPre=+/usr/bin/mkdir -p %h/.config/templaros %h/.local/share/applications"
+            ),
+            "a missing %h/.config/templaros is 226/NAMESPACE under ProtectHome=read-only"
+        );
+        assert!(sessiond.contains("ReadWritePaths=%S/templaros %h/.config/templaros"));
     }
 
     #[test]

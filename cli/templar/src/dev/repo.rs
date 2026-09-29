@@ -705,27 +705,26 @@ impl Repo {
             },
         }
 
-        // The signing key's home is 0700 root. Read as another user, `gpg --verify` fails for
-        // want of a trust database, which looked like tampering; say what it is instead. The
-        // archive can still be judged on its index and pool above, and the provisioner runs this
-        // as root anyway.
-        if fs::read_dir(self.gnupg()).is_err() {
+        // Signatures are checked against the exported public key, which is what the medium and
+        // the target carry. The private home (`gnupg/`, 0700, never copied) is only for signing;
+        // the verifier must not depend on it or an installer can never verify what it installs.
+        let keyring = self.public_key();
+        if !keyring.is_file() {
             problems.push(format!(
-                "the signing key directory {} is missing or not readable by this user, so the \
-                 signatures were not checked; as root, or after the next publish makes a key, \
-                 they can be",
-                self.gnupg().display()
+                "the public key {} is missing, so the signatures were not checked; \
+                 the next publish exports it",
+                keyring.display()
             ));
             return problems;
         }
-        let homedir = self.gnupg().display().to_string();
+        let keyring = keyring.display().to_string();
         for (name, args) in [
-            ("InRelease", vec!["--verify", "InRelease"]),
-            ("Release.gpg", vec!["--verify", "Release.gpg", "Release"]),
+            ("InRelease", vec!["InRelease"]),
+            ("Release.gpg", vec!["Release.gpg", "Release"]),
         ] {
-            let mut argv = vec!["--homedir", homedir.as_str(), "--batch"];
+            let mut argv = vec!["--keyring", keyring.as_str()];
             argv.extend(args);
-            match self.runner.run(&self.root, "gpg", &argv) {
+            match self.runner.run(&self.root, "gpgv", &argv) {
                 Err(error) => problems.push(format!("{name} could not be verified: {error}")),
                 Ok(output) if !output.status.success() => problems.push(format!(
                     "{name} does not verify against this archive's key: {}",
@@ -1039,6 +1038,7 @@ mod tests {
     /// would have produced. Their *content* is never what verification trusts — `gpg --verify` is,
     /// and the fake answers that — but their absence is itself a finding, so they have to exist.
     fn signed(repo: &Repo) {
+        fs::write(repo.public_key(), b"fake key").unwrap();
         for name in ["InRelease", "Release.gpg"] {
             fs::write(
                 repo.root.join(name),
@@ -1248,7 +1248,7 @@ mod tests {
         // The matrix is passed in, and here it is the copy compiled into the binary — which is
         // the whole point: an installed machine has no `distro/deploy/components.toml` and must
         // still be able to say "this set is missing the compositor".
-        let (repo, _runner, scratch) = repo("verify-missing");
+        let (repo, runner, scratch) = repo("verify-missing");
         let embedded = templar_build::components::Matrix::embedded();
         let mut packages = build_set(&scratch, SET);
         let dropped = packages.pop().expect("the matrix is not empty").0;
@@ -1274,6 +1274,40 @@ mod tests {
         assert!(good.ok, "{}", good.render());
         assert_eq!(good.sets[0].pinned.len(), embedded.components.len());
         assert!(good.staged.is_none(), "a finished publish stages nothing");
+        // The medium and the target carry the public key, never gnupg/: verification must use it.
+        let checks: Vec<String> = runner
+            .lines()
+            .into_iter()
+            .filter(|line| line.starts_with("gpgv "))
+            .collect();
+        assert!(checks.len() >= 2, "{checks:#?}");
+        assert!(
+            checks
+                .iter()
+                .all(|line| line.contains(&repo.public_key().display().to_string())),
+            "{checks:#?}"
+        );
+        assert!(
+            !runner.lines().iter().any(|line| line.contains("--verify")),
+            "the private signing home must not be consulted to verify"
+        );
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn verify_without_the_public_key_reports_unchecked_signatures() {
+        let (repo, _runner, scratch) = repo("verify-nokey");
+        let embedded = templar_build::components::Matrix::embedded();
+        repo.publish(&build_set(&scratch, SET), SET).unwrap();
+        signed(&repo);
+        fs::remove_file(repo.public_key()).unwrap();
+        let report = repo.verify(&embedded, None).unwrap();
+        assert!(!report.ok);
+        assert!(
+            report.problems.iter().any(|p| p.contains("public key")),
+            "{:#?}",
+            report.problems
+        );
         let _ = fs::remove_dir_all(scratch);
     }
 

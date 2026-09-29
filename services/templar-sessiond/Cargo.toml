@@ -50,5 +50,6 @@ depends = "$auto, systemd, xdg-utils"
 assets = [
     ["target/release/templar-sessiond", "usr/libexec/templar-sessiond", "755"],
     ["../../session/units/user/templar-sessiond.service", "usr/lib/systemd/user/templar-sessiond.service", "644"],
+    ["../../session/skel/.config/templaros/.keep", "etc/skel/.config/templaros/.keep", "644"],
     ["../../distro/app-manifests/*.json", "usr/share/templaros/apps/", "644"],
 ]
