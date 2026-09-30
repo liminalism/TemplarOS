@@ -2261,6 +2261,18 @@ record legeos.evidence.installed-home-visible-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.installer-cuda-multiverse-resume-vm-20260930/1 : evidence {
+    title "Replica VM: the step-8 CUDA failure reproduced on the old medium, then resumed to completion on gb919ed4"
+    state verified
+    result pass
+    method command
+    observed_at git:b919ed40af331a687ea8249d60f7418d8705b2b6
+    command "qemu (KVM, SB OVMF), replica disks of the laptop; live ISO g57f890b then ISO gb919ed4; templaros-autoinstall from each medium, as the user runs it"
+    summary """
+        g57f890b medium (the user's stick): templaros-autoinstall made p5/p6, bootstrapped from the snapshot, stopped at the package step with 'templaros-dev-cuda Depends nvidia-cuda-toolkit ... [no choices]' and state bootstrapped — the user's failure, reproduced. nvidia-cuda-toolkit is only in multiverse (checked in the snapshot's four Packages indexes); every other requested package resolved (--check-packages: 10 requested, 1607 to install, once multiverse is named; without it, one line: templaros-dev-cuda needs nvidia-cuda-toolkit). After that failure the live system's /dev, /dev/pts, /proc, /sys, /run and /dev/shm had changed from shared to private propagation; sudo through a pty still worked, so the user's pty failure was not reproduced. gb919ed4 medium over the same disks: verdict resumable across the set change, pre-write solvability check passed, install completed (nvidia-cuda-toolkit 12.4.131 ii, templaros-dev-cuda, templar-files, templaros-nvidia-open, kernel 7.0.0-31), doctor 11 pass 0 fail, state complete, firmware entry appended; live mounts identical before and after (shared), sudo pty OK, no leftover target mounts; partitions 1-4 and the data disk unchanged.
+        """
+}
+
 record legeos.evidence.installer-refuses-failed-preflight-20260907/1 : evidence {
     title "With a report containing 'fail preflight-network', --apply dies naming the line before any write or the root check; with --ignore-preflight it proceeds to the root requirement."
     state verified

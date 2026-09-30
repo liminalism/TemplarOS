@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.1"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:8a5eb7f69a51c9aa7ee338e2c57d624a83dca3ab2c871e0eb7d9a93c95de83e4"
+    source_graph "sha256:4475be670b7dad5f24079900b9ef8114196ec4df271e1bdd365671070d1e0738"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:7fc0f438ccdd922843cf28dc23cc9803ed682b09958b8195c00e870cb40fc27e"
-    records 324
+    hash "sha256:d5c958f5272391cdb84bbaa633a171e33acfdc12aa05cf23a827ff3e350a3de4"
+    records 325
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -5276,6 +5276,11 @@ seal @legeos.evidence.index-scale-two-million-20260907/1 {
 seal @legeos.evidence.installed-home-visible-20260824/1 {
     state verified
     hash "sha256:d2f40424f4130c1dbb9530046734df51b54bcf57687e03474780f4ccb087d3b5"
+}
+
+seal @legeos.evidence.installer-cuda-multiverse-resume-vm-20260930/1 {
+    state verified
+    hash "sha256:c546cad53dd7a30595dcde8e6028f233249063fc77941eb524fc549f5862122f"
 }
 
 seal @legeos.evidence.installer-refuses-failed-preflight-20260907/1 {
