@@ -15,13 +15,25 @@ sudo installer/provision.sh --image /var/tmp/templaros.img --user dev --password
 sudo installer/provision.sh --image /var/tmp/templaros.img --user dev --password-stdin \
     --apply --plan /var/tmp/templaros.img.plan.json
 
-# The reference laptop: first identify the OS drive by model, serial, the lubuntu_2504
-# label and partition layout. NVMe numbers can swap. The disk containing label Second
-# is the data drive and must never be passed here.
+# The reference laptop: one command from the live session (or the medium's last GRUB entry).
+# It finds the OS drive by its lubuntu_2504 label and never writes the drive labelled Second,
+# chooses between a fresh install, a rebuild of the TemplarOS pair and a resume by itself, and
+# does the plan/apply dance below with a provisional password (dk / templaros, expired).
+sudo templaros-autoinstall
+# ...or, on a medium older than this script, straight from a checkout:
+sudo /path/to/LegeOS/distro/iso/live/autoinstall.sh
+
+# The same thing by hand. NVMe numbers can swap between boots; the disk containing label
+# Second is the data drive and must never be passed here.
 sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 templaros-install --free-space /dev/OS_DISK \
     --user dk --password-stdin --plan-out /tmp/templaros-install.json
 sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 templaros-install --free-space /dev/OS_DISK \
     --user dk --password-stdin --apply --plan /tmp/templaros-install.json
+
+# An install that stopped partway: what the pair holds, then carry on from it.
+sudo templaros-install --esp /dev/ESP_PART --root /dev/ROOT_PART --inspect
+sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 templaros-install --esp /dev/ESP_PART --root /dev/ROOT_PART \
+    --resume --user dk --password-stdin --plan-out /tmp/templaros-resume.json   # then --apply --plan
 
 # Two partitions somebody already made (formatted; the table is not touched).
 sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 templaros-install --esp /dev/ESP_PART --root /dev/ROOT_PART --user dk
@@ -35,6 +47,38 @@ The archive it installs from is `/templaros/devrepo` on the live medium and `/va
 elsewhere (`--archive DIR` overrides). It is copied whole to the target's `/var/lib/templaros/devrepo`,
 so the installed system's `templar dev status` knows the set it came from and `templar dev rollback` has
 somewhere to go.
+
+Ubuntu itself comes from the snapshot `distro/base.toml` pins (`snapshot_url`), not the moving
+archive: the set's metapackages pin the NVIDIA modules and userspace to the exact versions its
+closure resolved, and the archive drops those as soon as Ubuntu publishes the next kernel. The
+installed system keeps the snapshot as its source; a newer base arrives with a newer set.
+
+## Stopping partway, and carrying on
+
+Every apply records its progress on the target, in `@var` at
+`/var/lib/templaros/provision/state`: `formatted`, then `bootstrapped` once Ubuntu is in `@`, then
+`complete`. The record names the root UUID, the ESP PARTUUID, the deployment id, the set, the
+suite and the mirror it was written for. `--inspect` reads it (root mounts read-only) and says one
+of:
+
+- `fresh` — the pair has no installed system; install onto it;
+- `resumable` — Ubuntu is bootstrapped for this set, suite and mirror; `--resume` keeps it and
+  repeats every later step. Each of those is repeatable: `dpkg --configure -a` first, the account
+  is only created if absent, `flatpak install --or-update`, and an existing firmware entry for this
+  ESP's shim is kept rather than duplicated;
+- `rebuild` — the pair is this provisioner's but cannot be resumed (it stopped before the
+  bootstrap finished, the set, suite or mirror changed, or an earlier provisioner left no record);
+  the same `--esp/--root` without `--reuse` reformats only those two partitions;
+- `complete` — installed; nothing to do;
+- `foreign` — not recognisably this provisioner's pair; nothing is done to it.
+
+A failed apply still unmounts everything it mounted, then says which step it stopped at, whether
+the target was modified, the recorded state, and the exact command that carries on.
+
+The chroot steps get their own `/run` (a tmpfs, so nothing reaches `@`): Ubuntu's
+`/etc/resolv.conf` is a symlink into `/run/systemd/resolve/`, which a never-booted target does not
+have, so the file it names is written there from the live system's upstream resolvers, and
+`getent ahostsv4 <mirror>` inside the target proves resolution before any step depends on it.
 
 ## What it refuses to do
 
@@ -98,6 +142,8 @@ again after any change to the boot path.
 ## The installation medium
 
 The live ISO (`distro/iso/`, ISO-PLAN.md) is a TemplarOS session that carries the build set at
-`/templaros/devrepo` and this provisioner as `templaros-install`. Installing is running it from a
-terminal in that session, reading the plan, and adding `--apply`. A graphical installer (Calamares
-versus subiquity) remains a product decision for a release that has users who did not build it.
+`/templaros/devrepo` and this provisioner as `templaros-install`. On the reference laptop,
+installing is `sudo templaros-autoinstall` (`distro/iso/live/autoinstall.sh`), or the medium's last
+GRUB entry, which runs the same script with no session. Running it again after any failure is
+always the next step. A graphical installer (Calamares versus subiquity) remains a product
+decision for a release that has users who did not build it.

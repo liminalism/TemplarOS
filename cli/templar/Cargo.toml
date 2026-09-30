@@ -64,6 +64,8 @@ assets = [
     ["../../installer/provision.sh", "usr/libexec/templaros/provision", "755"],
     ["../../installer/templaros-install", "usr/bin/templaros-install", "755"],
     ["../../distro/deploy/layout.toml", "usr/share/templaros/layout.toml", "644"],
+    # The Ubuntu snapshot the set was resolved against: the provisioner installs from it.
+    ["../../distro/base.toml", "usr/share/templaros/base.toml", "644"],
     ["../../installer/README.md", "usr/share/doc/templaros-cli/provision.md", "644"],
     ["../../installer/CHECKLIST.md", "usr/share/doc/templaros-cli/CHECKLIST.md", "644"],
     ["../../session/profile.d/60-templaros-garden.sh", "etc/profile.d/60-templaros-garden.sh", "644"],

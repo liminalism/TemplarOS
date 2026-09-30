@@ -22,6 +22,7 @@ if [ -f "$repo/distro/deploy/layout.toml" ]; then
     data_grub_stub="$repo/distro/deploy/grub.d/09_templaros"
     data_os_release="$repo/distro/branding/os-release"
     data_flatpak_refs="$repo/distro/seeds/flatpak-refs.list"
+    data_base="$repo/distro/base.toml"
 else
     # The live medium is itself a TemplarOS: templaros-hostd ships the GRUB stub and the identity is
     # the running system's own, so only the layout needs a home of its own (templaros-cli).
@@ -29,16 +30,19 @@ else
     data_grub_stub=/etc/grub.d/09_templaros
     data_os_release=/usr/lib/os-release
     data_flatpak_refs=/usr/share/templaros/flatpak-refs.list
+    data_base=/usr/share/templaros/base.toml
 fi
 
 # --- C1: package selection (D1 owns these names; they are variables so a rename is one edit) -----
 TEMPLAROS_KEYRING="${TEMPLAROS_KEYRING:-templaros-archive-keyring}"
 TEMPLAROS_DESKTOP="${TEMPLAROS_DESKTOP:-templaros-desktop}"
-TEMPLAROS_SESSION="${TEMPLAROS_SESSION:-templaros-session-meta}"     # D1 may rename to templaros-session-full
+TEMPLAROS_SESSION="${TEMPLAROS_SESSION:-templaros-session-full}"     # built from distro/metapackages/templaros-session-meta
 TEMPLAROS_KERNEL="${TEMPLAROS_KERNEL:-templaros-kernel}"
 TEMPLAROS_NVIDIA="${TEMPLAROS_NVIDIA:-templaros-nvidia-open}"        # or templaros-nvidia-proprietary
 TEMPLAROS_DEV_RUST="${TEMPLAROS_DEV_RUST:-templaros-dev-rust}"
 TEMPLAROS_DEV_CUDA="${TEMPLAROS_DEV_CUDA:-templaros-dev-cuda}"
+# In the set but in no metapackage; `templar doctor`'s build-set-coherent check fails without it.
+TEMPLAROS_FILES="${TEMPLAROS_FILES:-templar-files}"
 
 # --- C2: the local TemplarOS archive (D2 owns this shape) -------------------------------------------
 # Where the set is read from: the live medium carries one at /templaros/devrepo; a development host
@@ -55,8 +59,18 @@ DEVREPO_MARKER="${DEVREPO_MARKER:-current}"   # current | previous. `staged` is 
 
 # --- Ubuntu base ---------------------------------------------------------------------------------
 UBUNTU_SUITE="${UBUNTU_SUITE:-resolute}"
-UBUNTU_MIRROR="${UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}"
-UBUNTU_SECURITY_MIRROR="${UBUNTU_SECURITY_MIRROR:-http://security.ubuntu.com/ubuntu}"
+# Ubuntu comes from the snapshot the TemplarOS set was resolved against (distro/base.toml), not the
+# moving archive: the set's metapackages pin the kernel's NVIDIA modules and userspace to exact
+# versions, and the archive drops those the day Ubuntu publishes the next kernel. (2026-09-30: the
+# set pinned 7.0.0-31 and 580.173, the archive had moved to 7.0.0-34 and 580.178, and the install
+# stopped at the NVIDIA step.) The installed system keeps the same sources, so what it upgrades to
+# is what the set was tested against; a newer base arrives with a newer set. No pin means the archive.
+base_snapshot=""
+if [ -f "$data_base" ]; then
+    base_snapshot="$(sed -n 's/^snapshot_url *= *"\([^"]*\)".*/\1/p' "$data_base" | head -1)"
+fi
+UBUNTU_MIRROR="${UBUNTU_MIRROR:-${base_snapshot:-http://archive.ubuntu.com/ubuntu}}"
+UBUNTU_SECURITY_MIRROR="${UBUNTU_SECURITY_MIRROR:-${base_snapshot:-http://security.ubuntu.com/ubuntu}}"
 UBUNTU_COMPONENTS="${UBUNTU_COMPONENTS:-main universe restricted}"
 bootstrap_backend="${TEMPLAROS_BOOTSTRAP_BACKEND:-auto}"
 case "$bootstrap_backend" in
@@ -79,6 +93,8 @@ step_no=0
 data_arg=""
 format_data=0
 reuse=0
+resume=0
+inspect=0
 plan_out=""
 plan_in=""
 ignore_preflight=0
@@ -91,6 +107,10 @@ note() { printf '  %s\n' "$*"; }
 
 block_type() { lsblk -dnro TYPE -- "$1" 2>/dev/null | head -1; }
 canonical_device() { readlink -f -- "$1" 2>/dev/null || printf '%s' "$1"; }
+# `|| true`: in a dry run the partitions may not exist yet, and blkid failing to read a device that
+# has not been created is the expected case, not an error.
+uuid_of() { blkid -s UUID -o value "$1" 2>/dev/null || true; }
+partuuid_of() { blkid -s PARTUUID -o value "$1" 2>/dev/null || true; }
 parent_disk() {
     local parent
     parent="$(lsblk -dnro PKNAME -- "$1" 2>/dev/null | head -1)"
@@ -137,6 +157,12 @@ usage: provision.sh --image PATH [--apply] [options]
   --format-data       make a new filesystem on --data. The explicit, destructive opt-in.
   --reuse             preserve every filesystem that already exists: no mkfs on the ESP or the
                       root, and no GPT type code rewritten. Refuses if a required one is absent.
+  --resume            with --esp/--root: continue an install this provisioner started and recorded
+                      as bootstrapped (/var/lib/templaros/provision/state on the target). Nothing is
+                      formatted and Ubuntu is not bootstrapped again; every later step is repeated,
+                      and each is written to be repeatable. Needs root even for the dry run.
+  --inspect           with --esp/--root: print what the pair holds and exit, writing nothing:
+                      fresh, resumable, rebuild, complete or foreign, then the reason. Needs root.
   --plan-out PATH     write the reviewed operation sequence here (default: alongside the target).
   --ignore-preflight  install even though the live medium's hardware preflight reported a failure.
   --plan PATH         with --apply: run *this* reviewed plan. The machine is observed again first
@@ -164,6 +190,8 @@ while [ $# -gt 0 ]; do
         --data) data_arg="${2:?--data needs a partition}"; shift 2 ;;
         --format-data) format_data=1; shift ;;
         --reuse) reuse=1; shift ;;
+        --resume) resume=1; reuse=1; shift ;;
+        --inspect) inspect=1; shift ;;
         --ignore-preflight) ignore_preflight=1; shift ;;
         --plan-out) plan_out="${2:?--plan-out needs a path}"; shift 2 ;;
         --plan) plan_in="${2:?--plan needs a path}"; shift 2 ;;
@@ -345,6 +373,135 @@ for pair in "ESP:$ESP_LABEL" "root:$ROOT_LABEL" "data:$DATA_LABEL"; do
     fi
 done
 
+# --- What an existing TemplarOS pair holds ---------------------------------------------------------
+#
+# The install records its progress on the target itself, in @var at $state_file: `formatted` once
+# the filesystems and subvolumes exist, `bootstrapped` once Ubuntu is in @, `complete` at the end.
+# It names the root UUID and the ESP PARTUUID it was written for, so a record copied onto another
+# filesystem, or a filesystem recreated under the same labels, is not mistaken for this install.
+#
+# A pair is only ever judged resumable from that record. A populated @ without one is either an
+# earlier provisioner's partial install (its install.toml names this very filesystem, and nothing
+# recorded how far it got, so it is rebuilt from the start) or something the provisioner did not
+# write at all, which is refused.
+state_file=/var/lib/templaros/provision/state
+verdict=""
+verdict_reason=""
+state_phase=""
+state_deployment=""
+inspect_target() {
+    local esp_pl root_pl rtype rlabel ruuid esp_pu top state="" legacy_uuid="" populated=0 known_good=0
+    local phase state_suite state_set
+    verdict=foreign
+    esp_pl="$(lsblk -dnro PARTLABEL -- "$esp_arg" 2>/dev/null || true)"
+    root_pl="$(lsblk -dnro PARTLABEL -- "$root_arg" 2>/dev/null || true)"
+    if [ "$esp_pl" != "$ESP_LABEL" ] || [ "$root_pl" != "$ROOT_LABEL" ]; then
+        verdict_reason="the partition names are '$esp_pl' and '$root_pl', not the $ESP_LABEL and $ROOT_LABEL this provisioner gives the partitions it creates"
+        return 0
+    fi
+    rtype="$(blkid -s TYPE -o value "$root_arg" 2>/dev/null || true)"
+    if [ -z "$rtype" ]; then
+        verdict=fresh
+        verdict_reason="the partitions exist but $root_arg holds no filesystem yet"
+        return 0
+    fi
+    if [ "$rtype" != "$ROOT_FORMAT" ]; then
+        verdict_reason="$root_arg holds a $rtype filesystem, not $ROOT_FORMAT"
+        return 0
+    fi
+    rlabel="$(blkid -s LABEL -o value "$root_arg" 2>/dev/null || true)"
+    if [ "$rlabel" != "$ROOT_LABEL" ]; then
+        verdict_reason="$root_arg is labelled '$rlabel', not $ROOT_LABEL"
+        return 0
+    fi
+    ruuid="$(uuid_of "$root_arg")"
+    esp_pu="$(partuuid_of "$esp_arg")"
+
+    top="$(mktemp -d "${TMPDIR:-/tmp}/templaros-inspect.XXXXXX")"
+    mount -o ro,subvolid=5 "$root_arg" "$top" \
+        || { rmdir "$top"; die "cannot mount $root_arg read-only to read its install state"; }
+    if [ -f "$top/@var${state_file#/var}" ]; then state="$(cat "$top/@var${state_file#/var}")"; fi
+    if [ -f "$top/@/etc/templaros/install.toml" ]; then
+        legacy_uuid="$(sed -n 's/^root_uuid = "\(.*\)"$/\1/p' "$top/@/etc/templaros/install.toml")"
+    fi
+    if [ -d "$top/@" ] && [ -n "$(find "$top/@" -mindepth 1 -maxdepth 1 -print -quit)" ]; then populated=1; fi
+    if [ -f "$top/@var/lib/templaros/hostd/grub/known-good" ]; then known_good=1; fi
+    umount "$top" && rmdir "$top"
+
+    if [ -n "$state" ]; then
+        state_value() { printf '%s\n' "$state" | sed -n "s/^$1=//p" | head -1; }
+        if [ "$(state_value root_uuid)" != "$ruuid" ]; then
+            verdict_reason="the install state names root filesystem $(state_value root_uuid), and $root_arg is $ruuid"
+            return 0
+        fi
+        if [ "$(state_value esp_partuuid)" != "$esp_pu" ]; then
+            verdict_reason="the install state names ESP partition $(state_value esp_partuuid), and $esp_arg is $esp_pu"
+            return 0
+        fi
+        phase="$(state_value phase)"
+        state_phase="$phase"
+        state_deployment="$(state_value deployment)"
+        state_suite="$(state_value suite)"
+        state_set="$(state_value archive_set)"
+        state_mirror="$(state_value mirror)"
+        case "$phase" in
+            complete)
+                verdict=complete
+                verdict_reason="deployment $state_deployment was installed here completely; there is nothing to resume" ;;
+            bootstrapped)
+                if [ "$state_suite" != "$UBUNTU_SUITE" ]; then
+                    verdict=rebuild
+                    verdict_reason="Ubuntu $state_suite was bootstrapped here, and this run installs $UBUNTU_SUITE"
+                elif [ "$state_mirror" != "$UBUNTU_MIRROR" ]; then
+                    verdict=rebuild
+                    verdict_reason="Ubuntu was bootstrapped from ${state_mirror:-an unrecorded mirror}, and this run installs from $UBUNTU_MIRROR"
+                elif [ "$state_set" != "$selected_set" ]; then
+                    verdict=rebuild
+                    verdict_reason="the install was started for TemplarOS set $state_set, and this archive's is $selected_set"
+                else
+                    verdict=resumable
+                    verdict_reason="Ubuntu $state_suite is bootstrapped for deployment $state_deployment (set $state_set); every later step is repeatable"
+                fi ;;
+            *)
+                verdict=rebuild
+                verdict_reason="the install stopped before Ubuntu finished bootstrapping (recorded phase: ${phase:-none})" ;;
+        esac
+    elif [ "$populated" = 0 ]; then
+        verdict=fresh
+        verdict_reason="$root_arg carries no installed system"
+    elif [ "$known_good" = 1 ]; then
+        verdict=complete
+        verdict_reason="an earlier provisioner finished an install here (hostd's known-good record is present)"
+    elif [ -n "$legacy_uuid" ] && [ "$legacy_uuid" = "$ruuid" ]; then
+        verdict=rebuild
+        verdict_reason="an earlier provisioner stopped partway through an install here and recorded no progress, so it cannot be resumed"
+    else
+        verdict_reason="@ on $root_arg holds a system this provisioner has no record of writing"
+    fi
+}
+
+if [ "$inspect" = 1 ] || [ "$resume" = 1 ]; then
+    [ "$target_kind" = partitions ] \
+        || die "--inspect and --resume read an existing TemplarOS pair, so they go with --esp/--root"
+    [ "$(id -u)" = 0 ] \
+        || die "--inspect and --resume need root: $root_arg is mounted read-only to read its install state"
+    inspect_target
+    if [ "$inspect" = 1 ]; then
+        [ "$apply" = 0 ] || die "--inspect only reads; it does not go with --apply"
+        printf '%s: %s\n' "$verdict" "$verdict_reason"
+        exit 0
+    fi
+    [ "$verdict" = resumable ] \
+        || die "--resume refused: $esp_arg + $root_arg is $verdict — $verdict_reason"
+    # The deployment the bootstrapped target was begun as keeps its name: its ESP directory and
+    # its command line are derived from it.
+    [ -n "$plan_in" ] || deployment_id="$state_deployment"
+    [ "$deployment_id" = "$state_deployment" ] \
+        || die "the plan is for deployment $deployment_id, and the target records $state_deployment"
+    esp_dir="${ESP_DIR_TEMPLATE/\{id\}/$deployment_id}"
+    cmdline="${CMDLINE_TEMPLATE/\{id\}/$deployment_id}"
+fi
+
 real_disk=0
 case "$target_kind" in
     device) real_disk=1 ;;
@@ -420,7 +577,7 @@ observe() {
 request_state() {
     printf '%s\n' \
         "target=$target" "target_kind=$target_kind" "esp=$esp_arg" "root=$root_arg" \
-        "data=$data_arg" "reuse=$reuse" "format_data=$format_data" "username=$username" \
+        "data=$data_arg" "reuse=$reuse" "resume=$resume" "format_data=$format_data" "username=$username" \
         "password_stdin=$read_password" "expire_password=$expire_password" "nvidia=$TEMPLAROS_NVIDIA" "suite=$UBUNTU_SUITE" \
         "mirror=$UBUNTU_MIRROR" "security_mirror=$UBUNTU_SECURITY_MIRROR" \
         "components=$UBUNTU_COMPONENTS" "bootstrap_backend=$bootstrap_backend" \
@@ -464,9 +621,13 @@ record() { # argv...
     plan_ops="$plan_ops$([ -n "$plan_ops" ] && printf ',')
     {\"step\": $step_no, \"description\": \"$(json_escape "$current_step")\", \"op\": \"$op\", \"target\": \"$(json_escape "$target")\", \"argv\": [$argv]}"
 }
+# Set once this run has written to the target, so a failure can say whether it left a partial
+# install behind or stopped with the target as it found it.
+target_modified=0
 run() {
     record "$@"
     if [ "$apply" = 1 ]; then
+        case "$(classify "$1")" in create|format) target_modified=1 ;; esac
         "$@"
     else
         printf '     $ %s\n' "$*"
@@ -512,7 +673,54 @@ cleanup() {
     fi
     [ "$mnt_created" = 1 ] && rmdir "$mnt" 2>/dev/null || true
     [ "$cleanup_failed" = 0 ] || printf 'provision: cleanup left a mount or loop attached; inspect before retrying\n' >&2
+    [ "$status" = 0 ] || failure_report "$status"
     return "$status"
+}
+# What a failed apply leaves behind and the one command that carries on from it. Unmounting is
+# still right — a half-installed target must not stay lent to the live system — but a person must
+# not be left to work out from the mounts what state the disk is in.
+failure_report() { # status
+    local again esp="${esp_part:-$esp_arg}" root="${root_part:-$root_arg}"
+    {
+        printf '\nInstallation stopped at step %d (%s), exit %s.\n' "$step_no" "$current_step" "$1"
+        if [ "$target_modified" = 0 ]; then
+            printf 'Nothing on the target was changed.\n'
+            return 0
+        fi
+        printf 'The target has been modified: %s (ESP) and %s (root) hold a partial TemplarOS install.\n' "$esp" "$root"
+        printf 'Recorded install state: %s.\n' "${state_phase:-none — it stopped before the filesystems were ready}"
+        if [ -n "${TEMPLAROS_PROVISION_RETRY_HINT:-}" ]; then
+            printf 'Next: %s\n' "$TEMPLAROS_PROVISION_RETRY_HINT"
+            return 0
+        fi
+        [ "$target_kind" != image ] || { printf 'Next: run the same --image command again; the image is rebuilt from the start.\n'; return 0; }
+        again="templaros-install --esp $esp --root $root"
+        [ "$real_disk" = 0 ] || again="TEMPLAROS_PROVISION_ALLOW_DEVICE=1 $again"
+        if [ "$state_phase" = bootstrapped ] || [ "$state_phase" = complete ]; then
+            printf 'Resume with (Ubuntu is kept; every step after the bootstrap is repeated):\n'
+            again="$again --resume"
+        else
+            printf 'Start again on the same two partitions (only they are reformatted; no other partition is touched):\n'
+        fi
+        again="$again --user $username --password-stdin$([ "$expire_password" = 1 ] && printf ' --expire-password')"
+        printf '  %s --plan-out /tmp/templaros-resume.json\n' "$again"
+        printf '  %s --apply --plan /tmp/templaros-resume.json\n' "$again"
+    } >&2
+}
+# The install's own record of how far it got (see inspect_target). Written to a temporary name and
+# renamed, so an interrupted write leaves the previous phase rather than half a file.
+write_state() { # phase
+    local ruuid epu
+    state_phase="$1"
+    note "install state: $1 (recorded in $mnt$state_file)"
+    [ "$apply" = 1 ] || return 0
+    ruuid="$(uuid_of "$root_part")"; epu="$(partuuid_of "$esp_part")"
+    [ -n "$ruuid" ] && [ -n "$epu" ] || die "cannot read the root UUID or ESP PARTUUID to record the install state"
+    mkdir -p "$mnt${state_file%/*}"
+    printf 'version=1\nphase=%s\nroot_uuid=%s\nesp_partuuid=%s\ndeployment=%s\narchive_set=%s\nsuite=%s\nmirror=%s\nusername=%s\nrecorded=%s\n' \
+        "$1" "$ruuid" "$epu" "$deployment_id" "$selected_set" "$UBUNTU_SUITE" "$UBUNTU_MIRROR" "$username" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        > "$mnt$state_file.new"
+    mv "$mnt$state_file.new" "$mnt$state_file"
 }
 
 write_plan() {
@@ -657,6 +865,8 @@ if [ "$apply" = 1 ]; then
     trap cleanup EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
+    # A resumed target is a partial install before this run writes anything to it.
+    [ "$resume" = 0 ] || target_modified=1
 fi
 case "$target_kind" in
 image|device)
@@ -665,8 +875,8 @@ image|device)
         run truncate -s "${TEMPLAROS_IMAGE_SIZE:-32G}" "$target"
     fi
     run sgdisk --zap-all "$target"
-    run sgdisk --new=1:0:+"${ESP_SIZE_MAX}" --typecode=1:ef00 --change-name=1:TEMPLAR_ESP "$target"
-    run sgdisk --new=2:0:0 --typecode=2:8304 --change-name=2:templaros-root "$target"
+    run sgdisk --new=1:0:+"${ESP_SIZE_MAX}" --typecode=1:ef00 --change-name=1:"$ESP_LABEL" "$target"
+    run sgdisk --new=2:0:0 --typecode=2:8304 --change-name=2:"$ROOT_LABEL" "$target"
     if [ "$target_kind" = image ]; then
         attach_loop
         esp_part="${loop}p1"; root_part="${loop}p2"
@@ -706,8 +916,8 @@ free-space)
     root_first=$(( ((esp_last + 1 + 2047) / 2048) * 2048 ))
     root_last="$free_last"
     [ "$root_first" -le "$root_last" ] || die "the reviewed free block cannot fit aligned ESP and root partitions"
-    run sgdisk --new="$n_esp:$esp_first:$esp_last" --typecode="$n_esp:ef00" --change-name="$n_esp:TEMPLAR_ESP" "$target"
-    run sgdisk --new="$n_root:$root_first:$root_last" --typecode="$n_root:8304" --change-name="$n_root:templaros-root" "$target"
+    run sgdisk --new="$n_esp:$esp_first:$esp_last" --typecode="$n_esp:ef00" --change-name="$n_esp:$ESP_LABEL" "$target"
+    run sgdisk --new="$n_root:$root_first:$root_last" --typecode="$n_root:8304" --change-name="$n_root:$ROOT_LABEL" "$target"
     if [ -b "$target" ]; then
         run partx --update "$target"
         esp_part="$(part_node "$target" "$n_esp")"; root_part="$(part_node "$target" "$n_root")"
@@ -779,8 +989,12 @@ for subvol in $SUBVOLUMES; do
         run btrfs subvolume create "$subvol_path"
     fi
 done
-if [ "$apply" = 1 ] && [ "$reuse" = 1 ] && find "$mnt/@" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
-    die "--reuse found a populated @ root; resuming an interrupted installation is not supported"
+# --reuse keeps filesystems, not installs: a populated @ is an install, and only one this
+# provisioner recorded as bootstrapped is continued — by --resume, which checked it above.
+if [ "$apply" = 1 ] && [ "$reuse" = 1 ] && [ "$resume" = 0 ] \
+    && [ -n "$(find "$mnt/@" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+    die "--reuse found a populated @ root. If an install stopped partway here, \`--inspect\` says whether
+     it can be resumed (--resume) or must be rebuilt (the same --esp/--root without --reuse)"
 fi
 unmount_owned "$mnt"
 
@@ -804,16 +1018,31 @@ if [ -n "$data_arg" ]; then
     run mkdir -p "$mnt$DATA_MOUNT"
     mount_owned ${DATA_MOUNT_OPTIONS:+-o "$DATA_MOUNT_OPTIONS"} "$data_arg" "$mnt$DATA_MOUNT"
 fi
+if [ "$resume" = 0 ]; then
+    write_state formatted
+fi
 
 # Bootstrap owns its own temporary /dev, /proc, /sys and resolver setup. The target contains only
 # the intentional Btrfs/ESP mountpoints at this point; target-owned files and host binds come later.
 step "Bootstrap Ubuntu $UBUNTU_SUITE ($UBUNTU_COMPONENTS) from $UBUNTU_MIRROR"
-if [ "$bootstrap_backend" = mmdebstrap ]; then
-    run mmdebstrap --skip=check/empty --components="${UBUNTU_COMPONENTS// /,}" \
-        "$UBUNTU_SUITE" "$mnt" "$UBUNTU_MIRROR"
+if [ "$resume" = 1 ]; then
+    note "already done: the install state records Ubuntu $UBUNTU_SUITE bootstrapped for $deployment_id; not repeated"
 else
-    note "mmdebstrap is absent; falling back to debootstrap"
-    run debootstrap --components="${UBUNTU_COMPONENTS// /,}" "$UBUNTU_SUITE" "$mnt" "$UBUNTU_MIRROR"
+    [ "$apply" = 0 ] || target_modified=1
+    if [ "$bootstrap_backend" = mmdebstrap ]; then
+        # IPv4 and retries for the same reason distro/iso/build.sh has them: snapshot.ubuntu.com
+        # answers on IPv4 only, and a hung IPv6 connection stalls apt for hours. ca-certificates
+        # because every later apt run is inside the target, over HTTPS to that snapshot.
+        run mmdebstrap --skip=check/empty --components="${UBUNTU_COMPONENTS// /,}" \
+            --include=ca-certificates \
+            --aptopt='Acquire::ForceIPv4 "true"' --aptopt='Acquire::Retries "8"' \
+            "$UBUNTU_SUITE" "$mnt" "$UBUNTU_MIRROR"
+    else
+        note "mmdebstrap is absent; falling back to debootstrap"
+        run debootstrap --include=ca-certificates --components="${UBUNTU_COMPONENTS// /,}" \
+            "$UBUNTU_SUITE" "$mnt" "$UBUNTU_MIRROR"
+    fi
+    write_state bootstrapped
 fi
 
 # --- Identity: /etc/fstab and /etc/templaros/install.toml, both by UUID ----------------------------
@@ -828,11 +1057,8 @@ fi
 # templar-hostd reads it back (`boot_entries.rs`), and it falls back to the label when the file is
 # absent — which is every machine provisioned before this and every mkosi image.
 step "Filesystem identity: /etc/fstab and /etc/templaros/install.toml, both by UUID"
-# `|| true` throughout: in a dry run the partitions do not exist yet, and blkid failing to read a
-# device that has not been created is the expected case, not an error.
-uuid_of() { blkid -s UUID -o value "$1" 2>/dev/null || true; }
 root_uuid="$(uuid_of "$root_part")"
-esp_partuuid="$(blkid -s PARTUUID -o value "$esp_part" 2>/dev/null || true)"
+esp_partuuid="$(partuuid_of "$esp_part")"
 data_uuid=""
 [ -n "$data_arg" ] && data_uuid="$(uuid_of "$data_arg")" || true
 if [ "$apply" = 1 ]; then
@@ -893,8 +1119,43 @@ if [ -d /sys/firmware/efi/efivars ]; then
     run mkdir -p "$mnt/sys/firmware/efi/efivars"
     mount_owned --bind /sys/firmware/efi/efivars "$mnt/sys/firmware/efi/efivars"
 fi
-run touch "$mnt/etc/resolv.conf"
-mount_owned --bind /etc/resolv.conf "$mnt/etc/resolv.conf"
+# Ubuntu's systemd-resolved makes the target's /etc/resolv.conf a symlink to
+# ../run/systemd/resolve/stub-resolv.conf, and in a target that has never booted /run is an empty
+# directory: `touch` and `mount --bind` both follow the dangling link and fail (the first install on
+# the reference laptop stopped here). The chroot gets a /run of its own instead — a tmpfs, so
+# nothing written there reaches @, and it is gone when the target is unmounted — and the file the
+# link names is written into it from the host's *upstream* resolvers, not the host's 127.0.0.53
+# stub, which answers only while the live system's resolved does. A package that re-creates the
+# link mid-install keeps resolving, because the file it points at is there.
+run mkdir -p "$mnt/run"
+mount_owned -t tmpfs -o mode=0755,nosuid,nodev tmpfs "$mnt/run"
+host_resolv=/run/systemd/resolve/resolv.conf
+[ -s "$host_resolv" ] || host_resolv=/etc/resolv.conf
+record __chroot_resolver__ "$host_resolv" "$mnt/etc/resolv.conf"
+if [ "$apply" = 1 ]; then
+    grep -q '^nameserver' "$host_resolv" \
+        || die "the live system names no nameserver in $host_resolv, and the chroot steps download packages"
+    if [ -L "$mnt/etc/resolv.conf" ]; then
+        resolv_link="$(readlink "$mnt/etc/resolv.conf")"
+        case "$resolv_link" in /*) ;; *) resolv_link="/etc/$resolv_link" ;; esac
+        resolv_path="$(realpath -ms "$resolv_link")"
+        case "$resolv_path" in
+            /run/*) ;;
+            *) die "the target's /etc/resolv.conf points at $resolv_path, outside /run; refusing to write through it" ;;
+        esac
+        install -D -m 0644 "$host_resolv" "$mnt$resolv_path"
+        note "/etc/resolv.conf -> $resolv_path, written into the chroot's own /run from $host_resolv"
+    else
+        [ -e "$mnt/etc/resolv.conf" ] || : > "$mnt/etc/resolv.conf"
+        mount_owned --bind "$host_resolv" "$mnt/etc/resolv.conf"
+    fi
+else
+    printf '     $ __chroot_resolver__ %s %s\n' "$host_resolv" "$mnt/etc/resolv.conf"
+    note "a link into /run has its target written into the chroot's /run; a plain file is bind-mounted over"
+fi
+# Resolved from inside, through the target's own resolver stack, before anything depends on it.
+mirror_host="${UBUNTU_MIRROR#*://}"; mirror_host="${mirror_host%%/*}"
+in_target getent ahostsv4 "$mirror_host"
 
 step "Sources: Canonical archive plus TemplarOS set $selected_set from $DEVREPO_ROOT"
 note "the TemplarOS archive is signed; the target trusts it through its key and nothing else"
@@ -916,6 +1177,10 @@ run install -D -m 0644 "$DEVREPO_ROOT/templaros-dev.gpg" \
 note "writing canonical Ubuntu sources, an immutable set pin, and the signed archive-root source"
 if [ "$apply" = 1 ]; then
     mkdir -p "$mnt/etc/apt/sources.list.d" "$mnt/etc/apt/preferences.d"
+    # The bootstrap's one-line sources.list names the same archive; keeping both makes apt warn
+    # about every target twice.
+    rm -f "$mnt/etc/apt/sources.list"
+    printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "8";\n' > "$mnt/etc/apt/apt.conf.d/01templaros-acquire"
     cat > "$mnt/etc/apt/sources.list.d/ubuntu.sources" <<EOF
 Types: deb
 URIs: $UBUNTU_MIRROR
@@ -941,9 +1206,13 @@ EOF
 fi
 
 step "Install the TemplarOS package set (contract C1)"
+if [ "$resume" = 1 ]; then
+    note "resuming: finish whatever dpkg was doing when the earlier attempt stopped"
+    in_target dpkg --configure -a
+fi
 in_target apt-get update
 in_target apt-get install -y "$TEMPLAROS_KEYRING" "$TEMPLAROS_SESSION" "$TEMPLAROS_DESKTOP" \
-    "$TEMPLAROS_DEV_RUST" "$TEMPLAROS_DEV_CUDA"
+    "$TEMPLAROS_DEV_RUST" "$TEMPLAROS_DEV_CUDA" "$TEMPLAROS_FILES"
 
 step "Kernel and NVIDIA modules: Ubuntu-signed only, previous kernel retained"
 note "$TEMPLAROS_KERNEL pulls Ubuntu's supported GA/HWE kernel; $TEMPLAROS_NVIDIA pulls the matching"
@@ -966,7 +1235,9 @@ in_target sh -c 'install -d -m 0755 /etc/netplan && umask 077 && printf "network
 step "Account: ${username:-<--user was not given>}"
 [ -n "$username" ] || note "no --user given; the plan stops short of creating an account"
 if [ -n "$username" ]; then
-    in_target useradd --create-home --shell /bin/bash --groups sudo,video,render "$username"
+    # Repeatable: a resumed install may already have made the account.
+    in_target sh -c 'id -u "$1" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --groups sudo,video,render "$1"' \
+        useradd "$username"
     note "reading the new password from stdin during apply; it is never echoed, planned, logged or placed in argv"
     record __password_stdin__ "$username"
     [ "$apply" = 1 ] || printf '     $ __password_stdin__ %s\n' "$username"
@@ -1005,7 +1276,7 @@ else
     # `<remote> <ref>` per line, comments and blanks ignored (the format D1's generator writes).
     while read -r remote ref; do
         [ -n "${ref:-}" ] || continue
-        in_target flatpak install -y --noninteractive --system "$remote" "$ref"
+        in_target flatpak install -y --noninteractive --or-update --system "$remote" "$ref"
     done < <(sed 's/#.*//' "$flatpak_refs")
 fi
 
@@ -1021,23 +1292,38 @@ if [ "$target_kind" = image ] || [ -n "$loop" ]; then
 else
     esp_disk="/dev/$(lsblk -dno PKNAME "$esp_part" 2>/dev/null || echo DISK)"
     esp_partn="$(lsblk -no PARTN "$esp_part" 2>/dev/null || echo N)"
-    before_entries=""
-    [ "$apply" = 0 ] || before_entries="$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\).*/\1/p' | sort)"
-    run efibootmgr --create-only --disk "$esp_disk" --part "$esp_partn" --label TemplarOS \
-        --loader '\EFI\TemplarOS\shimx64.efi'
+    # One entry per ESP: an earlier attempt at this install that got this far already made it.
+    entry=""
     if [ "$apply" = 1 ]; then
-        after_entries="$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\).*/\1/p' | sort)"
-        entry="$(comm -13 <(printf '%s\n' "$before_entries") <(printf '%s\n' "$after_entries"))"
-        [ "$(printf '%s\n' "$entry" | grep -c .)" = 1 ] \
-            || die "cannot identify the one firmware entry this invocation created"
-        created="$(efibootmgr -v | grep -i "^Boot${entry}" || true)"
-        printf '%s' "$created" | grep -Fqi '\\EFI\\TemplarOS\\shimx64.efi' \
-            || die "new Boot$entry does not point at the TemplarOS shim"
-        printf '%s' "$created" | grep -Fqi "$esp_partuuid" \
-            || die "new Boot$entry does not identify the target ESP $esp_partuuid"
+        entry="$(efibootmgr -v | grep -Fi '\EFI\TemplarOS\shimx64.efi' | grep -Fi "$esp_partuuid" \
+            | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\).*/\1/p' | head -1 || true)"
+    fi
+    if [ -n "$entry" ]; then
+        note "firmware entry Boot$entry already starts this ESP's TemplarOS shim; kept, not duplicated"
+    else
+        before_entries=""
+        [ "$apply" = 0 ] || before_entries="$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\).*/\1/p' | sort)"
+        run efibootmgr --create-only --disk "$esp_disk" --part "$esp_partn" --label TemplarOS \
+            --loader '\EFI\TemplarOS\shimx64.efi'
+        if [ "$apply" = 1 ]; then
+            after_entries="$(efibootmgr | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\).*/\1/p' | sort)"
+            entry="$(comm -13 <(printf '%s\n' "$before_entries") <(printf '%s\n' "$after_entries"))"
+            [ "$(printf '%s\n' "$entry" | grep -c .)" = 1 ] \
+                || die "cannot identify the one firmware entry this invocation created"
+            created="$(efibootmgr -v | grep -i "^Boot${entry}" || true)"
+            printf '%s' "$created" | grep -Fqi '\EFI\TemplarOS\shimx64.efi' \
+                || die "new Boot$entry does not point at the TemplarOS shim"
+            printf '%s' "$created" | grep -Fqi "$esp_partuuid" \
+                || die "new Boot$entry does not identify the target ESP $esp_partuuid"
+        fi
+    fi
+    if [ "$apply" = 1 ]; then
         order="$(efibootmgr | sed -n 's/^BootOrder: //p')"
-        case ",$order," in *",$entry,"*) ;; *) efibootmgr --bootorder "${order:+$order,}$entry" >/dev/null ;; esac
-        note "firmware entry Boot$entry appended to the boot order: $order,$entry"
+        case ",$order," in
+            *",$entry,"*) note "firmware entry Boot$entry is in the boot order: $order" ;;
+            *) efibootmgr --bootorder "${order:+$order,}$entry" >/dev/null
+               note "firmware entry Boot$entry appended to the boot order: ${order:+$order,}$entry" ;;
+        esac
     else
         note "then: efibootmgr --bootorder <current order>,<the new TemplarOS entry> — appended, not first"
     fi
@@ -1091,6 +1377,8 @@ step "Diagnostics"
 run templar doctor --root "$mnt"
 note "then, after the first real boot: templar doctor --hardware, and installer/CHECKLIST.md for the"
 note "Secure Boot, module-trust and rollback checks that only a person at the machine can make."
+
+write_state complete
 
 if [ "$apply" = 1 ]; then
     step "Unmount"

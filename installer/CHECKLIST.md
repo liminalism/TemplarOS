@@ -7,11 +7,11 @@ Take it in order: each section assumes the one above it held.
 Print or keep a second device handy — steps 4 and 5 involve rebooting the machine you are reading
 this on. Have a live USB ready before you start, and read §6 before you need it.
 
-The reference laptop installs into the free block on the OS drive. NVMe numbers have swapped
-between boots, so no device name in an old note is authoritative. `--free-space` creates two new
-partitions and keeps every existing one. The disk containing the large filesystem labelled
-`Second` is the data drive and must not be selected. `--device --i-mean-it` destroys a whole disk
-and is not this checklist.
+The reference laptop installs onto the OS drive: into its free block the first time, or onto the
+TemplarOS pair (partition names `TEMPLAR_ESP` and `templaros-root`) an earlier attempt created.
+`sudo templaros-autoinstall` finds that drive by its `lubuntu_2504` label — NVMe numbers have
+swapped between boots, so no device name in an old note is authoritative — and never writes the
+drive labelled `Second`. `--device --i-mean-it` destroys a whole disk and is not this checklist.
 
 ## 1. Before provisioning
 
@@ -20,21 +20,18 @@ and is not this checklist.
 - [ ] The USB stick is the TemplarOS live image (`TEMPLAROS_LIVE`), written with `dd` of the
       whole ISO — not a FAT32 copy. The image is over 4 GB. On this host `dd` is uutils, so no
       `oflag=direct`.
-- [ ] Set `OS_DISK=/dev/...` only after confirming it contains `lubuntu_2504` and the expected free
-      extent. Confirm the other disk contains label `Second`; that disk is out of scope.
+- [ ] `lsblk` shows `lubuntu_2504` and `Second` on two different disks. The one with
+      `lubuntu_2504` is the one the install writes; the other is out of scope.
 - [ ] Firmware is in UEFI mode, not CSM/legacy. There is no BIOS boot path.
 - [ ] Secure Boot state noted: `mokutil --sb-state` → `SecureBoot enabled` / `disabled`.
       Write down which, so §4 compares against something.
-- [ ] You have read the plan from the live session (no `--apply`):
-      `sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 templaros-install --free-space "$OS_DISK" --user dk --password-stdin --plan-out /tmp/templaros-install.json`
-      It must name new partitions 5 (TEMPLAR_ESP) and 6 (templaros-root) and list the four
-      existing OS-drive partitions as kept. The `OTHER PHYSICAL DISKS` section must show the disk
-      containing `Second` as `WILL NOT BE TOUCHED`.
+- [ ] The USB-C ethernet adapter is plugged in and `nmcli device` shows it `connected`.
 
 ## 2. Provision
 
 There is no graphical installer on the medium. The first GRUB entry is a live session, the
-second copies it into RAM. Installing is a command in a terminal, not a menu item.
+second copies it into RAM, and the last installs unattended. From a session, installing is one
+command in a terminal: `sudo templaros-autoinstall`.
 
 If the live Home cannot open Files, Settings, a terminal, or Shut down, sessiond did not
 start (casper user, missing `~/.config/templaros`). Do not hold the power button. Reboot
@@ -54,9 +51,12 @@ Log in as `templaros` with an empty password.
 From the live session, after `/run/templaros/preflight.txt` is readable and does not report a
 hardware failure that would strand the machine:
 
-- [ ] `sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 templaros-install --free-space "$OS_DISK" --user dk --password-stdin --apply --plan /tmp/templaros-install.json`
-      completed without an error.
-- [ ] The plan it applied created only the two reviewed partitions on the identified OS disk.
+- [ ] `sudo templaros-autoinstall` (or the medium's last GRUB entry) ended with
+      `autoinstall: DONE`. It prints the plan it applies: on a first install that is new
+      partitions 5 (TEMPLAR_ESP) and 6 (templaros-root) with the four existing OS-drive partitions
+      kept, and `OTHER PHYSICAL DISKS` showing the `Second` disk as `WILL NOT BE TOUCHED`; on a
+      second attempt it names the pair and whether it is rebuilding or resuming it.
+      If it stopped, fix what it names and run the same command again.
 - [ ] `templar doctor --root <mount>` at the end reported no fault it called fatal.
 - [ ] Reboot without the stick and choose TemplarOS from the firmware menu. The installer
       appends its UEFI entry rather than making it first. Lubuntu stays bootable.

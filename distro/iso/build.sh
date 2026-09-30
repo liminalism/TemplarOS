@@ -120,7 +120,7 @@ cache_key="$({
     printf '%s\n' "$ubuntu_key" "$set_id"
     for input in "$archive/sets/$set_id/manifest.json" "$archive/Packages" "$archive/Release" \
                  "$archive/InRelease" "$root/installer/provision.sh" \
-                 "$here/live/customize.sh" "$root/distro/deploy/layout.toml"; do
+                 "$here/live/customize.sh" "$here/live/autoinstall.sh" "$root/distro/deploy/layout.toml"; do
         [ -f "$input" ] && sha256sum "$input"
     done
 } | sha256sum | awk '{print $1}')"
