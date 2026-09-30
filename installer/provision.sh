@@ -90,7 +90,6 @@ esp_arg=""
 root_arg=""
 username=""
 read_password=0
-expire_password=0
 apply=0
 i_mean_it=0
 step_no=0
@@ -151,8 +150,8 @@ usage: provision.sh --image PATH [--apply] [options]
   --user NAME         the account to create. No password is baked in; see --password-stdin.
   --password-stdin    read the new user's password from stdin during apply. Required with --apply;
                       the password is never put in argv, the plan, or a file.
-  --expire-password   the password read above is provisional: the first login must replace it.
-                      What an unattended install uses, so no chosen secret sits on a medium.
+                      There is no "change it at first login": greetd cannot run PAM's password
+                      change, so an expired password locks the account out of the greeter.
   --nvidia PACKAGE    the NVIDIA metapackage variant (default: $TEMPLAROS_NVIDIA).
   --set ID            install a specific TemplarOS build set instead of the `current` marker.
   --layout PATH       an alternative layout declaration (testing).
@@ -192,7 +191,6 @@ while [ $# -gt 0 ]; do
         --apply) apply=1; shift ;;
         --user) username="${2:?--user needs a name}"; shift 2 ;;
         --password-stdin) read_password=1; shift ;;
-        --expire-password) expire_password=1; shift ;;
         --nvidia) TEMPLAROS_NVIDIA="${2:?--nvidia needs a package}"; shift 2 ;;
         --set) DEVREPO_MARKER="${2:?--set needs an id}"; shift 2 ;;
         --layout) layout="${2:?--layout needs a path}"; shift 2 ;;
@@ -721,7 +719,7 @@ request_state() {
     printf '%s\n' \
         "target=$target" "target_kind=$target_kind" "esp=$esp_arg" "root=$root_arg" \
         "data=$data_arg" "reuse=$reuse" "resume=$resume" "format_data=$format_data" "username=$username" \
-        "password_stdin=$read_password" "expire_password=$expire_password" "nvidia=$TEMPLAROS_NVIDIA" "suite=$UBUNTU_SUITE" \
+        "password_stdin=$read_password" "nvidia=$TEMPLAROS_NVIDIA" "suite=$UBUNTU_SUITE" \
         "mirror=$UBUNTU_MIRROR" "security_mirror=$UBUNTU_SECURITY_MIRROR" \
         "components=$UBUNTU_COMPONENTS" "bootstrap_backend=$bootstrap_backend" \
         "layout_sha256=$(sha256sum "$layout" | awk '{print $1}')" \
@@ -845,7 +843,7 @@ failure_report() { # status
         else
             printf 'Start again on the same two partitions (only they are reformatted; no other partition is touched):\n'
         fi
-        again="$again --user $username --password-stdin$([ "$expire_password" = 1 ] && printf ' --expire-password')"
+        again="$again --user $username --password-stdin"
         printf '  %s --plan-out /tmp/templaros-resume.json\n' "$again"
         printf '  %s --apply --plan /tmp/templaros-resume.json\n' "$again"
     } >&2
@@ -1368,10 +1366,6 @@ if [ -n "$username" ]; then
         [ -n "$new_password" ] || die "the initial password may not be empty"
         printf '%s:%s\n' "$username" "$new_password" | chroot "$mnt" chpasswd
         unset new_password
-    fi
-    if [ "$expire_password" = 1 ]; then
-        note "the password is provisional: the first login must replace it"
-        in_target chage -d 0 "$username"
     fi
 fi
 note "root is locked either way: this machine is administered through sudo, not a root login."

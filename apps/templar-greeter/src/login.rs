@@ -53,10 +53,10 @@ impl LoginFlow {
     /// (`success`, `error`, `auth_message`), so one function covers both call sites.
     pub fn advance(username: String, response: Response) -> LoginFlow {
         match response {
-            // `greetd-ipc(7)`: "the session is cancelled automatically on error" — so whatever was
-            // in flight is already gone server-side; the only honest next state is Idle, with the
-            // description surfaced so the user (or the log) knows why. This is what turns a
-            // mistyped password into "try again", not a dead end: nothing here exits or panics.
+            // Idle, with the description surfaced so the user (or the log) knows why. The session
+            // greetd was configuring is *not* gone: `LoginController` cancels it (see
+            // `LoginController::after`), because greetd keeps it and refuses the next
+            // create_session with "a session is already being configured".
             Response::Error { description, .. } => LoginFlow::Idle {
                 error: Some(description),
             },
@@ -131,12 +131,8 @@ impl<S: Read + Write> LoginController<S> {
     /// `Authenticating` with the first prompt on success, `Idle` with an error message on any
     /// failure, protocol-level or connection-level alike.
     pub fn submit_username(&mut self, username: String) {
-        self.flow = match self.client.create_session(username.clone()) {
-            Ok(response) => LoginFlow::advance(username, response),
-            Err(error) => LoginFlow::Idle {
-                error: Some(connection_error_text(&error)),
-            },
-        };
+        let result = self.client.create_session(username.clone());
+        self.flow = self.after(username, result);
     }
 
     /// Answer the current prompt. A no-op if nothing is currently `Authenticating` — the caller
@@ -146,12 +142,28 @@ impl<S: Read + Write> LoginController<S> {
         let Some(username) = self.flow.username().map(str::to_owned) else {
             return;
         };
-        self.flow = match self.client.post_auth_message_response(text) {
-            Ok(response) => LoginFlow::advance(username, response),
+        let result = self.client.post_auth_message_response(text);
+        self.flow = self.after(username, result);
+    }
+
+    /// The next flow for a create_session/post_auth_message_response answer. On an `error`
+    /// response greetd keeps the half-configured session — observed on the reference laptop's
+    /// greetd after `pam_acct_mgmt: NEW_AUTHTOK_REQD` and after a wrong password — and answers
+    /// every later create_session with "a session is already being configured", so one mistyped
+    /// password locked the screen until greetd restarted. Cancel it, best-effort, before retrying
+    /// is possible.
+    fn after(&mut self, username: String, result: Result<Response, ProtocolError>) -> LoginFlow {
+        match result {
+            Ok(response) => {
+                if matches!(response, Response::Error { .. }) {
+                    let _ = self.client.cancel_session();
+                }
+                LoginFlow::advance(username, response)
+            }
             Err(error) => LoginFlow::Idle {
                 error: Some(connection_error_text(&error)),
             },
-        };
+        }
     }
 
     /// Start the session once [`LoginFlow::ReadyToStart`] — `cmd`/`env` from whichever session the
@@ -162,6 +174,7 @@ impl<S: Read + Write> LoginController<S> {
         match self.client.start_session(cmd, env) {
             Ok(Response::Success) => true,
             Ok(Response::Error { description, .. }) => {
+                let _ = self.client.cancel_session();
                 self.flow = LoginFlow::Idle {
                     error: Some(description),
                 };
@@ -329,27 +342,30 @@ mod controller_tests {
     /// to a fresh [`LoginController`] for the test body to drive. `script` sees each [`Request`]
     /// in order and returns the [`Response`] to send back — the same fake-greetd shape
     /// `crate::client`'s own tests use, at the level this module actually drives it from.
-    fn with_fake_greetd<F>(script: Vec<Response>, body: F)
+    fn with_fake_greetd<F>(script: Vec<Response>, body: F) -> Vec<Request>
     where
         F: FnOnce(&mut LoginController<UnixStream>),
     {
         let (client_stream, mut server_stream) = UnixStream::pair().unwrap();
         let server = thread::spawn(move || {
+            let mut seen = Vec::new();
             for response in script {
-                let _request: Request = match read_frame(&mut server_stream) {
+                let request: Request = match read_frame(&mut server_stream) {
                     Ok(request) => request,
-                    Err(_) => return,
+                    Err(_) => return seen,
                 };
+                seen.push(request);
                 if write_frame(&mut server_stream, &response).is_err() {
-                    return;
+                    return seen;
                 }
             }
+            seen
         });
 
         let mut controller = LoginController::new(GreetdClient::new(client_stream));
         body(&mut controller);
         drop(controller);
-        server.join().unwrap();
+        server.join().unwrap()
     }
 
     #[test]
@@ -383,7 +399,7 @@ mod controller_tests {
 
     #[test]
     fn a_wrong_password_lets_the_user_try_again_with_the_same_controller() {
-        with_fake_greetd(
+        let requests = with_fake_greetd(
             vec![
                 Response::AuthMessage {
                     auth_message_type: AuthMessageType::Secret,
@@ -393,6 +409,8 @@ mod controller_tests {
                     error_type: ErrorType::AuthError,
                     description: "authentication failed".to_owned(),
                 },
+                // greetd's answer to the cancel_session the error must be followed by.
+                Response::Success,
                 // The retry: a brand new create_session for the same controller.
                 Response::AuthMessage {
                     auth_message_type: AuthMessageType::Secret,
@@ -419,6 +437,13 @@ mod controller_tests {
                 assert!(controller.start_session(vec!["templar-session".to_owned()], vec![]));
             },
         );
+        // Without the cancel, greetd refuses the retry's create_session ("a session is already
+        // being configured") — what the reference laptop's greeter did after one failed attempt.
+        assert!(
+            matches!(requests.get(2), Some(Request::CancelSession)),
+            "the request after an error must be cancel_session: {requests:?}"
+        );
+        assert!(matches!(requests.get(3), Some(Request::CreateSession { .. })));
     }
 
     #[test]
@@ -434,6 +459,7 @@ mod controller_tests {
                     error_type: ErrorType::Error,
                     description: "no such session command".to_owned(),
                 },
+                Response::Success,
             ],
             |controller| {
                 controller.submit_username("alice".to_owned());

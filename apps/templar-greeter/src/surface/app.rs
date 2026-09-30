@@ -102,6 +102,11 @@ impl GreeterApp {
         }
         let scale = window.scale;
         let (width, height) = (window.buffer.width as i32, window.buffer.height as i32);
+        // pixelkit's widgets paint first and apply the frame's input after (`Ui::text_field` draws
+        // the field, then `consume_keys`), so a frame that took keys shows the state from *before*
+        // them. Without one more frame the field lags a key behind until the next event: type
+        // "dk" and it shows "d" — on a login screen, indistinguishable from dropped keys.
+        let had_keys = !window.input.keys().is_empty();
         let data = GreeterData {
             flow: &self.controller.flow,
             sessions: &self.sessions,
@@ -126,9 +131,12 @@ impl GreeterApp {
         window.input.end_frame();
         window.present();
 
-        if action != GreeterAction::None {
+        let acted = action != GreeterAction::None;
+        if acted {
             self.apply_action(action);
             self.maybe_start_session();
+        }
+        if acted || had_keys {
             if let Some(window) = &self.window {
                 window.request_redraw();
             }

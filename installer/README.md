@@ -18,7 +18,7 @@ sudo installer/provision.sh --image /var/tmp/templaros.img --user dev --password
 # The reference laptop: one command from the live session (or the medium's last GRUB entry).
 # It finds the OS drive by its lubuntu_2504 label and never writes the drive labelled Second,
 # chooses between a fresh install, a rebuild of the TemplarOS pair and a resume by itself, and
-# does the plan/apply dance below with a provisional password (dk / templaros, expired).
+# does the plan/apply dance below with the password dk / templaros (change it with passwd).
 sudo templaros-autoinstall
 # ...or, on a medium older than this script, straight from a checkout:
 sudo /path/to/LegeOS/distro/iso/live/autoinstall.sh
@@ -132,9 +132,10 @@ what `tests/integration/provision-qemu.sh` asserts against.
    selectable — that is policy, not an accident of apt's mood.
 6. **OS identity** from `distro/branding/os-release`.
 7. **An account with no baked-in password.** `--password-stdin` reads one from stdin (never echoed,
-   never written to a file, never in an argument list); otherwise the account is created with an
-   expired password and the first login has to set one. Root is locked either way. There is no
-   release password and no autologin — those exist only in the dev/VM image, in
+   never written to a file, never in an argument list). It is never expired for a first-login
+   change: greetd cannot run PAM's password change, so that account could not log in at all.
+   Root is locked either way. There is no release password and no autologin — those exist only
+   in the dev/VM image, in
    `distro/image/mkosi.conf.d/90-dev-credentials.conf`, which says so on every line.
 8. **Session units and the greeter**, the same steps `distro/image/mkosi.postinst` performs.
 9. **The production boot path**: Canonical-signed shim → Canonical-signed GRUB → Ubuntu-signed

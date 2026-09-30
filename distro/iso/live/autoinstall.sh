@@ -11,7 +11,8 @@
 #   progress  the provisioner's own verdict on that pair: fresh or rebuild -> reformat only those
 #             two partitions and install; resumable -> continue after the bootstrap; complete ->
 #             nothing to do; anything else -> stop
-#   account   dk, provisional password `templaros` that the first login must replace
+#   account   dk, password `templaros` — change it with `passwd` after the first login (greetd
+#             cannot run a forced first-login change, so the password is not expired)
 #
 # Run by templaros-autoinstall.service from the last GRUB entry, or by hand from the live session:
 # `sudo templaros-autoinstall`. Running it again after any failure is always the next step — it
@@ -110,7 +111,7 @@ else
     stop "$os_disk has only one of the two TemplarOS partitions ($esps$roots); refusing to guess"
 fi
 
-args=("${target[@]}" --user "$user" --password-stdin --expire-password)
+args=("${target[@]}" --user "$user" --password-stdin)
 log "1/2 dry run: the plan is written to $plan and nothing is touched"
 "${provision[@]}" "${args[@]}" --plan-out "$plan" </dev/null \
     || stop "the provisioner refused to plan (its reason is above)"
@@ -120,7 +121,7 @@ printf '%s\n' "$initial_password" | "${provision[@]}" "${args[@]}" --apply --pla
     || stop "the install did not finish (the step and the target's state are printed above). Run it again — it resumes or rebuilds by itself: $again"
 
 log "DONE. TemplarOS is installed on $os_disk and appended to the firmware boot menu."
-log "First login: user $user, password '$initial_password' — it must be changed immediately."
+log "First login: user $user, password '$initial_password'. Change it with 'passwd' once you are in."
 if [ "${TEMPLAROS_AUTOINSTALL_POWEROFF:-0}" = 1 ]; then
     log "Remove the USB stick. This machine powers off in 60 seconds (Ctrl+C on this console to stay)."
     sleep 60
