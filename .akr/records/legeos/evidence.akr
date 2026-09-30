@@ -2273,6 +2273,18 @@ record legeos.evidence.installer-refuses-failed-preflight-20260907/1 : evidence 
         """
 }
 
+record legeos.evidence.installer-resume-autoinstall-vm-20260930/1 : evidence {
+    title "Reference-laptop replica VM: fresh, rebuild, resume, complete and legacy-inspect paths of the autoinstall"
+    state verified
+    result pass
+    method command
+    observed_at git:137e1e43db33c886ec5e40a28c766828e44126b5
+    command "qemu (KVM, SB OVMF) booting templaros-0.1.0~dev1790680477+g4084f63.iso with two NVMe replicas of the laptop disks (lubuntu_2504 + leading 45 GiB gap; Second) and the working tree over 9p; distro/iso/live/autoinstall.sh run as root, TEMPLAROS_DEV_CUDA overridden to skip CUDA"
+    summary """
+        Working tree on top of 137e1e4 (uncommitted). Run 1, fresh with a missing package injected: free-space created p5/p6, bootstrap, step 7 wrote /etc/resolv.conf -> /run/systemd/resolve/stub-resolv.conf into the chroot's tmpfs /run and getent resolved archive.ubuntu.com, stopped at step 9 with 'Recorded install state: bootstrapped' and the rerun command. Run 2: verdict resumable, bootstrap skipped, packages installed, stopped at the NVIDIA step because the set pins 7.0.0-31.31/580.173.02 and the archive had 7.0.0-34/580.178. After switching to the base.toml snapshot: run 3 verdict rebuild (unrecorded mirror), reformatted only p5/p6, bootstrapped from snapshot.ubuntu.com, stopped at the injected package; run 4 resumed through kernel+NVIDIA, flatpak, grub, efibootmgr (Boot0008 created and verified), seeded 7.0.0-31-generic, stopped at doctor build-set-coherent (templar-files not installed); run 5 resumed in 12 s, kept Boot0008, doctor 11 pass 0 fail, state complete, 'autoinstall: DONE'. Run 6: verdict complete, nothing written, one TemplarOS firmware entry. With the state file and known-good removed and @/run/systemd/resolve/stub-resolv.conf added (the laptop's current shape) --inspect says rebuild. The installed disk booted from Boot0008 under SB to a compositor cursor; the greeter UI was not visible under bochs-drm. tests/integration/provision-plan.sh and provision-qemu.sh OK.
+        """
+}
+
 record legeos.evidence.iso-autoinstall-wired-network-qemu-20260929/1 : evidence {
     title "Direct-kernel QEMU boot of the g4084f63 medium with templaros.autoinstall=1 and virtio wired user networking: autoinstall logged ens3:ethernet:connected:Wired connection 1 with 10.0.2.15/24 (NetworkManager manages wired via the netplan renderer file), then STOPPED at 'no filesystem labelled lubuntu_2504' having written nothing."
     state verified

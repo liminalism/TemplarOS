@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.1"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:6b90102e49431d8f06d68ee654cec2a31c2d2370876877f749e8a7bc0f7e9187"
+    source_graph "sha256:8a5eb7f69a51c9aa7ee338e2c57d624a83dca3ab2c871e0eb7d9a93c95de83e4"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:cbcc14aa9d2a644a9a78f1a116236aab4b9e343b2e44b2d835f4a74f2c5c16e6"
-    records 323
+    hash "sha256:7fc0f438ccdd922843cf28dc23cc9803ed682b09958b8195c00e870cb40fc27e"
+    records 324
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:d07d63c9ded920e6bbad71c9497ff4ded73a9d4bf64a3ac76101ec341b497782"
-    records 160
+    hash "sha256:18612145dd392eedf72381350a76e6a2e99bad45ed798917abfe0dd023fcde3a"
+    records 162
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -54,8 +54,8 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:6b89f563dff918f3b0fe09b8a5c6635b375d88206978935346dccadf09f144ef"
-    records 151
+    hash "sha256:cc610c71a441b0ecadfdd3a3f098c677d42c4c47faa940a18400f44dc12d7c57"
+    records 152
 }
 
 resolution @legeos.assessment.astra-memory-polling-indexing-review-20260909/1 {
@@ -3220,6 +3220,18 @@ resolution @legeos.work.install-onto-the-laptop-partitions-20260909/1 {
     hash "sha256:aa50f870ffdb21a65fc8cc285012b885a711567abf892feb21f33143f63a3d63"
 }
 
+resolution @legeos.work.installer-resume-and-autoinstall-20260930/1 {
+    slot implements
+    to @legeos.decision.independent-storage-roles/1
+    hash "sha256:d207355cee3503543bb05194567aea631f83d12d00a9f9fc765a0d16a34ae7e2"
+}
+
+resolution @legeos.work.installer-resume-and-autoinstall-20260930/1 {
+    slot part_of
+    to @legeos.milestone.developer-edition-0-1/1
+    hash "sha256:aa50f870ffdb21a65fc8cc285012b885a711567abf892feb21f33143f63a3d63"
+}
+
 resolution @legeos.work.iso-hardware-safety/1 {
     slot implements
     to @legeos.decision.base-ubuntu-2604-kernel-70/1
@@ -5271,6 +5283,11 @@ seal @legeos.evidence.installer-refuses-failed-preflight-20260907/1 {
     hash "sha256:337425c2c9616885ecdd98bce0628249ab03ae4181dbf9a67ae8ccb7cf0d9d0c"
 }
 
+seal @legeos.evidence.installer-resume-autoinstall-vm-20260930/1 {
+    state verified
+    hash "sha256:7f7220bbe5c1a46b47c1b08b23ebc18b7522e15e63cb40aad80164cae652e2a8"
+}
+
 seal @legeos.evidence.iso-autoinstall-wired-network-qemu-20260929/1 {
     state verified
     hash "sha256:9783717f0d144755c2b60f8786d9f5406419634d36b420cd50d28f249514388d"
@@ -6861,6 +6878,11 @@ seal @legeos.papercut.promoting-decisions-to-active-with-akr-revise/1 {
     hash "sha256:8c9f28d0c3cfd03c3b3765328cbb06a3ac1a95ddf62ab9e90a809703d02803a1"
 }
 
+seal @legeos.papercut.provisioner-defaults-drifted-from-the-set/1 {
+    state verified
+    hash "sha256:e6bdd17916ffa8df9a4a4242391b27178d9c4b11b168968bcafc135f5a805609"
+}
+
 seal @legeos.papercut.reconcile-reconcile-unconditionally-called/1 {
     state verified
     hash "sha256:502934197b18411f4df1b9385891748a4d6e1085e1edc9ab6ea61b6c44a4abe0"
@@ -6899,6 +6921,11 @@ seal @legeos.papercut.scripts-nested-session-sh-stop-left-lege/1 {
 seal @legeos.papercut.second-separate-bug-found-after-the-apt-trust/1 {
     state verified
     hash "sha256:0a5eb883a4ace7a92809a2da168dc3c72e9845379511a6294e0b1fe875715fab"
+}
+
+seal @legeos.papercut.set-metapackages-pin-nvidia-kernel-with-to-base/1 {
+    state verified
+    hash "sha256:1e8cc6cb4ac9f59fe4775d7b0659b2c2157f25939633ff683274cf52d60452cc"
 }
 
 seal @legeos.papercut.systemd-analyze-user-verify-accepted-the/1 {

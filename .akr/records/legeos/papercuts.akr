@@ -1104,6 +1104,17 @@ record legeos.papercut.promoting-decisions-to-active-with-akr-revise/1 : papercu
     created_at 2026-08-17
 }
 
+record legeos.papercut.provisioner-defaults-drifted-from-the-set/1 : papercut {
+    title "Provisioner defaults drifted from the set: TEMPLAROS_SESSION named…"
+    state verified
+    statement """
+        Provisioner defaults drifted from the set: TEMPLAROS_SESSION named templaros-session-meta (the directory) while the package is templaros-session-full, and templar-files is in no metapackage yet doctor's build-set-coherent requires it; no test installs from a real set, so both surfaced only in a VM apply.
+        """
+    observed_at git:137e1e43db33c886ec5e40a28c766828e44126b5
+    author "claude"
+    created_at 2026-09-30
+}
+
 record legeos.papercut.reconcile-reconcile-unconditionally-called/1 : papercut {
     title "reconcile::reconcile() unconditionally called index.mark_stale() before…"
     state verified
@@ -1191,6 +1202,17 @@ record legeos.papercut.second-separate-bug-found-after-the-apt-trust/1 : papercu
     observed_at git:f5007ef369d0b386fb872a6b726e3f8baaac5944
     author "claude"
     created_at 2026-09-01
+}
+
+record legeos.papercut.set-metapackages-pin-nvidia-kernel-with-to-base/1 : papercut {
+    title "Set metapackages pin NVIDIA/kernel with '=' to base.toml's snapshot…"
+    state verified
+    statement """
+        Set metapackages pin NVIDIA/kernel with '=' to base.toml's snapshot versions, but the provisioner installed from archive.ubuntu.com; a medium stops installing the day Ubuntu publishes a kernel. Now installs from the snapshot; the installed system therefore tracks the snapshot, not security updates.
+        """
+    observed_at git:137e1e43db33c886ec5e40a28c766828e44126b5
+    author "claude"
+    created_at 2026-09-30
 }
 
 record legeos.papercut.systemd-analyze-user-verify-accepted-the/1 : papercut {

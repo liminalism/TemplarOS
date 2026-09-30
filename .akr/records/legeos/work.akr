@@ -5828,6 +5828,20 @@ record legeos.work.install-onto-the-laptop-partitions-20260909/1 : work {
     part_of [ @legeos.milestone.developer-edition-0-1 ]
 }
 
+record legeos.work.installer-resume-and-autoinstall-20260930/1 : work {
+    title "Recoverable interrupted installs and a one-command reference-laptop install"
+    state proposed
+    intent """
+        Make an interrupted install on the reference laptop recoverable and the whole install one command. The first real install (2026-09-30) stopped at the chroot DNS step: the bootstrapped target's /etc/resolv.conf is systemd-resolved's link into /run, which a never-booted target lacks, so `touch` followed a dangling link. Afterwards --free-space had no free space left and --reuse refused the populated @, so there was no supported next command.
+
+        Done in the tree: provision.sh records its progress on the target (@var /var/lib/templaros/provision/state: formatted, bootstrapped, complete, with root UUID, ESP PARTUUID, deployment, set, suite, mirror); --inspect judges a TemplarOS pair fresh/resumable/rebuild/complete/foreign; --resume skips mkfs and the bootstrap and repeats every later step, each made repeatable (dpkg --configure -a, useradd only if absent, flatpak --or-update, an existing firmware entry for this ESP kept); a failed apply names the step, whether the target was modified, the recorded state and the command that carries on. The chroot gets its own tmpfs /run with the host's upstream resolvers written where the link points, checked by getent inside the target. Three further stops found by running it: the session metapackage is templaros-session-full, templar-files is in no metapackage, and the set's exact NVIDIA/kernel pins exist only in the base.toml snapshot, so Ubuntu now comes from that snapshot (IPv4, ca-certificates). The efibootmgr shim check matched a doubled backslash and could never pass.
+
+        distro/iso/live/autoinstall.sh (reference laptop only) replaces the customize.sh heredoc: finds the OS disk by lubuntu_2504, refuses the Second disk, picks free-space, rebuild or resume from --inspect, and runs plan+apply; `sudo templaros-autoinstall` on a new medium, or the checkout copy on the g4084f63 stick.
+        """
+    implements [ @legeos.decision.independent-storage-roles ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+}
+
 record legeos.work.iso-hardware-safety/1 : work {
     title "The installation medium does not strand its owner — hardware inventory, seeds that cover it, a live preflight, rescue boot entries and the first ISO build"
     state superseded
