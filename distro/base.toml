@@ -10,7 +10,9 @@ lts = true
 support_until = "2031-04"          # follows the base
 architectures = ["amd64"]
 mirror = "http://archive.ubuntu.com/ubuntu"
-components = ["main", "universe", "restricted"]   # restricted: NVIDIA LRM/userspace
+# restricted: NVIDIA LRM/userspace. multiverse: nvidia-cuda-toolkit, which templaros-dev-cuda needs;
+# the installer reads this line (installer/provision.sh), the live medium's rootfs does not need it.
+components = ["main", "universe", "restricted", "multiverse"]
 security_mirror = "http://security.ubuntu.com/ubuntu"
 # The snapshot the package closure is expected to resolve against. Empty means unpinned, and
 # `cargo xtask seeds closure` says so rather than presenting an unpinned resolution as reproducible.

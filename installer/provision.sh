@@ -66,12 +66,16 @@ UBUNTU_SUITE="${UBUNTU_SUITE:-resolute}"
 # stopped at the NVIDIA step.) The installed system keeps the same sources, so what it upgrades to
 # is what the set was tested against; a newer base arrives with a newer set. No pin means the archive.
 base_snapshot=""
+base_components=""
 if [ -f "$data_base" ]; then
     base_snapshot="$(sed -n 's/^snapshot_url *= *"\([^"]*\)".*/\1/p' "$data_base" | head -1)"
+    base_components="$(sed -n 's/^components *= *\[\([^]]*\)\].*/\1/p' "$data_base" | head -1 | tr -d '",')"
 fi
 UBUNTU_MIRROR="${UBUNTU_MIRROR:-${base_snapshot:-http://archive.ubuntu.com/ubuntu}}"
 UBUNTU_SECURITY_MIRROR="${UBUNTU_SECURITY_MIRROR:-${base_snapshot:-http://security.ubuntu.com/ubuntu}}"
-UBUNTU_COMPONENTS="${UBUNTU_COMPONENTS:-main universe restricted}"
+# distro/base.toml names them too: multiverse is there because nvidia-cuda-toolkit, which
+# templaros-dev-cuda depends on, is in no other component.
+UBUNTU_COMPONENTS="${UBUNTU_COMPONENTS:-$(printf '%s' "${base_components:-main universe restricted multiverse}" | xargs)}"
 bootstrap_backend="${TEMPLAROS_BOOTSTRAP_BACKEND:-auto}"
 case "$bootstrap_backend" in
     auto) command -v mmdebstrap >/dev/null 2>&1 && bootstrap_backend=mmdebstrap || bootstrap_backend=debootstrap ;;
@@ -163,6 +167,9 @@ usage: provision.sh --image PATH [--apply] [options]
                       and each is written to be repeatable. Needs root even for the dry run.
   --inspect           with --esp/--root: print what the pair holds and exit, writing nothing:
                       fresh, resumable, rebuild, complete or foreign, then the reason. Needs root.
+  --check-packages    resolve the whole package set against the Ubuntu snapshot and the archive in
+                      a scratch apt root, say what cannot be installed and why, and exit. No target,
+                      no root. Every --apply does the same before its first write.
   --plan-out PATH     write the reviewed operation sequence here (default: alongside the target).
   --ignore-preflight  install even though the live medium's hardware preflight reported a failure.
   --plan PATH         with --apply: run *this* reviewed plan. The machine is observed again first
@@ -171,6 +178,8 @@ usage: provision.sh --image PATH [--apply] [options]
 USAGE
 }
 
+orig_args=("$@")
+check_packages=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --image) target="${2:?--image needs a path}"; target_kind=image; shift 2 ;;
@@ -193,12 +202,23 @@ while [ $# -gt 0 ]; do
         --resume) resume=1; reuse=1; shift ;;
         --inspect) inspect=1; shift ;;
         --ignore-preflight) ignore_preflight=1; shift ;;
+        --check-packages) check_packages=1; shift ;;
         --plan-out) plan_out="${2:?--plan-out needs a path}"; shift 2 ;;
         --plan) plan_in="${2:?--plan needs a path}"; shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; die "unknown argument $1" ;;
     esac
 done
+
+# Every mount a privileged run makes lives in a mount namespace of its own, as a slave of the host's:
+# the host's mounts reach in, nothing made here reaches out. Binding the host's /dev into a target
+# otherwise joins the host's /dev peer group, so a mount or unmount under <target>/dev propagates
+# back onto the live system's own /dev — the kind of damage that leaves `sudo` unable to open a
+# pty. And when the run ends, however it ends, the kernel takes the namespace's mounts with it.
+if [ "$(id -u)" = 0 ] && [ "${TEMPLAROS_PROVISION_MOUNT_NS:-}" != 1 ]; then
+    export TEMPLAROS_PROVISION_MOUNT_NS=1
+    exec unshare --mount --propagation slave -- bash "$0" "${orig_args[@]}"
+fi
 
 # --- The layout declaration ----------------------------------------------------------------------
 # A deliberately small reader: the declaration is flat, and a provisioner that needs a TOML library
@@ -266,7 +286,8 @@ if [ -n "$esp_arg" ] || [ -n "$root_arg" ]; then
     [ -z "$target" ] || die "--esp/--root name the target; do not also pass --image, --device or --free-space"
     target="$esp_arg+$root_arg"; target_kind=partitions
 fi
-[ -n "$target" ] || { usage >&2; die "no target: pass --image PATH, --free-space DISK, --esp/--root, or --device with --i-mean-it"; }
+[ -n "$target" ] || [ "$check_packages" = 1 ] \
+    || { usage >&2; die "no target: pass --image PATH, --free-space DISK, --esp/--root, or --device with --i-mean-it"; }
 
 case "$target_kind" in
     image)
@@ -353,6 +374,127 @@ if [ -n "$selected_set" ] && [ -d "$DEVREPO_ROOT/sets/$selected_set" ]; then
             [ -f "$f" ] && sha256sum "$f"
         done
     } | sha256sum | awk '{print $1}')"
+fi
+
+# --- The package set must be installable before anything is written --------------------------------
+#
+# 2026-09-30: an install partitioned, formatted and bootstrapped the laptop, then stopped at the
+# package step: templaros-dev-cuda depends on nvidia-cuda-toolkit, which is only in multiverse, and
+# the sources named main, universe and restricted. The same question can be put to the same sources
+# before the first write: a scratch apt root with an empty dpkg status, the Ubuntu snapshot and the
+# TemplarOS set configured exactly as the target will have them, and `apt-get install --simulate` of
+# every package the install asks for. `--check-packages` asks it on its own, with no target, as an
+# ordinary user (distro/iso/build.sh does, before it builds a medium).
+base_packages=("$TEMPLAROS_KEYRING" "$TEMPLAROS_SESSION" "$TEMPLAROS_DESKTOP" "$TEMPLAROS_DEV_RUST"
+    "$TEMPLAROS_DEV_CUDA" "$TEMPLAROS_FILES")
+kernel_packages=("$TEMPLAROS_KERNEL" "$TEMPLAROS_NVIDIA")
+boot_packages=(shim-signed grub-efi-amd64-signed)
+
+# The target's apt configuration, and the scratch root's: one writer, so they cannot differ.
+write_apt_config() { # root archive_dir archive_keyring
+    local root="$1"
+    mkdir -p "$root/etc/apt/sources.list.d" "$root/etc/apt/preferences.d" "$root/etc/apt/apt.conf.d"
+    printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "8";\n' > "$root/etc/apt/apt.conf.d/01templaros-acquire"
+    cat > "$root/etc/apt/sources.list.d/ubuntu.sources" <<EOF
+Types: deb
+URIs: $UBUNTU_MIRROR
+Suites: $UBUNTU_SUITE $UBUNTU_SUITE-updates
+Components: $UBUNTU_COMPONENTS
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: $UBUNTU_SECURITY_MIRROR
+Suites: $UBUNTU_SUITE-security
+Components: $UBUNTU_COMPONENTS
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF
+    cat > "$root/etc/apt/sources.list.d/templaros.sources" <<EOF
+Types: deb
+URIs: file://$2
+Suites: ./
+Signed-By: $3
+EOF
+    printf 'Package: templaros-* templar-files\nPin: version %s\nPin-Priority: 1001\n' \
+        "$selected_set" > "$root/etc/apt/preferences.d/templaros-set"
+}
+
+# Which of the requested packages cannot be installed, and the first thing each one needs that no
+# configured source has — one line per cause, rather than apt's cascade of everything downstream.
+explain_unsolvable() { # apt-get apt-cache packages...
+    local get="$1" cache="$2" pkg cand group alt name ver found named=0
+    shift 2
+    for pkg in "$@"; do
+        cand="$($cache policy "$pkg" 2>/dev/null | sed -n 's/^ *Candidate: //p')"
+        if [ -z "$cand" ] || [ "$cand" = "(none)" ]; then
+            printf '  %s: no configured source has it\n' "$pkg"; named=1; continue
+        fi
+        $get install -s -q "$pkg" >/dev/null 2>&1 && continue
+        found=0
+        while IFS= read -r group; do
+            [ -n "$group" ] || continue
+            local any=0
+            IFS='|' read -ra alts <<< "$group"
+            for alt in "${alts[@]}"; do
+                name="$(printf '%s' "$alt" | sed 's/(.*//; s/:any//' | xargs)"
+                ver="$(printf '%s' "$alt" | sed -n 's/.*(= *\([^)]*\)).*/\1/p' | xargs)"
+                cand="$($cache policy "$name" 2>/dev/null | sed -n 's/^ *Candidate: //p')"
+                [ -n "$cand" ] && [ "$cand" != "(none)" ] || continue
+                if [ -z "$ver" ] || $cache madison "$name" 2>/dev/null | awk -F'|' '{ gsub(/ /, "", $2); print $2 }' | grep -Fxq "$ver"; then
+                    any=1; break
+                fi
+            done
+            if [ "$any" = 0 ]; then
+                printf '  %s needs %s — no configured source has it\n' "$pkg" "$(printf '%s' "$group" | xargs)"
+                found=1
+            fi
+        done < <($cache show --no-all-versions "$pkg" 2>/dev/null \
+            | sed -n 's/^\(Pre-\)\{0,1\}Depends: //p' | tr ',' '\n')
+        if [ "$found" = 0 ]; then
+            printf '  %s: apt cannot install it; in its words:\n' "$pkg"
+            $get install -s -q "$pkg" 2>&1 | grep -E '^(E:| [a-z0-9].* : )' | head -6 | sed 's/^/    /'
+        fi
+        named=1
+    done
+    [ "$named" = 1 ] || printf '  every package installs alone; together they conflict:\n'
+}
+
+solve_check() {
+    local root out installs status=0
+    root="$(mktemp -d "${TMPDIR:-/tmp}/templaros-solve.XXXXXX")"
+    chmod 0755 "$root"
+    mkdir -p "$root/var/lib/apt/lists/partial" "$root/var/cache/apt/archives/partial" "$root/var/lib/dpkg"
+    : > "$root/var/lib/dpkg/status"
+    write_apt_config "$root" "$DEVREPO_ROOT" "$DEVREPO_ROOT/templaros-dev.gpg"
+    # APT_CONFIG replaces the host's /etc/apt entirely: its sources, pins and proxies stay out of it.
+    printf 'Dir "%s/";\nDir::State::status "%s/var/lib/dpkg/status";\nAPT::Architecture "amd64";\nAPT::Architectures { "amd64"; };\nAcquire::Languages "none";\nDebug::NoLocking "true";\n' \
+        "$root" "$root" > "$root/apt.conf"
+    local get="env APT_CONFIG=$root/apt.conf apt-get" cache="env APT_CONFIG=$root/apt.conf apt-cache"
+    local all=("${base_packages[@]}" "${kernel_packages[@]}" "${boot_packages[@]}")
+    if ! out="$($get update -q 2>&1)" || printf '%s\n' "$out" | grep -q '^[EW]: .*\(Failed to fetch\|not signed\|NO_PUBKEY\)'; then
+        printf '%s\n' "$out" | grep -E '^[EW]:' | head -8 >&2
+        rm -rf "$root"
+        die "cannot read the package indexes ($UBUNTU_MIRROR: $UBUNTU_COMPONENTS; TemplarOS set $selected_set at $DEVREPO_ROOT). Nothing has been written."
+    fi
+    if out="$($get install -s -q "${all[@]}" 2>&1)"; then
+        installs="$(printf '%s\n' "$out" | grep -c '^Inst ' || true)"
+        note "all ${#all[@]} requested packages resolve from $UBUNTU_MIRROR ($UBUNTU_COMPONENTS) and set $selected_set: $installs to install"
+    else
+        {
+            printf 'provision: the package set cannot be installed from these sources:\n'
+            explain_unsolvable "$get" "$cache" "${all[@]}"
+            printf '  sources: %s (%s), set %s\n' "$UBUNTU_MIRROR" "$UBUNTU_COMPONENTS" "$selected_set"
+        } >&2
+        status=1
+    fi
+    rm -rf "$root"
+    [ "$status" = 0 ] || die "refusing before anything is written."
+}
+
+if [ "$check_packages" = 1 ]; then
+    [ -n "$selected_set" ] && [ -f "$DEVREPO_ROOT/sets/$selected_set/manifest.json" ] \
+        || die "cannot resolve archive marker $DEVREPO_MARKER at $DEVREPO_ROOT"
+    solve_check
+    exit 0
 fi
 
 # Two filesystems with the same label are two filesystems the boot path cannot tell apart, and
@@ -455,12 +597,13 @@ inspect_target() {
                 elif [ "$state_mirror" != "$UBUNTU_MIRROR" ]; then
                     verdict=rebuild
                     verdict_reason="Ubuntu was bootstrapped from ${state_mirror:-an unrecorded mirror}, and this run installs from $UBUNTU_MIRROR"
-                elif [ "$state_set" != "$selected_set" ]; then
-                    verdict=rebuild
-                    verdict_reason="the install was started for TemplarOS set $state_set, and this archive's is $selected_set"
                 else
+                    # The bootstrap is plain Ubuntu; the set only matters from the sources step on,
+                    # which a resume repeats — and the pin moves installed packages to this set.
                     verdict=resumable
-                    verdict_reason="Ubuntu $state_suite is bootstrapped for deployment $state_deployment (set $state_set); every later step is repeatable"
+                    verdict_reason="Ubuntu $state_suite is bootstrapped for deployment $state_deployment; every later step is repeated with set $selected_set"
+                    [ "$state_set" = "$selected_set" ] \
+                        || verdict_reason="$verdict_reason (it was begun with $state_set)"
                 fi ;;
             *)
                 verdict=rebuild
@@ -820,6 +963,7 @@ downloads Ubuntu from there. Nothing has been written. Connect a network first:
   ip -br addr             # it should have an address
 then run this again."
     note "the Ubuntu mirror $UBUNTU_MIRROR answers for $UBUNTU_SUITE"
+    solve_check
 fi
 
 printf 'TemplarOS Developer Edition provisioner\n'
@@ -1176,32 +1320,10 @@ run install -D -m 0644 "$DEVREPO_ROOT/templaros-dev.gpg" \
     "$mnt/usr/share/keyrings/templaros-archive-keyring.gpg"
 note "writing canonical Ubuntu sources, an immutable set pin, and the signed archive-root source"
 if [ "$apply" = 1 ]; then
-    mkdir -p "$mnt/etc/apt/sources.list.d" "$mnt/etc/apt/preferences.d"
     # The bootstrap's one-line sources.list names the same archive; keeping both makes apt warn
     # about every target twice.
     rm -f "$mnt/etc/apt/sources.list"
-    printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "8";\n' > "$mnt/etc/apt/apt.conf.d/01templaros-acquire"
-    cat > "$mnt/etc/apt/sources.list.d/ubuntu.sources" <<EOF
-Types: deb
-URIs: $UBUNTU_MIRROR
-Suites: $UBUNTU_SUITE $UBUNTU_SUITE-updates
-Components: $UBUNTU_COMPONENTS
-Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-
-Types: deb
-URIs: $UBUNTU_SECURITY_MIRROR
-Suites: $UBUNTU_SUITE-security
-Components: $UBUNTU_COMPONENTS
-Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-EOF
-    cat > "$mnt/etc/apt/sources.list.d/templaros.sources" <<EOF
-Types: deb
-URIs: file://$TARGET_DEVREPO
-Suites: ./
-Signed-By: /usr/share/keyrings/templaros-archive-keyring.gpg
-EOF
-    printf 'Package: templaros-* templar-files\nPin: version %s\nPin-Priority: 1001\n' \
-        "$selected_set" > "$mnt/etc/apt/preferences.d/templaros-set"
+    write_apt_config "$mnt" "$TARGET_DEVREPO" /usr/share/keyrings/templaros-archive-keyring.gpg
     printf '%s\n' "$selected_set" > "$mnt$TARGET_DEVREPO/current"
 fi
 
@@ -1211,13 +1333,12 @@ if [ "$resume" = 1 ]; then
     in_target dpkg --configure -a
 fi
 in_target apt-get update
-in_target apt-get install -y "$TEMPLAROS_KEYRING" "$TEMPLAROS_SESSION" "$TEMPLAROS_DESKTOP" \
-    "$TEMPLAROS_DEV_RUST" "$TEMPLAROS_DEV_CUDA" "$TEMPLAROS_FILES"
+in_target apt-get install -y "${base_packages[@]}"
 
 step "Kernel and NVIDIA modules: Ubuntu-signed only, previous kernel retained"
 note "$TEMPLAROS_KERNEL pulls Ubuntu's supported GA/HWE kernel; $TEMPLAROS_NVIDIA pulls the matching"
 note "Canonical-signed linux-modules-nvidia LRM. No DKMS, no self-built module, no MOK."
-in_target apt-get install -y "$TEMPLAROS_KERNEL" "$TEMPLAROS_NVIDIA"
+in_target apt-get install -y "${kernel_packages[@]}"
 note "keeping the previous kernel installable and selectable is policy, not luck:"
 if [ "$apply" = 1 ]; then
     printf 'APT::NeverAutoRemove { "^linux-image-.*"; "^linux-modules-nvidia-.*"; };\n' \
@@ -1281,7 +1402,7 @@ else
 fi
 
 step "Boot path: Canonical-signed shim -> Canonical-signed GRUB -> Ubuntu-signed kernel (ADR-0004)"
-in_target apt-get install -y shim-signed grub-efi-amd64-signed
+in_target apt-get install -y "${boot_packages[@]}"
 note "--no-nvram: the firmware entry is registered below, on the host side, and appended rather"
 note "than put first. The firmware menu is how the first boots happen; making TemplarOS the default"
 note "is a person's decision after installer/CHECKLIST.md passes (efibootmgr -o)."

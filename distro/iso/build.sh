@@ -257,6 +257,14 @@ save_ubuntu_layer() {
     printf '%s\n' "$ubuntu_key" > "$layer_dir/key"
 }
 
+# --- 0. The medium installs this set: prove it can --------------------------------------------------
+# The provisioner's own solvability check, against the same snapshot and components an install
+# uses. A set whose package list cannot resolve (2026-09-30: templaros-dev-cuda without multiverse)
+# must stop here, not at step 8 on somebody's disk.
+echo "0. the install's package set resolves"
+"$root/installer/provision.sh" --check-packages --archive "$archive" --set "$set_id" \
+    || die "the set $set_id cannot be installed from the Ubuntu snapshot (reason above)"
+
 # --- 1. rootfs → squashfs --------------------------------------------------------------------------
 if [ -s "$squashfs" ] && [ "$(cat "$cache_stamp" 2>/dev/null || true)" = "$cache_key" ]; then
     echo "1. $squashfs exists; skipping the bootstrap"

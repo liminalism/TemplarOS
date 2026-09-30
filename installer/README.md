@@ -51,7 +51,15 @@ somewhere to go.
 Ubuntu itself comes from the snapshot `distro/base.toml` pins (`snapshot_url`), not the moving
 archive: the set's metapackages pin the NVIDIA modules and userspace to the exact versions its
 closure resolved, and the archive drops those as soon as Ubuntu publishes the next kernel. The
-installed system keeps the snapshot as its source; a newer base arrives with a newer set.
+installed system keeps the snapshot as its source; a newer base arrives with a newer set. The
+components come from the same file (`components`): multiverse is among them because
+`nvidia-cuda-toolkit`, which `templaros-dev-cuda` depends on, is in no other component.
+
+Before its first write, every `--apply` resolves the whole package set in a scratch apt root (empty
+dpkg status, the target's exact sources and set pin, `apt-get install --simulate`) and refuses with
+one line per cause — `templaros-dev-cuda needs nvidia-cuda-toolkit — no configured source has it` —
+instead of partitioning a disk it cannot finish. `--check-packages` asks the same question with no
+target and no root; `distro/iso/build.sh` runs it before building a medium.
 
 ## Stopping partway, and carrying on
 
@@ -62,13 +70,15 @@ suite and the mirror it was written for. `--inspect` reads it (root mounts read-
 of:
 
 - `fresh` — the pair has no installed system; install onto it;
-- `resumable` — Ubuntu is bootstrapped for this set, suite and mirror; `--resume` keeps it and
+- `resumable` — Ubuntu is bootstrapped for this suite and mirror; `--resume` keeps it and
   repeats every later step. Each of those is repeatable: `dpkg --configure -a` first, the account
   is only created if absent, `flatpak install --or-update`, and an existing firmware entry for this
   ESP's shim is kept rather than duplicated;
 - `rebuild` — the pair is this provisioner's but cannot be resumed (it stopped before the
-  bootstrap finished, the set, suite or mirror changed, or an earlier provisioner left no record);
-  the same `--esp/--root` without `--reuse` reformats only those two partitions;
+  bootstrap finished, the suite or mirror changed, or an earlier provisioner left no record);
+  the same `--esp/--root` without `--reuse` reformats only those two partitions. A newer TemplarOS
+  set is not a reason: the bootstrap is plain Ubuntu, and a resume repeats every step the set
+  touches;
 - `complete` — installed; nothing to do;
 - `foreign` — not recognisably this provisioner's pair; nothing is done to it.
 
@@ -79,6 +89,12 @@ The chroot steps get their own `/run` (a tmpfs, so nothing reaches `@`): Ubuntu'
 `/etc/resolv.conf` is a symlink into `/run/systemd/resolve/`, which a never-booted target does not
 have, so the file it names is written there from the live system's upstream resolvers, and
 `getent ahostsv4 <mirror>` inside the target proves resolution before any step depends on it.
+
+A privileged run re-executes itself in its own mount namespace, a slave of the host's
+(`unshare --mount --propagation slave`). Host mounts are visible inside; nothing mounted or
+unmounted inside — the target, its bind of `/dev`, `/dev/pts`, `/proc`, `/sys`, efivars, the
+chroot's `/run` — can propagate back onto the live system, and the kernel drops all of it when the
+run ends, however it ends.
 
 ## What it refuses to do
 

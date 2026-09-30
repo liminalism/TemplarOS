@@ -237,7 +237,7 @@ reason = "the VA-API driver set, so decode works on whichever GPU answered"
 
 [[layer.package]]
 name = "intel-media-va-driver"
-reason = "iHD decode for the Intel iGPU; the -non-free build is in multiverse, which distro/base.toml does not enable — the 59 VA-API profiles the hardware lane measured came from the non-free driver on a dev host and are not a TemplarOS number"
+reason = "iHD decode for the Intel iGPU; the -non-free build is in multiverse, which distro/base.toml enables only for the CUDA toolkit and TemplarOS does not select from — the 59 VA-API profiles the hardware lane measured came from the non-free driver on a dev host and are not a TemplarOS number"
 
 [[layer.package]]
 name = "vainfo"
