@@ -729,6 +729,14 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     }
 }
 
+/// The decoration a client request resolves to. The compositor draws every frame — the tags
+/// along each window's bottom edge are its name and its park, maximize and close controls — so
+/// a client asking for client-side still gets server-side: one set of controls, the
+/// compositor's, on every window. No application themes its own chrome on this system.
+fn granted_mode(_requested: Mode) -> Mode {
+    Mode::ServerSide
+}
+
 impl<B: Backend + 'static> XdgDecorationHandler for TemplarCompState<B> {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         // The compositor draws the frame: the tags along every client window's bottom edge are
@@ -736,7 +744,7 @@ impl<B: Backend + 'static> XdgDecorationHandler for TemplarCompState<B> {
         // `chrome::layout::control_tags`), and the window is movable by its name tag and
         // resizable from its outside edges and corners (`templar_window::geometry::resize_edges_at`).
         // A client that also drew its own title bar would be showing two sets of controls, so
-        // server-side is the answer unless the client insists on client-side in `request_mode`.
+        // server-side is the answer, including when the client asks for client-side below.
         toplevel.with_pending_state(|state| {
             state.decoration_mode = Some(Mode::ServerSide);
         });
@@ -747,13 +755,14 @@ impl<B: Backend + 'static> XdgDecorationHandler for TemplarCompState<B> {
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: Mode) {
+        let granted = granted_mode(mode);
         toplevel.with_pending_state(|state| {
-            state.decoration_mode = Some(mode);
+            state.decoration_mode = Some(granted);
         });
         if toplevel.is_initial_configure_sent() {
             toplevel.send_configure();
         }
-        self.apply_decoration(&toplevel, mode);
+        self.apply_decoration(&toplevel, granted);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
@@ -772,7 +781,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let Some(window_id) = self.windows.window_id_for(&toplevel.wl_surface().id()) else {
             return;
         };
-        let decoration = if mode == Mode::ServerSide {
+        // Belt and braces: even a future caller passing `ClientSide` lands on server-side.
+        let decoration = if granted_mode(mode) == Mode::ServerSide {
             Decoration::ServerSide
         } else {
             Decoration::ClientSide
@@ -850,7 +860,17 @@ impl<B: Backend + 'static> XdgActivationHandler for TemplarCompState<B> {
 
 #[cfg(test)]
 mod tests {
+    use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge as Wire;
+
+    /// The compositor draws every frame, so decoration negotiation is not a negotiation: a
+    /// client asking for client-side still gets server-side, and no application themes its
+    /// own chrome. (`request_mode` and `apply_decoration` both resolve through this.)
+    #[test]
+    fn client_side_requests_are_granted_server_side() {
+        assert_eq!(super::granted_mode(Mode::ClientSide), Mode::ServerSide);
+        assert_eq!(super::granted_mode(Mode::ServerSide), Mode::ServerSide);
+    }
 
     /// A client asking for a resize means what the protocol says it means. The compositor's own
     /// perimeter turns every press into a corner (`templar_window::resize_edges_at`), but that rule
