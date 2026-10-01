@@ -49,6 +49,8 @@ required=(
     usr/share/templaros/greetd/config.toml
     usr/lib/sysusers.d/templaros-greeter.conf
     usr/lib/tmpfiles.d/templaros-greeter.conf
+    usr/share/applications/firefox.desktop
+    usr/lib/firefox/distribution/policies.json
 )
 for path in "${required[@]}"; do
     [ -e "$install_root/$path" ] || {

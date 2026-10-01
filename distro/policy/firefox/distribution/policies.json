@@ -1,0 +1,15 @@
+{
+  "_comment": "TemplarOS Firefox policy, shipped by the templaros-shell package. The compositor draws every window frame on this system, so Firefox is locked to the system title bar and native title-bar buttons: its own client-side chrome would be a second set of controls under the compositor's.",
+  "policies": {
+    "Preferences": {
+      "browser.tabs.inTitlebar": {
+        "Value": 0,
+        "Status": "locked"
+      },
+      "widget.gtk.non-native-titlebar-buttons.enabled": {
+        "Value": false,
+        "Status": "locked"
+      }
+    }
+  }
+}

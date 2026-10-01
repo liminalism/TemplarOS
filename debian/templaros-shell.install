@@ -1,1 +1,3 @@
 target/release/templar-shell usr/bin/
+distro/policy/firefox/firefox.desktop usr/share/applications/
+distro/policy/firefox/distribution/policies.json usr/lib/firefox/distribution/

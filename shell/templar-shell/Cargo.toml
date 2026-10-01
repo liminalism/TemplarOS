@@ -130,4 +130,10 @@ assets = [
     # every line in it. It lives with the shell because it is the shell's palette
     # (`src/surface/design.rs`) that it carries.
     ["../../distro/policy/xdg/kitty.conf", "etc/xdg/kitty/kitty.conf", "644"],
+    # Firefox's canonical launcher and its locked-down chrome policy. The desktop entry is the
+    # XDG-namespace variant of the Flathub Flatpak the seeds install; sessiond groups the two
+    # under one logical Firefox (variants.rs rule 4: shared window class and name), and a
+    # person's own ~/.local/share/applications/firefox.desktop shadows this one.
+    ["../../distro/policy/firefox/firefox.desktop", "usr/share/applications/firefox.desktop", "644"],
+    ["../../distro/policy/firefox/distribution/policies.json", "usr/lib/firefox/distribution/policies.json", "644"],
 ]

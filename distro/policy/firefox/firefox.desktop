@@ -1,0 +1,22 @@
+# TemplarOS's Firefox launcher: the OS browser's canonical desktop entry.
+#
+# Shipped by the `templaros-shell` package to /usr/share/applications/firefox.desktop. The
+# browser itself is the Flathub Flatpak (distro/seeds/browser.seed), so this entry launches
+# through it; the Flatpak's own export remains a second variant of the same logical
+# application, and sessiond groups the two. A person's own
+# ~/.local/share/applications/firefox.desktop shadows this file entirely — that is the
+# sanctioned override for anyone running a different Firefox build.
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Firefox
+GenericName=Web Browser
+Comment=Browse the web
+TryExec=/usr/bin/flatpak
+Exec=/usr/bin/flatpak run org.mozilla.firefox %u
+Icon=org.mozilla.firefox
+Categories=Network;WebBrowser;
+StartupNotify=true
+StartupWMClass=firefox
+Terminal=false
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/mozilla;
