@@ -17,7 +17,9 @@ use smithay::{
         dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
         fractional_scale::FractionalScaleHandler,
         output::OutputHandler,
-        selection::primary_selection::PrimarySelectionHandler,
+        selection::{
+            primary_selection::PrimarySelectionHandler, wlr_data_control::DataControlHandler,
+        },
         shm::{ShmHandler, ShmState},
     },
 };
@@ -45,6 +47,14 @@ impl<B: Backend + 'static> PrimarySelectionHandler for TemplarCompState<B> {
         &mut self,
     ) -> &mut smithay::wayland::selection::primary_selection::PrimarySelectionState {
         &mut self.primary_selection_state
+    }
+}
+
+impl<B: Backend + 'static> DataControlHandler for TemplarCompState<B> {
+    fn data_control_state(
+        &mut self,
+    ) -> &mut smithay::wayland::selection::wlr_data_control::DataControlState {
+        &mut self.data_control_state
     }
 }
 

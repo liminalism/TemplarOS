@@ -267,6 +267,9 @@ mod tests {
             // A client saying "do not turn the screen off while I am playing this"
             // (`src/idle.rs`). Ordinary clients may bind it: that is the protocol's whole point.
             "zwp_idle_inhibit_manager_v1",
+            // Clipboard managers and tools (`wl-copy`, the portal backend): selections without
+            // keyboard focus (`src/state.rs`'s `data_control_state`).
+            "zwlr_data_control_manager_v1",
         ] {
             assert!(
                 advertised.iter().any(|name| name == required),

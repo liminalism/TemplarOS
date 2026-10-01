@@ -11,10 +11,9 @@
 //! sense) are mapped straight into `Space` at whatever geometry the client itself chose and never
 //! touch `WindowService`, matching every other Smithay-based compositor's treatment of them.
 //!
-//! Selection/clipboard bridging between XWayland and native Wayland clients is out of scope this
-//! milestone (`allow_selection_access` stays at its default `false`) — XWayland apps can still
-//! read/write their own X11 clipboard among themselves, they just don't share one with native
-//! Wayland clients yet. A real gap, not a silent one: worth flagging as follow-up.
+//! Selection/clipboard bridging between XWayland and native Wayland clients is on: one
+//! shared clipboard, whichever side a program lives on (`allow_selection_access` answers `true`
+//! for every selection).
 
 use crate::state::{Backend, TemplarCompState};
 use crate::window_bridge::{claims_from_x11, client_kind};
@@ -304,7 +303,7 @@ impl<B: Backend + 'static> XwmHandler for TemplarCompState<B> {
     }
 
     fn allow_selection_access(&mut self, _xwm: XwmId, _selection: SelectionTarget) -> bool {
-        false
+        xwayland_selection_allowed()
     }
 
     /// `_NET_WM_NAME`/`WM_NAME` changing is delivered here rather than as its own callback —
@@ -413,4 +412,20 @@ impl<B: Backend + 'static> TemplarCompState<B> {
 /// theme (`src/chrome.rs`'s "no font/raster dependency yet" scope applies to cursors too).
 fn solid_cursor_pixels() -> [u8; 4] {
     [0, 0, 0, 255]
+}
+
+/// Whether XWayland selections bridge to native Wayland ones. One clipboard for the whole
+/// session: an X11 program's copy is a Wayland client's paste, and the reverse.
+fn xwayland_selection_allowed() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    /// The bridge stays on: X11 programs share the session clipboard rather than a private
+    /// X11-only one. (`allow_selection_access` answers through this.)
+    #[test]
+    fn xwayland_selections_bridge_to_wayland() {
+        assert!(super::xwayland_selection_allowed());
+    }
 }

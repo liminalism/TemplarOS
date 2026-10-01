@@ -30,7 +30,10 @@ use smithay::{
         fractional_scale::FractionalScaleManagerState,
         output::OutputManagerState,
         presentation::PresentationState,
-        selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
+        selection::{
+            data_device::DataDeviceState, primary_selection::PrimarySelectionState,
+            wlr_data_control::DataControlState,
+        },
         session_lock::SessionLockManagerState,
         shell::xdg::{XdgShellState, decoration::XdgDecorationState, dialog::XdgDialogState},
         shm::ShmState,
@@ -133,6 +136,10 @@ pub struct TemplarCompState<B: Backend + 'static> {
     pub seat_state: SeatState<Self>,
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
+    /// `zwlr_data_control_manager_v1`: clipboard managers and tools (`wl-copy`, the portal
+    /// backend) reading and offering selections without owning keyboard focus. Held so the
+    /// global stays registered.
+    pub data_control_state: DataControlState,
     pub viewporter_state: ViewporterState,
     pub fractional_scale_manager_state: FractionalScaleManagerState,
     pub presentation_state: PresentationState,
@@ -305,7 +312,10 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             fractional_scale::FractionalScaleManagerState,
             output::OutputManagerState,
             presentation::PresentationState,
-            selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
+            selection::{
+                data_device::DataDeviceState, primary_selection::PrimarySelectionState,
+                wlr_data_control::DataControlState,
+            },
             session_lock::SessionLockManagerState,
             shell::xdg::{XdgShellState, decoration::XdgDecorationState, dialog::XdgDialogState},
             shm::ShmState,
@@ -332,6 +342,12 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             .map_err(|error| anyhow::anyhow!("adding keyboard to seat: {error}"))?;
         seat.add_pointer();
 
+        let primary_selection_state = PrimarySelectionState::new::<Self>(dh);
+        // Visible to every client, like the session lock manager below: clipboard tools are
+        // ordinary clients by design, and gating them would break `wl-copy` with no error.
+        let data_control_state =
+            DataControlState::new::<Self, _>(dh, Some(&primary_selection_state), |_| true);
+
         Ok(Self {
             backend_data,
             display_handle: dh.clone(),
@@ -345,7 +361,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(dh),
             seat_state,
             data_device_state: DataDeviceState::new::<Self>(dh),
-            primary_selection_state: PrimarySelectionState::new::<Self>(dh),
+            primary_selection_state,
+            data_control_state,
             viewporter_state: ViewporterState::new::<Self>(dh),
             fractional_scale_manager_state: FractionalScaleManagerState::new::<Self>(dh),
             presentation_state: PresentationState::new::<Self>(dh, libc::CLOCK_MONOTONIC as u32),
