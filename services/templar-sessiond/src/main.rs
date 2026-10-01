@@ -175,6 +175,10 @@ struct Services {
     native_count: usize,
     imported_count: usize,
     resolver: Arc<dyn ExecResolver>,
+    /// The `.desktop` directories the startup import scanned. Kept so the desktop watcher can
+    /// re-scan exactly the same chain — including `--application-dir` overrides — for the rest
+    /// of the session.
+    application_dirs: Vec<PathBuf>,
     catalog: Arc<dyn AppCatalog>,
     engine: Arc<RwLock<AssociationEngine>>,
     detector: Arc<dyn MimeDetector>,
@@ -196,6 +200,17 @@ struct Services {
         Vec<String>,
         templar_types::InstanceId,
     )>,
+}
+
+/// The `.desktop` directories the import scans: the operator's `--application-dir`
+/// overrides, or the default discovery chain. Factored out of [`load_services`] so that
+/// function stays within its line budget; the watcher reuses the stored answer, not this.
+fn resolve_application_dirs(cli: &Cli) -> Vec<PathBuf> {
+    if cli.application_dirs.is_empty() && !cli.no_default_discovery {
+        background::desktop_import::application_dirs()
+    } else {
+        cli.application_dirs.clone()
+    }
 }
 
 fn load_services(cli: &Cli) -> Result<Services> {
@@ -231,11 +246,7 @@ fn load_services(cli: &Cli) -> Result<Services> {
     let native_count = registry.manifests().len();
 
     let resolver: Arc<dyn ExecResolver> = Arc::new(PathExecResolver::from_env());
-    let application_dirs = if cli.application_dirs.is_empty() && !cli.no_default_discovery {
-        background::desktop_import::application_dirs()
-    } else {
-        cli.application_dirs.clone()
-    };
+    let application_dirs = resolve_application_dirs(cli);
     let imported_count =
         background::desktop_import::import(&registry, &store, &application_dirs, resolver.as_ref())
             .unwrap_or_else(|error| {
@@ -297,6 +308,7 @@ fn load_services(cli: &Cli) -> Result<Services> {
         native_count,
         imported_count,
         resolver,
+        application_dirs,
         catalog,
         engine,
         detector,
@@ -756,6 +768,13 @@ fn spawn_background_tasks(
         services.history.clone(),
         services.registry.clone(),
         Duration::from_secs(5),
+    ));
+    tokio::spawn(background::desktop_watch::run(
+        services.registry.clone(),
+        services.store.clone(),
+        services.resolver.clone(),
+        connection.clone(),
+        services.application_dirs.clone(),
     ));
 }
 

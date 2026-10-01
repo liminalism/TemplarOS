@@ -225,7 +225,7 @@ pub async fn run(
 
 /// Emit `AppIdentity1.ApplicationsChanged`. Best-effort: a listener that misses it re-reads on its
 /// next natural refresh, and failing to announce a change must never abort autostart.
-async fn announce_applications_changed(connection: &zbus::Connection) {
+pub(crate) async fn announce_applications_changed(connection: &zbus::Connection) {
     let emitter = match zbus::object_server::SignalEmitter::new(
         connection,
         templar_types::dbus::session::APP_IDENTITY_PATH,

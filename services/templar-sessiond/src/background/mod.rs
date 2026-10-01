@@ -6,4 +6,5 @@ pub mod autostart;
 pub mod checkpoint_relay;
 pub mod crash_ingest;
 pub mod desktop_import;
+pub mod desktop_watch;
 pub mod notification_provider;
