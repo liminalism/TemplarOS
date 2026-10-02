@@ -103,7 +103,7 @@ Read from the code at 50af378. A framed window's frame is its client plus a TAG_
 
 During the task-system campaign's nested checks, Lane C measured that the bottom-right cluster received no pointer events while wl_surface.set_input_region was declared with the correct chip rectangles [(8,8,112,32),(128,8,96,32),(232,8,160,32),(400,8,140,32)] on a 548x48 surface, and received them when the call was skipped; the island, which declares no region, delivered either way. The earlier ~25-30 px input/paint offset report was an artefact of measuring X screen coordinates against output coordinates. The user reports that during those runs they were using the machine and two other sessions were driving the pointer at once, so the hit-test result is most likely confounded, not a defect; Smithay's RendererSurfaceState::contains_point and RegionAttributes::contains read correctly for these rectangles. Unverified either way. What changed in this campaign around it: 186ae89 declares the input region on every present (previously only on the masked path, so a plain present kept the previous frame's region); 6d7943f makes the compositor re-run pointer motion when the surface under a resting pointer moves or resizes; 3703344 deletes the shell's follow_bottom_anchored_resize compensation. The user's hands-on gate: hover the bottom-right chips nested with nothing else driving the pointer, click the account chip, and drag the sliders; if the cluster does not react, the one-line suspect is declare_input_region in wayland_bridge.rs. Rule learned the hard way: never drive synthetic X input (xdotool) on this machine while it is in use; a nested check's clicks landed on the live browser.
 
-> **Stale** — `watches "shell/templar-shell/src/wayland_bridge.rs"` was matched by `271f815b`, which touched `shell/templar-shell/src/wayland_bridge.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#nested-the-machine-cluster-once-received-no-pointer-events-while-its-input-region-was-declared-the-measurement-was-confounded-and-the-user-verifies-it-by-hand).
+> **Stale** — `watches "shell/templar-shell/src/wayland_bridge.rs"` was matched by `12d2d5dc`, which touched `shell/templar-shell/src/wayland_bridge.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#nested-the-machine-cluster-once-received-no-pointer-events-while-its-input-region-was-declared-the-measurement-was-confounded-and-the-user-verifies-it-by-hand).
 
 ### btrfs send --no-data is flat in tree size and proportional to the change, and the delta beats a crawl by up to 647x
 
@@ -131,7 +131,7 @@ Three desktop freezes on 2026-10-01, all on the installed build set b919ed4 (tem
 
 **supersedes** `@legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocked/1`
 
-> **Stale** — `watches "compositor/templar-comp/src/**"` was matched by `31e4e231`, which touched `compositor/templar-comp/src/backend/udev.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#three-2026-10-01-freezes-templar-comp-stopped-presenting-kernel-clean-loop-stall-vs-dead-render-chain-still-open).
+> **Stale** — `watches "compositor/templar-comp/src/**"` was matched by `12d2d5dc`, which touched `compositor/templar-comp/src/protocols_shell.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#three-2026-10-01-freezes-templar-comp-stopped-presenting-kernel-clean-loop-stall-vs-dead-render-chain-still-open).
 
 ### fanotify refuses a filesystem mark on a Btrfs subvolume, and one group cannot hold marks on two subvolumes at all — so it cannot cover LegeOS's declared layout
 
@@ -149,7 +149,7 @@ Read from Lubuntu on 2026-10-01 against the TemplarOS root (/media/dk/templaros-
 
 **supersedes** `@legeos.observation.freeze-watchdog-not-deployed-20261001/2` · **derived_from** `@legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocked/2`
 
-> **Stale** — `watches "compositor/templar-comp/src/**"` was matched by `31e4e231`, which touched `compositor/templar-comp/src/backend/udev.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#after-the-2026-10-01-freezes-the-evidence-harness-is-armed-on-the-laptop-but-the-installed-templar-comp-still-has-no-watchdog).
+> **Stale** — `watches "compositor/templar-comp/src/**"` was matched by `12d2d5dc`, which touched `compositor/templar-comp/src/protocols_shell.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#after-the-2026-10-01-freezes-the-evidence-harness-is-armed-on-the-laptop-but-the-installed-templar-comp-still-has-no-watchdog).
 
 ### Hands-on run after logout/login: usable but rough — placement, inert tiling menu, no tile drag, widget sprawl, label noise, no drive route
 

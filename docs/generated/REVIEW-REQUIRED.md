@@ -49,7 +49,19 @@ What should not be trusted without re-checking: records the build flagged `stale
 
 `verified` · `@legeos.observation.cluster-pointer-delivery-with-an-input-region-is-unverified/1` · observation · **stale** · [Nested, the machine cluster once received no pointer events while its input region was declared; the measurement was confounded and the user verifies it by hand](CURRENT-STATE.md#nested-the-machine-cluster-once-received-no-pointer-events-while-its-input-region-was-declared-the-measurement-was-confounded-and-the-user-verifies-it-by-hand)
 
-**Cause** — `watches "shell/templar-shell/src/wayland_bridge.rs"` was matched by `271f815b`, which touched `shell/templar-shell/src/wayland_bridge.rs`.
+**Cause** — `watches "shell/templar-shell/src/wayland_bridge.rs"` was matched by `12d2d5dc`, which touched `shell/templar-shell/src/wayland_bridge.rs`.
+
+### Three 2026-10-01 freezes: templar-comp stopped presenting, kernel clean; loop stall vs dead render chain still open
+
+`verified` · `@legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocked/2` · observation · **stale** · [Three 2026-10-01 freezes: templar-comp stopped presenting, kernel clean; loop stall vs dead render chain still open](CURRENT-STATE.md#three-2026-10-01-freezes-templar-comp-stopped-presenting-kernel-clean-loop-stall-vs-dead-render-chain-still-open)
+
+**Cause** — `watches "compositor/templar-comp/src/**"` was matched by `12d2d5dc`, which touched `compositor/templar-comp/src/protocols_shell.rs`.
+
+### After the 2026-10-01 freezes the evidence harness is armed on the laptop but the installed templar-comp still has no watchdog
+
+`verified` · `@legeos.observation.freeze-watchdog-not-deployed-20261001/3` · observation · **stale** · [After the 2026-10-01 freezes the evidence harness is armed on the laptop but the installed templar-comp still has no watchdog](CURRENT-STATE.md#after-the-2026-10-01-freezes-the-evidence-harness-is-armed-on-the-laptop-but-the-installed-templar-comp-still-has-no-watchdog)
+
+**Cause** — `watches "compositor/templar-comp/src/**"` was matched by `12d2d5dc`, which touched `compositor/templar-comp/src/protocols_shell.rs`.
 
 ### Identity never resolves in a nested session, so the fan, the chip count, grouping and the launcher's running count can only be seen offscreen or on hardware
 
@@ -62,18 +74,6 @@ What should not be trusted without re-checking: records the build flagged `stale
 `verified` · `@legeos.observation.desktop-freeze-20261001-display-path-stall-machine-alive/2` · observation · **stale** · [The 2026-10-01 desktop freeze stalled the display path while the machine kept running; the logs cannot say where](CURRENT-STATE.md#the-2026-10-01-desktop-freeze-stalled-the-display-path-while-the-machine-kept-running-the-logs-cannot-say-where)
 
 **Cause** — `watches "compositor/templar-comp/src/backend/**"` was matched by `31e4e231`, which touched `compositor/templar-comp/src/backend/udev.rs`.
-
-### Three 2026-10-01 freezes: templar-comp stopped presenting, kernel clean; loop stall vs dead render chain still open
-
-`verified` · `@legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocked/2` · observation · **stale** · [Three 2026-10-01 freezes: templar-comp stopped presenting, kernel clean; loop stall vs dead render chain still open](CURRENT-STATE.md#three-2026-10-01-freezes-templar-comp-stopped-presenting-kernel-clean-loop-stall-vs-dead-render-chain-still-open)
-
-**Cause** — `watches "compositor/templar-comp/src/**"` was matched by `31e4e231`, which touched `compositor/templar-comp/src/backend/udev.rs`.
-
-### After the 2026-10-01 freezes the evidence harness is armed on the laptop but the installed templar-comp still has no watchdog
-
-`verified` · `@legeos.observation.freeze-watchdog-not-deployed-20261001/3` · observation · **stale** · [After the 2026-10-01 freezes the evidence harness is armed on the laptop but the installed templar-comp still has no watchdog](CURRENT-STATE.md#after-the-2026-10-01-freezes-the-evidence-harness-is-armed-on-the-laptop-but-the-installed-templar-comp-still-has-no-watchdog)
-
-**Cause** — `watches "compositor/templar-comp/src/**"` was matched by `31e4e231`, which touched `compositor/templar-comp/src/backend/udev.rs`.
 
 ### Every shipped binary carries its line tables: the debs are ~5x their stripped size, deliberately, and the ISO will inherit that
 
