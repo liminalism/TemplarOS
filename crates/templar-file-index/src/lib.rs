@@ -22,6 +22,7 @@
 #![forbid(unsafe_code)]
 
 pub mod aggregate;
+mod arrays;
 pub mod btrfs_delta;
 pub mod coalesce;
 pub mod error;
@@ -67,18 +68,22 @@ pub struct IndexConfig {
     pub max_changes: u64,
     /// Live search cursors kept; the least recently used is evicted beyond this.
     pub max_cursors: usize,
-    /// Rows a cursor may pin.
+    /// Rows a cursor may pin: the best this many matches of a search, in order. Every match is
+    /// still counted, so this bounds memory, not correctness.
     pub max_cursor_rows: usize,
     /// How long an idle cursor survives.
     pub cursor_ttl: std::time::Duration,
     /// Generations a tombstone outlives before a commit may sweep it.
     pub tombstone_retention_generations: u64,
-    /// Rows a `LIKE` fallback may examine before it declares the answer truncated.
-    pub candidate_limit: usize,
     /// Entries staged before a scan flushes them.
     pub scan_flush_rows: usize,
     /// Mutations applied in one transaction before a batch is split.
     pub max_batch: usize,
+    /// Answer searches from in-memory arrays of the live rows (`arrays.rs`) once a search has
+    /// had them built for the current generation, instead of through SQL. Off by default so a
+    /// library user, and every test that does not ask for it, gets the one deterministic SQL
+    /// path; the file service turns it on.
+    pub search_arrays: bool,
 }
 
 impl Default for IndexConfig {
@@ -90,9 +95,9 @@ impl Default for IndexConfig {
             max_cursor_rows: 100_000,
             cursor_ttl: std::time::Duration::from_secs(300),
             tombstone_retention_generations: 2,
-            candidate_limit: 50_000,
             scan_flush_rows: 4_096,
             max_batch: 10_000,
+            search_arrays: false,
         }
     }
 }
@@ -123,6 +128,7 @@ struct Inner {
     sink: RwLock<Option<Arc<dyn ChangeSink>>>,
     cursors: Mutex<query::CursorStore>,
     scanning: Mutex<HashSet<RootId>>,
+    arrays: arrays::ArraysSlot,
 }
 
 impl std::fmt::Debug for Inner {
@@ -169,6 +175,7 @@ impl Index {
             sink: RwLock::new(None),
             cursors: Mutex::new(query::CursorStore::default()),
             scanning: Mutex::new(HashSet::new()),
+            arrays: arrays::ArraysSlot::default(),
         }));
         index.sweep_aborted_scans()?;
         Ok(index)
@@ -257,6 +264,10 @@ impl Index {
 
     pub(crate) fn cursors(&self) -> &Mutex<query::CursorStore> {
         &self.0.cursors
+    }
+
+    pub(crate) fn arrays_slot(&self) -> &arrays::ArraysSlot {
+        &self.0.arrays
     }
 
     /// Claims the right to walk a root. The maintenance lane treats the refusal as "someone else
@@ -1279,6 +1290,283 @@ mod tests {
             1,
             "a consumer that asks for every tier does get the object file"
         );
+    }
+
+    /// A result cut at `max_cursor_rows` is the best rows in order, on both query paths, and its
+    /// `total` still counts every match. The old candidate `LIMIT` ran before ranking, so a cut
+    /// kept whatever the scan visited first and the exact match could be the row that was lost.
+    #[test]
+    fn a_cut_off_result_keeps_the_best_matches_and_counts_all_of_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        for number in 0..40 {
+            std::fs::write(home.join(format!("aaa-report-{number:02}")), b"x").unwrap();
+        }
+        std::fs::write(home.join("report"), b"the one").unwrap();
+        let index = Index::open(
+            &dir.path().join("file-index-v1.sqlite3"),
+            IndexConfig {
+                max_cursor_rows: 5,
+                ..IndexConfig::default()
+            },
+        )
+        .unwrap();
+        scan(&index, &home);
+
+        for (needle, best) in [("report", Rank::Exact), ("re", Rank::Prefix)] {
+            let result = index.search(&Query::new(needle)).unwrap();
+            assert_eq!(result.total, Some(41), "`{needle}` must count every match");
+            assert!(result.truncated, "`{needle}`: 41 matches, 5 kept");
+            assert_eq!(result.hits.len(), 5);
+            assert_eq!(
+                result.hits[0].row.path,
+                NativePath::from_path(&home.join("report")),
+                "`{needle}` via {} lost the best match",
+                result.strategy
+            );
+            assert_eq!(result.hits[0].rank, best);
+        }
+    }
+
+    /// The arrays are a cache of the SQL answer, so they must give the same one: the same rows in
+    /// the same order with the same ranks and the same total, for every sort, direction, filter
+    /// and scope — including the cut at `max_cursor_rows`.
+    #[test]
+    fn the_search_arrays_answer_exactly_what_sql_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let files: &[(&str, usize, u64)] = &[
+            ("Report.PDF", 30, 100),
+            ("report", 1, 300),
+            ("notes/2026/annual-report.md", 400, 200),
+            ("notes/report_final", 400, 200),
+            // Sort between `reports` and `reports/…` in byte order (`-` and `.` precede `/`),
+            // so a directory's subtree is not the rows right after it.
+            ("reports-2025.csv", 3, 250),
+            ("reports.txt", 3, 250),
+            ("reports-old/report.md", 3, 250),
+            ("notes/.hidden-report", 5, 50),
+            ("reports/q1/sales.csv", 7, 400),
+            ("reports/q1/report.txt", 7, 400),
+            ("archive/reports/old/a.txt", 9, 10),
+            ("archive/misc/rep.txt", 9, 10),
+            ("x", 2, 500),
+            ("big.bin", 5000, 5),
+        ];
+        for (path, size, age) in files {
+            let path = home.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, vec![b'x'; *size]).unwrap();
+            let when = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(*age);
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(when)
+                .unwrap();
+        }
+        let index = Index::open(
+            &dir.path().join("file-index-v1.sqlite3"),
+            IndexConfig {
+                search_arrays: true,
+                max_cursor_rows: 4,
+                ..IndexConfig::default()
+            },
+        )
+        .unwrap();
+        let (root, _) = scan(&index, &home);
+        index.prepare_search_arrays().unwrap();
+
+        let mut queries = Vec::new();
+        for needle in ["rep", "re", "r", "report", "REPORT", "q1", "x", "nothing"] {
+            for sort in [
+                Sort::Relevance,
+                Sort::Name,
+                Sort::Path,
+                Sort::Size,
+                Sort::Mtime,
+            ] {
+                for descending in [false, true] {
+                    let mut query = Query::new(needle);
+                    query.sort = sort;
+                    query.descending = descending;
+                    queries.push(query);
+                }
+            }
+        }
+        let mut filtered = Query::new("rep");
+        filtered.include_hidden = false;
+        filtered.kinds = Some(vec![EntryKind::Regular]);
+        filtered.min_size = Some(8);
+        queries.push(filtered);
+        let mut scoped = Query::new("re").in_roots(vec![root]);
+        scoped.within = vec![NativePath::from_path(&home.join("reports"))];
+        queries.push(scoped);
+        let mut whole_root = Query::new("rep");
+        whole_root.within = vec![NativePath::from_path(&home)];
+        queries.push(whole_root);
+        let mut every_tier = Query::new("rep").including_every_tier();
+        every_tier.sort = Sort::Size;
+        queries.push(every_tier);
+
+        for query in &queries {
+            let arrays = index.search(query).unwrap();
+            let sql = index
+                .search_with(&crate::query::Fts5TrigramPlanner, query)
+                .unwrap();
+            assert_eq!(arrays.strategy, "arrays", "{query:?}");
+            let shape = |result: &SearchResult| {
+                (
+                    result.total,
+                    result.truncated,
+                    result
+                        .hits
+                        .iter()
+                        .map(|hit| (hit.row.path.display(), hit.rank))
+                        .collect::<Vec<_>>(),
+                )
+            };
+            assert_eq!(shape(&arrays), shape(&sql), "{query:?}");
+        }
+    }
+
+    /// Arrays built for one generation are not used for the next: the search goes back to SQL,
+    /// which sees the new row, rather than answering from a stale cache.
+    #[test]
+    fn stale_search_arrays_are_not_used() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        tree(&home);
+        let index = Index::open(
+            &dir.path().join("file-index-v1.sqlite3"),
+            IndexConfig {
+                search_arrays: true,
+                ..IndexConfig::default()
+            },
+        )
+        .unwrap();
+        let (root, _) = scan(&index, &home);
+        index.prepare_search_arrays().unwrap();
+        assert_eq!(
+            index.search(&Query::new("report")).unwrap().strategy,
+            "arrays"
+        );
+
+        std::fs::write(home.join("fresh-report.txt"), b"new").unwrap();
+        index.scan_root(root, ScanOptions::default()).unwrap();
+        let result = index.search(&Query::new("fresh-report")).unwrap();
+        assert_ne!(result.strategy, "arrays");
+        assert_eq!(result.total, Some(1));
+    }
+
+    /// A search scoped to one folder sees every match inside it, however far down the whole
+    /// index's ranking those matches sit.
+    #[test]
+    fn a_folder_scoped_search_returns_every_match_inside_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        for number in 0..30 {
+            let elsewhere = home.join(format!("elsewhere/d{number:02}"));
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            std::fs::write(elsewhere.join("plan"), b"x").unwrap();
+        }
+        std::fs::create_dir_all(home.join("inside/deep")).unwrap();
+        std::fs::write(home.join("inside/deep/old-plan-notes"), b"x").unwrap();
+        let index = index_at(dir.path());
+        scan(&index, &home);
+
+        let mut query = Query::new("plan").with_page_size(10);
+        query.within = vec![NativePath::from_path(&home.join("inside"))];
+        let result = index.search(&query).unwrap();
+        assert_eq!(result.total, Some(1));
+        assert_eq!(
+            result.hits[0].row.path,
+            NativePath::from_path(&home.join("inside/deep/old-plan-notes"))
+        );
+        assert_eq!(
+            index.search(&Query::new("plan")).unwrap().total,
+            Some(31),
+            "unscoped, the thirty exact matches rank ahead of it"
+        );
+    }
+
+    /// Path matching without path trigrams: a row matches by path when a directory above it
+    /// matches by name. Nested matching directories are counted once, and a needle with a
+    /// separator matches whole paths.
+    #[test]
+    fn path_matches_come_from_matching_directories_and_are_counted_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join("projects/alpha/src")).unwrap();
+        std::fs::create_dir_all(home.join("projects/alpha/projects")).unwrap();
+        std::fs::write(home.join("projects/alpha/src/main.rs"), b"x").unwrap();
+        std::fs::write(home.join("projects/alpha/projects-notes.md"), b"x").unwrap();
+        let index = index_at(dir.path());
+        scan(&index, &home);
+
+        for needle in ["projects", "pr"] {
+            let result = index.search(&Query::new(needle)).unwrap();
+            // projects, alpha, src, main.rs, projects (nested), projects-notes.md
+            assert_eq!(result.total, Some(6), "`{needle}` via {}", result.strategy);
+            let mut ids: Vec<_> = result.hits.iter().map(|hit| hit.row.entry_id).collect();
+            ids.sort();
+            ids.dedup();
+            assert_eq!(
+                ids.len(),
+                6,
+                "a row under two matching directories appeared twice"
+            );
+            let main = result
+                .hits
+                .iter()
+                .find(|hit| {
+                    hit.row.path == NativePath::from_path(&home.join("projects/alpha/src/main.rs"))
+                })
+                .expect("a file under a matching directory is a path match");
+            assert_eq!(main.rank, Rank::PathOnly);
+        }
+
+        let separator = index.search(&Query::new("alpha/src")).unwrap();
+        assert_eq!(separator.strategy, "path-scan");
+        assert_eq!(separator.total, Some(2), "src and main.rs");
+    }
+
+    /// A database written by a build with the old accelerator (trigrams of names and paths, with
+    /// content) is converted on open and refilled, so name search keeps working without a rescan.
+    #[test]
+    fn an_old_path_trigram_accelerator_is_replaced_and_refilled_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        tree(&home);
+        let db = dir.path().join("file-index-v1.sqlite3");
+        {
+            let index = index_at(dir.path());
+            scan(&index, &home);
+        }
+        {
+            let connection = Connection::open(&db).unwrap();
+            connection
+                .execute_batch(
+                    r#"DROP TABLE entries_fts;
+                       CREATE VIRTUAL TABLE entries_fts USING fts5(
+                           name_display, path_display, tokenize = "trigram");"#,
+                )
+                .unwrap();
+        }
+        let index = index_at(dir.path());
+        let result = index.search(&Query::new("annual")).unwrap();
+        assert_eq!(result.strategy, "fts5-trigram");
+        assert_eq!(result.total, Some(1), "the refill restored the name");
+        let shape: String = Connection::open(&db)
+            .unwrap()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'entries_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!shape.contains("path_display"), "{shape}");
     }
 
     /// Job 1's whole point: an `Opaque` directory is not just known, it is *sized* — without a

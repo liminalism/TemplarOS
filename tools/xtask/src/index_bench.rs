@@ -386,6 +386,103 @@ struct SearchLatency {
     max_ms: f64,
 }
 
+/// One needle of the broad-query workload: how many rows it matches, which plan answered it, and
+/// what a first page of 100 costs. Broad needles are the case a type-ahead search box hits on its
+/// first keystrokes, and the one a single selective query says nothing about.
+#[derive(Debug, Serialize)]
+struct BroadSearchLatency {
+    needle: String,
+    strategy: String,
+    total: u64,
+    samples: u64,
+    p50_ms: f64,
+    p95_ms: f64,
+    max_ms: f64,
+}
+
+/// Needles chosen against the fixture's own names (`d<n>` directories, `f<n>.txt` files): a
+/// one-character needle that matches every directory and so every row by path, a two-character
+/// scan, a three-character trigram match on every file, a selective name, and a path needle.
+const BROAD_NEEDLES: &[&str] = &["d", "f1", "txt", "f12.txt", "d3/d4"];
+
+/// Times every broad needle twice: through SQL (`search_with` the default planner) on `index`,
+/// then from the search arrays on a second handle to the same database that has them enabled
+/// and built. Returns both series and the build time.
+fn broad_search(index: &Index, db_path: &Path, samples: u64) -> Result<BroadSearchReport> {
+    let sql = broad_series(index, samples, true)?;
+    let with_arrays = Index::open(
+        db_path,
+        IndexConfig {
+            search_arrays: true,
+            ..IndexConfig::default()
+        },
+    )?;
+    let start = Instant::now();
+    let rows = with_arrays.prepare_search_arrays()?;
+    let build_ms = start.elapsed().as_secs_f64() * 1000.0;
+    println!("search arrays: {rows} rows built in {build_ms:.1}ms");
+    let arrays = broad_series(&with_arrays, samples, false)?;
+    Ok(BroadSearchReport {
+        sql,
+        arrays,
+        arrays_rows: rows as u64,
+        arrays_build_ms: build_ms,
+    })
+}
+
+#[derive(Debug, Default, Serialize)]
+struct BroadSearchReport {
+    sql: Vec<BroadSearchLatency>,
+    arrays: Vec<BroadSearchLatency>,
+    arrays_rows: u64,
+    arrays_build_ms: f64,
+}
+
+fn broad_series(index: &Index, samples: u64, sql: bool) -> Result<Vec<BroadSearchLatency>> {
+    let planner = templar_file_index::query::Fts5TrigramPlanner;
+    let run = |query: &Query| {
+        if sql {
+            index.search_with(&planner, query)
+        } else {
+            index.search(query)
+        }
+    };
+    let mut out = Vec::new();
+    for needle in BROAD_NEEDLES {
+        let query = Query::new(*needle).with_page_size(100);
+        let warm = run(&query)?;
+        let mut timings = Vec::with_capacity(samples as usize);
+        for _ in 0..samples {
+            let start = Instant::now();
+            let result = run(&query)?;
+            timings.push(start.elapsed().as_secs_f64() * 1000.0);
+            index.close_cursor(&result.cursor);
+        }
+        index.close_cursor(&warm.cursor);
+        timings.sort_by(f64::total_cmp);
+        let latency = BroadSearchLatency {
+            needle: (*needle).to_owned(),
+            strategy: warm.strategy.clone(),
+            total: warm.total.unwrap_or(0),
+            samples,
+            p50_ms: percentile(&timings, 0.50),
+            p95_ms: percentile(&timings, 0.95),
+            max_ms: timings.last().copied().unwrap_or(0.0),
+        };
+        println!(
+            "broad search `{}` ({}, {} matches): p50={:.2}ms p95={:.2}ms max={:.2}ms",
+            latency.needle,
+            latency.strategy,
+            latency.total,
+            latency.p50_ms,
+            latency.p95_ms,
+            latency.max_ms
+        );
+        out.push(latency);
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Serialize)]
 struct SnapshotResult {
     payload_bytes: u64,
@@ -407,6 +504,9 @@ struct WorkloadReport {
     build_burst: Option<TimedResult>,
     clean_burst: Option<TimedResult>,
     search: Option<SearchLatency>,
+    broad_search: BroadSearchReport,
+    broad_search_2m: BroadSearchReport,
+    db_bytes_2m: Option<u64>,
     snapshot: Option<SnapshotResult>,
     db_bytes: Option<u64>,
 }
@@ -659,6 +759,7 @@ fn workloads(
             max_ms: max,
         });
     }
+    report.broad_search = broad_search(&index, &db_path, 20)?;
 
     // 7. Snapshot bytes and duration.
     let start = Instant::now();
@@ -722,6 +823,13 @@ fn workloads(
             elapsed,
             Some(format!("complete={}", outcome.complete)),
         ));
+        report.broad_search_2m =
+            broad_search(&big_index, &big_scratch.path().join("index.sqlite3"), 10)?;
+        report.db_bytes_2m = Some(db_bytes(&big_scratch.path().join("index.sqlite3")));
+        println!(
+            "2M db size on disk: {} bytes",
+            report.db_bytes_2m.unwrap_or(0)
+        );
     } else {
         println!(
             "2,000,000-entry case not run (pass --allow-two-million --release to include it; \

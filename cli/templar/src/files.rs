@@ -568,8 +568,10 @@ pub fn render_index_hits(result: &IndexSearchResult) -> String {
             )
         })
         .collect();
-    if result.truncated {
-        lines.push("(truncated: narrow the query for an exact count)".to_owned());
+    if let Some(total) = result.total
+        && total > result.hits.len() as u64
+    {
+        lines.push(format!("({} of {total} matches shown)", result.hits.len()));
     }
     lines.join("\n")
 }

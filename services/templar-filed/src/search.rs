@@ -259,22 +259,20 @@ impl Index {
         if needle.is_empty() {
             return Ok(Vec::new());
         }
-        // Over-fetch, then filter by path prefix in Rust: `roots` here is any path prefix a
-        // caller wants results restricted to (a subdirectory of an indexed root counts), not
-        // necessarily a registered index root, so this cannot be pushed into the core's own
-        // root-scoped `Query.roots`.
-        let over_fetch = (limit.saturating_mul(4)).max(limit).clamp(1, 1000) as u32;
-        let core_query = templar_file_index::Query::new(needle).with_page_size(over_fetch);
+        // `roots` here is any path prefix a caller wants results restricted to (a subdirectory of
+        // an indexed root counts), not necessarily a registered index root, so it is the core's
+        // subtree scope rather than its root-id scope. Answered in SQL: filtering a global top-N
+        // afterwards lost every in-folder match that ranked below N across the whole index.
+        let mut core_query =
+            templar_file_index::Query::new(needle).with_page_size(limit.clamp(1, 1000) as u32);
+        core_query.within = roots
+            .iter()
+            .map(|root| templar_file_index::NativePath::from_path(root))
+            .collect();
         let result = self.core.search(&core_query)?;
         let mut hits: Vec<Hit> = result
             .hits
             .into_iter()
-            .filter(|hit| {
-                roots.is_empty()
-                    || roots
-                        .iter()
-                        .any(|root| hit.row.path.to_path().starts_with(root))
-            })
             .map(|hit| Hit {
                 entry: Entry::from_row(&hit.row),
                 rank: Rank::from(hit.rank),

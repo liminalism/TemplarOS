@@ -207,11 +207,18 @@ pub const MIGRATIONS: &[Migration] = &[
 /// The FTS5 accelerator, created separately: it is the one part of the schema that can legitimately
 /// be missing (a SQLite without FTS5), and the index must still work when it is — slower, through
 /// the `LIKE` fallback, but correct.
+///
+/// Names only, and contentless. A path match is "some ancestor directory's name matches", which
+/// the search answers from the name matches and a subtree range, so trigrams of every row's whole
+/// path were never needed — and they were most of the database (88 MiB of 149 MiB measured on a
+/// 95k-entry home). Contentless because only `rowid` is ever read back; `contentless_delete`
+/// keeps `DELETE … WHERE rowid IN` working, which is how [`crate::generation`] keeps it current.
 pub const FTS_SQL: &str = r#"
     CREATE VIRTUAL TABLE entries_fts USING fts5(
         name_display,
-        path_display,
-        tokenize = "trigram"
+        tokenize = "trigram",
+        content = '',
+        contentless_delete = 1
     );
 "#;
 
@@ -304,22 +311,54 @@ pub fn migrate(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Creates the FTS table if this SQLite can. Returns whether the accelerator is available.
+/// Creates the FTS table if this SQLite can, replacing an older shape (names and paths, with
+/// content) and refilling it from `entries`. Returns whether the accelerator is available.
 pub fn ensure_fts(connection: &Connection) -> bool {
-    let exists = connection
+    let existing: Option<String> = connection
         .query_row(
-            "SELECT 1 FROM sqlite_master WHERE name = 'entries_fts'",
+            "SELECT sql FROM sqlite_master WHERE name = 'entries_fts'",
             [],
-            |row| row.get::<_, i64>(0),
+            |row| row.get(0),
         )
-        .is_ok();
-    if exists {
-        return true;
+        .ok();
+    match existing {
+        Some(sql) if !sql.contains("path_display") => return true,
+        Some(_) => {
+            if let Err(error) = connection.execute_batch("DROP TABLE entries_fts;") {
+                tracing::warn!(%error, "could not drop the old path-trigram accelerator");
+                return false;
+            }
+        }
+        None => {}
     }
-    match connection.execute_batch(FTS_SQL) {
-        Ok(()) => true,
+    if let Err(error) = connection.execute_batch(FTS_SQL) {
+        tracing::info!(%error, "no FTS5 trigram tokenizer; substring search falls back to a scan");
+        return false;
+    }
+    // A fresh table on a database that already has rows: fill it with exactly what
+    // `generation::refresh_fts` would have inserted, or a name search would miss everything
+    // committed before this build.
+    match connection.execute(
+        &format!(
+            "INSERT INTO entries_fts (rowid, name_display)
+             SELECT entry_id, name_display FROM entries
+              WHERE deleted_generation IS NULL AND coverage = {}",
+            crate::model::Coverage::Detailed.as_i64()
+        ),
+        [],
+    ) {
+        Ok(rows) => {
+            if rows > 0 {
+                tracing::info!(
+                    rows,
+                    "filled the name-trigram accelerator from existing entries"
+                );
+            }
+            true
+        }
         Err(error) => {
-            tracing::info!(%error, "no FTS5 trigram tokenizer; substring search falls back to a bounded scan");
+            tracing::warn!(%error, "could not fill the name-trigram accelerator; dropping it");
+            let _ = connection.execute_batch("DROP TABLE entries_fts;");
             false
         }
     }

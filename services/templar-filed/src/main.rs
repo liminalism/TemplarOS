@@ -93,7 +93,12 @@ async fn main() -> Result<()> {
     let mut index = Index::with_index_db(
         store.clone(),
         &index_db_path,
-        templar_file_index::IndexConfig::default(),
+        templar_file_index::IndexConfig {
+            // Broad type-ahead searches over a whole home are answered from memory once a search
+            // has had the arrays built; until then, and after every commit, SQL answers.
+            search_arrays: true,
+            ..templar_file_index::IndexConfig::default()
+        },
     )
     .with_context(|| format!("opening file index {}", index_db_path.display()))?;
     if let Some(max_entries) = cli.index_max_entries {

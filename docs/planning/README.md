@@ -19,6 +19,9 @@ Current focused assessments:
 - [`shared-incremental-file-index.md`](shared-incremental-file-index.md) — replace the interim two-index
   search arrangement with one persistent, incrementally maintained `templar-filed` index consumed by
   TemplarOS search, a remote-index FSearch fork, Silvaview-rs, the CLI, and future clients.
+- [`integrated-indexing.md`](integrated-indexing.md) — status of that plan as of 2026-10-01 and the
+  ordered remaining work: ledger cutover, deferred core fixes, first-party clients on `Index1`, the
+  FSearch remote-index fork, Silvaview-rs service mode, and hardening on the installed system.
 - [`ubuntu-derived-full-distribution-roadmap.md`](ubuntu-derived-full-distribution-roadmap.md) — the
   Ubuntu components TemplarOS should reuse, the distribution infrastructure it must own, a latest-qualified
   Linux 7.2/7.3 kernel-channel plan, phased delivery gates, and a remaining-work estimate for a

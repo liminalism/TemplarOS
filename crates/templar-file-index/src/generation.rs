@@ -833,8 +833,8 @@ pub(crate) fn refresh_fts(
     )?;
     transaction.execute(
         &format!(
-            "INSERT INTO entries_fts (rowid, name_display, path_display)
-             SELECT entry_id, name_display, path_display FROM entries
+            "INSERT INTO entries_fts (rowid, name_display)
+             SELECT entry_id, name_display FROM entries
               WHERE root_id = ?1 AND written_generation = ?2 AND deleted_generation IS NULL
                 AND coverage = {searchable}",
             searchable = Coverage::Detailed.as_i64()
