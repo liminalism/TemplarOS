@@ -41,36 +41,11 @@ type State = TemplarCompState<CheckBackendData>;
 /// host compositor, which is the only kind CI has.
 pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
-    let display: Display<State> = Display::new()?;
-    let dh = display.handle();
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
         .build()?;
-    let handle = runtime.handle().clone();
-    // These reach for the session bus, which need not exist here: each degrades to a disconnected
-    // cache/notifier rather than failing, exactly as it does when sessiond has not started yet.
-    let identity_cache = DbusIdentityCache::spawn(&handle);
-    let governor = GovernorNotifier::spawn(&handle);
-    let idle_notifier = IdleNotifier::spawn(&handle);
-    let shell_sink = crate::shell_sink::install(&event_loop.handle());
-    let shell_broadcaster = ShellStateBroadcaster::spawn(&handle, shell_sink);
-
-    let socket_name = crate::state::init_wayland_listener(display, &event_loop.handle(), None)?;
-
-    let mut state = State::new(
-        CheckBackendData,
-        SEAT_NAME,
-        &dh,
-        event_loop.handle(),
-        event_loop.get_signal(),
-        identity_cache,
-        governor,
-        idle_notifier,
-        shell_broadcaster,
-    )?;
-    State::create_private_globals(&dh);
+    let (mut state, socket_name) = build_state(&event_loop, runtime.handle())?;
     let shell_socket_name = crate::shell_socket::install(&mut state, &socket_name)?;
 
     let session_command = exec
@@ -119,6 +94,38 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
 
     println!("ok");
     Ok(0)
+}
+
+/// The whole compositor state with no backend, listening on a fresh public socket (returned).
+/// The session-bus services degrade to disconnected caches/notifiers when there is no bus,
+/// exactly as they do when sessiond has not started yet.
+fn build_state(
+    event_loop: &EventLoop<'static, State>,
+    runtime: &tokio::runtime::Handle,
+) -> anyhow::Result<(State, String)> {
+    let display: Display<State> = Display::new()?;
+    let dh = display.handle();
+    let identity_cache = DbusIdentityCache::spawn(runtime);
+    let governor = GovernorNotifier::spawn(runtime);
+    let idle_notifier = IdleNotifier::spawn(runtime);
+    let shell_sink = crate::shell_sink::install(&event_loop.handle());
+    let shell_broadcaster = ShellStateBroadcaster::spawn(runtime, shell_sink);
+
+    let socket_name = crate::state::init_wayland_listener(display, &event_loop.handle(), None)?;
+
+    let state = State::new(
+        CheckBackendData,
+        SEAT_NAME,
+        &dh,
+        event_loop.handle(),
+        event_loop.get_signal(),
+        identity_cache,
+        governor,
+        idle_notifier,
+        shell_broadcaster,
+    )?;
+    State::create_private_globals(&dh);
+    Ok((state, socket_name))
 }
 
 #[cfg(test)]
@@ -180,33 +187,11 @@ mod tests {
         // name crosses back.
         let server = std::thread::spawn(move || {
             let mut event_loop: EventLoop<State> = EventLoop::try_new().unwrap();
-            let display: Display<State> = Display::new().unwrap();
-            let dh = display.handle();
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
-            let handle = runtime.handle().clone();
-            let identity_cache = DbusIdentityCache::spawn(&handle);
-            let governor = GovernorNotifier::spawn(&handle);
-            let idle_notifier = IdleNotifier::spawn(&handle);
-            let shell_sink = crate::shell_sink::install(&event_loop.handle());
-            let shell_broadcaster = ShellStateBroadcaster::spawn(&handle, shell_sink);
-            let socket_name =
-                crate::state::init_wayland_listener(display, &event_loop.handle(), None).unwrap();
-            let mut state = State::new(
-                CheckBackendData,
-                SEAT_NAME,
-                &dh,
-                event_loop.handle(),
-                event_loop.get_signal(),
-                identity_cache,
-                governor,
-                idle_notifier,
-                shell_broadcaster,
-            )
-            .unwrap();
-            State::create_private_globals(&dh);
+            let (mut state, socket_name) = build_state(&event_loop, runtime.handle()).unwrap();
             let shell_socket_name = crate::shell_socket::install(&mut state, &socket_name).unwrap();
             socket_tx.send((socket_name, shell_socket_name)).unwrap();
 
@@ -302,5 +287,182 @@ mod tests {
         drop(ordinary);
         stop_tx.send(()).ok();
         server.join().expect("compositor thread panicked");
+    }
+
+    /// A pointer grab that changes the window model from inside `button` — what the name-tag
+    /// click does (`WindowGestureGrab::button` → `toggle_always_on_top` → `sync_after_change`),
+    /// and dropping a window on another's band (`group_windows`).
+    struct ChangesTheModelOnRelease {
+        start_data: smithay::input::pointer::GrabStartData<State>,
+    }
+
+    impl smithay::input::pointer::PointerGrab<State> for ChangesTheModelOnRelease {
+        fn motion(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+            _focus: Option<(
+                smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+                smithay::utils::Point<f64, smithay::utils::Logical>,
+            )>,
+            event: &smithay::input::pointer::MotionEvent,
+        ) {
+            handle.motion(data, None, event);
+        }
+        fn relative_motion(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+            focus: Option<(
+                smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+                smithay::utils::Point<f64, smithay::utils::Logical>,
+            )>,
+            event: &smithay::input::pointer::RelativeMotionEvent,
+        ) {
+            handle.relative_motion(data, focus, event);
+        }
+        fn button(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+            event: &smithay::input::pointer::ButtonEvent,
+        ) {
+            handle.button(data, event);
+            crate::space_sync::sync_after_change(data);
+            handle.unset_grab(self, data, event.serial, event.time, true);
+        }
+        fn axis(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+            details: smithay::input::pointer::AxisFrame,
+        ) {
+            handle.axis(data, details);
+        }
+        fn frame(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+        ) {
+            handle.frame(data);
+        }
+        fn gesture_swipe_begin(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+            event: &smithay::input::pointer::GestureSwipeBeginEvent,
+        ) {
+            handle.gesture_swipe_begin(data, event);
+        }
+        fn gesture_swipe_update(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+            event: &smithay::input::pointer::GestureSwipeUpdateEvent,
+        ) {
+            handle.gesture_swipe_update(data, event);
+        }
+        fn gesture_swipe_end(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+            event: &smithay::input::pointer::GestureSwipeEndEvent,
+        ) {
+            handle.gesture_swipe_end(data, event);
+        }
+        fn gesture_pinch_begin(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+            event: &smithay::input::pointer::GesturePinchBeginEvent,
+        ) {
+            handle.gesture_pinch_begin(data, event);
+        }
+        fn gesture_pinch_update(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+            event: &smithay::input::pointer::GesturePinchUpdateEvent,
+        ) {
+            handle.gesture_pinch_update(data, event);
+        }
+        fn gesture_pinch_end(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+            event: &smithay::input::pointer::GesturePinchEndEvent,
+        ) {
+            handle.gesture_pinch_end(data, event);
+        }
+        fn gesture_hold_begin(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+            event: &smithay::input::pointer::GestureHoldBeginEvent,
+        ) {
+            handle.gesture_hold_begin(data, event);
+        }
+        fn gesture_hold_end(
+            &mut self,
+            data: &mut State,
+            handle: &mut smithay::input::pointer::PointerInnerHandle<'_, State>,
+            event: &smithay::input::pointer::GestureHoldEndEvent,
+        ) {
+            handle.gesture_hold_end(data, event);
+        }
+        fn start_data(&self) -> &smithay::input::pointer::GrabStartData<State> {
+            &self.start_data
+        }
+        fn unset(&mut self, _data: &mut State) {}
+    }
+
+    /// The 2026-10-01 desktop freezes: Smithay holds the pointer's mutex while a grab handles a
+    /// button, and `sync_after_change` used to ask that same pointer (`is_grabbed`,
+    /// `current_location`) whether to refresh its focus — a second lock of a `std` mutex on the
+    /// same thread, which never returns. The compositor's main thread slept in it forever: no
+    /// frames, no input, every other process still running. A name-tag click took that path.
+    #[test]
+    fn changing_the_window_model_inside_a_pointer_grab_does_not_hang_the_compositor() {
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut event_loop: EventLoop<State> = EventLoop::try_new().unwrap();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (mut state, _socket) = build_state(&event_loop, runtime.handle()).unwrap();
+            let pointer = state.seat.get_pointer().unwrap();
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            pointer.set_grab(
+                &mut state,
+                ChangesTheModelOnRelease {
+                    start_data: smithay::input::pointer::GrabStartData {
+                        focus: None,
+                        button: 0x110,
+                        location: pointer.current_location(),
+                    },
+                },
+                serial,
+                smithay::input::pointer::Focus::Clear,
+            );
+            pointer.button(
+                &mut state,
+                &smithay::input::pointer::ButtonEvent {
+                    serial,
+                    time: 0,
+                    button: 0x110,
+                    state: smithay::backend::input::ButtonState::Released,
+                },
+            );
+            // The deferred pointer refresh runs on the loop's next turn, outside the grab.
+            event_loop
+                .dispatch(Some(std::time::Duration::from_millis(0)), &mut state)
+                .unwrap();
+            done_tx.send(pointer.is_grabbed()).unwrap();
+        });
+        let still_grabbed = done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the compositor thread deadlocked inside the pointer grab");
+        assert!(!still_grabbed, "the grab ended with the release");
     }
 }

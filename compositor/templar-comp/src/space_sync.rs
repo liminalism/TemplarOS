@@ -80,9 +80,13 @@ fn pointer_scene_changed(
 /// recomputed, an enter/leave pair is sent if the pointer crossed into another surface, and the
 /// surface-local coordinate is derived from the new placement.
 ///
-/// Not called while a pointer grab is running: a drag or resize owns the pointer for its whole
-/// duration and re-entering focus resolution underneath it is exactly what a grab exists to
-/// prevent. Not `note_activity` either — nothing happened; the screen must not wake for this.
+/// Never called while Smithay is dispatching to the pointer: it runs from the event loop's idle
+/// list ([`sync_after_change`] queues it), because every `PointerHandle` call locks the pointer's
+/// `std` mutex — the very mutex a grab's `button`/`motion` runs under — and a second lock on the
+/// same thread never returns. A drag or resize still in progress when it runs is left alone: a
+/// grab owns the pointer for its whole duration, and re-entering focus resolution underneath it
+/// is exactly what a grab exists to prevent. Not `note_activity` either — nothing happened; the
+/// screen must not wake for this.
 fn refresh_pointer_focus<B: Backend + 'static>(
     state: &mut TemplarCompState<B>,
     before: &[(WindowId, Rect)],
@@ -283,7 +287,6 @@ fn log_home_visibility<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
 /// window that is in it is on screen. The governor is told `visible = mapped && !shelved`, but
 /// deliberately ignores a Home reveal: a momentary view must not suspend every application.
 pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
-    let before = std::mem::take(&mut state.last_pointer_scene);
     // Reconcile existence before order. A toplevel may be temporarily unmapped while retaining
     // its semantic record, and a broken/missing layer assignment must never leave an old Space
     // element visible even though stacking_order cannot name it.
@@ -355,10 +358,20 @@ pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) 
     state.shell_broadcaster.publish(snapshot);
 
     // Last, and only if something under the pointer actually moved: the pointer's own view of the
-    // scene is part of the scene, and this is the one funnel every change comes through.
-    let after = pointer_scene(state);
-    refresh_pointer_focus(state, &before);
-    state.last_pointer_scene = after;
+    // scene is part of the scene, and this is the one funnel every change comes through. Queued,
+    // not run: this function is called from inside pointer grabs (a name-tag click pins the window
+    // from `WindowGestureGrab::button`; a band drop groups from the same place), where Smithay
+    // holds the pointer's mutex and touching the pointer here deadlocked the compositor for good.
+    if !state.pointer_refresh_pending {
+        state.pointer_refresh_pending = true;
+        state.loop_handle.insert_idle(|state| {
+            state.pointer_refresh_pending = false;
+            let before = std::mem::take(&mut state.last_pointer_scene);
+            let after = pointer_scene(state);
+            refresh_pointer_focus(state, &before);
+            state.last_pointer_scene = after;
+        });
+    }
 }
 
 /// One governor record per instance: OR of `activated` and of `mapped && !shelved` across every

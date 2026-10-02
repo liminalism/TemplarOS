@@ -258,11 +258,14 @@ pub struct TemplarCompState<B: Backend + 'static> {
     /// every motion is reported to the shell as `rail_pointer` until it closes
     /// (`TemplarCompState::close_rail`, the one way it ends).
     pub rail: Option<(String, crate::gesture_gate::Side)>,
-    /// The pointer scene last applied to `Space` — stacking order and client rectangles, top
-    /// first. `space_sync::sync_after_change` compares this to the scene it is about to apply,
-    /// because snapshotting `WindowService` *after* the caller already mutated it made the
-    /// motionless-pointer refresh compare a list to itself.
+    /// The pointer scene the pointer's focus was last refreshed against — stacking order and
+    /// client rectangles, top first. `space_sync`'s deferred refresh compares this to the scene
+    /// as it is now, because snapshotting `WindowService` *after* the caller already mutated it
+    /// made the motionless-pointer refresh compare a list to itself.
     pub last_pointer_scene: Vec<(templar_window::WindowId, templar_window::Rect)>,
+    /// A pointer-focus refresh is queued on the event loop's idle list
+    /// (`space_sync::sync_after_change`), so a burst of changes queues one.
+    pub pointer_refresh_pending: bool,
     /// Set while a press on one of the compositor's own affordances is being swallowed, so its
     /// release is swallowed with it (`input::on_pointer_button`).
     ///
@@ -415,6 +418,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             gesture_gate: crate::gesture_gate::GestureGate::default(),
             rail: None,
             last_pointer_scene: Vec::new(),
+            pointer_refresh_pending: false,
             swallowing_press: false,
             chrome: crate::chrome::ChromeState::new(),
             idle: crate::idle::IdleState::default(),
