@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub mod checks;
+pub mod freeze;
 pub mod hardware;
 pub mod preflight;
 

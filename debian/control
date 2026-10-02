@@ -34,7 +34,7 @@ Description: TemplarOS file service
 
 Package: templaros-hostd
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, apt, polkitd
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, apt, polkitd, systemd-coredump
 Description: TemplarOS host daemon
  Staged kernel/driver update transactions, boot deployments and rollback, driver authority and
  GPU mode, storage reserve and hardware profile on the system bus (org.templaros.Host).

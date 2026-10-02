@@ -11,6 +11,8 @@ After=templar-sessiond.service
 # (ADR-0002), so its readiness must not be defined as "the name appeared".
 Type=simple
 ExecStart=/usr/libexec/templar-resourced
+# A panic prints its backtrace; error values do not capture one each (`templar doctor freeze`).
+Environment=RUST_BACKTRACE=1 RUST_LIB_BACKTRACE=0
 Restart=always
 RestartSec=200ms
 Slice=session.slice

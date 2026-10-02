@@ -14,6 +14,8 @@ Type=simple
 # socket no confined application may ever reach.
 Environment=WAYLAND_DISPLAY=templaros-shell-wayland-0
 ExecStart=/usr/bin/templar-shell --surface
+# A panic prints its backtrace; error values do not capture one each (`templar doctor freeze`).
+Environment=RUST_BACKTRACE=1 RUST_LIB_BACKTRACE=0
 # Everything decorative restarts without terminating applications.
 Restart=always
 RestartSec=500ms

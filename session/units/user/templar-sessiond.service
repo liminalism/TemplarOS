@@ -9,6 +9,8 @@ Requires=dbus.socket
 Type=notify
 BusName=org.templaros.Session
 ExecStart=/usr/libexec/templar-sessiond
+# A panic prints its backtrace; error values do not capture one each (`templar doctor freeze`).
+Environment=RUST_BACKTRACE=1 RUST_LIB_BACKTRACE=0
 # Casper live accounts and a first installed login have no ~/.config/templaros yet.
 # ProtectHome=read-only bind-mounts every ReadWritePaths entry; a missing one is
 # 226/NAMESPACE and sessiond never starts, so the shell has no providers, no

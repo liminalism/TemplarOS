@@ -38,7 +38,9 @@ workspace = true
 name = "templaros-hostd"
 section = "admin"
 priority = "optional"
-depends = "$auto, systemd, apt, polkitd"
+# systemd-coredump: the coredump policy below is inert without it, and core_pattern stays `core`
+# (a file in whatever directory the crashing process had as its cwd, usually nowhere).
+depends = "$auto, systemd, apt, polkitd, systemd-coredump"
 assets = [
     ["target/release/templar-hostd", "usr/libexec/templar-hostd", "755"],
     ["../../session/units/system/templar-hostd.service", "usr/lib/systemd/system/templar-hostd.service", "644"],
@@ -48,4 +50,9 @@ assets = [
     ["../../distro/policy/dbus/org.templaros.Host.service", "usr/share/dbus-1/system-services/org.templaros.Host.service", "644"],
     ["../../distro/policy/apparmor/usr.libexec.templar-hostd", "etc/apparmor.d/usr.libexec.templar-hostd", "644"],
     ["../../distro/deploy/grub.d/09_templaros", "etc/grub.d/09_templaros", "755"],
+    # The evidence a frozen or crashed desktop leaves (scripts/freeze-evidence-setup.sh applies the
+    # same files to a machine installed before they shipped here).
+    ["../../distro/policy/coredump/coredump.conf.d/templaros.conf", "usr/lib/systemd/coredump.conf.d/templaros.conf", "644"],
+    ["../../distro/policy/journald/journald.conf.d/60-templaros.conf", "usr/lib/systemd/journald.conf.d/60-templaros.conf", "644"],
+    ["../../distro/policy/sysctl.d/60-templaros-hang-evidence.conf", "usr/lib/sysctl.d/60-templaros-hang-evidence.conf", "644"],
 ]

@@ -1355,7 +1355,10 @@ step "Account: ${username:-<--user was not given>}"
 [ -n "$username" ] || note "no --user given; the plan stops short of creating an account"
 if [ -n "$username" ]; then
     # Repeatable: a resumed install may already have made the account.
-    in_target sh -c 'id -u "$1" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --groups sudo,video,render "$1"' \
+    # `adm` is what reads the system journal and /var/log (journald's ACL grants it, as on Ubuntu):
+    # without it `journalctl` shows a user only their own session, never the kernel, so a frozen
+    # desktop leaves no evidence its owner can read (`templar doctor freeze`).
+    in_target sh -c 'id -u "$1" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --groups sudo,video,render,adm "$1"' \
         useradd "$username"
     note "reading the new password from stdin during apply; it is never echoed, planned, logged or placed in argv"
     record __password_stdin__ "$username"

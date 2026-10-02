@@ -12,6 +12,8 @@ FailureAction=reboot-force
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/templar-boot-health
+# A panic prints its backtrace; error values do not capture one each (`templar doctor freeze`).
+Environment=RUST_BACKTRACE=1 RUST_LIB_BACKTRACE=0
 TimeoutStartSec=90
 RemainAfterExit=yes
 

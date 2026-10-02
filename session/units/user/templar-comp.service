@@ -24,6 +24,13 @@ Type=notify
 # a socket every snap is denied — which is how Chromium and Firefox came to report "Failed to
 # connect to Wayland display: Permission denied" on a working desktop.
 ExecStart=/usr/bin/templar-comp --backend udev --socket-name wayland-0
+# Evidence for a frozen desktop (`templar doctor freeze`). A panic prints its backtrace (and
+# RUST_LIB_BACKTRACE=0 keeps error values from capturing one each, which costs on hot paths);
+# the compositor's own debug lines are event-level (gestures, rails, grouping, capture failures),
+# never per frame or per key. The watchdog (src/watchdog.rs) logs at warn regardless.
+# TEMPLAR_COMP_WATCHDOG_ABORT_AFTER_SECS=<n> in a drop-in turns an event-loop stall of n seconds
+# into an abort, so systemd-coredump records every thread and the greeter comes back.
+Environment=RUST_BACKTRACE=1 RUST_LIB_BACKTRACE=0 RUST_LOG=info,templar_comp=debug
 Restart=no
 # A compositor that cannot finish DRM/input/event-loop initialization must give control back to
 # the display manager instead of holding the VT on a black frame forever.

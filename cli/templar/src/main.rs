@@ -164,7 +164,10 @@ enum Command {
         json: bool,
     },
     /// Integration checks (runtime, image root, or hardware matrix).
+    #[command(args_conflicts_with_subcommands = true)]
     Doctor {
+        #[command(subcommand)]
+        command: Option<DoctorCommand>,
         /// Check an unpacked image root instead of `/`.
         #[arg(long, default_value = "/")]
         root: PathBuf,
@@ -181,6 +184,27 @@ enum Command {
         /// Override hardware profile detection when reviewing a matrix off-device.
         #[arg(long, requires = "hardware")]
         profile: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DoctorCommand {
+    /// Freeze report for a past boot: run after a hard restart.
+    ///
+    /// Collects what the frozen boot left behind (journal, compositor watchdog, kernel,
+    /// coredumps, pstore) into one report directory and prints the triage answer. Read-only;
+    /// reads more as root (`sudo` writes the report for the invoking user).
+    Freeze {
+        /// The boot to examine: a journal offset (`-1` is the previous boot) or a boot ID.
+        #[arg(long, default_value = "-1", allow_hyphen_values = true)]
+        boot: String,
+        /// Write the `boot-<id>/` report under this directory instead of
+        /// `$XDG_STATE_HOME/templaros/freeze-reports`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Print the structured analysis instead of the summary.
         #[arg(long)]
         json: bool,
     },
@@ -946,6 +970,20 @@ fn doctor_command(
     std::process::exit(doctor::exit_code(&findings));
 }
 
+/// `templar doctor freeze` — the freeze report. Fails only when the report cannot be written.
+fn doctor_freeze(boot: String, out: Option<PathBuf>, json: bool) -> Result<()> {
+    let runner = dev::cmd::RealCommandRunner {
+        timeout: std::time::Duration::from_secs(120),
+    };
+    let report = doctor::freeze::collect(&doctor::freeze::Options { boot, out }, &runner)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report.summary);
+    }
+    Ok(())
+}
+
 async fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Dev {
@@ -961,6 +999,11 @@ async fn run() -> Result<()> {
             Ok(())
         }
         Command::Doctor {
+            command: Some(DoctorCommand::Freeze { boot, out, json }),
+            ..
+        } => doctor_freeze(boot, out, json),
+        Command::Doctor {
+            command: None,
             root,
             hardware,
             preflight,
