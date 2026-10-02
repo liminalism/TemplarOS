@@ -23,6 +23,7 @@ members = [
     "crates/templar-hwdetect",
     "crates/templar-file-index",
     "crates/templar-fanotify",
+    "crates/templar-clipboard",
     "services/templar-sessiond",
     "services/templar-resourced",
     "services/templar-filed",

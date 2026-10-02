@@ -1,0 +1,11 @@
+[package]
+name = "templar-clipboard"
+description = "Plain-text clipboard model and MIME negotiation for TemplarOS: what text copy puts down and what paste picks up, without a compositor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
