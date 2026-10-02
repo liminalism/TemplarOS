@@ -481,25 +481,18 @@ fn add_rails_specs(schema: &mut SettingsSchema) {
 /// compositor over `templar_shell_v1`, and applied to libinput devices there — the shell is
 /// only the relay, like the gesture gate.
 fn add_input_specs(schema: &mut SettingsSchema) {
-    for (key, description, default, choices, min, max) in [(
-        "input.touchpad.tap-to-click",
-        "Tapping the touchpad counts as a click. libinput leaves this off unless asked, so the \\
-         default is on: a trackpad that only clicks on a full press reads as broken hardware",
-        SettingValue::Bool(true),
-        vec![],
-        None,
-        None,
-    )] {
-        schema.add(SettingSpec {
-            key: key.into(),
-            description: description.into(),
-            default,
-            choices,
-            min,
-            max,
-            privileged: false,
-        });
-    }
+    schema.add(SettingSpec {
+        key: "input.touchpad.tap-to-click".into(),
+        description: "Tapping the touchpad counts as a click. libinput leaves this off unless \
+                      asked, so the default is on: a trackpad that only clicks on a full press \
+                      reads as broken hardware"
+            .into(),
+        default: SettingValue::Bool(true),
+        choices: vec![],
+        min: None,
+        max: None,
+        privileged: false,
+    });
 }
 
 /// Values that override the schema's defaults; absent keys fall back to `spec.default`.

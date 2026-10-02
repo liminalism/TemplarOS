@@ -34,7 +34,7 @@ use templar_window::{
 /// Both peers ship from this repository, so a version bump is a pair of edits, not a
 /// compatibility matrix — but every `since="2"` event below is still guarded on the bound
 /// object's version rather than assumed.
-pub const SHELL_PROTOCOL_VERSION: u32 = 9;
+pub const SHELL_PROTOCOL_VERSION: u32 = 10;
 
 /// The value of `templar_shell_manager_v1.group_cycle_binding` this compositor sends: 0 is
 /// `Super+Tab`, the only binding there is (planning doc §2.1 — one chord, always the same, no

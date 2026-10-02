@@ -136,10 +136,10 @@ impl GreeterApp {
             self.apply_action(action);
             self.maybe_start_session();
         }
-        if acted || had_keys {
-            if let Some(window) = &self.window {
-                window.request_redraw();
-            }
+        if (acted || had_keys)
+            && let Some(window) = &self.window
+        {
+            window.request_redraw();
         }
         if self.exit_code.is_some() {
             event_loop.exit();
