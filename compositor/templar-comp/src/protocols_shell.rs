@@ -249,6 +249,9 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
                     state.close_rail("shell asked");
                 }
             }
+            templar_shell_manager_v1::Request::SetTouchpadTap { enabled } => {
+                state.set_touchpad_tap(enabled != 0);
+            }
         }
     }
 

@@ -6,7 +6,7 @@
 <protocol name="templar_shell_v1">
   <copyright>Copyright 2026 TemplarOS contributors. AGPL-3.0-only.</copyright>
 
-  <interface name="templar_shell_manager_v1" version="9">
+  <interface name="templar_shell_manager_v1" version="10">
     <description summary="shell control entry point">
       Bound only by the client the compositor itself launched as the shell.
     </description>
@@ -346,6 +346,15 @@
         with `rail` naming no side. Ignored when no rail is open. The gate cannot arm again until
         the pointer has been above it.
       </description>
+    </request>
+    <request name="set_touchpad_tap" since="10">
+      <description summary="whether tapping the touchpad counts as a click">
+        Sent on connect and again whenever the input setting changes. libinput leaves
+        tap-to-click off unless asked, so the compositor applies this to every touchpad it sees —
+        already present and newly added alike. `enabled` 1 is taps click; 0 is full presses only.
+        The compositor assumes taps click for a shell that never sends this request.
+      </description>
+      <arg name="enabled" type="uint" summary="1 for tap-to-click, 0 for full presses only"/>
     </request>
     <event name="rail" since="9">
       <description summary="a rail opened or closed">

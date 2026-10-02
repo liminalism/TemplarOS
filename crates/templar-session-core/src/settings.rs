@@ -160,6 +160,7 @@ pub fn baseline_schema() -> SettingsSchema {
     add_home_field_specs(&mut schema);
     add_home_garden_specs(&mut schema);
     add_rails_specs(&mut schema);
+    add_input_specs(&mut schema);
     schema.add(SettingSpec {
         key: "shell.launcher.recent-apps".into(),
         description: "Recently launched applications, newest first, shown under Home's search"
@@ -465,6 +466,31 @@ fn add_rails_specs(schema: &mut SettingsSchema) {
     }
 }
 
+/// Pointer and touchpad keys (`input.*`). Read by `templar-shell`, relayed to the
+/// compositor over `templar_shell_v1`, and applied to libinput devices there — the shell is
+/// only the relay, like the gesture gate.
+fn add_input_specs(schema: &mut SettingsSchema) {
+    for (key, description, default, choices, min, max) in [(
+        "input.touchpad.tap-to-click",
+        "Tapping the touchpad counts as a click. libinput leaves this off unless asked, so the \\
+         default is on: a trackpad that only clicks on a full press reads as broken hardware",
+        SettingValue::Bool(true),
+        vec![],
+        None,
+        None,
+    )] {
+        schema.add(SettingSpec {
+            key: key.into(),
+            description: description.into(),
+            default,
+            choices,
+            min,
+            max,
+            privileged: false,
+        });
+    }
+}
+
 /// Values that override the schema's defaults; absent keys fall back to `spec.default`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SettingsValues(BTreeMap<String, SettingValue>);
@@ -714,6 +740,22 @@ mod tests {
             schema.validate("shell.rails.exceptions", &SettingValue::Str("org.a".into())),
             Err(SettingError::WrongType { .. })
         ));
+    }
+
+    /// Tap-to-click defaults on: libinput leaves it off unless asked, and a trackpad that only
+    /// clicks on a full press reads as broken hardware.
+    #[test]
+    fn tap_to_click_defaults_on() {
+        let schema = baseline_schema();
+        let values = SettingsValues::default();
+        assert_eq!(
+            values.effective(&schema, "input.touchpad.tap-to-click"),
+            Some(SettingValue::Bool(true))
+        );
+        assert_eq!(
+            schema.validate("input.touchpad.tap-to-click", &SettingValue::Bool(false)),
+            Ok(())
+        );
     }
 
     #[test]

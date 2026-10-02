@@ -253,6 +253,14 @@ pub struct TemplarCompState<B: Backend + 'static> {
     /// The bottom-centre gesture gate (`src/gesture_gate.rs`): its configuration from the shell
     /// (`set_gesture_gate`) and the recognizer both pointer paths feed (`input::update_gesture_gate`).
     pub gesture_gate: crate::gesture_gate::GestureGate,
+    /// Whether tapping the touchpad counts as a click, from the shell (`set_touchpad_tap`,
+    /// relayed from `input.touchpad.tap-to-click`). Applied to every tracked libinput device;
+    /// libinput leaves tap-to-click off unless asked, so the default is on.
+    pub touchpad_tap: bool,
+    /// The libinput devices seen so far (udev backend only; winit never fills this). Tracked
+    /// because libinput offers no device enumeration: without this a setting change could only
+    /// reach devices added afterwards.
+    pub input_devices: Vec<smithay::reexports::input::Device>,
     /// The rail the gate opened, while it is open: the output's name and the side the pointer
     /// went. The peek on that output is the rail's (`input::update_dwell` leaves it alone), and
     /// every motion is reported to the shell as `rail_pointer` until it closes
@@ -298,7 +306,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     ///
     /// What legitimately differs between backends — the renderer, the outputs, DMA-BUF, and the
     /// seat's name — stays with the backend and is either a parameter here or set up afterwards.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub fn new(
         backend_data: B,
         seat_name: &str,
@@ -416,6 +424,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             dwell: None,
             dwell_timer_pending: false,
             gesture_gate: crate::gesture_gate::GestureGate::default(),
+            touchpad_tap: true,
+            input_devices: Vec::new(),
             rail: None,
             last_pointer_scene: Vec::new(),
             pointer_refresh_pending: false,
@@ -492,6 +502,53 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             self.idle_notifier.set_idle(false);
         }
         self.arm_idle_timer();
+    }
+
+    /// Tap-to-click changed (`templar_shell_v1.set_touchpad_tap`, ultimately
+    /// `input.touchpad.tap-to-click`). Applied to every tracked device now; devices added
+    /// later pick it up in `track_input_device`.
+    pub fn set_touchpad_tap(&mut self, enabled: bool) {
+        self.touchpad_tap = enabled;
+        for device in &mut self.input_devices {
+            Self::apply_tap_to_device(device, enabled);
+        }
+    }
+
+    /// Remember a newly seen libinput device and bring it under the current tap setting.
+    /// Called from the udev backend's device-added path; the winit backend has no libinput
+    /// devices and never calls this.
+    pub fn track_input_device(&mut self, device: smithay::reexports::input::Device) {
+        let mut device = device;
+        Self::apply_tap_to_device(&mut device, self.touchpad_tap);
+        if !self
+            .input_devices
+            .iter()
+            .any(|known| known.sysname() == device.sysname())
+        {
+            self.input_devices.push(device);
+        }
+    }
+
+    /// Forget a removed libinput device, by kernel name.
+    pub fn untrack_input_device(&mut self, sysname: &str) {
+        self.input_devices
+            .retain(|known| known.sysname() != sysname);
+    }
+
+    /// One device's tap configuration. Devices without tap support (`config_tap_finger_count`
+    /// 0 — keyboards, mice, anything that is not a touchpad) are left alone; a refusal from
+    /// libinput is logged, never fatal.
+    fn apply_tap_to_device(device: &mut smithay::reexports::input::Device, enabled: bool) {
+        if device.config_tap_finger_count() == 0 {
+            return;
+        }
+        if let Err(error) = device.config_tap_set_enabled(enabled) {
+            tracing::debug!(
+                device = device.sysname(),
+                ?error,
+                "libinput refused tap-to-click configuration"
+            );
+        }
     }
 
     /// Create the two private protocol globals (`templar_shell_v1`, `templar_recovery_v1`).
