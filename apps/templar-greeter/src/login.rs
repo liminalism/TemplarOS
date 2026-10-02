@@ -443,7 +443,10 @@ mod controller_tests {
             matches!(requests.get(2), Some(Request::CancelSession)),
             "the request after an error must be cancel_session: {requests:?}"
         );
-        assert!(matches!(requests.get(3), Some(Request::CreateSession { .. })));
+        assert!(matches!(
+            requests.get(3),
+            Some(Request::CreateSession { .. })
+        ));
     }
 
     #[test]
