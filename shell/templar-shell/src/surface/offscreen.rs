@@ -185,6 +185,7 @@ pub(super) fn bar_frame(
         open_fan.then(|| entries[0].visible()),
         false,
         entries.len(),
+        None,
         2560,
     );
     let scale = Scale::new(scale);
@@ -213,6 +214,7 @@ pub(super) fn bar_frame(
         home_revealed: false,
         now_ms: 0,
         rail: None,
+        rows: None,
     };
     // Open: the pointer over the last chip, so one entry is drawn hovered. The dwell has not
     // elapsed (`now_ms` is 0), so no row opens and the strip stays its resting height.
@@ -238,7 +240,7 @@ pub(super) fn bar_frame(
         }
         Presence::Hint => {}
         Presence::Revealed => {
-            let hint = wanted_size(Presence::Hint, None, false, entries.len(), 2560);
+            let hint = wanted_size(Presence::Hint, None, false, entries.len(), None, 2560);
             let mut first = WindowBuffer::new(width, scale.px(hint.1) as u32);
             input.cursor_moved(width as f32 / 2.0, scale.px(hint.1) as f32 - 1.0);
             paint(&mut first, &mut input, &data);
@@ -376,6 +378,7 @@ pub fn render_rails(path: &Path) -> Result<Vec<std::path::PathBuf>> {
                     home_revealed: false,
                     now_ms: 0,
                     rail: Some(rail),
+                    rows: None,
                 };
                 screen.draw(&mut ui, area, &data);
                 screen.opaque_shapes().to_vec()

@@ -11,8 +11,98 @@
 //! the bar spent a campaign removing: the window wears its own name on its own tag. The name of a
 //! chip is the name of the *application*; the window titles live on the fan above it.
 
+use std::collections::HashSet;
+
 use templar_window::task::{TaskKey, TaskUnit};
 use templar_window::{ShellToplevel, WindowId};
+
+/// The freedesktop category that puts an application's chips on the active lane.
+///
+/// **Taskbar lanes are a feature, added on purpose** (`docs/architecture/taskbar-lanes.md`).
+/// The lane is a fixed property of the *kind* of program — a terminal is where things run — and
+/// never a measurement of what a window is doing right now: nothing here polls, samples or
+/// re-sorts by load, so a chip only ever changes lane when its windows open, close or change
+/// application.
+pub const ACTIVE_LANE_CATEGORY: &str = "TerminalEmulator";
+
+/// The application ids, from the catalogue, whose windows belong on the active lane.
+#[must_use]
+pub fn active_lane_apps(apps: &[crate::app_search::AppEntry]) -> HashSet<String> {
+    apps.iter()
+        .filter(|app| app.categories.iter().any(|c| c == ACTIVE_LANE_CATEGORY))
+        .map(|app| app.id.to_string())
+        .collect()
+}
+
+/// Which lane an entry belongs to.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Lane {
+    /// Programs that run things: terminals.
+    Active,
+    /// Everything else.
+    #[default]
+    Latent,
+}
+
+/// How the bar treats lanes (`shell.rails.lanes`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LaneMode {
+    /// Chips stay in first-seen order whatever kind of program they are.
+    Off,
+    /// Active-lane chips are kept together, ahead of the rest, in one row.
+    #[default]
+    Contiguous,
+    /// Active-lane chips on the bar's own row, the rest on a second row above it — when both lanes
+    /// have chips and each fits its row; otherwise as [`Self::Contiguous`].
+    Rows,
+}
+
+impl LaneMode {
+    /// The setting's spelling. `None` for anything the schema does not offer.
+    #[must_use]
+    pub fn parse(choice: &str) -> Option<Self> {
+        match choice {
+            "off" => Some(Self::Off),
+            "contiguous" => Some(Self::Contiguous),
+            "rows" => Some(Self::Rows),
+            _ => None,
+        }
+    }
+}
+
+/// The two-row shape of a bar: how many chips are on each row. Entries are laid out active lane
+/// first, so the first [`Self::active`] entries are the bar's own row and the rest the row above.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rows {
+    pub active: usize,
+    pub latent: usize,
+}
+
+impl Rows {
+    /// The chips on the longer row: what decides how wide the bar has to be.
+    #[must_use]
+    pub fn widest(self) -> usize {
+        self.active.max(self.latent)
+    }
+}
+
+/// Whether `entries` are drawn as two rows: only in [`LaneMode::Rows`], only when both lanes have
+/// a chip, and only when each lane fits one row of `capacity` chips — a lane too long for its row
+/// would need an overflow chip, and one overflow chip cannot stand in for the tail of a lane that
+/// is not the tail of the list. Then it is one row, which already knows how to overflow.
+#[must_use]
+pub fn rows_of(entries: &[Entry], mode: LaneMode, capacity: usize) -> Option<Rows> {
+    if mode != LaneMode::Rows {
+        return None;
+    }
+    let active = entries
+        .iter()
+        .filter(|entry| entry.lane == Lane::Active)
+        .count();
+    let latent = entries.len() - active;
+    (active > 0 && latent > 0 && active <= capacity && latent <= capacity)
+        .then_some(Rows { active, latent })
+}
 
 /// One window of an entry, as the fan needs it.
 ///
@@ -41,6 +131,8 @@ pub struct Entry {
     pub windows: Vec<EntryWindow>,
     /// Whether the activated window is one of these.
     pub active: bool,
+    /// The lane the entry's application kind puts it on ([`ACTIVE_LANE_CATEGORY`]).
+    pub lane: Lane,
 }
 
 impl Entry {
@@ -93,7 +185,19 @@ impl Entry {
 /// memory.
 #[must_use]
 pub fn entries(toplevels: &[ShellToplevel]) -> Vec<Entry> {
-    templar_window::task::units(toplevels)
+    entries_in(toplevels, LaneMode::Off, &HashSet::new())
+}
+
+/// [`entries`] under a lane mode: anything but [`LaneMode::Off`] moves the active-lane entries
+/// ahead of the rest — a stable partition, so first-seen order is kept inside each lane — and
+/// touches nothing else. `active_apps` is [`active_lane_apps`].
+#[must_use]
+pub fn entries_in(
+    toplevels: &[ShellToplevel],
+    mode: LaneMode,
+    active_apps: &HashSet<String>,
+) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = templar_window::task::units(toplevels)
         .into_iter()
         .map(|unit| {
             let windows: Vec<EntryWindow> = unit
@@ -105,6 +209,19 @@ pub fn entries(toplevels: &[ShellToplevel]) -> Vec<Entry> {
             let active = toplevels
                 .iter()
                 .any(|top| top.activated && unit.windows.contains(&top.window_id));
+            // A group is on the active lane when any member is: it holds a terminal.
+            let lane = if toplevels.iter().any(|top| {
+                unit.windows.contains(&top.window_id)
+                    && top.verified_identity
+                    && top
+                        .canonical_app_id
+                        .as_ref()
+                        .is_some_and(|app| active_apps.contains(app.as_str()))
+            }) {
+                Lane::Active
+            } else {
+                Lane::Latent
+            };
             Entry {
                 label: label_of(&unit),
                 app_id: match &unit.key {
@@ -113,10 +230,15 @@ pub fn entries(toplevels: &[ShellToplevel]) -> Vec<Entry> {
                 },
                 windows,
                 active,
+                lane,
                 unit,
             }
         })
-        .collect()
+        .collect();
+    if mode != LaneMode::Off {
+        entries.sort_by_key(|entry| entry.lane != Lane::Active);
+    }
+    entries
 }
 
 /// The name to draw. `TaskUnit::label` is deliberately raw — `templar-window` has neither the
@@ -353,6 +475,114 @@ mod tests {
         };
         assert_eq!(keys(&resting), keys(&used));
         assert_eq!(keys(&resting), vec!["group:2", "b.app", "a.app"]);
+    }
+
+    fn terminals() -> HashSet<String> {
+        ["org.example.Term".to_owned()].into()
+    }
+
+    #[test]
+    fn lane_modes_move_terminals_only_when_asked_to() {
+        let toplevels = vec![
+            window(1, "a.app", "x", None),
+            window(2, "org.example.Term", "y", None),
+            window(3, "c.app", "z", None),
+        ];
+        let keys = |mode| -> Vec<String> {
+            entries_in(&toplevels, mode, &terminals())
+                .iter()
+                .map(Entry::key)
+                .collect()
+        };
+        assert_eq!(
+            keys(LaneMode::Off),
+            vec!["a.app", "org.example.Term", "c.app"]
+        );
+        assert_eq!(
+            keys(LaneMode::Contiguous),
+            vec!["org.example.Term", "a.app", "c.app"]
+        );
+        assert_eq!(keys(LaneMode::Rows), keys(LaneMode::Contiguous));
+        assert_eq!(
+            entries_in(&toplevels, LaneMode::Off, &terminals())[1].lane,
+            Lane::Active
+        );
+    }
+
+    #[test]
+    fn a_group_holding_a_terminal_is_on_the_active_lane_and_an_unverified_claim_is_not() {
+        let mut claimed = window(9, "org.example.Term", "sh", None);
+        claimed.verified_identity = false;
+        let toplevels = vec![
+            window(1, "a.app", "x", None),
+            window(2, "org.example.Term", "sh", Some(4)),
+            window(3, "b.app", "y", Some(4)),
+            claimed,
+        ];
+        let entries = entries_in(&toplevels, LaneMode::Contiguous, &terminals());
+        let lanes: Vec<(String, Lane)> = entries.iter().map(|e| (e.key(), e.lane)).collect();
+        assert_eq!(
+            lanes,
+            vec![
+                ("group:4".to_owned(), Lane::Active),
+                ("a.app".to_owned(), Lane::Latent),
+                ("unknown-window-9".to_owned(), Lane::Latent),
+            ],
+            "a claimed app id must not buy a place on the active lane"
+        );
+    }
+
+    #[test]
+    fn rows_need_rows_mode_two_populated_lanes_and_a_row_each_lane_fits() {
+        let toplevels = vec![
+            window(1, "org.example.Term", "x", Some(7)),
+            window(2, "org.example.Term", "y", None),
+            window(3, "c.app", "z", None),
+        ];
+        let entries = entries_in(&toplevels, LaneMode::Rows, &terminals());
+        assert_eq!(
+            rows_of(&entries, LaneMode::Rows, 5),
+            Some(Rows {
+                active: 2,
+                latent: 1
+            })
+        );
+        assert_eq!(rows_of(&entries, LaneMode::Rows, 5).unwrap().widest(), 2);
+        assert_eq!(rows_of(&entries, LaneMode::Contiguous, 5), None);
+        assert_eq!(rows_of(&entries, LaneMode::Off, 5), None);
+        // The active lane is two long: a row of one cannot hold it.
+        assert_eq!(rows_of(&entries, LaneMode::Rows, 1), None);
+        // One lane empty: one row, not a row and an empty row.
+        let latent = entries_in(&toplevels[2..], LaneMode::Rows, &terminals());
+        assert_eq!(rows_of(&latent, LaneMode::Rows, 5), None);
+    }
+
+    #[test]
+    fn lane_mode_spellings_are_the_settings_choices() {
+        assert_eq!(LaneMode::parse("off"), Some(LaneMode::Off));
+        assert_eq!(LaneMode::parse("contiguous"), Some(LaneMode::Contiguous));
+        assert_eq!(LaneMode::parse("rows"), Some(LaneMode::Rows));
+        assert_eq!(LaneMode::parse("Rows"), None);
+    }
+
+    #[test]
+    fn the_active_lane_is_the_terminal_emulator_category() {
+        let app = |id: &str, categories: &[&str]| crate::app_search::AppEntry {
+            id: id.parse().unwrap(),
+            name: id.to_owned(),
+            desktop_file_id: String::new(),
+            icon: String::new(),
+            categories: categories.iter().map(|c| (*c).to_owned()).collect(),
+            keywords: Vec::new(),
+            no_display: false,
+            logical: String::new(),
+            variants: 1,
+        };
+        let set = active_lane_apps(&[
+            app("org.example.Term", &["System", "TerminalEmulator"]),
+            app("org.example.Files", &["System", "FileManager"]),
+        ]);
+        assert_eq!(set, ["org.example.Term".to_owned()].into());
     }
 
     #[test]

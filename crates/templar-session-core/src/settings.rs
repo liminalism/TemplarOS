@@ -420,6 +420,17 @@ fn add_rails_specs(schema: &mut SettingsSchema) {
             None,
         ),
         (
+            "shell.rails.lanes",
+            "How the running-apps strip groups windows by kind of program: `off` keeps first-seen \
+             order; `contiguous` keeps terminals together, ahead of everything else; `rows` \
+             puts terminals on the strip's own row and the rest on a second row above it. The \
+             lane is a fixed property of the program, never a reading of what it is doing",
+            SettingValue::Choice("contiguous".into()),
+            vec!["off".into(), "contiguous".into(), "rows".into()],
+            None,
+            None,
+        ),
+        (
             "shell.rails.gate-width",
             "Width, in logical pixels, of the invisible box at the bottom centre that the reveal \
              gesture starts in",
@@ -700,6 +711,10 @@ mod tests {
         for (key, default) in [
             ("shell.rails.mode", SettingValue::Choice("gesture".into())),
             ("shell.rails.swap", SettingValue::Bool(false)),
+            (
+                "shell.rails.lanes",
+                SettingValue::Choice("contiguous".into()),
+            ),
             ("shell.rails.gate-width", SettingValue::Int(240)),
             ("shell.rails.gate-height", SettingValue::Int(96)),
             ("shell.rails.learning", SettingValue::Bool(false)),

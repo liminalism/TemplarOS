@@ -73,6 +73,8 @@ enum DataUpdate {
     HomeFieldSettings(HomeFieldSettings),
     /// `shell.rails.*`: gesture rails or the classic bar, and the gate the compositor watches.
     RailSettings(RailSettings),
+    /// `shell.rails.lanes`: how the running-apps strip groups windows by kind of program.
+    Lanes(crate::taskbar::LaneMode),
     /// The session's screen-off delay in seconds, from `Power1` (0 = never). Relayed straight to
     /// the compositor, which is the only process that can see the seat go idle.
     IdleTimeout(u32),
@@ -588,6 +590,11 @@ struct ShellApp {
     cluster_wanted: (i32, i32),
     /// `shell.rails.*` as last read. Defaults (gesture rails) until the first read lands.
     rail_settings: RailSettings,
+    /// `shell.rails.lanes` as last read: the schema default until the first read lands.
+    lanes: crate::taskbar::LaneMode,
+    /// The application ids on the active lane (`taskbar::active_lane_apps`), refreshed whenever
+    /// the catalogue is. Read from the catalogue, never measured from the windows.
+    active_lane_apps: std::collections::HashSet<String>,
     /// The gate last relayed to the compositor, so an unchanged reading costs nothing — the
     /// `DataUpdate::IdleTimeout` rule. `None` until the first relay.
     rail_gate_relayed: Option<RailSettings>,
@@ -720,6 +727,8 @@ impl ShellApp {
             cluster_mask: WindowBuffer::new(0, 0),
             cluster_wanted: (0, 0),
             rail_settings: RailSettings::default(),
+            lanes: crate::taskbar::LaneMode::default(),
+            active_lane_apps: std::collections::HashSet::new(),
             rail_gate_relayed: None,
             hosts_gesture: false,
             rail: None,
@@ -1200,6 +1209,7 @@ impl ShellApp {
                         // only those cost a call — and their copies are asked for once per
                         // refresh rather than once per menu, because a context menu opening is
                         // not a moment to be waiting on a bus.
+                        self.active_lane_apps = crate::taskbar::active_lane_apps(&apps);
                         let wanted: Vec<String> = apps
                             .iter()
                             .filter(|entry| entry.variants > 1 && !entry.logical.is_empty())
@@ -1254,6 +1264,13 @@ impl ShellApp {
                 DataUpdate::RailSettings(settings) => {
                     self.rail_settings = settings;
                     self.relay_gesture_gate();
+                }
+                DataUpdate::Lanes(lanes) => {
+                    if self.lanes != lanes {
+                        self.lanes = lanes;
+                        // The chips change place, and a fan or hover index names a place.
+                        self.bar_screen.reset();
+                    }
                 }
                 DataUpdate::IdleTimeout(seconds) => {
                     // Only on a change, and only over a live connection: the compositor keeps
@@ -2821,6 +2838,7 @@ impl ShellApp {
                 None,
                 false,
                 crate::taskbar::entries(toplevels).len(),
+                None,
                 self.output_width(),
             )
         };
@@ -2922,7 +2940,7 @@ impl ShellApp {
             .as_ref()
             .map(ShellBridge::toplevels)
             .unwrap_or_default();
-        let entries = crate::taskbar::entries(&toplevels);
+        let (entries, rows) = self.bar_entries(&toplevels);
         let keys: Vec<String> = entries.iter().filter_map(|e| e.app_id.clone()).collect();
         for key in keys {
             self.ensure_icon(&key);
@@ -2953,6 +2971,7 @@ impl ShellApp {
             home_revealed,
             now_ms,
             rail,
+            rows,
         };
         let actions = {
             let mut ui = Ui::new(
@@ -3045,6 +3064,7 @@ impl ShellApp {
             crate::surface::bar_screen::rail_wanted_size(
                 self.bar_screen.fan_cards(&entries),
                 self.bar_screen.tooltip_open(now_ms),
+                rows,
                 output_width,
             )
         } else {
@@ -3053,6 +3073,7 @@ impl ShellApp {
                 self.bar_screen.fan_cards(&entries),
                 self.bar_screen.tooltip_open(now_ms),
                 entries.len(),
+                rows,
                 output_width,
             )
         };
@@ -3544,6 +3565,24 @@ impl ShellApp {
                 .is_some_and(ShellBridge::gestures_available)
     }
 
+    /// The bar's entries in the order they are drawn, and the two-row shape when the lane mode
+    /// and the room ask for one. Every consumer of a chip's index — the draw, the hover, the
+    /// deadline — has to read this and not `taskbar::entries`, or the index means another chip.
+    fn bar_entries(
+        &self,
+        toplevels: &[templar_window::ShellToplevel],
+    ) -> (Vec<crate::taskbar::Entry>, Option<crate::taskbar::Rows>) {
+        let entries = crate::taskbar::entries_in(toplevels, self.lanes, &self.active_lane_apps);
+        let width = self.output_width();
+        let capacity = if self.hosts_gesture {
+            crate::surface::bar_screen::rail_row_capacity(width)
+        } else {
+            crate::surface::bar_screen::island_row_capacity(width)
+        };
+        let rows = crate::taskbar::rows_of(&entries, self.lanes, capacity);
+        (entries, rows)
+    }
+
     /// Rebuild the bar and the cluster when the mode changes. Their edge alignment is fixed when
     /// they are created, and a rail host and a classic one differ in exactly that, so the old
     /// surfaces go and `ensure_bar`/`ensure_cluster` make new ones on this same pass.
@@ -3572,7 +3611,7 @@ impl ShellApp {
     /// Follow the compositor's rail: open one when it says so, reveal it as the pointer travels,
     /// close it when it closes, and dismiss it when the pointer has wandered off for longer than
     /// the grace. Only the rail's own host is ever asked to redraw from here.
-    fn sync_rail(&mut self, entries: usize) {
+    fn sync_rail(&mut self, entries: usize, rows: Option<crate::taskbar::Rows>) {
         let now = Instant::now();
         if !self.hosts_gesture {
             return;
@@ -3596,7 +3635,7 @@ impl ShellApp {
                     let known = self.rail.as_ref().map(|rail| rail.opening) == Some(opening);
                     if !known && self.rail_dismissed != Some(opening) {
                         self.dismiss_rail(false);
-                        self.open_rail(opening, side, entries);
+                        self.open_rail(opening, side, entries, rows);
                     }
                     if let (Some(rail), Some((x, y))) = (&mut self.rail, pointer) {
                         rail.session.pointer(x, y, now);
@@ -3619,14 +3658,24 @@ impl ShellApp {
 
     /// Start drawing a rail the compositor just opened. Laid out once, here: the reveal's length
     /// is fixed for the opening, and only its clip moves after this.
-    fn open_rail(&mut self, opening: u64, side: RailSide, entries: usize) {
+    fn open_rail(
+        &mut self,
+        opening: u64,
+        side: RailSide,
+        entries: usize,
+        rows: Option<crate::taskbar::Rows>,
+    ) {
         let host = rail_host(side, self.rail_settings.swap);
         let (width, height) = self.output_size();
         let (length, initial, wanted) = match host {
             RailHost::Apps => (
-                crate::surface::bar_screen::rail_length(entries, width),
+                // Two rows are only as long as the longer one.
+                crate::surface::bar_screen::rail_length(
+                    rows.map_or(entries, crate::taskbar::Rows::widest),
+                    width,
+                ),
                 crate::surface::bar_screen::rail_initial(),
-                crate::surface::bar_screen::rail_wanted_size(None, false, width),
+                crate::surface::bar_screen::rail_wanted_size(None, false, rows, width),
             ),
             RailHost::System => (
                 crate::surface::cluster_screen::rail_length(),
@@ -4202,16 +4251,18 @@ impl ShellApp {
                 return;
             };
             loop {
-                let (field, recents, rails) = tokio::join!(
+                let (field, recents, rails, lanes) = tokio::join!(
                     fetch_home_field_settings(),
                     crate::settings::load_recent_apps(&settings),
                     crate::settings::rails(&settings),
+                    crate::settings::lanes(&settings),
                 );
                 if tx.send(DataUpdate::HomeFieldSettings(field)).is_err() {
                     return;
                 }
                 let _ = tx.send(DataUpdate::RecentApps(recents));
                 let _ = tx.send(DataUpdate::RailSettings(rails));
+                let _ = tx.send(DataUpdate::Lanes(lanes));
                 let _ = tx.send(DataUpdate::IdleTimeout(
                     crate::data::fetch_idle_timeout().await,
                 ));
@@ -5480,7 +5531,8 @@ impl ApplicationHandler<Wake> for ShellApp {
         self.ensure_bar(event_loop, &toplevels);
         self.ensure_cluster(event_loop, &toplevels);
         self.sync_taskfield(event_loop);
-        self.sync_rail(crate::taskbar::entries(&toplevels).len());
+        let (entries, rows) = self.bar_entries(&toplevels);
+        self.sync_rail(entries.len(), rows);
         // A masked frame deferred because the compositor still held every buffer is owed, and
         // the pointer that asked for it may have stopped: the buffer coming back is the wake.
         self.retry_deferred_presents();
@@ -5559,7 +5611,7 @@ impl ApplicationHandler<Wake> for ShellApp {
             )
             && !self.bridge.as_ref().is_some_and(ShellBridge::bar_peeked);
         let bar_deadline = self.bar.as_ref().filter(|_| bar_live).and_then(|bar| {
-            let entries = crate::taskbar::entries(&toplevels);
+            let entries = self.bar_entries(&toplevels).0;
             let deadline_ms = self.bar_screen.next_deadline_ms(
                 &entries,
                 bar_covered,

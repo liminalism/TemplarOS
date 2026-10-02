@@ -40,6 +40,9 @@ pub const RAILS_MODE_KEY: &str = "shell.rails.mode";
 /// `shell.rails.swap` — `false` puts running applications on the left rail, the system on the
 /// right; `true` exchanges them.
 pub const RAILS_SWAP_KEY: &str = "shell.rails.swap";
+/// `shell.rails.lanes` — `off`, `contiguous` or `rows`: how the running-apps strip groups
+/// windows by kind of program (`crate::taskbar::LaneMode`).
+pub const RAILS_LANES_KEY: &str = "shell.rails.lanes";
 /// `shell.rails.gate-width`, logical px.
 pub const RAILS_GATE_WIDTH_KEY: &str = "shell.rails.gate-width";
 /// `shell.rails.gate-height`, logical px.
@@ -159,6 +162,18 @@ pub async fn rails(client: &impl SettingsClient) -> RailSettings {
         learning,
         exceptions,
     }
+}
+
+/// The activity lane mode, falling back to the schema default when unreadable or unknown.
+pub async fn lanes(client: &impl SettingsClient) -> crate::taskbar::LaneMode {
+    client
+        .get(RAILS_LANES_KEY)
+        .await
+        .ok()
+        .as_deref()
+        .and_then(parse_choice)
+        .and_then(|choice| crate::taskbar::LaneMode::parse(&choice))
+        .unwrap_or_default()
 }
 
 /// The `value` of a `SettingValue` JSON payload as an integer.
@@ -486,6 +501,23 @@ mod tests {
         assert_eq!(settings.gate_width, 800);
         assert_eq!(settings.gate_height, 96);
         assert_eq!(settings.exceptions, vec!["org.mpv.Mpv".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn lanes_read_the_choice_and_fall_back_on_anything_else() {
+        use crate::taskbar::LaneMode;
+        let with = |value: &str| {
+            let mut pairs = std::collections::HashMap::new();
+            pairs.insert(
+                RAILS_LANES_KEY,
+                format!(r#"{{"type":"choice","value":"{value}"}}"#),
+            );
+            Keyed(pairs)
+        };
+        assert_eq!(lanes(&with("rows")).await, LaneMode::Rows);
+        assert_eq!(lanes(&with("off")).await, LaneMode::Off);
+        assert_eq!(lanes(&with("sideways")).await, LaneMode::Contiguous);
+        assert_eq!(lanes(&Fake(Err(()))).await, LaneMode::Contiguous);
     }
 
     #[tokio::test]

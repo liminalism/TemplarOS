@@ -75,7 +75,7 @@ use templar_window::WindowId;
 use crate::surface::design::{self, Elevation};
 use crate::surface::field_screen::FieldAction;
 use crate::surface::rail::{self, RAIL_GAP, RailSide, RailView};
-use crate::taskbar::{Entry, EntryWindow};
+use crate::taskbar::{Entry, EntryWindow, Rows};
 
 /// The bar's thickness. It reserves nothing: the exclusive zone is 0.
 pub const BAR_HEIGHT: i32 = 48;
@@ -127,6 +127,9 @@ pub const CHIP_GAP: i32 = 8;
 /// The margin at each end of the strip, and what centres a chip in the bar's own height.
 pub const CHIP_PAD: i32 = 8;
 const CELL: i32 = 48;
+/// How far the second row of activity lanes (`shell.rails.lanes` = `rows`) sits above the first:
+/// one chip and the gap between chips.
+pub const ROW_STEP: i32 = CHIP_H + CHIP_GAP;
 const ICON: i32 = 32;
 /// Dwell before a hovered chip names itself. Shorter than the row's, because a name is a much
 /// smaller thing to be given than a strip of window pictures, and a chip that is only an icon has
@@ -205,6 +208,11 @@ pub struct BarData<'a> {
     /// and everything the module documentation says about presence; `Some` skips all of that —
     /// the host opened the rail on a gesture and is the one that dismisses it.
     pub rail: Option<RailView>,
+    /// `Some` when the entries are drawn as two rows (`crate::taskbar::rows_of`): the first
+    /// `active` entries on the bar's own row, the rest on a second row above it. The host
+    /// computes it once and passes the same answer to the size functions, so the surface is
+    /// asked for exactly the height this layout uses.
+    pub rows: Option<Rows>,
 }
 
 #[derive(Debug, Default)]
@@ -291,6 +299,7 @@ pub fn wanted_size(
     fan_cards: Option<usize>,
     tooltip: bool,
     entries: usize,
+    rows: Option<Rows>,
     full_width: i32,
 ) -> (i32, i32) {
     if presence == Presence::Hint {
@@ -307,10 +316,36 @@ pub fn wanted_size(
         2 * CHIP_PAD + FAN_CARD_W + (cards - 1) * FAN_OFFSET
     });
     let band = band_above(fan_cards, tooltip);
+    // Two rows are only as wide as the longer one.
+    let across = rows.map_or(entries, Rows::widest);
     (
-        island_width(entries).max(fan).min(widest(full_width)),
-        BAR_HEIGHT + band,
+        island_width(across).max(fan).min(widest(full_width)),
+        BAR_HEIGHT + extra_row(rows) + band,
     )
+}
+
+/// The height a second row adds: nothing for one row.
+fn extra_row(rows: Option<Rows>) -> i32 {
+    if rows.is_some() { ROW_STEP } else { 0 }
+}
+
+/// How many chips one row of the island can hold before it would need an overflow chip: what
+/// [`crate::taskbar::rows_of`] is asked to fit each lane into. From the same `widest` the island
+/// itself is clamped to.
+#[must_use]
+pub fn island_row_capacity(full_width: i32) -> usize {
+    row_capacity(widest(full_width), CHIP_PAD)
+}
+
+/// How many chips one row of a rail can hold, the room `rail_length` and `rail_cells` share.
+#[must_use]
+pub fn rail_row_capacity(full_width: i32) -> usize {
+    row_capacity(rail_room(full_width), 0)
+}
+
+fn row_capacity(width: i32, pad: i32) -> usize {
+    let stride = CELL + CHIP_GAP;
+    usize::try_from(((width - 2 * pad).max(0) + CHIP_GAP) / stride).unwrap_or(0)
 }
 
 /// How much room above the bar an open fan or a chip's name needs.
@@ -359,10 +394,15 @@ pub fn rail_initial() -> i32 {
 /// because the rail runs from its centre to either edge and the mask makes the rest desktop, and
 /// the bar plus whatever band an open fan or name needs.
 #[must_use]
-pub fn rail_wanted_size(fan_cards: Option<usize>, tooltip: bool, full_width: i32) -> (i32, i32) {
+pub fn rail_wanted_size(
+    fan_cards: Option<usize>,
+    tooltip: bool,
+    rows: Option<Rows>,
+    full_width: i32,
+) -> (i32, i32) {
     (
         full_width.max(1),
-        BAR_HEIGHT + band_above(fan_cards, tooltip),
+        BAR_HEIGHT + extra_row(rows) + band_above(fan_cards, tooltip),
     )
 }
 
@@ -642,15 +682,37 @@ impl BarScreen {
     }
 
     fn layout(ui: &Ui<'_>, area: Rect, data: &BarData<'_>, open_fan: Option<usize>) -> Layout {
-        let bar_height = ui.px(BAR_HEIGHT).min(area.h);
-        let row = Rect::new(area.x, area.bottom() - bar_height, area.w, bar_height);
+        let row_height = ui.px(BAR_HEIGHT).min(area.h);
+        let row = Rect::new(area.x, area.bottom() - row_height, area.w, row_height);
         let chip_h = ui.px(CHIP_H).min(row.h);
         let chip_y = row.y + (row.h - chip_h) / 2;
         let gap = ui.px(CHIP_GAP);
         let cell_w = ui.px(CELL);
+        // With two rows the bar is the pair of them: what the fan and the ground are measured
+        // from is the top of the upper one, and the fan has that much less room above it.
+        let step = ui.px(extra_row(data.rows));
+        let bar_height = (row_height + step).min(area.h);
 
         let (bar, cells, overflow, overflow_count, revealed) = if let Some(view) = data.rail {
-            Self::rail_cells(ui, area, row, view, data.entries.len(), chip_y, chip_h)
+            Self::rail_cells(ui, area, row, view, data, chip_y, chip_h)
+        } else if let Some(rows) = data.rows {
+            // Two lanes: active-lane chips on the bar's own row, the rest one step above. Each row is
+            // centred in the same strip, whose width is the longer row's, so a chip does not
+            // slide sideways when the other row grows or the surface widens for a fan.
+            let strip = ui.px(island_width(rows.widest())).min(row.w);
+            let origin = row.x + ((row.w - strip) / 2).max(0);
+            let lay = |count: usize, y: i32| -> Vec<Rect> {
+                let count = i32::try_from(count).unwrap_or(0);
+                let span = count * cell_w + (count - 1).max(0) * gap;
+                let start = origin + ((strip - span) / 2).max(0);
+                (0..count)
+                    .map(|slot| Rect::new(start + slot * (cell_w + gap), y, cell_w, chip_h))
+                    .collect()
+            };
+            let mut cells = lay(rows.active, chip_y);
+            cells.extend(lay(rows.latent, chip_y - step));
+            let bar = Rect::new(row.x, row.y - step, row.w, row.h + step);
+            (bar, cells, None, 0, None)
         } else {
             // The chips are centred *inside* the surface, not laid from its left edge. That
             // matters because an open row makes the surface wider than the island, and the
@@ -738,10 +800,12 @@ impl BarScreen {
         area: Rect,
         row: Rect,
         view: RailView,
-        entries: usize,
+        data: &BarData<'_>,
         chip_y: i32,
         chip_h: i32,
     ) -> (Rect, Vec<Rect>, Option<Rect>, usize, Option<(i32, i32)>) {
+        let entries = data.entries.len();
+        let step = ui.px(extra_row(data.rows));
         let cell_w = ui.px(CELL);
         let gap = ui.px(CHIP_GAP);
         let origin = area.x + ui.px(view.origin);
@@ -752,17 +816,34 @@ impl BarScreen {
         let room = (origin - lead - (area.x + clearance))
             .min(area.right() - clearance - (origin + lead))
             .max(0);
-        let (shown, has_overflow) = chip_slots(room, entries, cell_w, gap, 0);
-        let place = |slot: usize| {
-            let step = i32::try_from(slot).unwrap_or(0) * (cell_w + gap);
-            let x = match view.side {
-                RailSide::Right => origin + lead + step,
-                RailSide::Left => origin - lead - step - cell_w,
-            };
-            Rect::new(x, chip_y, cell_w, chip_h)
+        // Two rows never overflow — `rows_of` only asks for them when each lane fits — so the
+        // overflow chip and the prefix that `shown` implies belong to the one-row layout alone.
+        let (shown, has_overflow) = if data.rows.is_some() {
+            (entries, false)
+        } else {
+            chip_slots(room, entries, cell_w, gap, 0)
         };
-        let cells: Vec<Rect> = (0..shown).map(place).collect();
-        let overflow = has_overflow.then(|| place(shown));
+        let place = |slot: usize, y: i32| {
+            let along = i32::try_from(slot).unwrap_or(0) * (cell_w + gap);
+            let x = match view.side {
+                RailSide::Right => origin + lead + along,
+                RailSide::Left => origin - lead - along - cell_w,
+            };
+            Rect::new(x, y, cell_w, chip_h)
+        };
+        let cells: Vec<Rect> = match data.rows {
+            Some(rows) => (0..shown)
+                .map(|index| {
+                    if index < rows.active {
+                        place(index, chip_y)
+                    } else {
+                        place(index - rows.active, chip_y - step)
+                    }
+                })
+                .collect(),
+            None => (0..shown).map(|slot| place(slot, chip_y)).collect(),
+        };
+        let overflow = has_overflow.then(|| place(shown, chip_y));
         // The plate: the origin to the far end of the last chip and its margin. Nothing is
         // painted on it; it is what a press between chips lands on.
         let far = cells
@@ -772,7 +853,12 @@ impl BarScreen {
                 RailSide::Right => far.max(cell.right() + ui.px(CHIP_PAD)),
                 RailSide::Left => far.min(cell.x - ui.px(CHIP_PAD)),
             });
-        let bar = Rect::new(origin.min(far), row.y, (far - origin).abs(), row.h);
+        let bar = Rect::new(
+            origin.min(far),
+            row.y - step,
+            (far - origin).abs(),
+            row.h + step,
+        );
         let revealed = view.physical_interval(area.x, |logical| ui.px(logical));
         (
             bar,
@@ -1224,11 +1310,11 @@ mod tests {
     /// no room to be tested in.
     const W: i32 = 1920;
 
-    /// The tallest the island ever gets: the bar plus an open fan. The harness buffer is
-    /// this tall so every state fits in one buffer, and the island is always drawn at the bottom
-    /// of it, exactly as the host's surface is.
+    /// The tallest the island ever gets: the bar, a second row and an open fan. The harness
+    /// buffer is this tall so every state fits in one buffer, and the island is always drawn at
+    /// the bottom of it, exactly as the host's surface is.
     fn tallest() -> i32 {
-        BAR_HEIGHT + FAN_BAND
+        BAR_HEIGHT + ROW_STEP + FAN_BAND
     }
 
     fn window(id: u64, app: &str, title: &str, activated: bool, maximized: bool) -> ShellToplevel {
@@ -1266,9 +1352,33 @@ mod tests {
         height: i32,
         /// Draw as a rail rather than the island.
         rail: Option<RailView>,
+        /// The activity lane mode. `Off` unless a test is about lanes, so the order every other
+        /// test reads is the plain one.
+        lanes: taskbar::LaneMode,
     }
 
     impl Harness {
+        /// The application ids on the active lane: the fixtures' terminal.
+        fn terminals() -> std::collections::HashSet<String> {
+            [
+                "org.example.Terminal".to_owned(),
+                "org.example.Shell".to_owned(),
+            ]
+            .into()
+        }
+
+        /// The entries and two-row shape exactly as `app.rs` computes them for this frame.
+        fn shape(&self) -> (Vec<Entry>, Option<Rows>) {
+            let entries = taskbar::entries_in(&self.toplevels, self.lanes, &Self::terminals());
+            let capacity = if self.rail.is_some() {
+                rail_row_capacity(W)
+            } else {
+                island_row_capacity(W)
+            };
+            let rows = taskbar::rows_of(&entries, self.lanes, capacity);
+            (entries, rows)
+        }
+
         fn new(toplevels: Vec<ShellToplevel>) -> Self {
             Self {
                 screen: BarScreen::default(),
@@ -1285,6 +1395,7 @@ mod tests {
                 width: W,
                 height: BAR_HEIGHT,
                 rail: None,
+                lanes: taskbar::LaneMode::Off,
             }
         }
 
@@ -1298,17 +1409,18 @@ mod tests {
         /// The surface the host would give the bar this frame — width included, exactly as
         /// `app.rs` computes it, so a test never clicks somewhere the real surface does not have.
         fn wanted(&self) -> (i32, i32) {
-            let entries = taskbar::entries(&self.toplevels);
+            let (entries, rows) = self.shape();
             let fan = self.screen.fan_cards(&entries);
             let tooltip = self.screen.tooltip_open(self.now);
             if self.rail.is_some() {
-                return rail_wanted_size(fan, tooltip, W);
+                return rail_wanted_size(fan, tooltip, rows, W);
             }
             wanted_size(
                 self.screen.presence(self.covered),
                 fan,
                 tooltip,
                 entries.len(),
+                rows,
                 W,
             )
         }
@@ -1322,7 +1434,8 @@ mod tests {
 
         /// How wide the island is with this harness's windows on it.
         fn island(&self) -> i32 {
-            island_width(taskbar::entries(&self.toplevels).len())
+            let (entries, rows) = self.shape();
+            island_width(rows.map_or(entries.len(), Rows::widest))
         }
 
         /// The middle of the hint tab's bottom edge — where the hint is, and where a pointer
@@ -1333,7 +1446,7 @@ mod tests {
         }
 
         fn frame(&mut self) -> Vec<BarAction> {
-            let entries = taskbar::entries(&self.toplevels);
+            let (entries, rows) = self.shape();
             let activated = self.activated();
             let data = BarData {
                 entries: &entries,
@@ -1345,6 +1458,7 @@ mod tests {
                 home_revealed: false,
                 now_ms: self.now,
                 rail: self.rail,
+                rows,
             };
             let (width, height) = (self.width, self.height);
             let mut ui = Ui::new(
@@ -1378,7 +1492,7 @@ mod tests {
 
         /// The rectangles this frame would use, for a test that needs to click one of them.
         fn rects(&mut self) -> Layout {
-            let entries = taskbar::entries(&self.toplevels);
+            let (entries, rows) = self.shape();
             let activated = self.activated();
             let data = BarData {
                 entries: &entries,
@@ -1390,6 +1504,7 @@ mod tests {
                 home_revealed: false,
                 now_ms: self.now,
                 rail: self.rail,
+                rows,
             };
             let ui = Ui::new(
                 Painter::new(&mut self.buffer),
@@ -1740,14 +1855,17 @@ mod tests {
         assert!(!overflow);
         assert_eq!(shown, 10);
 
-        assert_eq!(wanted_size(open, None, false, 0, W), (empty, BAR_HEIGHT));
+        assert_eq!(
+            wanted_size(open, None, false, 0, None, W),
+            (empty, BAR_HEIGHT)
+        );
         // A fan is wider than the island it hangs off, so it is the fan that sets the width.
-        let one_card = wanted_size(open, Some(1), false, 0, W);
+        let one_card = wanted_size(open, Some(1), false, 0, None, W);
         assert_eq!(one_card.1, BAR_HEIGHT + FAN_BAND);
         assert!(one_card.0 > empty, "an open fan widens the surface");
         // And each further card costs an offset rather than a whole card: that is what a fan is.
         assert_eq!(
-            wanted_size(open, Some(4), false, 0, W).0 - one_card.0,
+            wanted_size(open, Some(4), false, 0, None, W).0 - one_card.0,
             3 * FAN_OFFSET
         );
         // An output narrower than the island clamps to the output *less its two corners*, which
@@ -1755,21 +1873,24 @@ mod tests {
         // still a surface.
         // An output with no room for both gives the island what is left and never a negative
         // width; a width of nothing is still a surface.
-        assert_eq!(wanted_size(open, None, false, 20, 200), (1, BAR_HEIGHT));
-        assert_eq!(wanted_size(open, None, false, 0, 0), (1, BAR_HEIGHT));
+        assert_eq!(
+            wanted_size(open, None, false, 20, None, 200),
+            (1, BAR_HEIGHT)
+        );
+        assert_eq!(wanted_size(open, None, false, 0, None, 0), (1, BAR_HEIGHT));
         // However many applications are open, the island never reaches either corner.
         assert!(
-            wanted_size(open, None, false, 200, 1280).0 <= 1280 - 2 * CORNER_CLEARANCE,
+            wanted_size(open, None, false, 200, None, 1280).0 <= 1280 - 2 * CORNER_CLEARANCE,
             "an island that spans the output would sit on the corner and silence it"
         );
         // Revealed is the island, in full; the hint is a tab, band or no band.
         assert_eq!(
-            wanted_size(Presence::Revealed, Some(1), false, 0, W),
+            wanted_size(Presence::Revealed, Some(1), false, 0, None, W),
             one_card,
             "revealed is the island in full, fan and all"
         );
         assert_eq!(
-            wanted_size(Presence::Hint, Some(1), false, 0, W),
+            wanted_size(Presence::Hint, Some(1), false, 0, None, W),
             (HINT_WIDTH, HINT_HEIGHT)
         );
         const { assert!(HINT_HEIGHT < BAR_HEIGHT) };
@@ -2273,6 +2394,154 @@ mod tests {
         );
         assert_eq!(h.wanted(), (W, BAR_HEIGHT));
     }
+
+    /// Four applications, the second and fourth of them terminals, under `mode`.
+    fn lane_harness(mode: taskbar::LaneMode) -> Harness {
+        let mut h = Harness::new(vec![
+            window(1, "org.example.Editor", "notes", true, false),
+            window(2, "org.example.Terminal", "build", false, false),
+            window(3, "org.example.Browser", "news", false, false),
+            window(4, "org.example.Shell", "sh", false, false),
+        ]);
+        h.lanes = mode;
+        // Let the surface settle at the size the lanes ask for, as the host does.
+        h.frame();
+        h
+    }
+
+    fn keys(entries: &[Entry]) -> Vec<String> {
+        entries.iter().map(Entry::key).collect()
+    }
+
+    #[test]
+    fn contiguous_lanes_keep_terminal_chips_together_in_one_row() {
+        let mut h = lane_harness(taskbar::LaneMode::Contiguous);
+        let (entries, rows) = h.shape();
+        assert_eq!(rows, None);
+        assert_eq!(
+            keys(&entries),
+            vec![
+                "org.example.Terminal",
+                "org.example.Shell",
+                "org.example.Editor",
+                "org.example.Browser"
+            ]
+        );
+        let cells = h.cells();
+        assert!(
+            cells.iter().all(|cell| cell.y == cells[0].y),
+            "one row: {cells:?}"
+        );
+        assert_eq!(h.wanted().1, BAR_HEIGHT);
+    }
+
+    #[test]
+    fn row_lanes_put_terminals_on_the_bars_own_row_and_the_rest_above() {
+        let mut h = lane_harness(taskbar::LaneMode::Rows);
+        let (_, rows) = h.shape();
+        assert_eq!(
+            rows,
+            Some(Rows {
+                active: 2,
+                latent: 2
+            })
+        );
+        assert_eq!(
+            h.wanted().1,
+            BAR_HEIGHT + ROW_STEP,
+            "the surface has room for both rows"
+        );
+        let cells = h.cells();
+        assert_eq!(cells.len(), 4);
+        assert_eq!(cells[0].y, cells[1].y);
+        assert_eq!(cells[2].y, cells[3].y);
+        assert_eq!(
+            cells[0].y - cells[2].y,
+            ROW_STEP,
+            "latent row one step above"
+        );
+        let layout = h.rects();
+        assert_eq!(layout.bar.y, cells[2].y - (BAR_HEIGHT - CHIP_H) / 2);
+        // Every chip is inside the surface the host asked for.
+        let top = tallest() - h.wanted().1;
+        assert!(cells.iter().all(|cell| cell.y >= top));
+    }
+
+    #[test]
+    fn a_click_on_an_upper_row_chip_activates_that_chips_window() {
+        let mut h = lane_harness(taskbar::LaneMode::Rows);
+        let (entries, _) = h.shape();
+        let cells = h.cells();
+        // Index 3 is the last latent chip: Browser, on the upper row.
+        let target = entries[3].most_recent().unwrap();
+        assert_eq!(entries[3].key(), "org.example.Browser");
+        let centre = cells[3];
+        let actions = h.click(centre.x + centre.w / 2, centre.y + centre.h / 2);
+        assert_eq!(actions, vec![BarAction::Activate(target)]);
+    }
+
+    #[test]
+    fn row_lanes_with_only_one_lane_populated_are_one_row() {
+        let mut h = lane_harness(taskbar::LaneMode::Rows);
+        for top in &mut h.toplevels {
+            top.canonical_app_id = Some("org.example.Editor".parse().unwrap());
+        }
+        let (_, rows) = h.shape();
+        assert_eq!(rows, None);
+        h.frame();
+        assert_eq!(h.wanted().1, BAR_HEIGHT);
+        let cells = h.cells();
+        assert!(cells.iter().all(|cell| cell.y == cells[0].y));
+    }
+
+    #[test]
+    fn rail_rows_lay_out_from_the_origin_and_never_move_with_the_reveal() {
+        for side in [RailSide::Left, RailSide::Right] {
+            let mut h = lane_harness(taskbar::LaneMode::Rows);
+            h.rail = Some(RailView {
+                origin: W / 2,
+                side,
+                revealed: 4,
+            });
+            h.width = W;
+            h.frame();
+            let early = h.cells();
+            assert_eq!(early.len(), 4);
+            assert_eq!(early[0].y - early[2].y, ROW_STEP, "{side:?}");
+            // Both rows start at the same distance from the origin.
+            let along = |cell: &Rect| match side {
+                RailSide::Right => cell.x - W / 2,
+                RailSide::Left => W / 2 - cell.right(),
+            };
+            assert_eq!(along(&early[0]), along(&early[2]), "{side:?}");
+            assert_eq!(along(&early[0]), RAIL_GAP, "{side:?}");
+            set_revealed(&mut h, rail_length(2, W));
+            h.frame();
+            assert_eq!(h.cells(), early, "{side:?}");
+        }
+    }
+
+    #[test]
+    fn a_lane_too_long_for_its_row_falls_back_to_one_row_with_an_overflow_chip() {
+        let capacity = island_row_capacity(W);
+        let mut tops: Vec<ShellToplevel> = (1..=u64::try_from(capacity).unwrap() + 3)
+            .map(|id| window(id, &format!("org.example.App{id}"), "x", false, false))
+            .collect();
+        // A single terminal chip, and a latent lane longer than the row holds.
+        tops[0].canonical_app_id = Some("org.example.Terminal".parse().unwrap());
+        let mut h = Harness::new(tops);
+        h.lanes = taskbar::LaneMode::Rows;
+        let (entries, rows) = h.shape();
+        assert_eq!(rows, None, "the latent lane does not fit a row");
+        h.frame();
+        assert_eq!(h.wanted().1, BAR_HEIGHT);
+        let layout = h.rects();
+        assert!(
+            layout.overflow.is_some(),
+            "the one-row layout carries the overflow chip"
+        );
+        assert_eq!(layout.cells.len() + layout.overflow_count, entries.len());
+    }
 }
 
 #[cfg(test)]
@@ -2298,6 +2567,7 @@ mod initial_tests {
                 preview: "window:1".to_owned(),
             }],
             active: false,
+            lane: crate::taskbar::Lane::Latent,
         }
     }
 

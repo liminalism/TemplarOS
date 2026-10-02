@@ -2176,6 +2176,7 @@ mod tests {
                 "shell.rails.exceptions",
                 "shell.rails.gate-height",
                 "shell.rails.gate-width",
+                "shell.rails.lanes",
                 "shell.rails.learning",
                 "shell.rails.mode",
                 "shell.rails.swap",
