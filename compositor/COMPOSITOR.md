@@ -97,6 +97,19 @@ below is developed, exercised in CI and tested with no display hardware at all. 
 one, via Smithay's `LibSeatSession`. The winit backend is not a toy — a compositor that can only be run by
 logging into it is a compositor that cannot be tested.
 
+## Watchdog
+
+A frozen display with nothing in the journal is undiagnosable, so both backends start `src/watchdog.rs`
+before anything else: a `comp-watchdog` thread pings a calloop source on the main loop every 5 s (one
+wakeup, two atomic stores, no lock). A probe unanswered for 5 s is logged as `compositor event loop
+stalled` with the main thread's `/proc` state, wchan and syscall plus every other thread not asleep,
+repeated at 15, 30 and 60 s and then every minute; the answer is logged once as `compositor event loop
+recovered`. On udev every CRTC's queued page flip is tracked too, and one outstanding after 2 s is
+`page flip overdue` (an idle blank or a VT switch cancels the flip rather than raising it).
+`TEMPLAR_COMP_WATCHDOG_ABORT_AFTER_SECS=n` turns an n-second stall into an abort for a core dump; it is
+off by default. These lines, and the idle blank's `outputs blanked after idle timeout` / `outputs woken
+from idle blank`, are what `templar doctor freeze` reads.
+
 ## What the compositor must call, and when
 
 The compositor owns one `WindowService<DbusIdentityCache>` and one `GovernorNotifier` on the render thread's

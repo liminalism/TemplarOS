@@ -182,7 +182,9 @@ lifetime = "session-bound"
 consumer_interfaces = ["templar_shell_v1"]
 recovery = "none: Restart=no by design. A crash disconnects every client, so there is nothing to restart into — the compositor-drawn recovery band and a fresh session are the recovery path."
 deadlines = "one frame; the render thread takes no lock a service can hold"
-timer_exceptions = []
+timer_exceptions = [
+    { site = "watchdog.rs:701", interval = "5s probe, 1s while a probe or page flip is outstanding", reason = "the watchdog's whole job is to notice that an event did not happen: a stalled event loop or a page flip the kernel never completes sends nothing, so only the passage of time can reveal it. The main loop is woken at most once per 5s probe; the 1s re-check runs on the watchdog thread only while something is outstanding" },
+]
 
 
 [[component]]

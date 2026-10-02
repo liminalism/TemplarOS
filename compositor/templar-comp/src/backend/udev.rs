@@ -62,7 +62,10 @@ use smithay::{
     wayland::dmabuf::{DmabufFeedbackBuilder, DmabufGlobal},
 };
 use smithay_drm_extras::{display_info, drm_scanner::DrmScanner};
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 use templar_comp_integration::{
     DbusIdentityCache, GovernorNotifier, IdleNotifier, ShellStateBroadcaster,
 };
@@ -75,6 +78,16 @@ use templar_comp_integration::{
 /// Clear colour behind every output — matches `src/backend/winit.rs`'s so a window dragged
 /// between the two backends during development looks the same.
 const CLEAR_COLOR: [f32; 4] = [0.05, 0.05, 0.07, 1.0];
+
+/// How often the main loop checks that every lit output is still being repainted.
+const REPAINT_CHECK: Duration = Duration::from_secs(2);
+/// A lit output with no frame in flight and no render attempt for this long has lost its render
+/// chain: the chain polls once a frame even with nothing to draw (module doc), so no healthy
+/// output is ever this quiet.
+const REPAINT_STALL: Duration = Duration::from_secs(2);
+/// A single `render_and_queue` (captures, scene, render, queue) slower than this is logged with
+/// its breakdown — evidence for freezes the event-loop watchdog's 5 s threshold does not catch.
+const SLOW_FRAME: Duration = Duration::from_millis(250);
 
 /// Scanout pixel formats to try, most-preferred first — 10-bit before 8-bit, matching anvil.
 const SUPPORTED_COLOR_FORMATS: &[Fourcc] = &[
@@ -101,6 +114,21 @@ struct SurfaceData {
     output: Output,
     global: Option<GlobalId>,
     drm_output: TemplarDrmOutput,
+    /// This CRTC's page-flip tracking (`src/watchdog.rs`): told when a frame is queued and when
+    /// its completion arrives, so a flip the kernel never completes is reported. `None` when the
+    /// watchdog could not start.
+    flip: Option<crate::watchdog::FlipHandle>,
+    /// A frame is queued for scanout and its completion has not arrived. While it is set the
+    /// completion (`on_vblank`) owns the next render; nothing else renders this CRTC. Cleared on
+    /// completion, on blanking and on a session pause, none of which complete a flip.
+    frame_in_flight: bool,
+    /// The pending `schedule_retry` timer, if any: with no frame in flight, this is the one other
+    /// thing that owns the next render, so a second retry is never stacked on the first.
+    retry: Option<RegistrationToken>,
+    /// When `render_and_queue` last ran for this CRTC while it was lit, or when it was last lit.
+    last_render: Instant,
+    /// `RenderFrameResult::needs_sync` has been reported for this CRTC (once is enough).
+    needs_sync_reported: bool,
 }
 
 /// One physical DRM device: since this backend only ever tracks the primary GPU (module doc),
@@ -139,6 +167,9 @@ pub struct UdevBackendData {
     /// submitted. A listening socket or initialized CRTC alone does not prove that pixels reached
     /// the display.
     ready_notified: bool,
+    /// The event-loop stall and page-flip watchdog (`src/watchdog.rs`); lives as long as the
+    /// backend, and `None` only if it could not start.
+    watchdog: Option<crate::watchdog::Watchdog>,
 }
 
 impl Backend for UdevBackendData {
@@ -200,8 +231,14 @@ impl Backend for UdevBackendData {
                 {
                     tracing::warn!(%error, ?crtc, "turning the output off");
                 }
+                // A cleared CRTC completes nothing that was in flight, and that is not a fault.
+                surface.frame_in_flight = false;
+                if let Some(flip) = &surface.flip {
+                    flip.cancel();
+                }
             } else {
                 surface.drm_output.reset_buffers();
+                surface.last_render = Instant::now();
                 state
                     .loop_handle
                     .insert_idle(move |state| render_surface(state, node, crtc));
@@ -265,6 +302,10 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
         crate::state::init_wayland_listener(display, &event_loop.handle(), requested_socket_name)?;
     tracing::info!(socket = %socket_name, "wayland socket ready");
 
+    // Before any device is opened, so every CRTC gets flip tracking and a hang during the rest of
+    // initialization (EGL, the first modeset) is reported like any other stall.
+    let watchdog = crate::watchdog::install_for_main_loop(&event_loop.handle());
+
     let mut state = State::new(
         UdevBackendData {
             session: session.clone(),
@@ -275,6 +316,7 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
             dmabuf_global: None,
             paused: false,
             ready_notified: false,
+            watchdog,
         },
         &session.seat(),
         &dh,
@@ -321,6 +363,13 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
                 libinput_context.suspend();
                 for device in state.backend_data.devices.values_mut() {
                     device.drm_output_manager.pause();
+                    // Without DRM master nothing in flight completes, and that is not a fault.
+                    for surface in device.surfaces.values_mut() {
+                        surface.frame_in_flight = false;
+                        if let Some(flip) = &surface.flip {
+                            flip.cancel();
+                        }
+                    }
                 }
             }
             smithay::backend::session::Event::ActivateSession => {
@@ -377,6 +426,16 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
         );
     }
     state.start_xwayland(&event_loop.handle());
+    event_loop
+        .handle()
+        .insert_source(
+            Timer::from_duration(REPAINT_CHECK),
+            |_, (), state: &mut State| {
+                restart_stalled_repaints(state);
+                TimeoutAction::ToDuration(REPAINT_CHECK)
+            },
+        )
+        .map_err(|error| anyhow::anyhow!("inserting the repaint check: {error}"))?;
 
     // READY is sent from `on_vblank`, after DRM confirms the first queued frame was submitted.
     // Until then systemd keeps dependants stopped and enforces the unit's startup timeout.
@@ -391,6 +450,9 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
             tracing::warn!(%error, "flushing Wayland clients after dispatch");
         }
     })?;
+    // The loop has stopped answering probes on purpose; waiting for the `--exec` child below is
+    // not a stall.
+    drop(state.backend_data.watchdog.take());
     Ok(session_command.map_or(0, |command| command.shut_down()))
 }
 
@@ -407,8 +469,9 @@ fn reactivate_device(state: &mut State, node: DrmNode) {
         return;
     }
     let crtcs: Vec<crtc::Handle> = device.surfaces.keys().copied().collect();
-    for surface in device.surfaces.values() {
+    for surface in device.surfaces.values_mut() {
         surface.drm_output.reset_buffers();
+        surface.last_render = Instant::now();
     }
     for crtc in crtcs {
         state
@@ -734,12 +797,22 @@ fn connector_connected(
         }
     };
 
+    let flip = state
+        .backend_data
+        .watchdog
+        .as_ref()
+        .map(|watchdog| watchdog.track(format!("{output_name}:{}", u32::from(crtc))));
     device.surfaces.insert(
         crtc,
         SurfaceData {
             output,
             global: Some(global),
             drm_output,
+            flip,
+            frame_in_flight: false,
+            retry: None,
+            last_render: Instant::now(),
+            needs_sync_reported: false,
         },
     );
     tracing::info!(%output_name, ?crtc, "output lit");
@@ -784,9 +857,15 @@ fn on_vblank(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
     let submitted = state
         .backend_data
         .devices
-        .get(&node)
-        .and_then(|device| device.surfaces.get(&crtc))
-        .map(|surface| surface.drm_output.frame_submitted());
+        .get_mut(&node)
+        .and_then(|device| device.surfaces.get_mut(&crtc))
+        .map(|surface| {
+            surface.frame_in_flight = false;
+            if let Some(flip) = &surface.flip {
+                flip.completed();
+            }
+            surface.drm_output.frame_submitted()
+        });
     match submitted {
         Some(Ok(_)) => crate::notify_ready_once(&mut state.backend_data.ready_notified),
         Some(Err(error)) => {
@@ -799,6 +878,10 @@ fn on_vblank(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
 
 /// Renders one CRTC's surface and, unless a flip was actually queued (in which case `on_vblank`
 /// will drive the next frame when it completes), falls back to a timer retry.
+///
+/// While a frame is in flight its completion owns the next render, so a redraw request, a wake
+/// or a stale retry arriving meanwhile does nothing: rendering then would only stack a second,
+/// independent repaint sequence on the first.
 fn render_surface(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
     if state.backend_data.paused {
         return;
@@ -808,6 +891,7 @@ fn render_surface(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
         .devices
         .get(&node)
         .and_then(|device| device.surfaces.get(&crtc))
+        .filter(|surface| !surface.frame_in_flight)
         .map(|surface| surface.output.clone())
     else {
         return;
@@ -843,10 +927,14 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
     if state.idle.blanked() {
         return false;
     }
+    let started = Instant::now();
     let backend = &mut state.backend_data;
     let Some(device) = backend.devices.get_mut(&node) else {
         return false;
     };
+    if let Some(surface) = device.surfaces.get_mut(&crtc) {
+        surface.last_render = started;
+    }
     let renderer = &mut device.renderer;
 
     let cursor_elements = state
@@ -896,6 +984,7 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
     // Previews queued since the last frame, with this device's renderer
     // (`src/screencopy.rs`'s module doc). Before the output's own frame so a preview never
     // delays a page flip it could have preceded.
+    let captures_started = Instant::now();
     crate::screencopy::drain_pending(
         &mut state.screencopy,
         &state.windows,
@@ -904,25 +993,62 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
         output,
         &elements,
     );
+    let captures = captures_started.elapsed();
 
     let Some(surface) = device.surfaces.get_mut(&crtc) else {
         return false;
     };
 
-    match surface
+    let frame = surface
         .drm_output
         .render_frame(renderer, &elements, CLEAR_COLOR, FrameFlags::DEFAULT)
-    {
-        Ok(result) if result.is_empty => true,
-        Ok(_) => match surface.drm_output.queue_frame(()) {
-            Ok(()) => false,
-            Err(error) => {
-                tracing::warn!(%error, ?crtc, "failed to queue drm frame for scanout");
-                true
-            }
-        },
+        .map(|result| (result.is_empty, result.needs_sync()));
+    let retry = match frame {
+        Ok((true, _)) => true,
+        Ok((false, needs_sync)) => queue_rendered(surface, crtc, needs_sync),
         Err(error) => {
             tracing::warn!(%error, ?crtc, "drm render_frame failed");
+            true
+        }
+    };
+
+    let total = started.elapsed();
+    if total >= SLOW_FRAME {
+        tracing::warn!(
+            ?crtc,
+            total_ms = u64::try_from(total.as_millis()).unwrap_or(u64::MAX),
+            captures_ms = u64::try_from(captures.as_millis()).unwrap_or(u64::MAX),
+            elements = elements.len(),
+            "slow frame"
+        );
+    }
+    retry
+}
+
+/// Queues the frame `render_frame` just produced for scanout. Returns whether the caller should
+/// fall back to a timer retry (the queue failed), as [`render_and_queue`] does.
+fn queue_rendered(surface: &mut SurfaceData, crtc: crtc::Handle, needs_sync: bool) -> bool {
+    // Smithay leaves synchronising the render with scanout to the caller when the primary plane
+    // is a rendered buffer and no exportable fence covers it. Reported, not handled: a blocking
+    // wait here would stall input with rendering, and whether this ever happens on the hardware
+    // is the question this answers first.
+    if needs_sync && !surface.needs_sync_reported {
+        surface.needs_sync_reported = true;
+        tracing::warn!(
+            ?crtc,
+            "frame queued without a scanout fence (RenderFrameResult::needs_sync)"
+        );
+    }
+    match surface.drm_output.queue_frame(()) {
+        Ok(()) => {
+            surface.frame_in_flight = true;
+            if let Some(flip) = &surface.flip {
+                flip.queued();
+            }
+            false
+        }
+        Err(error) => {
+            tracing::warn!(%error, ?crtc, "failed to queue drm frame for scanout");
             true
         }
     }
@@ -931,29 +1057,87 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
 /// One nominal frame interval after this call, retries rendering `crtc` — the fallback for the
 /// two cases page-flip completion cannot drive: a damage-free frame (nothing queued, so no vblank
 /// is coming) and a `render_frame`/`queue_frame` failure. Falls back to a plain 16ms poll if the
-/// output's mode isn't known yet.
+/// output's mode isn't known yet. A retry already pending for `crtc` is the one retry: nothing is
+/// stacked on it.
 fn schedule_retry(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
     if state.backend_data.paused || state.idle.blanked() {
         return;
     }
-    let delay = state
+    let Some(surface) = state
         .backend_data
         .devices
         .get(&node)
         .and_then(|device| device.surfaces.get(&crtc))
-        .and_then(|surface| surface.output.current_mode())
+    else {
+        return;
+    };
+    if surface.retry.is_some() {
+        return;
+    }
+    let delay = surface
+        .output
+        .current_mode()
         .filter(|mode| mode.refresh > 0)
         .map_or(Duration::from_millis(16), |mode| {
             Duration::from_secs_f64(1000.0 / f64::from(mode.refresh))
         });
-    if let Err(error) = state.loop_handle.insert_source(
+    match state.loop_handle.insert_source(
         Timer::from_duration(delay),
         move |_, (), state: &mut State| {
+            if let Some(surface) = state
+                .backend_data
+                .devices
+                .get_mut(&node)
+                .and_then(|device| device.surfaces.get_mut(&crtc))
+            {
+                surface.retry = None;
+            }
             render_surface(state, node, crtc);
             TimeoutAction::Drop
         },
     ) {
-        tracing::warn!(%error, ?crtc, "failed to schedule drm repaint retry");
+        Ok(token) => {
+            if let Some(surface) = state
+                .backend_data
+                .devices
+                .get_mut(&node)
+                .and_then(|device| device.surfaces.get_mut(&crtc))
+            {
+                surface.retry = Some(token);
+            }
+        }
+        Err(error) => tracing::warn!(%error, ?crtc, "failed to schedule drm repaint retry"),
+    }
+}
+
+/// The repaint check ([`REPAINT_CHECK`]): a lit output with no frame in flight, no retry pending
+/// and no render attempt for [`REPAINT_STALL`] has lost its render chain — nothing will ever draw
+/// it again although the loop is alive. Logged as evidence, then restarted. A frame stuck in
+/// flight is not touched here: the watchdog reports it (`page flip overdue`), and only its real
+/// completion may release its buffer.
+fn restart_stalled_repaints(state: &mut State) {
+    if state.backend_data.paused || state.idle.blanked() {
+        return;
+    }
+    let stalled: Vec<(DrmNode, crtc::Handle, Duration)> = state
+        .backend_data
+        .devices
+        .iter()
+        .flat_map(|(node, device)| {
+            device.surfaces.iter().filter_map(move |(crtc, surface)| {
+                let quiet = surface.last_render.elapsed();
+                (!surface.frame_in_flight && surface.retry.is_none() && quiet >= REPAINT_STALL)
+                    .then_some((*node, *crtc, quiet))
+            })
+        })
+        .collect();
+    for (node, crtc, quiet) in stalled {
+        tracing::warn!(
+            ?crtc,
+            quiet_ms = u64::try_from(quiet.as_millis()).unwrap_or(u64::MAX),
+            "output repaint stalled: nothing rendered, nothing in flight, no retry pending; restarting it"
+        );
+        render_surface(state, node, crtc);
     }
 }
 

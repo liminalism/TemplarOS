@@ -432,7 +432,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// list of what counts would be a list to forget something from.
     pub fn note_activity(&mut self) {
         if self.idle.wake() {
-            tracing::info!("input after an idle blank; turning the outputs back on");
+            tracing::info!(cause = "input", "outputs woken from idle blank");
             B::set_blanked(self, false);
             self.idle_notifier.set_idle(false);
         }
@@ -466,7 +466,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         if self.idle.expire() {
             tracing::info!(
                 timeout_s = self.idle.timeout().map_or(0, |d| d.as_secs()),
-                "idle timeout reached; turning the outputs off"
+                "outputs blanked after idle timeout"
             );
             B::set_blanked(self, true);
             self.idle_notifier.set_idle(true);
@@ -484,6 +484,10 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let _ = self.idle.set_timeout(timeout);
         tracing::info!(seconds, "idle screen-off delay set");
         if timeout.is_none() && self.idle.wake() {
+            tracing::info!(
+                cause = "idle blanking turned off",
+                "outputs woken from idle blank"
+            );
             B::set_blanked(self, false);
             self.idle_notifier.set_idle(false);
         }

@@ -56,6 +56,8 @@ type State = TemplarCompState<WinitBackendData>;
 pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyhow::Result<i32> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
+    // Stall detection only: there are no page flips to track nested (`src/watchdog.rs`).
+    let watchdog = crate::watchdog::install_for_main_loop(&event_loop.handle());
     let dh = display.handle();
 
     let (mut graphics, winit_events) = winit::init::<GlesRenderer>()
@@ -272,6 +274,9 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
             tracing::warn!(%error, "flushing Wayland clients after dispatch");
         }
     })?;
+    // The loop has stopped answering probes on purpose; waiting for the `--exec` child below is
+    // not a stall.
+    drop(watchdog);
     Ok(session_command.map_or(0, |command| command.shut_down()))
 }
 

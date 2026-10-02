@@ -23,6 +23,7 @@ mod shell_sink;
 mod shell_socket;
 mod space_sync;
 mod state;
+mod watchdog;
 mod window_bridge;
 mod window_groups;
 mod xdg_shell;
