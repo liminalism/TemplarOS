@@ -64,6 +64,17 @@ record legeos.work.acceptance-checks-that-cannot-fail/1 : work {
         false-positive class described at the top of this record: on this ledger it would have flagged
         eight healthy gates alongside the nine real ones.
         """
+    note """
+        RESCAN 2026-10-02 at 50af378 (working tree), against the authoritative list rather than a text grep: `cargo test --workspace -- --list` (2242 tests), each filter token matched as a substring of a test path, as cargo does.
+
+        The four `verified` evidence records the first version worried about are settled; none is rewritten. hands-on-3-band-controls and hands-on-3-frame-geometry no longer appear. bar-cluster-clears-window-controls-20260908 names `the_cluster_never_overlaps_the_maximized_window_controls`, which did exist: `git log -S` shows it added in 57445aa (the evidence was taken from the working tree just before that commit, observed_at 63ab3f7b) and deleted in dbf309d when the bar stopped carrying window controls, so the evidence attested a real run. field-stays-above-the-bar-strip-20260907 names `the_field_paints_nothing_in_the_bar_strip`, which never existed in history, but the same command's other filter ran `a_tile_placed_off_the_grid_is_drawn_back_inside_the_field`, the test its summary describes; the phantom half is noise, not a false pass. home-field-command-checks-20260831, home-field-keyboard-complete (`field_keyboard`) and home-folders-and-panes-20260831 (`desktop_folder`) name tokens that matched source text at their commits; they are historical and left alone.
+
+        LIVE planning checks whose filter matches no test today: bar-cluster-clickable-20260908 (the deleted cluster test; the check is obsolete with the bar redesign), bottom-bar-taskbar (`wanted_size_is_the_chips_alone_until_a_row_or_controls_need_the_width`), hands-on-run-5-fixes (`desktop_folder_opens`), home-field (`field_keyboard`), home-field-settings-gui (`dark_palette_has_every_role_and_light_is_unchanged`, `display_configuration`, `input_settings`; not built yet, so a specification), home-input-and-refinement (`network_control`). None may be completed against those commands as written.
+
+        A LARGER CLASS the first version did not count: 41 live planning records still name pre-rename packages (`-p lege-shell`, `-p lege-comp`, `-p lege-window`, ...). Those commands fail rather than pass vacuously (cargo rejects an unknown package), so they cannot close anything, but every one must be renamed before its record can be completed, and renaming sealed acceptance content puts existing evidence behind the record's last change (see @legeos.papercut.the-lege-templar-rename-never-reached-the). Rename each record when its own work resumes, re-running its checks then, rather than in one sweep that would invalidate ~150 satisfied checks at once.
+
+        The general fix stands: a sweep in `just check` that matches filters the way cargo does. Cheapest correct form found: compare against `cargo test --workspace -- --list` output, which costs one test build (about 45 s warm here).
+        """
 }
 
 record legeos.work.accessibility-claimed-but-not-built/1 : work {
@@ -1105,8 +1116,8 @@ record legeos.work.btrfs-delta-baseline-checkpoint-protocol-20260909/1 : work {
     title "Deferred — the btrfs delta backend seeds its own baseline, commits the pointer only after apply, rearms watches after catch-up, and bounds the stream read"
     state proposed
     scope [
-        path "crates/lege-file-index/src/btrfs_delta.rs",
-        path "services/lege-filed/src/delta_catchup.rs"
+        path "crates/templar-file-index/src/btrfs_delta.rs",
+        path "services/templar-filed/src/delta_catchup.rs"
     ]
     intent """
         services/lege-filed/src/delta_catchup.rs (~145-156) returns without a baseline when none exists, and ensure_baseline has no production caller, so a fresh opt-in never seeds itself; plant (~236-247) writes the baseline pointer before decode and apply have succeeded, and the existing tests never inspect that file; a successful catch-up skips recursive watch rearming; crates/lege-file-index/src/btrfs_delta.rs (~320-325) reads the send stream with an unbounded read_to_end although the host checks reported bytes. Design one atomic applied-index/baseline checkpoint (pointer written in the same commit as the applied generation, or after it with a recovery rule) and a watch-coverage step after catch-up, then implement. The reader byte limit is independent and may land ahead of the redesign.
@@ -1120,21 +1131,21 @@ record legeos.work.btrfs-delta-baseline-checkpoint-protocol-20260909/1 : work {
                 Tests inspect the baseline pointer file: it is absent after a failed decode/apply, present and pointing at the applied checkpoint after success, and a fresh opt-in seeds its first baseline.
                 """
             method command
-            command "cargo test -p lege-filed delta"
+            command "cargo test -p templar-filed delta"
         }
         check stream-bounded {
             statement """
                 A test feeds a stream past the byte limit and the decoder stops at the limit with an error rather than buffering it whole.
                 """
             method command
-            command "cargo test -p lege-file-index btrfs_delta"
+            command "cargo test -p templar-file-index btrfs_delta"
         }
         check watches-rearmed {
             statement """
                 After a successful catch-up the roots' watches cover the tree again.
                 """
             method command
-            command "cargo test -p lege-filed delta"
+            command "cargo test -p templar-filed delta"
         }
     }
     after [ @legeos.work.watcher-recovery-durable-and-ordered-20260909 ]
@@ -1211,6 +1222,142 @@ record legeos.work.build-set-archive-verification/1 : work {
         @legeos.milestone.developer-edition-0-1,
         @legeos.work.deployment-activation-and-resourced
     ]
+}
+
+record legeos.work.clipboard-consumers-shell-portal/1 : work {
+    title "Clipboard consumers: shell inputs, wl-copy replacement, portal backend"
+    state blocked
+    intent """
+        Finish clipboard end-to-end: the three consumers of crates/templar-clipboard that are still
+        unwritten. (1) Shell text inputs: Ctrl+C/V/X handling plus seat-selection integration in
+        templar-shell/templar-field, so select/copy/paste works inside OS surfaces. (2) In-process
+        replacement for the `wl-copy` shell-out (shell/templar-shell/src/surface/app.rs "Copy path"
+        path) using the new crate's data-source model. (3) Clipboard portal backend in
+        portals/xdg-desktop-portal-templar (org.freedesktop.portal.Clipboard), so sandboxed apps get
+        clipboard through the portal instead of raw data-control.
+
+        Already landed underneath this: crates/templar-clipboard (MIME offer model, 6/6 tests),
+        compositor zwlr_data_control_manager_v1 wiring with primary-selection support, and
+        XWayland selection bridging flipped on (allow_selection_access -> true), all with
+        regression tests (148/148 comp suite green).
+
+        BLOCKED on a lane conflict, not on design: shell/settings/taskbar files are owned by another
+        agent's lane (per the lane map and OptMem #0, which also reserves file-index work to claude),
+        so this work must not cut shell-side code until the lanes are re-coordinated. When resuming:
+        confirm lane ownership first, then implement consumers in the order above, each with its
+        maintained tests; the portal backend additionally needs a decision on which backend (if any)
+        gates clipboard access for sandboxed clients.
+        """
+}
+
+record legeos.work.compositor-clipboard-wiring/1 : work {
+    title "Data-control global and XWayland selection bridging"
+    state superseded
+    scope [
+        path "compositor/templar-comp/src/backend/check.rs",
+        path "compositor/templar-comp/src/handlers.rs",
+        path "compositor/templar-comp/src/state.rs",
+        path "compositor/templar-comp/src/xwayland.rs"
+    ]
+    intent """
+        One session clipboard: wire zwlr_data_control_manager_v1 (with primary-selection support,
+        visible to ordinary clients like the session lock manager) and flip XWayland selection
+        bridging on (allow_selection_access answers true). X11 programs share the session clipboard
+        instead of a private X11-only one, and clipboard tools can drive selections without keyboard
+        focus. The advertisement self-check now requires the data-control global.
+        """
+    acceptance {
+        check comp-suite-green {
+            statement """
+                The full compositor binary suite passes, including the XWayland bridge regression test
+                and the advertisement self-check covering the new global, with clippy and fmt clean.
+                """
+            method command
+            command "cargo test -p templar-comp --bin templar-comp"
+            verified_by [ @legeos.evidence.comp-clipboard-tests-20261001/1 ]
+        }
+    }
+}
+
+record legeos.work.compositor-clipboard-wiring/2 : work {
+    title "Data-control global and XWayland selection bridging"
+    state completed
+    scope [
+        path "compositor/templar-comp/src/backend/check.rs",
+        path "compositor/templar-comp/src/handlers.rs",
+        path "compositor/templar-comp/src/state.rs",
+        path "compositor/templar-comp/src/xwayland.rs"
+    ]
+    intent """
+        One session clipboard: wire zwlr_data_control_manager_v1 (with primary-selection support,
+        visible to ordinary clients like the session lock manager) and flip XWayland selection
+        bridging on (allow_selection_access answers true). X11 programs share the session clipboard
+        instead of a private X11-only one, and clipboard tools can drive selections without keyboard
+        focus. The advertisement self-check now requires the data-control global.
+        """
+    acceptance {
+        check comp-suite-green {
+            statement """
+                The full compositor binary suite passes, including the XWayland bridge regression test
+                and the advertisement self-check covering the new global, with clippy and fmt clean.
+                """
+            method command
+            command "cargo test -p templar-comp --bin templar-comp"
+            verified_by [ @legeos.evidence.comp-clipboard-tests-20261001/2 ]
+        }
+    }
+    supersedes [ @legeos.work.compositor-clipboard-wiring/1 ]
+    author "dk"
+}
+
+record legeos.work.compositor-forced-server-side-decorations/1 : work {
+    title "Compositor answers every decoration request server-side"
+    state superseded
+    scope [ path "compositor/COMPOSITOR.md", path "compositor/templar-comp/src/xdg_shell.rs" ]
+    intent """
+        The compositor draws every window frame: decoration negotiation always answers ServerSide,
+        including when a client explicitly requests ClientSide. No application themes its own chrome
+        on this system, so windows never show two sets of controls and the compositor's tags are
+        always the single authority for move, resize, park, maximize and close. Implemented as a
+        pure granted_mode() policy resolved in both request_mode and apply_decoration, with the
+        COMPOSITOR.md contract row updated to match.
+        """
+    acceptance {
+        check decoration-negotiation-tests {
+            statement """
+                The decoration regression test passes: client-side requests are granted server-side.
+                """
+            method command
+            command "cargo test -p templar-comp --bin templar-comp xdg_shell"
+            verified_by [ @legeos.evidence.comp-forced-ssd-tests-20261001/1 ]
+        }
+    }
+}
+
+record legeos.work.compositor-forced-server-side-decorations/2 : work {
+    title "Compositor answers every decoration request server-side"
+    state completed
+    scope [ path "compositor/COMPOSITOR.md", path "compositor/templar-comp/src/xdg_shell.rs" ]
+    intent """
+        The compositor draws every window frame: decoration negotiation always answers ServerSide,
+        including when a client explicitly requests ClientSide. No application themes its own chrome
+        on this system, so windows never show two sets of controls and the compositor's tags are
+        always the single authority for move, resize, park, maximize and close. Implemented as a
+        pure granted_mode() policy resolved in both request_mode and apply_decoration, with the
+        COMPOSITOR.md contract row updated to match.
+        """
+    acceptance {
+        check decoration-negotiation-tests {
+            statement """
+                The decoration regression test passes: client-side requests are granted server-side.
+                """
+            method command
+            command "cargo test -p templar-comp --bin templar-comp xdg_shell"
+            verified_by [ @legeos.evidence.comp-forced-ssd-tests-20261001/2 ]
+        }
+    }
+    supersedes [ @legeos.work.compositor-forced-server-side-decorations/1 ]
+    author "dk"
 }
 
 record legeos.work.compositor-window-authority/1 : work {
@@ -2020,6 +2167,55 @@ record legeos.work.event-driven-service-audit/1 : work {
     part_of [ @legeos.work.design-consolidation-roadmap ]
 }
 
+record legeos.work.external-window-tabs-20261002/1 : work {
+    title "External window tabs on any side: the corners resize, one layout drives every consumer, tabs appear on a resting pointer, and a window's side is chosen"
+    state proposed
+    scope [
+        path "apps/templar-settings/**",
+        path "compositor/COMPOSITOR.md",
+        path "compositor/templar-comp/src/**",
+        path "crates/templar-session-core/src/settings.rs",
+        path "crates/templar-window/**",
+        path "interfaces/wayland/templar-shell-v1.xml"
+    ]
+    intent """
+        Carry @legeos.decision.window-tabs-are-external-revealed-and-stationary in four steps, each landing on its own with its own tests and none needing the owner's eye before the last:
+        1. @legeos.work.window-corner-hit-geometry-20261002 — inside today's bottom-strip model, the visible client corners resize and Close never sits under one. Independent of the rest and worth having even if the redesign stalls.
+        2. @legeos.work.window-tab-layout-model-20261002 — WindowService produces one WindowLayout per window; frame == client; the strip subtraction is deleted; Top and Bottom sides; tabs still always shown.
+        3. @legeos.work.window-tab-hover-reveal-20261002 — hidden by default, revealed by a resting pointer in the exterior band, latched through grabs, occlusion-safe, overlay fallback where there is no exterior room; the windows.tabs.* settings.
+        4. @legeos.work.window-tab-side-choice-20261002 — Left and Right, the per-window choice from the name tag, and the optional follow-resize hint.
+        The headless tests are the gate for 1-3. A nested-session look (scripts/nested-session.sh, which refuses over a live session) is enough for 1-3; the owner's day in the installed session is only asked for at the end of 4.
+        """
+    note """
+        Scoped 2026-10-02 from the owner's request (tabs on all four sides, maybe tied to resizing, perhaps better revealed on mouseover) and the 2026-10-01 advisor. Not in this campaign: the advisor's display-path items (needs_sync, a queued-frame completion deadline, bounded screencopy, one repaint owner per output), which are freeze hardening, not tabs.
+        """
+    acceptance {
+        check owner-day {
+            statement """
+                After the owner's own deploy, a working day with tabs on hover: no accidental Close, no tab that moved under the pointer, every window reachable for move, resize, park and close; the owner settles the open choices in the decision (default side, reveal dwell, discoverability gesture).
+                """
+            method manual
+        }
+        check steps-complete {
+            statement """
+                The four step records are completed, each against its own checks.
+                """
+            method observation
+        }
+    }
+    derived_from [ @legeos.observation.close-tag-sits-under-the-client-bottom-right-corner ]
+    implements [ @legeos.decision.window-tabs-are-external-revealed-and-stationary ]
+    author "dk"
+    source {
+        kind external
+        role origin
+        document "external-window-tabs-advice-20261001"
+        use """
+            Order of work: corner geometry first and independently, then the layout refactor, then anchored hover reveal.
+            """
+    }
+}
+
 record legeos.work.file-index-core/1 : work {
     title "F1 — the lege-file-index core crate, the cache database with generations, and the org.legeos.Files.Index1 contract"
     state completed
@@ -2511,6 +2707,84 @@ record legeos.work.files-windows-bookmarks-home-objects-20260907/1 : work {
     part_of [ @legeos.work.hands-on-run-5-fixes ]
 }
 
+record legeos.work.firefox-os-integration-packaging/1 : work {
+    title "Ship Firefox launcher and locked chrome policy"
+    state superseded
+    scope [
+        path "debian/templaros-shell.install",
+        path "distro/policy/firefox/**",
+        path "shell/templar-shell/Cargo.toml",
+        path "tests/integration/package-install.sh"
+    ]
+    intent """
+        Ship Firefox OS integration instead of user-local stopgaps: a canonical firefox.desktop
+        (XDG-namespace variant launching the seeded Flathub Flatpak) and a locked enterprise policy
+        forcing the system title bar and native title-bar buttons, owned by templaros-shell in both
+        build paths (debian/.install and cargo-deb assets). The entry merges with the Flatpak export
+        under one logical Firefox via the documented rule-4 evidence (shared window class and name);
+        a person's own ~/.local entry shadows it by XDG precedence.
+        """
+    acceptance {
+        check install-list-covers-new-files {
+            statement """
+                The package-install integration gate asserts both new destination paths.
+                """
+            method manual
+            verified_by [ @legeos.evidence.firefox-install-list-manual-20261001/1 ]
+        }
+        check shipped-files-valid {
+            statement """
+                policies.json parses, firefox.desktop passes desktop-file-validate, and check-packaging
+                reports no new mismatches beyond the two pre-existing filed-asset errors also present on
+                the clean tree.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-packaging"
+            verified_by [ @legeos.evidence.firefox-packaging-checks-20261001/1 ]
+        }
+    }
+}
+
+record legeos.work.firefox-os-integration-packaging/2 : work {
+    title "Ship Firefox launcher and locked chrome policy"
+    state completed
+    scope [
+        path "debian/templaros-shell.install",
+        path "distro/policy/firefox/**",
+        path "shell/templar-shell/Cargo.toml",
+        path "tests/integration/package-install.sh"
+    ]
+    intent """
+        Ship Firefox OS integration instead of user-local stopgaps: a canonical firefox.desktop
+        (XDG-namespace variant launching the seeded Flathub Flatpak) and a locked enterprise policy
+        forcing the system title bar and native title-bar buttons, owned by templaros-shell in both
+        build paths (debian/.install and cargo-deb assets). The entry merges with the Flatpak export
+        under one logical Firefox via the documented rule-4 evidence (shared window class and name);
+        a person's own ~/.local entry shadows it by XDG precedence.
+        """
+    acceptance {
+        check install-list-covers-new-files {
+            statement """
+                The package-install integration gate asserts both new destination paths.
+                """
+            method manual
+            verified_by [ @legeos.evidence.firefox-install-list-manual-20261001/2 ]
+        }
+        check shipped-files-valid {
+            statement """
+                policies.json parses, firefox.desktop passes desktop-file-validate, and check-packaging
+                reports no new mismatches beyond the two pre-existing filed-asset errors also present on
+                the clean tree.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-packaging"
+            verified_by [ @legeos.evidence.firefox-packaging-checks-20261001/2 ]
+        }
+    }
+    supersedes [ @legeos.work.firefox-os-integration-packaging/1 ]
+    author "dk"
+}
+
 record legeos.work.focus-and-switching-20260908/1 : work {
     title "A new window takes the keyboard at map, and Alt+Tab walks every window on a list frozen for the hold"
     state superseded
@@ -2626,7 +2900,7 @@ record legeos.work.full-distribution-roadmap/1 : work {
 
 record legeos.work.gesture-rails-20260928/1 : work {
     title "Gesture rails: a forgiving bottom-centre gate opens the apps and system rails, revealed by the pointer"
-    state active
+    state completed
     scope [
         path "apps/templar-settings/**",
         path "compositor/templar-comp/**",
@@ -2666,6 +2940,7 @@ record legeos.work.gesture-rails-20260928/1 : work {
                 """
             method command
             command "cargo test -p templar-comp gesture_gate"
+            verified_by [ @legeos.evidence.gesture-rails-gate-tests-20260928/1 ]
         }
         check rail-reveal-tests {
             statement """
@@ -2673,6 +2948,7 @@ record legeos.work.gesture-rails-20260928/1 : work {
                 """
             method command
             command "cargo test -p templar-shell rail"
+            verified_by [ @legeos.evidence.gesture-rails-shell-rail-tests-20260928/1 ]
         }
         check workspace-gate {
             statement """
@@ -2680,6 +2956,7 @@ record legeos.work.gesture-rails-20260928/1 : work {
                 """
             method command
             command "just check"
+            verified_by [ @legeos.evidence.gesture-rails-workspace-gate-20260928/1 ]
         }
     }
 }
@@ -5630,6 +5907,63 @@ record legeos.work.host-update-transaction/1 : work {
     part_of [ @legeos.milestone.m1-session-runtime ]
 }
 
+record legeos.work.hostd-deployments-follow-the-layout-20261002/1 : work {
+    title "hostd stages candidates at @deployments/<id> and its boot entries name that subvolume, as layout.toml declares"
+    state proposed
+    scope [
+        path "cli/templar/src/dev/gates.rs",
+        path "distro/deploy/README.md",
+        path "distro/deploy/layout.toml",
+        path "installer/provision.sh",
+        path "services/templar-hostd/**",
+        path "tests/integration/provision-qemu.sh"
+    ]
+    intent """
+        Fix @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume.
+        - hostd's real configuration derives the deployments location from layout.toml's subvolume_template and the /.deployments mount the provisioner writes, not from state_dir.join("deployments"); the mounted directory (where snapshots are created) and the btrfs subvolume path (what rootflags=subvol= names) are two separate values in Deployment, never one path printed twice.
+        - Boot entries for GRUB and systemd-boot carry subvol=@deployments/<id> for a candidate and the known-good deployment's own subvolume (initially @) for the fallback.
+        - hostd's registry and transaction ledger stay in /var/lib/templaros/hostd (they are State tier); only the snapshots move.
+        - templar dev deploy's root-before-<set> snapshot is either taken into @deployments as a deployment hostd knows, or listed as a declared exception in step 1's table, not left as a second, silent rollback store.
+        """
+    note """
+        Independent of the decision's open choices: this is the layout the project already declared. Verified with fixture trees and the provisioner's disk-image path; a staged candidate actually booting is a user-run gate on hardware.
+        """
+    acceptance {
+        check candidate-boots-on-hardware {
+            statement """
+                On the reference laptop, a hostd-staged candidate boots from @deployments/<id>, reports its deployment id, and the known-good entry still boots.
+                """
+            method manual
+        }
+        check config-from-layout {
+            statement """
+                A test builds hostd's real configuration over a fixture root and finds the deployments directory and subvolume template from layout.toml; changing the template in the fixture changes both.
+                """
+            method command
+            command "cargo test -p templar-hostd deployments_follow_the_layout"
+        }
+        check entries-name-the-subvolume {
+            statement """
+                For a staged candidate, the GRUB and systemd-boot entry writers emit rootflags=subvol=@deployments/<id> and the fallback names the known-good subvolume; no entry names a /var path.
+                """
+            method command
+            command "cargo test -p templar-hostd boot_entries"
+        }
+        check image-path {
+            statement """
+                The provisioner's disk-image run creates @deployments and a staged candidate lands inside it, or the script reports not-executed with its reason.
+                """
+            method command
+            command "tests/integration/provision-qemu.sh"
+        }
+    }
+    derived_from [
+        @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume
+    ]
+    part_of [ @legeos.work.ownership-tiers-20261002 ]
+    author "dk"
+}
+
 record legeos.work.hot-corner-fullscreen-reveal-and-a-centred-island-20260908/1 : work {
     title "The bottom-left corner is Home, fullscreen gets the switcher back on a dwell, and the island stops sitting in the corner"
     state proposed
@@ -5745,10 +6079,10 @@ record legeos.work.index-children-parent-id-contract-20260909/1 : work {
     title "Deferred — Index::children by an indexed parent lookup, once parent_id is correct on every path and the read views have a contract"
     state proposed
     scope [
-        path "crates/lege-file-index/src/lib.rs",
-        path "crates/lege-file-index/src/mutation.rs",
-        path "crates/lege-file-index/src/query.rs",
-        path "crates/lege-file-index/src/reconcile.rs"
+        path "crates/templar-file-index/src/lib.rs",
+        path "crates/templar-file-index/src/mutation.rs",
+        path "crates/templar-file-index/src/query.rs",
+        path "crates/templar-file-index/src/reconcile.rs"
     ]
     intent """
         crates/lege-file-index/src/lib.rs Index::children (~575-598) retrieves and decodes the whole descendant range and filters immediate children in Rust, so recursive reconciliation pays for every descendant at every level. An indexed parent lookup needs parent_id correctness first: take-on-trust reconciliation observes directories with parent None, and mutation::place_at does not update parent_id on a move. Search/query reads and cursor row materialisation also use distinct live views. Write the contract (parent_id is set on every committed entry; a query and its cursor materialise from one view), fix the two writers, measure the reconcile workload against @legeos.observation.reconciliation-cost-tracks-tree-size-not-change-size, then switch children to the indexed lookup.
@@ -5768,7 +6102,7 @@ record legeos.work.index-children-parent-id-contract-20260909/1 : work {
                 Tests: every committed entry has a parent_id after take-on-trust reconciliation, and a move updates it.
                 """
             method command
-            command "cargo test -p lege-file-index --test reconcile"
+            command "cargo test -p templar-file-index --test reconcile"
         }
     }
     after [ @legeos.work.subtree-repair-preserves-root-truth-20260909 ]
@@ -6134,7 +6468,7 @@ record legeos.work.logical-app-and-variant-identity/1 : work {
 
 record legeos.work.memory-polling-indexing-effectiveness-20260909/1 : work {
     title "Memory governor, watcher host and file-index effectiveness — the Astra-ranked fix set"
-    state active
+    state superseded
     scope [
         path "crates/lege-file-index/**",
         path "services/lege-filed/src/delta_catchup.rs",
@@ -6187,6 +6521,68 @@ record legeos.work.memory-polling-indexing-effectiveness-20260909/1 : work {
     derived_from [ @legeos.assessment.astra-memory-polling-indexing-review-20260909 ]
     implements [ @legeos.decision.event-driven-service-authorities ]
     part_of [ @legeos.work.event-driven-service-audit ]
+}
+
+record legeos.work.memory-polling-indexing-effectiveness-20260909/2 : work {
+    title "Memory governor, watcher host and file-index effectiveness — the Astra-ranked fix set"
+    state completed
+    scope [
+        path "crates/templar-file-index/**",
+        path "services/templar-filed/src/delta_catchup.rs",
+        path "services/templar-filed/src/index_host.rs",
+        path "services/templar-filed/src/observer.rs",
+        path "services/templar-filed/src/watcher.rs",
+        path "services/templar-resourced/**"
+    ]
+    intent """
+        Land the four must-fix findings from the 2026-09-09 Astra review as small, test-backed changes, then the two P2 bounds and the explicit critical-grace policy change, and leave the two redesigns as scoped follow-ups. Order: governor wake reliability, subtree repair truth, watcher recovery ordering, bounded handoff and repair supersession; then the snapshot read transaction; then resourced bounds and the victim-bound grace delay; the btrfs baseline protocol and the children lookup contract wait for those. Every child names the exact code it changes and the regression test that fails without it; no live desktop or session service is touched, cargo tests and headless checks only.
+        """
+    note """
+        Governor changes stay observe-safe under @legeos.constraint.identity-and-launch-safety: the victim-bound grace delay is a policy behaviour change and is filed as its own child so it is accepted explicitly, not folded into a polling fix. Astra's uncertainties carry over: no workload timing, privileged PSI trigger, D-Bus saturation or btrfs fault injection has been measured, so each child's acceptance is a deterministic test, not a benchmark.
+        """
+    acceptance {
+        check replay-fidelity {
+            statement """
+                The resourced replay fixtures still reproduce their recorded decisions after the governor changes.
+                """
+            method command
+            command "cargo test -p templar-resourced --test replay_fixtures --test fixture_report"
+            verified_by [ @legeos.evidence.effectiveness-replay-fidelity-20261002/1 ]
+        }
+        check scoped-lint {
+            statement """
+                Scoped clippy with warnings denied is clean across all targets.
+                """
+            method command
+            command "cargo clippy -p templar-resourced -p templar-file-index -p templar-filed --all-targets -- -D warnings"
+            verified_by [ @legeos.evidence.effectiveness-scoped-lint-20261002/1 ]
+        }
+        check scoped-tests {
+            statement """
+                The three scoped crates pass their tests including every new regression test named by the children.
+                """
+            method command
+            command "cargo test -p templar-resourced -p templar-file-index -p templar-filed"
+            verified_by [ @legeos.evidence.effectiveness-scoped-tests-20261002/1 ]
+        }
+        check signatures-frozen {
+            statement """
+                No shipped D-Bus signature changed; the Resources1 and Files.Index1 interfaces are byte-identical to the baseline.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-interface-signatures"
+            verified_by [ @legeos.evidence.interface-signatures-unchanged-20261002/1 ]
+        }
+    }
+    depends_on [
+        @legeos.constraint.native-lubuntu-is-the-development-environment,
+        @legeos.decision.inotify-remains-the-index-event-backend,
+        @legeos.decision.resourced-separate-process
+    ]
+    derived_from [ @legeos.assessment.astra-memory-polling-indexing-review-20260909 ]
+    implements [ @legeos.decision.event-driven-service-authorities ]
+    part_of [ @legeos.work.event-driven-service-audit ]
+    supersedes [ @legeos.work.memory-polling-indexing-effectiveness-20260909/1 ]
 }
 
 record legeos.work.no-memory-ceiling-on-developer-tooling/1 : work {
@@ -6246,6 +6642,109 @@ record legeos.work.no-memory-ceiling-on-developer-tooling/1 : work {
         a MemoryMax that is generous but finite. If it completes, (1) is the whole answer for this
         machine and the rest is for other hardware.
         """
+}
+
+record legeos.work.ownership-tier-declaration-20261002/1 : work {
+    title "The ownership tiers as data the build checks: every subvolume, state path and component names its tier and owner, and every crossing is a declared exception"
+    state proposed
+    scope [
+        path "debian/**",
+        path "distro/deploy/README.md",
+        path "distro/deploy/components.toml",
+        path "distro/deploy/layout.toml",
+        path "docs/architecture/**",
+        path "justfile",
+        path "session/units/**",
+        path "tools/xtask/**"
+    ]
+    intent """
+        Make @legeos.decision.three-ownership-tiers checkable before anything is changed to obey it, the same way the service inventory became data in distro/deploy/components.toml (@legeos.work.event-driven-service-audit).
+        - distro/deploy/layout.toml: each subvolume in [root] (@, @home, @var, @snapshots, @deployments) and the [data] role gains tier = system | state | work and owner = <component or 'person'>. State paths that matter get the same: /var/lib/templaros/hostd, /var/lib/templaros/snapshots, /var/lib/dpkg, $XDG_STATE_HOME/templaros.
+        - distro/deploy/components.toml: each component gains tier and writes = [declared paths]; an [[ownership.exception]] table names each crossing with the decision that allows it (hostd snapshots @home for index checkpoints; templar dev deploy runs apt on the live root; the provisioner's chroot apt; scripts/update-templaros.sh's apt advice), so the list of leaks is in one file and shrinks visibly.
+        - xtask check-ownership, wired into just check: fails when a subvolume, state path or component has no tier; when a package's debian/*.install puts a file under /home, /var/lib/templaros of another component, or anywhere a Work-tier path; when a unit (session/units/**) has StateDirectory/ReadWritePaths/ProtectHome settings that contradict its component's tier and writes; when an exception names no decision.
+        - docs/architecture/ownership-tiers.md: the three tiers, what Ubuntu owns and what Templar owns, where apt sits, the exception list read from components.toml (pointer, not a copy).
+        """
+    note """
+        Reports today's leaks as exceptions rather than fixing them; steps 2-4 of @legeos.work.ownership-tiers-20261002 remove them. The tests are written against fixture trees so they fail without the check, not against the live repository's current shape alone.
+        """
+    acceptance {
+        check check-catches-crossings {
+            statement """
+                Fixture tests fail the check for: a component without a tier, a deb installing under /home, a unit with ReadWritePaths into another component's state, an exception with no decision; and pass the corrected fixture.
+                """
+            method command
+            command "cargo test -p xtask ownership"
+        }
+        check in-the-gate {
+            statement """
+                just check runs check-ownership.
+                """
+            method command
+            command "just check"
+        }
+        check tree-declares-every-tier {
+            statement """
+                On the repository, every subvolume, listed state path and component declares a tier and owner, every known leak is an exception naming its decision, and the check passes.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-ownership"
+        }
+    }
+    implements [ @legeos.decision.three-ownership-tiers ]
+    part_of [ @legeos.work.ownership-tiers-20261002 ]
+}
+
+record legeos.work.ownership-tiers-20261002/1 : work {
+    title "Begin the three ownership tiers: declare them as checked data, put hostd's deployments where the layout says, make the system read-only behind one way in, and give terminal workloads their own identity"
+    state proposed
+    scope [
+        path "cli/templar/**",
+        path "crates/templar-appd/**",
+        path "crates/templar-types/**",
+        path "distro/**",
+        path "docs/architecture/**",
+        path "installer/**",
+        path "services/templar-hostd/**",
+        path "services/templar-resourced/**",
+        path "session/**",
+        path "tools/xtask/**"
+    ]
+    intent """
+        Carry @legeos.decision.three-ownership-tiers from statement to enforcement in four steps, ordered so each is useful alone:
+        1. @legeos.work.ownership-tier-declaration-20261002 — the tiers as data the build checks (every subvolume, state path and component names its tier and owner; crossings are declared exceptions) and one architecture document. Cheap, and it turns every later leak into a failing check instead of a review comment.
+        2. @legeos.work.hostd-deployments-follow-the-layout-20261002 — a correctness fix independent of the decision's open choices: candidates live at @deployments/<id> and boot entries name that subvolume.
+        3. @legeos.work.read-only-system-deployment-20261002 — the booted deployment read-only, the package database moving with it, and apt reachable only through a hostd transaction; dev deploy and the update script converted or declared. Waits for the owner's answers (a) and (b).
+        4. @legeos.work.terminal-workload-identity-20261002 — work started from a terminal gets its own unit and an identity naming its parent application; resourced sees workloads and Flatpak scopes. Waits for answer (c).
+        Not begun here: the application record as the full authority (permissions, sandbox policy acted on, update source) beyond what step 4 needs, and moving further applications to Flatpak (answer (d)).
+        """
+    note """
+        Everything here is exercised with cargo tests, the provisioner's disk-image path (tests/integration/provision-qemu.sh) and nested sessions; nothing touches the owner's live session or the installed root. Related, not merged: @legeos.work.self-hosting-legeos and @legeos.work.full-distribution-roadmap.
+        """
+    acceptance {
+        check no-undeclared-crossing {
+            statement """
+                The tier check from step 1 passes on the tree with no undeclared crossing, and its exception list contains only what the decision names.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-ownership"
+        }
+        check steps-complete {
+            statement """
+                The four step records are completed against their own checks, or carried into a revised plan with a disposition each.
+                """
+            method observation
+        }
+    }
+    implements [ @legeos.decision.three-ownership-tiers ]
+    author "dk"
+    source {
+        kind external
+        role origin
+        document "nitrux-ownership-tiers-advice-20261001"
+        use """
+            The request to formalize and enforce the three ownership layers.
+            """
+    }
 }
 
 record legeos.work.partition-manager-in-the-installer-20260909/1 : work {
@@ -6406,6 +6905,34 @@ record legeos.work.pixelkit-should-carry-alpha-so-a-surface-can-be-a-shape/1 : w
     derived_from [ @legeos.work.the-bar-floats-an-argb-surface-with-a-coverage-mask-20260908 ]
 }
 
+record legeos.work.pointer-grab-reentry-deadlock-fix-20261001/1 : work {
+    title "A window-model change inside a pointer grab no longer deadlocks templar-comp: the pointer-focus refresh is deferred to the idle list"
+    state completed
+    scope [
+        path "compositor/templar-comp/src/backend/check.rs",
+        path "compositor/templar-comp/src/space_sync.rs",
+        path "compositor/templar-comp/src/state.rs"
+    ]
+    intent """
+        Fix the 2026-10-01 desktop freezes traced to Smithay 1ed69cb's PointerHandle holding its std mutex while a PointerGrab handles button/motion: a name-tag click (pins_on_click -> toggle_always_on_top) or a band drop reached space_sync::sync_after_change, whose refresh_pointer_focus locked the same mutex again on the same thread. sync_after_change now queues one pointer-focus refresh on the event loop's idle list (state.pointer_refresh_pending coalesces bursts) and the before/after pointer-scene comparison runs there, outside any grab.
+        """
+    note """
+        Fix and regression test are in the working tree on top of 50af378 (uncommitted at completion). The deployed /usr/bin/templar-comp only gets it at the user's next deploy. The advisor's separate display-path weaknesses (needs_sync unchecked, no queued-frame completion deadline, unbounded screencopy before the display frame, unconsolidated repaint scheduling) are not part of this record.
+        """
+    acceptance {
+        check grab-reentry-regression-test {
+            statement """
+                A test grab that changes the window model on button release returns, the loop dispatches the deferred refresh, and the grab has ended; the compositor and window crates' suites pass.
+                """
+            method command
+            command "cargo test -p templar-comp changing_the_window_model_inside_a_pointer_grab && cargo test -p templar-comp -p templar-window"
+            verified_by [ @legeos.evidence.pointer-grab-reentry-test-20261002/1 ]
+        }
+    }
+    derived_from [ @legeos.observation.pointer-grab-reentry-deadlocks-the-compositor ]
+    author "dk"
+}
+
 record legeos.work.project-semantic-service/1 : work {
     title "WS4 — projects as authoritative semantic objects; priority_boost becomes ProjectImportance"
     state completed
@@ -6521,6 +7048,68 @@ record legeos.work.provisioning-storage-plan-and-reuse/1 : work {
     ]
     implements [ @legeos.decision.independent-storage-roles ]
     part_of [ @legeos.milestone.developer-edition-0-1/1 ]
+}
+
+record legeos.work.read-only-system-deployment-20261002/1 : work {
+    title "The booted deployment is read-only, its package database moves with it, and apt reaches the system only through a hostd transaction"
+    state proposed
+    scope [
+        path "cli/templar/src/dev/**",
+        path "distro/deploy/**",
+        path "distro/policy/**",
+        path "docs/adr/0004-boot-deploy-secure-boot.md",
+        path "installer/provision.sh",
+        path "scripts/update-templaros.sh",
+        path "services/templar-hostd/**"
+    ]
+    intent """
+        Remove the System-tier leaks in @legeos.observation.the-system-root-is-mutable-in-place-and-its-package-database-lives-in-var, once the owner has answered the decision's open choices (a) and (b).
+        - Split @var by what follows a deployment and what persists: dpkg/apt state (var/lib/dpkg, var/lib/apt, var/cache/apt) belongs to the deployment and is snapshotted with it (inside the root subvolume, or a per-deployment subvolume bind-mounted at boot, per answer (b)); journals, hostd's registry, NetworkManager, systemd's machine state and the like stay in @var. The split is declared in step 1's table, and a rollback test shows dpkg's view matching the booted root.
+        - Boot the deployment read-only (rootflags ... ro, fstab ro for /), with every writable location the base system needs at runtime (/etc pieces that systemd or NetworkManager write, /var) accounted for: either on @var, or tmpfs, or a named bind. A boot-time check reports any unit that failed on EROFS.
+        - One way in for packages: hostd's transaction (snapshot -> apt --root -> seal -> stage) is the only writer of a deployment. templar dev deploy stages its build set as a hostd candidate instead of apt-get on /, scripts/update-templaros.sh stops advising apt upgrade on the live root and points at the hostd route for inherited updates, and answer (a) decides whether a person's ad-hoc package becomes a 'templar install' transaction or is refused.
+        - ADR-0004's snapshot-versus-A/B question is closed in favour of snapshot deployments, in the ADR.
+        """
+    note """
+        The largest step and the one with real risk to the daily machine: everything is exercised on the provisioner's disk images and a VM first, and the owner deploys it to the laptop themselves. Overlaps @legeos.work.self-hosting-legeos (which needs a working update path to delete Lubuntu).
+        """
+    acceptance {
+        check boots-read-only-in-a-vm {
+            statement """
+                A provisioned disk image boots its deployment read-only to the greeter with no unit failed on EROFS, and a session logs in.
+                """
+            method observation
+        }
+        check dpkg-follows-the-deployment {
+            statement """
+                In a fixture or disk-image test, installing a package into a candidate and rolling back leaves dpkg's status describing exactly the booted root's packages.
+                """
+            method command
+            command "cargo test -p templar-hostd dpkg_follows_the_deployment"
+        }
+        check only-hostd-writes-a-deployment {
+            statement """
+                templar dev deploy and the update script no longer run apt against /; the ownership check's exception list no longer contains them.
+                """
+            method command
+            command "cargo test -p templar dev_deploy && cargo run -q -p xtask -- check-ownership"
+        }
+        check owner-runs-it {
+            statement """
+                The owner deploys it to the reference laptop, applies one inherited Ubuntu update through hostd, rolls back once, and the desktop and their home are as they were.
+                """
+            method manual
+        }
+    }
+    after [
+        @legeos.work.hostd-deployments-follow-the-layout-20261002,
+        @legeos.work.ownership-tier-declaration-20261002
+    ]
+    derived_from [
+        @legeos.observation.the-system-root-is-mutable-in-place-and-its-package-database-lives-in-var
+    ]
+    implements [ @legeos.decision.three-ownership-tiers ]
+    part_of [ @legeos.work.ownership-tiers-20261002 ]
+    author "dk"
 }
 
 record legeos.work.reference-hardware-qualification/1 : work {
@@ -6909,7 +7498,7 @@ record legeos.work.self-hosting-legeos/1 : work {
 
 record legeos.work.semantic-window-registry-20260909/1 : work {
     title "Separate semantic window lifecycle and MRU from compositor stacking"
-    state active
+    state superseded
     scope [
         path "compositor/COMPOSITOR.md",
         path "compositor/templar-comp-integration/**",
@@ -6971,6 +7560,78 @@ record legeos.work.semantic-window-registry-20260909/1 : work {
     derived_from [ @legeos.work.focus-and-switching-20260908/1 ]
     part_of [ @legeos.milestone.developer-edition-0-1 ]
     supersedes [ @legeos.work.focus-and-switching-20260908/1 ]
+}
+
+record legeos.work.semantic-window-registry-20260909/2 : work {
+    title "Separate semantic window lifecycle and MRU from compositor stacking"
+    state active
+    scope [
+        path "compositor/COMPOSITOR.md",
+        path "compositor/templar-comp-integration/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-window/**",
+        path "docs/architecture/compositor-shell.md",
+        path "interfaces/wayland/templar-shell-v1.xml",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Make application identity, mapped lifecycle, switch eligibility and activation recency authoritative in WindowService rather than inferred from LayerStack. Preserve WindowId across Wayland and XWayland temporary unmap/remap, drive Alt-Tab and taskbar rows from semantic MRU, coalesce complete shell snapshots, and retain the existing frozen switch ring and taskbar group/application interaction.
+        """
+    note """
+        Automated implementation and headless checks are in this worktree. Installed-session validation still requires the person to log out/deploy per the compositor safety boundary.
+        """
+    acceptance {
+        check compositor-lifecycle {
+            statement """
+                The compositor tests pass with stable Wayland/XWayland lifecycle joins, refocus-on-unmap, protocol version coverage, and diagnostics.
+                """
+            method command
+            command "cargo test -p templar-comp"
+            verified_by [ @legeos.evidence.comp-and-window-suites-20261002/1 ]
+        }
+        check hands-on {
+            statement """
+                After the person's logout/deploy, fullscreen and ordinary Wayland/XWayland applications remain present in Alt-Tab and the taskbar; temporary remaps retain behavior; taskbar hover rows are MRU ordered.
+                """
+            method manual
+        }
+        check headless-check {
+            statement """
+                The compositor self-check starts its isolated sockets and advertises its private protocols successfully.
+                """
+            method command
+            command "cargo run -p templar-comp -- --check"
+            verified_by [ @legeos.evidence.comp-headless-self-check-20261002/1 ]
+        }
+        check semantic-model {
+            statement """
+                WindowService tests prove semantic roles, mapped-state retention, and switching MRU independent of stacking/fullscreen/pinning.
+                """
+            method command
+            command "cargo test -p templar-window"
+            verified_by [ @legeos.evidence.comp-and-window-suites-20261002/1 ]
+        }
+        check shell-taskbar {
+            statement """
+                The shell and integration tests pass with protocol MRU propagation, MRU-ordered hover rows, and latest-value snapshot coalescing.
+                """
+            method command
+            command "cargo test -p templar-comp-integration -p templar-shell"
+            verified_by [ @legeos.evidence.comp-integration-and-shell-tests-20261002/1 ]
+        }
+        check workspace-check {
+            statement """
+                Every workspace target type-checks after the shared ShellToplevel and protocol changes.
+                """
+            method command
+            command "cargo check --workspace --all-targets"
+            verified_by [ @legeos.evidence.workspace-check-all-targets-20261002/1 ]
+        }
+    }
+    derived_from [ @legeos.work.focus-and-switching-20260908/1 ]
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+    supersedes [ @legeos.work.semantic-window-registry-20260909/1 ]
+    author "dk"
 }
 
 record legeos.work.session-lock-client/1 : work {
@@ -7043,6 +7704,86 @@ record legeos.work.session-lock-client/1 : work {
     }
     depends_on [ @legeos.decision.compositor-on-smithay ]
     part_of [ @legeos.work.home-widgets ]
+}
+
+record legeos.work.sessiond-live-desktop-rescan/1 : work {
+    title "Desktop entries re-import without a session restart"
+    state superseded
+    scope [
+        path "services/templar-sessiond/src/background/autostart.rs",
+        path "services/templar-sessiond/src/background/desktop_watch.rs",
+        path "services/templar-sessiond/src/background/mod.rs",
+        path "services/templar-sessiond/src/main.rs"
+    ]
+    intent """
+        Newly installed applications appear without restarting the session. A desktop_watch
+        background task re-stats the exact startup application-directory chain every 15 seconds and,
+        on any add/remove/content change, re-runs the startup import() + regroup_and_persist() pair
+        and fires the existing AppIdentity1.ApplicationsChanged signal. Additions and edits take
+        effect live; deletions still need a restart (documented in the module: the import path only
+        ever adds, and the registry has no removal path yet).
+        """
+    acceptance {
+        check sessiond-suite-green {
+            statement """
+                The full sessiond binary suite passes with the watcher wired into Services and the
+                background task set, with clippy and fmt clean.
+                """
+            method command
+            command "cargo test -p templar-sessiond --bin templar-sessiond"
+            verified_by [ @legeos.evidence.sessiond-suite-green-20261001/1 ]
+        }
+        check watcher-unit-tests {
+            statement """
+                The six desktop_watch snapshot tests pass: stability, add, edit, remove, non-desktop
+                invisibility, and late-appearing directories.
+                """
+            method command
+            command "cargo test -p templar-sessiond --bin templar-sessiond desktop_watch"
+            verified_by [ @legeos.evidence.sessiond-watcher-tests-20261001/1 ]
+        }
+    }
+}
+
+record legeos.work.sessiond-live-desktop-rescan/2 : work {
+    title "Desktop entries re-import without a session restart"
+    state completed
+    scope [
+        path "services/templar-sessiond/src/background/autostart.rs",
+        path "services/templar-sessiond/src/background/desktop_watch.rs",
+        path "services/templar-sessiond/src/background/mod.rs",
+        path "services/templar-sessiond/src/main.rs"
+    ]
+    intent """
+        Newly installed applications appear without restarting the session. A desktop_watch
+        background task re-stats the exact startup application-directory chain every 15 seconds and,
+        on any add/remove/content change, re-runs the startup import() + regroup_and_persist() pair
+        and fires the existing AppIdentity1.ApplicationsChanged signal. Additions and edits take
+        effect live; deletions still need a restart (documented in the module: the import path only
+        ever adds, and the registry has no removal path yet).
+        """
+    acceptance {
+        check sessiond-suite-green {
+            statement """
+                The full sessiond binary suite passes with the watcher wired into Services and the
+                background task set, with clippy and fmt clean.
+                """
+            method command
+            command "cargo test -p templar-sessiond --bin templar-sessiond"
+            verified_by [ @legeos.evidence.sessiond-suite-green-20261001/2 ]
+        }
+        check watcher-unit-tests {
+            statement """
+                The six desktop_watch snapshot tests pass: stability, add, edit, remove, non-desktop
+                invisibility, and late-appearing directories.
+                """
+            method command
+            command "cargo test -p templar-sessiond --bin templar-sessiond desktop_watch"
+            verified_by [ @legeos.evidence.sessiond-watcher-tests-20261001/2 ]
+        }
+    }
+    supersedes [ @legeos.work.sessiond-live-desktop-rescan/1 ]
+    author "dk"
 }
 
 record legeos.work.sessiond-persistence-and-launch/1 : work {
@@ -7129,7 +7870,7 @@ record legeos.work.shared-incremental-file-index/1 : work {
 record legeos.work.silvaview-and-fsearch-share-the-index/1 : work {
     title "The FSearch fork and Silvaview service mode consume the LegeOS index generation instead of scanning"
     state proposed
-    scope [ path "distro/forks/**", path "interfaces/dbus/org.legeos.Files.Index1.xml" ]
+    scope [ path "distro/forks/**", path "interfaces/dbus/org.templaros.Files.Index1.xml" ]
     intent """
         Make the two external consumers read the shared index rather than build their own: the LegeOS FSearch fork ships with no scanner, no watches and no fsearch.db, and Silvaview service mode obtains a consistent snapshot through Files.Index1.OpenSnapshot and projects it through its existing tree builder, keeping its direct MFT/jwalk scanners only as an explicit fallback and as future non-LegeOS ingestion backends.
         """
@@ -7640,6 +8381,66 @@ record legeos.work.taskbar-windowing-ownership-fixes-20260910/1 : work {
     part_of [ @legeos.milestone.developer-edition-0-1/1 ]
 }
 
+record legeos.work.terminal-workload-identity-20261002/1 : work {
+    title "Work started from a terminal runs in its own unit with an identity that names the application that spawned it, and resourced sees workloads and Flatpak scopes"
+    state proposed
+    scope [
+        path "crates/templar-appd/**",
+        path "crates/templar-types/src/app.rs",
+        path "crates/templar-types/src/unit.rs",
+        path "distro/policy/systemd/user/background.slice.d/**",
+        path "docs/architecture/**",
+        path "interfaces/dbus/**",
+        path "services/templar-resourced/**",
+        path "services/templar-sessiond/**",
+        path "session/profile.d/**"
+    ]
+    intent """
+        Fix @legeos.observation.terminal-workloads-inherit-the-terminal-identity without guessing from process names.
+        - A Workload identity alongside the application identity: WorkloadId, spawned_by (the parent application instance), a command summary and a class (interactive, background compute). Unit naming joins app-templaros-<AppId>@<uuid>.service: workload-templaros-<parent-instance>-<n>.scope in background.slice, parsed by templar-types::unit the same way.
+        - The route, per the decision's open choice (c). Starting candidate, cheapest that keeps @legeos.constraint.identity-and-launch-safety (no shell for Exec=, identity from the launch cgroup): an opt-in command `templar run -- <cmd>` that asks sessiond to start a transient scope for the caller's own child, and the garden's bash hook offering it automatically for commands the person lists (cargo, make, ninja). Interactive shells stay kitty's. Measure before choosing the automatic form: the extra latency per command and what happens to job control and Ctrl-C in a scope.
+        - AppIdentity1 resolves a PID in a workload scope to the workload, with its parent application; windows a workload opens still resolve by the existing rules.
+        - resourced discovers workload scopes and app-flatpak-*.scope units as well as Templar launch units, classifies a workload as background so it is reclaimed before the interactive terminal that started it, and never kills the parent for its workload's memory.
+        - Interface changes go through check-interface-signatures as additions; nothing shipped changes signature.
+        """
+    note """
+        No live-session effects while testing: transient-unit behaviour is exercised against the systemd fixture the appd tests already use, and a nested session for the end-to-end look.
+        """
+    acceptance {
+        check governor-sees-workloads {
+            statement """
+                resourced discovers workload and Flatpak scopes, a replay fixture with a build workload under pressure reclaims the workload before its terminal, and existing replay fixtures still reproduce their decisions.
+                """
+            method command
+            command "cargo test -p templar-resourced && cargo test -p templar-resourced --test replay_fixtures --test fixture_report"
+        }
+        check route-measured-and-chosen {
+            statement """
+                A short note under docs/architecture/ownership-tiers.md records the measured per-command latency and the job-control/Ctrl-C behaviour of the candidate routes, and the owner's choice for (c).
+                """
+            method manual
+        }
+        check signatures-only-grow {
+            statement """
+                No shipped D-Bus member changed signature.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-interface-signatures"
+        }
+        check workload-resolves-to-itself {
+            statement """
+                A PID in a workload scope resolves to its WorkloadId with spawned_by naming the terminal's instance; the terminal's own PIDs still resolve to the terminal; unit-name parsing round-trips.
+                """
+            method command
+            command "cargo test -p templar-appd workload && cargo test -p templar-types unit"
+        }
+    }
+    depends_on [ @legeos.constraint.identity-and-launch-safety ]
+    derived_from [ @legeos.observation.terminal-workloads-inherit-the-terminal-identity ]
+    implements [ @legeos.decision.three-ownership-tiers ]
+    part_of [ @legeos.work.ownership-tiers-20261002 ]
+}
+
 record legeos.work.the-bar-floats-an-argb-surface-with-a-coverage-mask-20260908/1 : work {
     title "The island floats: an Argb8888 buffer on the bar's surface, its alpha from a coverage mask, with the opaque present as the fallback"
     state proposed
@@ -7870,6 +8671,61 @@ record legeos.work.window-controls-and-mouse-parity/1 : work {
         """
     part_of [ @legeos.work.home-widgets ]
     verified_by [ @legeos.evidence.window-controls-20260825 ]
+}
+
+record legeos.work.window-corner-hit-geometry-20261002/1 : work {
+    title "A window's visible corners resize it: Close and the name tag move in from the strip's ends, and no geometry path leaves a corner unreachable"
+    state proposed
+    scope [
+        path "compositor/COMPOSITOR.md",
+        path "compositor/templar-comp/src/chrome/layout.rs",
+        path "compositor/templar-comp/src/input.rs",
+        path "crates/templar-window/src/geometry.rs",
+        path "crates/templar-window/src/service.rs"
+    ]
+    intent """
+        Fix @legeos.observation.close-tag-sits-under-the-client-bottom-right-corner inside today's bottom-strip model, before and independently of the tab redesign.
+        (a) Reserve a resize square at each end of the tag strip (side = a named constant, e.g. CORNER_RESIZE = 16 logical px, kept less than MIN_RECOVERY_WIDTH's spare room): a press there is Affordance::Edge for that bottom corner, decided in templar-window (resize_edges_at or a sibling over the frame) so input.rs keeps one hit-test. chrome::layout::control_tags packs against strip.right() - CORNER_RESIZE and name_tag starts at strip.x + CORNER_RESIZE; drawn rectangles and hit rectangles stay the same function.
+        (b) The visible client corner is the target: the zone that resizes from the bottom-right covers the client's bottom-right pixel neighbourhood (the strip's end square below it and the RESIZE_MARGIN band outside it), so aiming at what you see works.
+        (c) Every path that sets a framed window's geometry keeps each corner's resize zone on some output's usable area: interactive resize ending at an output edge, unmaximize restore, unfullscreen restore, output removal/repair, a client-committed size larger than the output. place_new_window already insets by RESIZE_MARGIN; the others are audited and given the same rule in one helper, not per call site.
+        (d) Hover cursor follows the same zones (press_candidates is already shared by hover and press).
+        """
+    note """
+        Throwaway after step 2 only in its constants: the rule it establishes (corners resize, tabs inset from corners, every geometry path keeps corners reachable) is exactly what step 2's WindowLayout must keep, and its tests should be rewritten against WindowLayout rather than deleted. Test names in the checks below are specifications; they must exist and run before completion (see @legeos.work.acceptance-checks-that-cannot-fail).
+        """
+    acceptance {
+        check every-geometry-path-keeps-corners-reachable {
+            statement """
+                For interactive resize to an output edge, unmaximize, unfullscreen, output removal and an oversized committed size, each of the window's four corner zones intersects some output's usable area.
+                """
+            method command
+            command "cargo test -p templar-window corners_stay_reachable"
+        }
+        check suites-and-lint {
+            statement """
+                The compositor and window crates' suites pass and clippy is clean with warnings denied.
+                """
+            method command
+            command "cargo test -p templar-comp -p templar-window && cargo clippy -p templar-comp -p templar-window --all-targets -- -D warnings"
+        }
+        check tags-inset-from-corners {
+            statement """
+                For strip widths from MIN_RECOVERY_WIDTH to wide, control tags and the name tag never intersect either end square, Close stays clickable at MIN_RECOVERY_WIDTH, and control_tag_at agrees with control_tags.
+                """
+            method command
+            command "cargo test -p templar-comp chrome::layout"
+        }
+        check visible-corners-route-to-resize {
+            statement """
+                Through press_target_at with the candidates press_candidates builds for a framed window: a press at, just inside the strip below, and just outside each of the four visible client corners yields Affordance::Edge naming that corner; no point within CORNER_RESIZE of the client's bottom-right corner yields Button(Close); a stacked window above still wins its own pixels.
+                """
+            method command
+            command "cargo test -p templar-comp visible_corner"
+        }
+    }
+    derived_from [ @legeos.observation.close-tag-sits-under-the-client-bottom-right-corner ]
+    part_of [ @legeos.work.external-window-tabs-20261002 ]
+    author "dk"
 }
 
 record legeos.work.window-groups/1 : work {
@@ -8190,6 +9046,199 @@ record legeos.work.window-perimeter-two-axis-resize/1 : work {
     depends_on [ @legeos.work.window-tags-replace-the-band/3 ]
     implements [ @legeos.decision.perimeter-resize-selects-two-axes-by-side-half ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
+}
+
+record legeos.work.window-tab-hover-reveal-20261002/1 : work {
+    title "Tabs appear when the pointer rests outside the window on its tab side, stay put while used, and take no input while hidden"
+    state proposed
+    scope [
+        path "apps/templar-settings/**",
+        path "compositor/COMPOSITOR.md",
+        path "compositor/templar-comp/src/chrome/**",
+        path "compositor/templar-comp/src/input.rs",
+        path "compositor/templar-comp/src/space_sync.rs",
+        path "crates/templar-session-core/src/settings.rs",
+        path "crates/templar-window/**",
+        path "interfaces/wayland/templar-shell-v1.xml",
+        path "shell/templar-shell/src/settings.rs"
+    ]
+    intent """
+        Add visibility to WindowLayout's tabs, owned by the compositor's input state like covering_chrome and the dwell timers already are.
+        - windows.tabs.reveal = hover (default) | always, and windows.tabs.side, relayed shell -> compositor over templar_shell_v1 the way set_touchpad_tap and set_gesture_gate are (one protocol version bump, settings keys in templar-session-core, a row on the Settings Windows page).
+        - Reveal: the pointer comes to rest (input::DWELL_REST_SLOP) in a window's tab band for a short dwell, and at that point the window is the topmost thing that band belongs to (no higher window, no shell overlay). Entering from inside the client does not reveal; the band is exterior by definition.
+        - While hidden the band takes no press, hover cursor or focus: press_target_at treats it as absent, so the window or Home under it gets the click.
+        - While revealed: tab rectangles take presses, the gaps between them fall through as today; leaving the band and the tabs starts an exit grace; a press on a tab, a name-tag drag, or a resize grab latches visibility and side until the grab ends (the latch is released only from the grab's own end, so a grab that swallows its release cannot strand it: see @legeos.observation.pointer-grab-reentry-deadlocks-the-compositor for why nothing here may touch PointerHandle from inside a grab).
+        - The reveal itself activates nothing: no focus change, no raise, and no control fires on the press that was the reveal.
+        - Overlay placement (no exterior room, maximized, fullscreen) reuses this visibility instead of covering_chrome's separate state; covering_chrome is folded in and deleted, not kept beside it.
+        - Order with the other bottom-edge owners stays explicit: the gesture gate and the peek band own the output's bottom edge; a bottom-side band that meets it is revealed only where they do not claim the point.
+        - Discoverability: the always mode is the fallback; a show-everything gesture waits for the owner's answer to the decision's open choice (c).
+        """
+    note """
+        Timers: the reveal dwell and the exit grace are the existing calloop timer pattern (dwell_timer_pending), one pending timer per purpose, never one per motion event.
+        """
+    acceptance {
+        check hidden-tabs-take-nothing {
+            statement """
+                press_target_at and the hover cursor over a hidden band return what is beneath it (another window, Home); over a band where a higher window overlaps, the higher window wins whether the tabs are hidden or shown.
+                """
+            method command
+            command "cargo test -p templar-comp hidden_tabs"
+        }
+        check nested-look {
+            statement """
+                In scripts/nested-session.sh: tabs appear on a resting pointer above a window, do not appear while crossing, stay put while aimed at, vanish after leaving, and a hidden band over Home lets the click through to Home.
+                """
+            method observation
+        }
+        check overlay-replaces-covering-chrome {
+            statement """
+                A maximized and a fullscreen window reveal their tabs as an overlay through the same state; covering_chrome no longer exists; the gesture gate and peek band still win at the output's bottom edge.
+                """
+            method command
+            command "cargo test -p templar-window -p templar-comp && cargo run -q -p xtask -- check-interfaces"
+        }
+        check reveal-is-not-a-click {
+            statement """
+                The press that lands on a band whose tabs were hidden fires no control, changes no focus and raises nothing; Close fires only on a press and release on a visible Close.
+                """
+            method command
+            command "cargo test -p templar-comp reveal_is_not_a_click"
+        }
+        check reveal-state-machine {
+            statement """
+                Pure tests of the visibility state: rest in the band reveals after the dwell, mere crossing does not, entry from inside the client does not, leaving starts the grace and returning cancels it, a press or grab latches until the grab ends, and the latch is released by a grab that ends without a release event.
+                """
+            method command
+            command "cargo test -p templar-comp tab_reveal"
+        }
+    }
+    after [ @legeos.work.window-tab-layout-model-20261002 ]
+    implements [ @legeos.decision.window-tabs-are-external-revealed-and-stationary ]
+    part_of [ @legeos.work.external-window-tabs-20261002 ]
+    author "dk"
+}
+
+record legeos.work.window-tab-layout-model-20261002/1 : work {
+    title "One WindowLayout per window from WindowService: the client is the geometry, the tabs are outside it on a Top or Bottom side, and every consumer reads the same rectangles"
+    state proposed
+    scope [
+        path "compositor/COMPOSITOR.md",
+        path "compositor/templar-comp/src/chrome/**",
+        path "compositor/templar-comp/src/input.rs",
+        path "compositor/templar-comp/src/protocols_shell.rs",
+        path "compositor/templar-comp/src/space_sync.rs",
+        path "compositor/templar-comp/src/window_groups.rs",
+        path "compositor/templar-comp/src/xdg_shell.rs",
+        path "compositor/templar-comp/src/xwayland.rs",
+        path "crates/templar-window/**"
+    ]
+    intent """
+        Replace the frame-includes-a-bottom-strip model with an authoritative per-window layout, as a clean cutover.
+        - templar-window: TabSide {Top, Bottom, Left, Right} on WindowRecord (Left/Right accepted by the type and laid out as Top until @legeos.work.window-tab-side-choice-20261002); WindowService::layout(id) -> WindowLayout { client, side, tab_band, name_tag, controls: [(ControlTag, Rect)], resize_zones, recovery_target, placement: Exterior | Overlay }. client == window.geometry; the tab band is the TAG_HEIGHT band outside the client on its side, with the end squares left to resize (the rule from @legeos.work.window-corner-hit-geometry-20261002). Placement is Overlay when the output has no exterior room on that side or the window covers the screen; then the band sits inside the client's edge, which is what covering_chrome draws today.
+        - Delete geometry::client_area, frame_around and tag_strip and every caller's use of them (space_sync, xdg_shell, xwayland, protocols_shell, main, input, window_groups: about 40 sites today); ControlTag and the control/name rectangles move from chrome::layout into templar-window so the layout is computed once, and chrome only paints it.
+        - Recovery restated: is_recoverable/repair_window keep MIN_RECOVERY_WIDTH x TAG_HEIGHT of the window's tab band (exterior, or overlay when the exterior is off-output) on a usable area; MIN_WINDOW_HEIGHT is restated against the client alone.
+        - Damage: the tab band is its own damage rectangle; nothing about the client is damaged when the band changes.
+        - Tabs stay always shown in this step; the default side is the windows.tabs.side setting relayed from the shell (default top, see the decision's open choice (a)).
+        """
+    note """
+        Behaviour the owner will notice: every framed window gains 32 px of client height at the same geometry, and with the top default the tags move from below to above. Window geometry is not persisted across sessions (restore_geometry and fullscreen_restore are in-memory), so no migration. The bottom-centre gesture gate and the bottom-edge peek keep priority over a bottom band that meets the output's bottom edge.
+        """
+    acceptance {
+        check nested-look {
+            statement """
+                In scripts/nested-session.sh (refuses over a live session), a kitty and a Files window show their tabs above them, the client fills what used to be the strip, and drag, resize from each corner, park, maximize and close all work.
+                """
+            method observation
+        }
+        check one-layout-many-consumers {
+            statement """
+                Chrome painting, press_target_at, the hover cursor and recovery all read WindowService::layout: a table test over Top and Bottom, exterior and overlay, small and large windows asserts the painted name/control rectangles equal the hit rectangles and the recovery target is the tab band.
+                """
+            method command
+            command "cargo test -p templar-window window_layout && cargo test -p templar-comp window_layout"
+        }
+        check recoverable-on-every-side {
+            statement """
+                For Top and Bottom, a window dragged or placed so its tab band would leave every output is repaired so MIN_RECOVERY_WIDTH x TAG_HEIGHT of the band (or its overlay) is on a usable area, and the corners keep the reachability step 1 established.
+                """
+            method command
+            command "cargo test -p templar-window recoverable"
+        }
+        check strip-model-deleted {
+            statement """
+                No caller of geometry::client_area, frame_around or tag_strip remains; the workspace type-checks.
+                """
+            method command
+            command "cargo check --workspace --all-targets"
+        }
+        check tabs-never-reconfigure {
+            statement """
+                Changing a window's side, or the tabs' placement between Exterior and Overlay, leaves WindowLayout.client unchanged and the compositor sends the client no configure; a test drives the xdg_shell configure path and counts configures.
+                """
+            method command
+            command "cargo test -p templar-comp tabs_never_reconfigure"
+        }
+    }
+    after [ @legeos.work.window-corner-hit-geometry-20261002 ]
+    implements [ @legeos.decision.window-tabs-are-external-revealed-and-stationary ]
+    part_of [ @legeos.work.external-window-tabs-20261002 ]
+    author "dk"
+}
+
+record legeos.work.window-tab-side-choice-20261002/1 : work {
+    title "Tabs on the left and right too, a window's side chosen from its name tag, and an optional follow-the-resize hint applied after the grab"
+    state proposed
+    scope [
+        path "apps/templar-settings/**",
+        path "compositor/COMPOSITOR.md",
+        path "compositor/templar-comp/src/chrome/**",
+        path "compositor/templar-comp/src/input.rs",
+        path "crates/templar-session-core/src/settings.rs",
+        path "crates/templar-window/**"
+    ]
+    intent """
+        Finish the four sides and the two ways a window's side changes.
+        - Left and Right in WindowLayout: the control tags stack vertically in the side band (same order top to bottom as left to right elsewhere); the name tag stays horizontal (no rotated text) and sits outward from the band's top end. The exact arrangement waits for the owner's answer to the decision's open choice (d); this record starts with a nested-session mock of two arrangements for the owner to pick from.
+        - Explicit choice: the name tag's context menu (secondary click) offers Top, Bottom, Left, Right and Default; the choice is per window and survives park/unpark, maximize/restore and regrouping. Whether it is remembered per application across sessions is the owner's call and stays out of scope until asked.
+        - windows.tabs.follow-resize (default off): when a resize grab ends, the side becomes the latched grab's vertical edge (top or bottom) or, for a pure side grab, that side; computed from the grab's start edges, never from pointer direction during it, and applied once, after the grab's end, so nothing visible moves mid-interaction.
+        - A side with no exterior room falls back to Overlay on that side (step 2's rule), never silently to another side.
+        """
+    note """
+        Last step; the owner's day in the installed session belongs to the campaign record, not this one.
+        """
+    acceptance {
+        check follow-resize-after-the-grab {
+            statement """
+                With follow-resize on, a top-edge resize grab moves the side to Top only at the grab's end; mid-grab the layout's side is unchanged; reversing direction during the grab does not matter; with it off, no grab changes the side.
+                """
+            method command
+            command "cargo test -p templar-comp follow_resize"
+        }
+        check four-sides-laid-out {
+            statement """
+                WindowLayout table tests for all four sides: bands outside the client, corner squares left to resize, name tag horizontal, painted equals hit rectangles, overlay fallback on the same side when the exterior is off-output.
+                """
+            method command
+            command "cargo test -p templar-window window_layout"
+        }
+        check owner-picks-the-side-arrangement {
+            statement """
+                The owner chooses between the nested-session mocks of the Left/Right arrangement.
+                """
+            method manual
+        }
+        check side-survives-transitions {
+            statement """
+                A per-window side survives park/unpark, maximize/restore, fullscreen/unfullscreen and joining or leaving a group.
+                """
+            method command
+            command "cargo test -p templar-window tab_side"
+        }
+    }
+    after [ @legeos.work.window-tab-hover-reveal-20261002 ]
+    implements [ @legeos.decision.window-tabs-are-external-revealed-and-stationary ]
+    part_of [ @legeos.work.external-window-tabs-20261002 ]
+    author "dk"
 }
 
 record legeos.work.window-tags-replace-the-band/1 : work {

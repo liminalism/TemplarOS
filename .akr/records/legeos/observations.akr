@@ -159,6 +159,31 @@ record legeos.observation.btrfs-send-needs-privilege-but-snapshotting-does-not/2
     verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
 }
 
+record legeos.observation.close-tag-sits-under-the-client-bottom-right-corner/1 : observation {
+    title "A press just below a framed window's visible bottom-right corner lands on Close; the resize corner is a whole tag height lower"
+    state verified
+    statement """
+        Read from the code at 50af378. A framed window's frame is its client plus a TAG_HEIGHT (32) strip below it: WindowService::client_area (crates/templar-window/src/service.rs:1130) returns geometry::client_area(frame), which subtracts the strip from the bottom (geometry.rs:504-511), and tag_strip (geometry.rs:405-414) is the frame's bottom 32 rows. chrome::layout::control_tags (compositor/templar-comp/src/chrome/layout.rs:220-244) packs Park, Maximize, Close against the strip's right edge, so Close is the 32x32 square directly beneath the client's bottom-right 32 pixels. press_target_at (compositor/templar-comp/src/input.rs:276-311) tests a point inside the frame against the control tags before anything else, and resize_edges_at (geometry.rs:544-580) answers only outside the frame, so the bottom-right resize corner begins at frame.bottom(), 32 px below the corner the person can see. A press aimed at the visible bottom-right corner from below or a little inside therefore closes the window; one aimed at the bottom-left corner grabs the name tag (a move or a pin). Inferred from code reading, not reproduced with a pointer; no test in the tree presses the visible client corners through press_target_at.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    method observation
+    watches [
+        "crates/templar-window/src/geometry.rs",
+        "crates/templar-window/src/service.rs",
+        "compositor/templar-comp/src/chrome/layout.rs",
+        "compositor/templar-comp/src/input.rs"
+    ]
+    author "dk"
+    source {
+        kind external
+        role origin
+        document "external-window-tabs-advice-20261001"
+        use """
+            The advisor named the frame/visible-corner mismatch as a credible explanation to check; this record checks it against the code.
+            """
+    }
+}
+
 record legeos.observation.cluster-pointer-delivery-with-an-input-region-is-unverified/1 : observation {
     title "Nested, the machine cluster once received no pointer events while its input region was declared; the measurement was confounded and the user verifies it by hand"
     state verified
@@ -328,6 +353,76 @@ record legeos.observation.deployments-subvolume-not-declared-by-repart/3 : obser
     verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
 }
 
+record legeos.observation.desktop-freeze-20261001-display-path-stall-machine-alive/1 : observation {
+    title "The 2026-10-01 desktop freeze stalled the display path while the machine kept running; the logs cannot say where"
+    state superseded
+    statement """
+        Boot a2228e0a709d40509c284f6698e0feb2 (2026-10-01 00:19:11 to 01:40:32 UTC, laptop with Intel Iris Xe driving eDP-1 and an RTX 4060 the compositor ignores) ended in a desktop freeze: display and pointer stopped, the user restarted the machine. Evidence available to the desktop user (user journal only; the account is not in adm, so kernel and system-unit lines were unreadable): templar-comp's last line was 01:26:59.226 (a 1x33 toplevel mapped and destroyed); after it, 962 entries from other processes, templar-resourced ticking every second with a largest gap of 1.002 s over the whole boot and level=normal from 01:00:50 on (MemAvailable about 28 GiB at the last level change), Firefox writing its profile until 01:40:19 and an agent session working until 01:34:05. At 01:40:30.698 the user manager began an orderly stop (Activating special unit exit.target); templar-comp took 1.450 s to stop against 0.15-0.19 s in boots -2 and -3 and logged nothing while stopping. templar-comp used 9 min 59 s CPU over 4881 s (12.3 percent), the same rate as healthy boots (11.8-12.2 percent), which rules out a full-core busy loop longer than about a minute. No idle blank was logged (the deployed build logs one), /var/lib/systemd/pstore is empty, systemd-coredump was not installed. Classification: a stall confined to the display path (templar-comp, or the i915 GPU/display work it waits on), not a whole-machine kernel lockup, memory exhaustion or OOM; whether templar-comp's main thread was blocked in a DRM/GPU wait or deadlocked, or its loop was alive with a page flip that never completed, is not decidable from what was logged. At the time templar-comp had no watchdog, kernel.sysrq was 176 (no W/L dumps), kernel.panic 0 and core_pattern `core`.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    method command
+    watches [
+        "compositor/templar-comp/src/backend/udev.rs",
+        "compositor/templar-comp/src/watchdog.rs",
+        "session/units/user/templar-comp.service",
+        "installer/provision.sh",
+        "distro/policy/sysctl.d/60-templaros-hang-evidence.conf",
+        "distro/policy/journald/journald.conf.d/60-templaros.conf",
+        "services/templar-hostd/Cargo.toml",
+        "cli/templar/src/doctor/freeze.rs",
+        "scripts/freeze-evidence-setup.sh"
+    ]
+    author "dk"
+}
+
+record legeos.observation.desktop-freeze-20261001-display-path-stall-machine-alive/2 : observation {
+    title "The 2026-10-01 desktop freeze stalled the display path while the machine kept running; the logs cannot say where"
+    state verified
+    statement """
+        Boot a2228e0a709d40509c284f6698e0feb2 (2026-10-01 00:19:11 to 01:40:32 UTC, laptop with Intel Iris Xe driving eDP-1 and an RTX 4060 the compositor ignores) ended in a desktop freeze: display and pointer stopped, the user restarted the machine. Evidence available to the desktop user (user journal only; the account is not in adm, so kernel and system-unit lines were unreadable): templar-comp's last line was 01:26:59.226 (a 1x33 toplevel mapped and destroyed); after it, 962 entries from other processes, templar-resourced ticking every second with a largest gap of 1.002 s over the whole boot and level=normal from 01:00:50 on (MemAvailable about 28 GiB at the last level change), Firefox writing its profile until 01:40:19 and an agent session working until 01:34:05. At 01:40:30.698 the user manager began an orderly stop (Activating special unit exit.target); templar-comp took 1.450 s to stop against 0.15-0.19 s in boots -2 and -3 and logged nothing while stopping. templar-comp used 9 min 59 s CPU over 4881 s (12.3 percent), the same rate as healthy boots (11.8-12.2 percent), which rules out a full-core busy loop longer than about a minute. No idle blank was logged (the deployed build logs one), /var/lib/systemd/pstore is empty, systemd-coredump was not installed. Classification: a stall confined to the display path (templar-comp, or the i915 GPU/display work it waits on), not a whole-machine kernel lockup, memory exhaustion or OOM; whether templar-comp's main thread was blocked in a DRM/GPU wait or deadlocked, or its loop was alive with a page flip that never completed, is not decidable from what was logged. At the time templar-comp had no watchdog, kernel.sysrq was 176 (no W/L dumps), kernel.panic 0 and core_pattern `core`.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    method command
+    watches [
+        "compositor/templar-comp/src/backend/**",
+        "compositor/templar-comp/src/main.rs",
+        "session/units/user/templar-comp.service",
+        "installer/provision.sh",
+        "services/templar-hostd/Cargo.toml",
+        "distro/policy/sysctl.d/**",
+        "cli/templar/src/doctor/**"
+    ]
+    supersedes [
+        @legeos.observation.desktop-freeze-20261001-display-path-stall-machine-alive/1
+    ]
+    author "dk"
+}
+
+record legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocked/1 : observation {
+    title "Three 2026-10-01 freezes: templar-comp's main thread blocked in userspace; kernel clean"
+    state superseded
+    statement """
+        Three desktop freezes on 2026-10-01, all on the installed build set b919ed4 (templar-comp without the watchdog): boots a2228e0a (comp silent from 01:26:59, power key 01:40:30), 54b1efc8 (comp silent from 06:39:02, power key 06:56:34) and a063f873 (comp silent from 07:26:05, power key 07:54:14). Read as root (scripts/freeze-evidence-setup.sh): every kernel log is clean in the freeze windows — no i915 error, GPU HANG, flip_done timeout, hung task (hung_task_timeout_secs 120, warnings left), lockup or OOM; logind records a short power-key press each time. templar-comp logged nothing for 13.5, 17.5 and 28 minutes — not even the 900 s idle blank or the bar's pointer-driven shell claims — while resourced ticked every second and filed, kitty and agent sessions kept working. In a063f873 templar-comp used 80.7 s CPU over 2219 s against about 12 percent of a core in healthy minutes: about 63 s before 07:26 and about 1 percent afterwards. Classification: the compositor's main thread stopped dispatching and was blocked, not spinning, in an interruptible wait (futex or socket/pipe), not a kernel display or GPU fault. Which wait is unknown until the watchdog (src/watchdog.rs) runs; TEMPLAR_COMP_WATCHDOG_ABORT_AFTER_SECS=30 is set in the user's drop-in so the next stall leaves a systemd-coredump stack.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    method command
+    watches [ "compositor/templar-comp/src/**", "session/units/user/templar-comp.service" ]
+    author "dk"
+}
+
+record legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocked/2 : observation {
+    title "Three 2026-10-01 freezes: templar-comp stopped presenting, kernel clean; loop stall vs dead render chain still open"
+    state verified
+    statement """
+        Three desktop freezes on 2026-10-01, all on the installed build set b919ed4 (templar-comp without the watchdog): boots a2228e0a (comp silent from 01:26:59, power key 01:40:30), 54b1efc8 (comp silent from 06:39:02, power key 06:56:34) and a063f873 (comp silent from 07:26:05, power key 07:54:14). Read as root (scripts/freeze-evidence-setup.sh): every kernel log is clean in the freeze windows — no i915 error, GPU HANG, flip_done timeout, hung task (hung_task_timeout_secs 120, warnings left), lockup or OOM; logind records a short power-key press each time. templar-comp logged nothing for 13.5, 17.5 and 28 minutes while resourced ticked every second and filed, kitty and agent sessions kept working. In a063f873 templar-comp used 80.7 s CPU over 2219 s against about 12 percent of a core in healthy minutes: about 63 s before 07:26 and about 1 percent afterwards, so it was not spinning. Two faults remain open and the logs cannot separate them: the main thread blocked in an interruptible wait, or the loop alive but its vblank-driven render chain dead (no frame callbacks, so every client stops drawing too). The missing idle-blank and bar-claim lines do not decide it: input re-arms the idle timer and the shell's claims may wait on frame callbacks. The working tree now carries the evidence for both: the event-loop and page-flip watchdog, a repaint check that logs and restarts an output with nothing rendered, nothing in flight and no retry pending, a one-time needs_sync report and a slow-frame log; TEMPLAR_COMP_WATCHDOG_ABORT_AFTER_SECS=30 is set in the user's drop-in.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    method command
+    watches [ "compositor/templar-comp/src/**", "session/units/user/templar-comp.service" ]
+    supersedes [ @legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocked/1 ]
+    author "dk"
+}
+
 record legeos.observation.fanotify-cannot-span-btrfs-subvolumes/1 : observation {
     title "fanotify refuses a filesystem mark on a Btrfs subvolume, and one group cannot hold marks on two subvolumes at all — so it cannot cover LegeOS's declared layout"
     state superseded
@@ -352,6 +447,51 @@ record legeos.observation.fanotify-cannot-span-btrfs-subvolumes/2 : observation 
     review_after 2027-03-08
     supersedes [ @legeos.observation.fanotify-cannot-span-btrfs-subvolumes/1 ]
     verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
+}
+
+record legeos.observation.freeze-watchdog-not-deployed-20261001/1 : observation {
+    title "After the 2026-10-01 freezes the evidence harness is armed on the laptop but the installed templar-comp still has no watchdog"
+    state superseded
+    statement """
+        Read from Lubuntu on 2026-10-01 against the TemplarOS root (/media/dk/templaros-root, journal @var/log/journal/13ddaed3..., readable via its ACL). Boot fbbc3d53 (2026-10-01 08:38-11:45 UTC) did not freeze: a logout at 09:04:24 (shell-initiated session restart) and a power-key poweroff at 11:45:30 after the user ran apt in kitty at 11:43:56-11:44:23, after a clean wake from a 900 s idle blank at 11:43:33. Armed on the installed root: /usr/lib/sysctl.d/60-templaros-hang-evidence.conf, /usr/lib/systemd/journald.conf.d/60-templaros.conf, coredump.conf.d/templaros.conf, systemd-coredump, dk in adm; ~/.config/systemd/user/templar-comp.service.d/watchdog-abort.conf sets TEMPLAR_COMP_WATCHDOG_ABORT_AFTER_SECS=30. Not deployed: /usr/bin/templar-comp is dated 2026-09-30 and contains no watchdog strings (only sd_notify WATCHDOG=), so the drop-in is inert and the next freeze on this build leaves no compositor-side evidence. /var/lib/systemd/coredump and pstore are empty. Freeze boots -7 (c412a890) and -3 (54b1efc8) both log smithay 'surface missing from known popups' as templar-comp's last line; in -3 sudo apt commands ran at 06:39:14-32 UTC, after that last line, so the compositor's last log line does not mark the freeze onset. Working tree at this commit: cargo test -p templar-comp 156 passed, cargo test -p templar freeze 13 passed.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    method command
+    watches [
+        "compositor/templar-comp/src/watchdog.rs",
+        "compositor/templar-comp/src/backend/udev.rs",
+        "session/units/user/templar-comp.service"
+    ]
+    derived_from [ @legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocked ]
+    author "dk"
+}
+
+record legeos.observation.freeze-watchdog-not-deployed-20261001/2 : observation {
+    title "After the 2026-10-01 freezes the evidence harness is armed on the laptop but the installed templar-comp still has no watchdog"
+    state superseded
+    statement """
+        Read from Lubuntu on 2026-10-01 against the TemplarOS root (/media/dk/templaros-root, journal @var/log/journal/13ddaed3..., readable via its ACL). Boot fbbc3d53 (2026-10-01 08:38-11:45 UTC) did not freeze: a logout at 09:04:24 (shell-initiated session restart) and a power-key poweroff at 11:45:30 after the user ran apt in kitty at 11:43:56-11:44:23, after a clean wake from a 900 s idle blank at 11:43:33. Armed on the installed root: /usr/lib/sysctl.d/60-templaros-hang-evidence.conf, /usr/lib/systemd/journald.conf.d/60-templaros.conf, coredump.conf.d/templaros.conf, systemd-coredump, dk in adm; ~/.config/systemd/user/templar-comp.service.d/watchdog-abort.conf sets TEMPLAR_COMP_WATCHDOG_ABORT_AFTER_SECS=30. Not deployed: /usr/bin/templar-comp is dated 2026-09-30 and contains no watchdog strings (only sd_notify WATCHDOG=), so the drop-in is inert and the next freeze on this build leaves no compositor-side evidence. /var/lib/systemd/coredump and pstore are empty. Freeze boots -7 (c412a890) and -3 (54b1efc8) both log smithay 'surface missing from known popups' as templar-comp's last line; in -3 sudo apt commands ran at 06:39:14-32 UTC, after that last line, so the compositor's last log line does not mark the freeze onset. Working tree at this commit: cargo test -p templar-comp 156 passed, cargo test -p templar freeze 13 passed.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    method command
+    watches [ "compositor/templar-comp/src/**", "session/units/user/templar-comp.service" ]
+    derived_from [ @legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocked ]
+    supersedes [ @legeos.observation.freeze-watchdog-not-deployed-20261001/1 ]
+    author "dk"
+}
+
+record legeos.observation.freeze-watchdog-not-deployed-20261001/3 : observation {
+    title "After the 2026-10-01 freezes the evidence harness is armed on the laptop but the installed templar-comp still has no watchdog"
+    state verified
+    statement """
+        Read from Lubuntu on 2026-10-01 against the TemplarOS root (/media/dk/templaros-root, journal @var/log/journal/13ddaed3..., readable via its ACL). Boot fbbc3d53 (2026-10-01 08:38-11:45 UTC) froze: after a logout at 09:04:24 (shell-initiated session restart) and a clean wake from a 900 s idle blank at 11:43:33, the user ran apt in kitty at 11:43:56-11:44:23, then clicked a window's tag; the display froze and they pressed the power key at 11:45:30 (the user's report; the journal alone reads like an orderly power-key poweroff, which is how every freeze so far has ended). Armed on the installed root: /usr/lib/sysctl.d/60-templaros-hang-evidence.conf, /usr/lib/systemd/journald.conf.d/60-templaros.conf, coredump.conf.d/templaros.conf, systemd-coredump, dk in adm; ~/.config/systemd/user/templar-comp.service.d/watchdog-abort.conf sets TEMPLAR_COMP_WATCHDOG_ABORT_AFTER_SECS=30. Not deployed: /usr/bin/templar-comp is dated 2026-09-30 and contains no watchdog strings (only sd_notify WATCHDOG=), so the drop-in is inert and the next freeze on this build leaves no compositor-side evidence. /var/lib/systemd/coredump and pstore are empty. Freeze boots -7 (c412a890) and -3 (54b1efc8) both log smithay 'surface missing from known popups' as templar-comp's last line; in -3 sudo apt commands ran at 06:39:14-32 UTC, after that last line, so the compositor's last log line does not mark the freeze onset. Working tree at this commit: cargo test -p templar-comp 156 passed, cargo test -p templar freeze 13 passed.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    method command
+    watches [ "compositor/templar-comp/src/**", "session/units/user/templar-comp.service" ]
+    derived_from [ @legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocked ]
+    supersedes [ @legeos.observation.freeze-watchdog-not-deployed-20261001/2 ]
+    author "dk"
 }
 
 record legeos.observation.fresh-store-wal-switch-races-without-a-busy-handler/1 : observation {
@@ -742,7 +882,7 @@ record legeos.observation.home-tree-exceeds-the-inotify-watch-budget/1 : observa
 
 record legeos.observation.home-tree-exceeds-the-inotify-watch-budget/2 : observation {
     title "The home tree needs half again more inotify watches than the index's budget allows, so watcher exhaustion is the normal outcome rather than an edge case"
-    state verified
+    state superseded
     scope [ path "crates/lege-file-index/src/watch.rs" ]
     statement """
         Measured on the reference laptop (kernel 6.17) on 2026-09-04: $HOME holds 230,323 directories, and 189,089 after applying the index's own skip list (189,087 with a depth<=24 clamp, so depth is not a factor). The project drive /mnt/Samsung980_1TB adds a further 172,681 directories. fs.inotify.max_user_watches is 250,074 and WatchBudget::from_limits deliberately takes half of it, giving 125,037. A single home root therefore requires about 1.5x the budget the index allows itself, and a full drive index would require about 1.6x the entire per-user kernel allowance. The consequence is that arm_recursive refuses watches past the budget, marks the pass incomplete and stops descending, so the root commits as Stale{WatcherExhausted} on every reconcile: the WatcherExhausted fallback path is the steady state on this machine, not an exceptional condition. This also contradicts the figure of 157,283 post-skip directories recorded in crates/lege-file-index/src/watch.rs and .agent/scratch/de01/F2-plan.md on 2026-09-03; the discrepancy is not explained by depth clamping and is left for the benchmark lane to settle from the index's own policy. Both figures exceed the budget, so the conclusion holds either way.
@@ -752,6 +892,21 @@ record legeos.observation.home-tree-exceeds-the-inotify-watch-budget/2 : observa
     watches [ "crates/lege-file-index/src/watch.rs" ]
     derived_from [ @legeos.work.file-index-maintenance ]
     supersedes [ @legeos.observation.home-tree-exceeds-the-inotify-watch-budget/1 ]
+    verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
+}
+
+record legeos.observation.home-tree-exceeds-the-inotify-watch-budget/3 : observation {
+    title "The home tree needs half again more inotify watches than the index's budget allows, so watcher exhaustion is the normal outcome rather than an edge case"
+    state superseded
+    scope [ path "crates/lege-file-index/src/watch.rs" ]
+    statement """
+        Measured on the reference laptop (kernel 6.17) on 2026-09-04: $HOME holds 230,323 directories, and 189,089 after applying the index's own skip list (189,087 with a depth<=24 clamp, so depth is not a factor). The project drive /mnt/Samsung980_1TB adds a further 172,681 directories. fs.inotify.max_user_watches is 250,074 and WatchBudget::from_limits deliberately takes half of it, giving 125,037. A single home root therefore requires about 1.5x the budget the index allows itself, and a full drive index would require about 1.6x the entire per-user kernel allowance. The consequence is that arm_recursive refuses watches past the budget, marks the pass incomplete and stops descending, so the root commits as Stale{WatcherExhausted} on every reconcile: the WatcherExhausted fallback path is the steady state on this machine, not an exceptional condition. This also contradicts the figure of 157,283 post-skip directories recorded in crates/lege-file-index/src/watch.rs and .agent/scratch/de01/F2-plan.md on 2026-09-03; the discrepancy is not explained by depth clamping and is left for the benchmark lane to settle from the index's own policy. Both figures exceed the budget, so the conclusion holds either way.
+        """
+    observed_at git:e6e1b1c3523004f2eef22aa3bfd2dc2abae4a06a
+    method command
+    watches [ "crates/lege-file-index/src/watch.rs" ]
+    derived_from [ @legeos.work.file-index-maintenance ]
+    supersedes [ @legeos.observation.home-tree-exceeds-the-inotify-watch-budget/2 ]
     verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
 }
 
@@ -879,6 +1034,26 @@ record legeos.observation.hostd-hands-a-privileged-fd-through-deltaopen/2 : obse
     ]
     resolves [ @legeos.question.no-route-for-a-privileged-fd-to-reach-the-per-user-daemon ]
     supersedes [ @legeos.observation.hostd-hands-a-privileged-fd-through-deltaopen/1 ]
+}
+
+record legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/1 : observation {
+    title "hostd stages candidate deployments under /var/lib/templaros/hostd/deployments, not the @deployments/{id} that layout.toml and the provisioner declare"
+    state verified
+    statement """
+        At 50af378. distro/deploy/layout.toml:89 declares subvolume_template = "@deployments/{id}" and installer/provision.sh (fstab block around :1219-1231) mounts @deployments at /.deployments. templar-hostd's real configuration sets deployments_dir: state_dir.join("deployments") with state_dir = root/var/lib/templaros/hostd (services/templar-hostd/src/main.rs:47,65), i.e. inside the shared @var subvolume, and UpdateLedger::candidate_deployment uses candidate_dir(id).display() as the Deployment's subvolume (services/templar-hostd/src/updates.rs:374-378), which the boot-entry writers put into rootflags=subvol=. Only fixture tests use @deployments/{id}. [INFERENCE, not run on hardware] a staged candidate's entry would name subvol=/var/lib/templaros/hostd/deployments/<id>, a path relative to the mounted root rather than to the btrfs top level (where it is @var/lib/...), so the candidate would not boot; and a candidate kept in @var lives in the same subvolume as the persistent state it is supposed to be independent of. Separately, templar dev deploy keeps its own rollback snapshot at /var/lib/templaros/snapshots/root-before-<set> (cli/templar/src/dev/gates.rs:278-284), a second rollback location.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    method observation
+    watches [
+        "services/templar-hostd/src/main.rs",
+        "services/templar-hostd/src/updates.rs",
+        "services/templar-hostd/src/deploy.rs",
+        "services/templar-hostd/src/boot_entries.rs",
+        "distro/deploy/layout.toml",
+        "installer/provision.sh",
+        "cli/templar/src/dev/gates.rs"
+    ]
+    author "dk"
 }
 
 record legeos.observation.identity-never-resolves-in-a-nested-session/1 : observation {
@@ -1073,6 +1248,21 @@ record legeos.observation.openuri-is-the-frontends-portal/2 : observation {
     verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
 }
 
+record legeos.observation.pointer-grab-reentry-deadlocks-the-compositor/1 : observation {
+    title "A name-tag click deadlocked templar-comp: sync_after_change re-locked Smithay's pointer mutex inside the grab"
+    state verified
+    statement """
+        templar-comp deadlocks its own main thread when the window model changes inside a pointer grab. Smithay 1ed69cb's PointerHandle::button and ::motion hold the pointer's std::sync::Mutex (PointerHandle.inner) while they call the active PointerGrab; WindowGestureGrab::button, on a name-tag press released without moving (pins_on_click), calls toggle_always_on_top -> space_sync::sync_after_change -> refresh_pointer_focus, which calls PointerHandle::is_grabbed and so locks that mutex a second time on the same thread. That lock never returns: no more frames, input or protocol dispatch, the main thread asleep in a futex at about 0 percent CPU, the kernel silent, every other process running. The same path runs when a dragged window is dropped on another's band (group_windows). It has been in every installed build since 6d7943f (2026-09-10, refresh_pointer_focus) together with 8b2ae24's pin-on-click, including b919ed4. Freeze 2026-10-01 boot fbbc3d53: the user clicked a window's tag after 11:44:23 UTC, the screen froze, and they pressed the power key at 11:45:30. The regression test backend::check::tests::changing_the_window_model_inside_a_pointer_grab_does_not_hang_the_compositor hangs (10 s timeout) on the old code and passes once sync_after_change queues the pointer refresh on the event loop's idle list instead of running it inline.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    method command
+    watches [
+        "compositor/templar-comp/src/space_sync.rs",
+        "compositor/templar-comp/src/input.rs"
+    ]
+    author "dk"
+}
+
 record legeos.observation.reconciliation-cost-tracks-tree-size-not-change-size/1 : observation {
     title "A reconcile that finds nothing changed costs as much as one that finds a hundred changes, and both scale with the tree"
     state superseded
@@ -1160,6 +1350,47 @@ record legeos.observation.release-debs-ship-unstripped-line-tables/2 : observati
     verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
 }
 
+record legeos.observation.search-arrays-answer-broad-queries-at-two-million-in-under-20ms/1 : observation {
+    title "In-memory search arrays answer broad one- to three-character queries over two million entries in p95 under 20 ms, where SQL takes 0.3-3.3 s, and match SQL exactly on real home data"
+    state verified
+    scope [
+        path "crates/templar-file-index/src/arrays.rs",
+        path "crates/templar-file-index/src/query.rs",
+        path "crates/templar-file-index/src/schema.rs",
+        path "tools/xtask/src/index_bench.rs"
+    ]
+    statement """
+        Measured 2026-10-01 with `cargo run -q -p xtask --release -- index-bench workloads --allow-two-million` (record at .agent/scratch/integrated-indexing/workloads-2m-arrays.json) after the keys-first SQL search (stage 1) and the in-memory search arrays (stage 2) landed in templar-file-index. At 2,000,001 entries, first page of 100, p50/p95: `d` (1,999,968 matches) SQL 3,257/3,264 ms vs arrays 16.8/17.8 ms; `f1` (550,000) 1,169/1,171 vs 14.9/18.0 ms; `txt` (1,600,000) 1,728/1,737 vs 16.8/18.2 ms; `f12.txt` (50,000) 274/276 vs 10.7/11.9 ms; the path needle `d3/d4` stays on SQL at 688-710 ms. Building the arrays took 1.6 s at 2M rows and 60-83 ms at 90-99k. On a VACUUM INTO copy of the live home index (99,447 rows), arrays and SQL returned identical totals, ranks and order for 10 needles x 5 sorts x 2 directions (an earlier arrays build that assumed a directory's subtree follows it immediately in byte order produced 50 mismatches; `d-x` and `d.rs` sort between `d` and `d/`); `e` 234 ms SQL vs 2.4 ms arrays, `cargo` 28 vs 1.7 ms, `main.rs` 0.7 vs 1.4 ms. The SQL fallback for one- and two-character needles is slower than the old capped search (`e` 234 ms vs 126 ms) because it now counts and orders every match exactly.
+        """
+    observed_at git:e436ed2dc0a114429ec33a2cb621f6f58ccc64dd
+    method instrumented
+    watches [
+        "crates/templar-file-index/src/arrays.rs",
+        "crates/templar-file-index/src/query.rs"
+    ]
+    author "dk"
+}
+
+record legeos.observation.search-cost-is-linear-in-matches-and-truncation-is-not-best-first/1 : observation {
+    title "Index search costs about 1.3 µs per matched row, mostly row materialisation and ranking; a truncated candidate set is not the best N, and folder-scoped Search1 drops in-scope matches"
+    state verified
+    scope [
+        path "crates/templar-file-index/src/query.rs",
+        path "crates/templar-file-index/src/schema.rs",
+        path "services/templar-filed/src/search.rs"
+    ]
+    statement """
+        Measured 2026-10-01 on a VACUUM INTO copy of the live index (94,953 live entries under /home/dk, release build, throwaway harness outside the tree). Index::search cost is linear in matched candidates at about 1.3 µs per row: `e` (like-scan, 94,928 matches) takes p50 126 ms with candidate_limit 200,000 and 63 ms at the default 50,000; `cargo` (FTS5 trigram, 14,691 matches) takes 19.5 ms. For `cargo` the FTS5 rowid lookup is 2.1 ms, entry_id after the filters 5.8 ms, entry_id plus sort keys (name_fold, path_bytes, size, mtime) 7.6 ms, and all ENTRY_COLUMNS decoded 10.9 ms; the remaining ~8.6 ms is rank_of re-folding every name and sorting whole EntryRows. The candidate LIMIT is applied before ranking, so a truncated result is the first N rows in FTS/rowid order, not the best N. Files.Search1 (the shell's folder-scoped search, limit 50) fetches the global top 200 and filters by path prefix afterwards: `lib` scoped to the LegeOS checkout returned 21 of its 24 matches. Storage: the vacuumed index is 148.7 MiB, of which entries_fts_data plus entries_fts_content is 88 MiB (about 940 bytes per entry), because the trigram index covers path_display as well as the name and stores its own copy of both columns.
+        """
+    observed_at git:e436ed2dc0a114429ec33a2cb621f6f58ccc64dd
+    method instrumented
+    watches [
+        "crates/templar-file-index/src/query.rs",
+        "crates/templar-file-index/src/schema.rs",
+        "services/templar-filed/src/search.rs"
+    ]
+}
+
 record legeos.observation.session-time-enters-sessiond-at-four-edges/1 : observation {
     title "Session time enters sessiond at four edges and leaves by one broadcast"
     state verified
@@ -1236,6 +1467,23 @@ record legeos.observation.shelved-tiles-have-no-route-back/2 : observation {
     depends_on [ @legeos.work.home-shelf-and-representation-ladder ]
     derived_from [ @legeos.evidence.home-field-reshape-across-resolutions-20260831 ]
     supersedes [ @legeos.observation.shelved-tiles-have-no-route-back/1 ]
+}
+
+record legeos.observation.terminal-workloads-inherit-the-terminal-identity/1 : observation {
+    title "Everything a terminal starts is the terminal: identity is the launch unit's cgroup, there is no workload, and the governor sees only Templar launch units"
+    state verified
+    statement """
+        At 50af378. Launcher1 starts an application as app-templaros-<AppId>@<uuid>.service in app.slice via StartTransientUnit (crates/templar-appd/src/systemd1.rs:75-150, crates/templar-types/src/unit.rs:11-44), and AppIdentity1 resolves PID -> /proc/PID/cgroup -> deepest registered instance -> AppId (crates/templar-appd/src/identity.rs:125-180). cgroup membership is inherited at fork, so kitty -> bash -> cargo -> rustc are all kitty's instance; a GUI app started from that terminal resolves to the terminal with VerifiedLaunchClaimMismatch (identity.rs:162-176). Nothing in resourced knows a workload, build or terminal job; its scan only discovers app-templaros-* units (services/templar-resourced/src/scan.rs:41-66) and its own test ignores an app-flatpak-*.scope (:82), and its actions are per instance (cgroup.kill, memory.oom.group). background.slice is configured but nothing is placed in it. The garden's bash PROMPT_COMMAND hook (session/profile.d/60-templaros-garden.sh) is the one per-command hook a Templar terminal already has. AppProvenance.sandboxed is reported and not acted on (crates/templar-types/src/variant.rs:215-273).
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    method observation
+    watches [
+        "crates/templar-appd/src/**",
+        "crates/templar-types/src/**",
+        "services/templar-resourced/src/**",
+        "session/profile.d/**"
+    ]
+    author "dk"
 }
 
 record legeos.observation.the-hardware-packages-that-matter-most-arrive-only-through-recommends/1 : observation {
@@ -1338,6 +1586,24 @@ record legeos.observation.the-provisioner-wrote-no-fstab-at-all/2 : observation 
     derived_from [ @legeos.decision.independent-storage-roles ]
     supersedes [ @legeos.observation.the-provisioner-wrote-no-fstab-at-all/1 ]
     verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
+}
+
+record legeos.observation.the-system-root-is-mutable-in-place-and-its-package-database-lives-in-var/1 : observation {
+    title "The booted system root is read-write, three routes run apt against it in place, and its dpkg database lives in the shared @var"
+    state verified
+    statement """
+        At 50af378. The deployment command line is rootflags=subvol=@ rw (distro/deploy/layout.toml:97) and fstab mounts / from subvol=@ (installer/provision.sh, fstab block around :1219); the first known-good deployment is @ itself (provision.sh around :1481). apt changes that root in place by three routes: the provisioner's chrooted apt-get (provision.sh :1333-1402), templar dev deploy's pinned apt-get install --allow-downgrades on the live / (cli/templar/src/dev/install.rs:110-120), and the owner, whom scripts/update-templaros.sh:44-46 tells to run sudo apt-get upgrade for inherited packages. hostd's own transaction does it the intended way (snapshot, apt-get --root into the candidate, seal read-only: services/templar-hostd/src/updates.rs:280-313, apt.rs:63-84). /var is the separate @var subvolume (provision.sh fstab), so /var/lib/dpkg — the record of what is installed in @ — lives outside @ and outside any snapshot of it; hostd reads it from apt_root/var/lib/dpkg/status (services/templar-hostd/src/state.rs:209,225). [INFERENCE] after a rollback to an older @, the shared dpkg database still describes the newer one. No document states that OS updates must not touch /home; that holds only because @home is its own subvolume, and hostd does reach into @home for file-index checkpoints (services/templar-hostd/src/index_checkpoint.rs:96, polkit allow_active).
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    method observation
+    watches [
+        "distro/deploy/layout.toml",
+        "installer/provision.sh",
+        "cli/templar/src/dev/install.rs",
+        "scripts/update-templaros.sh",
+        "services/templar-hostd/src/**"
+    ]
+    author "dk"
 }
 
 record legeos.observation.this-machines-partition-table-cannot-hold-legeos-as-it-stands/1 : observation {
@@ -1550,4 +1816,29 @@ record legeos.observation.unprivileged-fanotify-costs-more-per-directory-than-in
         @legeos.observation.unprivileged-fanotify-costs-more-per-directory-than-inotify/1
     ]
     verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
+}
+
+record legeos.observation.watch-budget-fits-home-and-project-drive-on-templaros/1 : observation {
+    title "On the installed TemplarOS, home plus the project drive need about 0.91x of the index's inotify watch budget, so watcher exhaustion is no longer the expected outcome"
+    state superseded
+    scope [ path "crates/templar-file-index/src/watch.rs" ]
+    statement """
+        Measured on the installed TemplarOS (reference laptop, /home on btrfs @home) on 2026-10-01 with `cargo run -q -p xtask --release -- index-bench dirs`, which counts through the index's own RootPolicy: /home/dk holds 6,445 directories after the skip list, and /mnt/second (the NTFS project drive, ntfs-3g fuseblk) holds 110,258. fs.inotify.max_user_watches is 257,001, so WatchBudget is 128,500; fanotify max_user_marks is 273,909. Home alone needs 0.05x the budget, the project drive 0.86x, and both together about 0.91x, so on this machine neither root nor their sum exhausts the watch budget. The 2026-09-04 premise (189,089 home directories plus 172,681 on the project drive) described the old Lubuntu home and does not hold here; it returns only if the old home is migrated wholesale or another large root is added.
+        """
+    observed_at git:e436ed2dc0a114429ec33a2cb621f6f58ccc64dd
+    method command
+    watches [ "crates/templar-file-index/src/watch.rs" ]
+}
+
+record legeos.observation.watch-budget-fits-home-and-project-drive-on-templaros/2 : observation {
+    title "On the installed TemplarOS, home plus the project drive need about 0.91x of the index's inotify watch budget, so watcher exhaustion is no longer the expected outcome"
+    state verified
+    scope [ path "crates/templar-file-index/src/watch.rs" ]
+    statement """
+        Measured on the installed TemplarOS (reference laptop, /home on btrfs @home) on 2026-10-01 with `cargo run -q -p xtask --release -- index-bench dirs`, which counts through the index's own RootPolicy: /home/dk holds 6,445 directories after the skip list, and /mnt/second (the NTFS project drive, ntfs-3g fuseblk) holds 110,258. fs.inotify.max_user_watches is 257,001, so WatchBudget is 128,500; fanotify max_user_marks is 273,909. Home alone needs 0.05x the budget, the project drive 0.86x, and both together about 0.91x, so on this machine neither root nor their sum exhausts the watch budget. The 2026-09-04 premise (189,089 home directories plus 172,681 on the project drive) described the old Lubuntu home and does not hold here; it returns only if the old home is migrated wholesale or another large root is added.
+        """
+    observed_at git:e436ed2dc0a114429ec33a2cb621f6f58ccc64dd
+    method command
+    watches [ "crates/templar-file-index/src/watch.rs" ]
+    supersedes [ @legeos.observation.watch-budget-fits-home-and-project-drive-on-templaros/1 ]
 }

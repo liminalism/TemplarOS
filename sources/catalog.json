@@ -11,6 +11,18 @@
     "title": "External design review: Home Field, file service, projects, app identity, resourced, hotfixability (2026-09-01)"
   },
   {
+    "added_at": "2026-10-02",
+    "availability": "full",
+    "byte_len": 8080,
+    "content_hash": "sha256:b292dcd7138a1c22978ec7d5f6d1a628c3b95a9359158a00171a36771423b3df",
+    "id": "external-window-tabs-advice-20261001",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/external-window-tabs-advice-20261001--b292dcd7.md",
+    "scope": "crates/templar-window/**",
+    "title": "External window tabs — advisor's review, 2026-10-01 (sections 3-4)"
+  },
+  {
     "added_at": "2026-09-07",
     "availability": "cited-only",
     "byte_len": 22477,
@@ -555,6 +567,18 @@
     "path": "sources/external/legacy-polling-services-design--c8916508.md",
     "scope": "services/**",
     "title": "Event-driven and polling services design notes"
+  },
+  {
+    "added_at": "2026-10-02",
+    "availability": "full",
+    "byte_len": 10175,
+    "content_hash": "sha256:dce76a777f3b80b321b97a33c1ee36b69979d13a868c941bcb91a69281412b7a",
+    "id": "nitrux-ownership-tiers-advice-20261001",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/nitrux-ownership-tiers-advice-20261001--dce76a77.md",
+    "scope": "distro/**",
+    "title": "Nitrux as an architectural reference — ownership tiers advice, 2026-10-01 (abridged)"
   },
   {
     "added_at": "2026-08-17",

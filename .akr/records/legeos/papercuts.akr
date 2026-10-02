@@ -223,6 +223,39 @@ record legeos.papercut.akr-build-could-not-refresh-the-ledger-after/1 : papercut
     created_at 2026-09-09
 }
 
+record legeos.papercut.akr-context-takes-paths-repeatable-not-path-the/1 : papercut {
+    title "akr context takes --paths (repeatable), not --path; the unknown-flag…"
+    state verified
+    statement """
+        akr context takes --paths (repeatable), not --path; the unknown-flag error does not suggest the right spelling.
+        """
+    observed_at git:e436ed2dc0a114429ec33a2cb621f6f58ccc64dd
+    author "claude"
+    created_at 2026-10-01
+}
+
+record legeos.papercut.akr-explain-akr-g023-describes-a-stale/1 : papercut {
+    title "akr explain AKR-G023 describes a stale generated-view tool stamp, but…"
+    state verified
+    statement """
+        akr explain AKR-G023 describes a stale generated-view tool stamp, but akr check emits AKR-G023 for scope paths that match no tracked path; the explain text and the emitted diagnostic disagree (and the explain text cites itself as an exemption).
+        """
+    observed_at git:e436ed2dc0a114429ec33a2cb621f6f58ccc64dd
+    author "claude"
+    created_at 2026-10-01
+}
+
+record legeos.papercut.akr-git-log-record-reports-no-commits-for/1 : papercut {
+    title "akr git log <record> reports no commits for trailer commits on a…"
+    state verified
+    statement """
+        akr git log <record> reports no commits for trailer commits on a non-main branch, with no hint about its search scope; had to verify linkage with git log --grep instead
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    author "muse"
+    created_at 2026-10-01
+}
+
 record legeos.papercut.akr-mcp-failed-to-connect-this-session-so/1 : papercut {
     title "AKR MCP failed to connect this session, so knowledge.start/context had…"
     state verified
@@ -390,6 +423,17 @@ record legeos.papercut.cli-lege-src-dev-cmd-rs-knowingly-duplicates/1 : papercut
     observed_at git:cd6563649c3c85e3c23b92adb22d60de7ce90e44
     author "claude"
     created_at 2026-09-01
+}
+
+record legeos.papercut.completing-gesture-rails-20260928-all-three/1 : papercut {
+    title "Completing gesture-rails-20260928: all three command checks already had…"
+    state verified
+    statement """
+        Completing gesture-rails-20260928: all three command checks already had verified evidence (named in the record's note) but no check cited it, so the record sat active for four days looking unfinished; whoever records evidence should cite it on the check (revise acceptance verified_by) in the same step.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    author "claude"
+    created_at 2026-10-02
 }
 
 record legeos.papercut.context-output-with-a-4000-token-budget-still/1 : papercut {
@@ -1014,6 +1058,28 @@ record legeos.papercut.no-existing-pattern-in-the-repo-for-a-custom/1 : papercut
     created_at 2026-09-03
 }
 
+record legeos.papercut.on-the-installed-templaros-agents-md-mandates/1 : papercut {
+    title "On the installed TemplarOS, AGENTS.md mandates ~/.optmem/memo but it…"
+    state verified
+    statement """
+        On the installed TemplarOS, AGENTS.md mandates ~/.optmem/memo but it does not exist; the only copy is the old Lubuntu install at /mnt/lubuntu/home/dk/.optmem. akr was also absent; built from /mnt/second/Rust-projects/AKR with cargo install --locked --root ~/.local --path crates/akr-cli (and akr-mcp).
+        """
+    observed_at git:e436ed2dc0a114429ec33a2cb621f6f58ccc64dd
+    author "claude"
+    created_at 2026-10-01
+}
+
+record legeos.papercut.on-the-installed-templaros-laptop-just-deb/1 : papercut {
+    title "On the installed TemplarOS laptop 'just deb' fails before building…"
+    state verified
+    statement """
+        On the installed TemplarOS laptop 'just deb' fails before building anything: preview-codecs resolves path deps into ~/rust-projects/jpegXL-rs (absent; metadata runs --offline so it says 'no matching package jpeg-encoder'), and cargo-deb is not installed. Worked around by staging /usr/libexec/templar-preview-codecs into target/preview-codecs and cargo install cargo-deb.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    author "claude"
+    created_at 2026-10-01
+}
+
 record legeos.papercut.on-the-qemu-boot-of-the-first-iso-the-live/1 : papercut {
     title "On the QEMU boot of the first ISO the live preflight fails…"
     state verified
@@ -1126,6 +1192,17 @@ record legeos.papercut.reconcile-reconcile-unconditionally-called/1 : papercut {
     created_at 2026-09-03
 }
 
+record legeos.papercut.recording-gate-green-for-bottom-bar-taskbar/1 : papercut {
+    title "Recording gate-green for bottom-bar-taskbar: just check stops at cargo…"
+    state verified
+    statement """
+        Recording gate-green for bottom-bar-taskbar: just check stops at cargo fmt --check on uncommitted files from parallel sessions (templar-greeter login.rs, templar-file-index arrays.rs/lib.rs), so the workspace gate cannot be evidenced until that work is formatted or committed.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    author "claude"
+    created_at 2026-10-02
+}
+
 record legeos.papercut.resuming-a-session-limited-resolute-native/1 : papercut {
     title "Resuming a session-limited Resolute native build: the outer…"
     state verified
@@ -1193,6 +1270,17 @@ record legeos.papercut.scripts-nested-session-sh-stop-left-lege/1 : papercut {
     created_at 2026-09-07
 }
 
+record legeos.papercut.scripts-update-templaros-sh-refuses-this/1 : papercut {
+    title "scripts/update-templaros.sh refuses this installed TemplarOS (cmdline…"
+    state verified
+    statement """
+        scripts/update-templaros.sh refuses this installed TemplarOS (cmdline templaros.deployment=install-20260930T034405Z, /etc/templaros/install.toml) because /usr/lib/os-release is Ubuntu's base-files copy (2026-08-24): provision.sh copies the live medium's /usr/lib/os-release, which was not TemplarOS's. Workaround: TEMPLAROS_OS_RELEASE=distro/branding/os-release.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    author "claude"
+    created_at 2026-10-01
+}
+
 record legeos.papercut.second-separate-bug-found-after-the-apt-trust/1 : papercut {
     title "Second, separate bug found after the apt-trust fix: `lege dev deploy`…"
     state verified
@@ -1215,6 +1303,17 @@ record legeos.papercut.set-metapackages-pin-nvidia-kernel-with-to-base/1 : paper
     created_at 2026-09-30
 }
 
+record legeos.papercut.stage-1-cargo-deb-packages-do-not-ship-most-of/1 : papercut {
+    title "Stage-1 cargo-deb packages do not ship most of what debian/*.install…"
+    state verified
+    statement """
+        Stage-1 cargo-deb packages do not ship most of what debian/*.install lists from distro/policy (sysctl.d/60-templaros.conf with the zswap VM tuning, tmpfiles zswap params, coredump.conf.d, environment.d, slice drop-ins), so the installed laptop runs Ubuntu defaults: sysrq=176, no swap at all, core_pattern=core. check-packaging compares package names and depends between the two paths but not their asset lists.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    author "sonnet-triage"
+    created_at 2026-10-01
+}
+
 record legeos.papercut.systemd-analyze-user-verify-accepted-the/1 : papercut {
     title "systemd-analyze --user verify accepted the session units but warned…"
     state verified
@@ -1227,6 +1326,17 @@ record legeos.papercut.systemd-analyze-user-verify-accepted-the/1 : papercut {
     created_at 2026-08-23
 }
 
+record legeos.papercut.systemd-coredump-was-not-installed-on-the/1 : papercut {
+    title "systemd-coredump was not installed on the laptop although…"
+    state verified
+    statement """
+        systemd-coredump was not installed on the laptop although distro/policy/coredump and sessiond's crash_ingest assume it, and Debian's systemd ships DefaultLimitCORE=0:infinity for both managers, so templar-comp ran with a soft core limit of 0: a crash or a watchdog abort left nothing. templaros-hostd now Depends on systemd-coredump, whose 20-coredump-debian.conf raises the limit from the next login.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    author "sonnet-triage"
+    created_at 2026-10-01
+}
+
 record legeos.papercut.taskbar-planning-targeted-reads-guessed-a/1 : papercut {
     title "Taskbar planning: targeted reads guessed a standalone stacking.rs and…"
     state verified
@@ -1236,6 +1346,28 @@ record legeos.papercut.taskbar-planning-targeted-reads-guessed-a/1 : papercut {
     observed_at git:1c56b773a0d59b0eda26427f2d086705b28d950e
     author "codex"
     created_at 2026-09-08
+}
+
+record legeos.papercut.templar-doctor-freeze-matched-only-the-watchdog/1 : papercut {
+    title "templar doctor freeze matched only the watchdog build's idle-blank…"
+    state verified
+    statement """
+        templar doctor freeze matched only the watchdog build's idle-blank wording ('outputs blanked'/'outputs woken'), so on every boot that actually froze (the b919ed4 build logs 'idle timeout reached'/'input after an idle blank') it reported no idle blank; IDLE_MARKERS now matches both.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    author "claude"
+    created_at 2026-10-01
+}
+
+record legeos.papercut.templar-resourced-reported-level-severe-from-01/1 : papercut {
+    title "templar-resourced reported level=severe from 01:00:18 to 01:00:49 on…"
+    state verified
+    statement """
+        templar-resourced reported level=severe from 01:00:18 to 01:00:49 on boot a2228e0a with about 28 GiB MemAvailable, because global memory full avg10 was 0.41-0.84 and the default severe_full_avg10 is 0.5; its once-a-second INFO 'tick' line carries only the level, so the journal alone cannot show why (traces.jsonl had the numbers).
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    author "sonnet-triage"
+    created_at 2026-10-01
 }
 
 record legeos.papercut.templaros-install-free-space-dev-nvme0n1/1 : papercut {
@@ -1517,6 +1649,17 @@ record legeos.papercut.the-lege-templar-rename-8b2ae24-rewrote-seven/1 : papercu
     created_at 2026-09-09
 }
 
+record legeos.papercut.the-lege-templar-rename-never-reached-the/1 : papercut {
+    title "The lege->templar rename never reached the ledger: akr check reports…"
+    state verified
+    statement """
+        The lege->templar rename never reached the ledger: akr check reports 517 AKR-G023 scope paths and AKR-G024 acceptance commands like cargo test -p lege-file-index that name no crate, so --strict fails and open index records cannot be completed by their own commands.
+        """
+    observed_at git:e436ed2dc0a114429ec33a2cb621f6f58ccc64dd
+    author "claude"
+    created_at 2026-10-01
+}
+
 record legeos.papercut.the-live-medium-s-getty-banner-reads-ubuntu-26/1 : papercut {
     title "The live medium's getty banner reads \"Ubuntu 26.04.1 LTS legeos-live\"…"
     state verified
@@ -1626,6 +1769,28 @@ record legeos.papercut.third-bug-in-the-same-chain-after-the-machine/1 : papercu
     observed_at git:f5007ef369d0b386fb872a6b726e3f8baaac5944
     author "claude"
     created_at 2026-09-01
+}
+
+record legeos.papercut.tracing-subscriber-fmt-writes-ansi-colour-codes/1 : papercut {
+    title "tracing_subscriber::fmt writes ANSI colour codes into journal MESSAGE…"
+    state verified
+    statement """
+        tracing_subscriber::fmt writes ANSI colour codes into journal MESSAGE fields of every templar unit (journalctl -o json returns them as byte arrays and they split 'templar_resourced::daemon: tick'), so anything parsing the journal must strip CSI sequences; disabling ANSI when JOURNAL_STREAM is set would avoid it.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    author "sonnet-triage"
+    created_at 2026-10-01
+}
+
+record legeos.papercut.triaging-the-2026-10-01-freeze-as-the-desktop/1 : papercut {
+    title "Triaging the 2026-10-01 freeze as the desktop user: `journalctl -k`…"
+    state verified
+    statement """
+        Triaging the 2026-10-01 freeze as the desktop user: `journalctl -k` printed nothing and no error, because provision.sh created the account in sudo,video,render only (not adm/systemd-journal), so every kernel and system-unit line of the frozen boot needed sudo. provision.sh now adds adm; machines installed earlier need scripts/freeze-evidence-setup.sh.
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    author "sonnet-triage"
+    created_at 2026-10-01
 }
 
 record legeos.papercut.ux-papercut-in-the-same-session-lege-dev-deploy/1 : papercut {
@@ -1806,6 +1971,17 @@ record legeos.papercut.working-the-portal-lane-the-generated-docs/1 : papercut {
     observed_at git:8b284c9147b70b4f03bb7c48ec993647e2e4df31
     author "claude"
     created_at 2026-09-03
+}
+
+record legeos.papercut.xdg-desktop-portal-templar-panicked-at-01-02-51/1 : papercut {
+    title "xdg-desktop-portal-templar panicked at 01:02:51 on 2026-10-01 when…"
+    state verified
+    statement """
+        xdg-desktop-portal-templar panicked at 01:02:51 on 2026-10-01 when Chromium opened a portal dialog: winit refused an EventLoop off the main thread, then 'EventLoop can't be recreated'; xdg-desktop-portal then killed Chromium for lacking background permission. RUST_BACKTRACE was unset, so only the message survived (now set in the unit).
+        """
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    author "sonnet-triage"
+    created_at 2026-10-01
 }
 
 record legeos.papercut.xtask-interface-baseline-prints-froze-170/1 : papercut {

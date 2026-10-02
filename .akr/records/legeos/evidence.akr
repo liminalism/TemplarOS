@@ -422,6 +422,99 @@ record legeos.evidence.capture-globals-stay-shell-only/1 : evidence {
         """
 }
 
+record legeos.evidence.comp-and-window-suites-20261002/1 : evidence {
+    title "Working tree on 50af378: templar-comp 157 passed and templar-window 191 passed, 0 failed."
+    state verified
+    result pass
+    method command
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    command "cargo test -p templar-comp -p templar-window"
+    summary """
+        Working tree on 50af378: templar-comp 157 passed and templar-window 191 passed, 0 failed.
+        """
+    author "dk"
+}
+
+record legeos.evidence.comp-clipboard-tests-20261001/1 : evidence {
+    title "148 passed, 0 failed, including the XWayland bridge test and the advertisement self-check; clippy and fmt clean."
+    state superseded
+    result pass
+    method command
+    observed_at git:e6858f0f1e7fd847bff3dfd8f101d11bb7d7879f
+    command "cargo test -p templar-comp --bin templar-comp"
+    summary """
+        148 passed, 0 failed, including the XWayland bridge test and the advertisement self-check; clippy and fmt clean.
+        """
+    author "dk"
+}
+
+record legeos.evidence.comp-clipboard-tests-20261001/2 : evidence {
+    title "148 passed, 0 failed, including the XWayland bridge test and the advertisement self-check; clippy and fmt clean."
+    state verified
+    result pass
+    method command
+    observed_at git:cdcab992cf7f725f43faa7c2112b904e49d3d3e8
+    command "cargo test -p templar-comp --bin templar-comp"
+    summary """
+        148 passed, 0 failed, including the XWayland bridge test and the advertisement self-check; clippy and fmt clean.
+        """
+    supersedes [ @legeos.evidence.comp-clipboard-tests-20261001/1 ]
+    author "dk"
+}
+
+record legeos.evidence.comp-forced-ssd-tests-20261001/1 : evidence {
+    title "2 passed: client_side_requests_are_granted_server_side and the pre-existing resize-edges test."
+    state superseded
+    result pass
+    method command
+    observed_at git:12d19e22c51fd33405db30b2e5ef9bc587b8119c
+    command "cargo test -p templar-comp --bin templar-comp xdg_shell"
+    summary """
+        2 passed: client_side_requests_are_granted_server_side and the pre-existing resize-edges test.
+        """
+    author "dk"
+}
+
+record legeos.evidence.comp-forced-ssd-tests-20261001/2 : evidence {
+    title "2 passed: client_side_requests_are_granted_server_side and the pre-existing resize-edges test."
+    state verified
+    result pass
+    method command
+    observed_at git:c4a5563ed4fce384800f62eddec12b551812be8e
+    command "cargo test -p templar-comp --bin templar-comp xdg_shell"
+    summary """
+        2 passed: client_side_requests_are_granted_server_side and the pre-existing resize-edges test.
+        """
+    supersedes [ @legeos.evidence.comp-forced-ssd-tests-20261001/1 ]
+    author "dk"
+}
+
+record legeos.evidence.comp-headless-self-check-20261002/1 : evidence {
+    title "Working tree on 50af378: templar-comp self-check prints ok with its isolated check seat."
+    state verified
+    result pass
+    method command
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    command "cargo run -p templar-comp -- --check"
+    summary """
+        Working tree on 50af378: templar-comp self-check prints ok with its isolated check seat.
+        """
+    author "dk"
+}
+
+record legeos.evidence.comp-integration-and-shell-tests-20261002/1 : evidence {
+    title "Working tree on 50af378: 455 passed, 0 failed across 6 test binaries."
+    state verified
+    result pass
+    method command
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    command "cargo test -p templar-comp-integration -p templar-shell"
+    summary """
+        Working tree on 50af378: 455 passed, 0 failed across 6 test binaries.
+        """
+    author "dk"
+}
+
 record legeos.evidence.content-changes-still-cannot-grow-a-place/1 : evidence {
     title "12 ledger tests and 2 tender tests pass with the new terminal-entered kind in place: only the declared semantic kinds carry weight, a burst in one session stays a Trace against a mixed multi-session context, and tending still emits only Place/Resize/Remove at a tending moment."
     state verified
@@ -884,6 +977,45 @@ record legeos.evidence.effectiveness-1-signatures-frozen-20260909/1 : evidence {
         """
 }
 
+record legeos.evidence.effectiveness-replay-fidelity-20261002/1 : evidence {
+    title "Working tree on 50af378: 7 passed, 0 failed across the two replay test binaries."
+    state verified
+    result pass
+    method command
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    command "cargo test -p templar-resourced --test replay_fixtures --test fixture_report"
+    summary """
+        Working tree on 50af378: 7 passed, 0 failed across the two replay test binaries.
+        """
+    author "dk"
+}
+
+record legeos.evidence.effectiveness-scoped-lint-20261002/1 : evidence {
+    title "Working tree on 50af378: clippy exits 0 with warnings denied for the three scoped crates, all targets."
+    state verified
+    result pass
+    method command
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    command "cargo clippy -p templar-resourced -p templar-file-index -p templar-filed --all-targets -- -D warnings"
+    summary """
+        Working tree on 50af378: clippy exits 0 with warnings denied for the three scoped crates, all targets.
+        """
+    author "dk"
+}
+
+record legeos.evidence.effectiveness-scoped-tests-20261002/1 : evidence {
+    title "Working tree on 50af378: 384 passed, 0 failed across 14 test binaries."
+    state verified
+    result pass
+    method command
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    command "cargo test -p templar-resourced -p templar-file-index -p templar-filed"
+    summary """
+        Working tree on 50af378: 384 passed, 0 failed across 14 test binaries.
+        """
+    author "dk"
+}
+
 record legeos.evidence.fanotify-against-inotify-20260904/1 : evidence {
     title "fanotify measured against inotify — the numbers behind keeping inotify"
     state verified
@@ -1097,6 +1229,58 @@ record legeos.evidence.files-windows-bookmarks-home-objects-gate-20260907/1 : ev
     summary """
         just check exit 0 on the uncommitted tree at 9855da2: fmt, clippy -D warnings, 1817 workspace tests (62 suites) including lege-window home-hidden-unless-revealed, lege-comp scene, lege-shell Files-object-launches-Files and lege-files menu/bookmark paths; MSRV; tree/deps/interfaces/signatures (186 members, PlaceFolder and SetBookmark frozen as additions)/proxies/packaging/assets/actions checks.
         """
+}
+
+record legeos.evidence.firefox-install-list-manual-20261001/1 : evidence {
+    title "package-install.sh required list contains usr/share/applications/firefox.desktop and usr/lib/firefox/distribution/policies.json."
+    state superseded
+    result pass
+    method manual
+    observed_at git:f457c56fb774b92d6b9b0f418dd93a61912632f3
+    summary """
+        package-install.sh required list contains usr/share/applications/firefox.desktop and usr/lib/firefox/distribution/policies.json.
+        """
+    author "dk"
+}
+
+record legeos.evidence.firefox-install-list-manual-20261001/2 : evidence {
+    title "package-install.sh required list contains usr/share/applications/firefox.desktop and usr/lib/firefox/distribution/policies.json."
+    state verified
+    result pass
+    method manual
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    summary """
+        package-install.sh required list contains usr/share/applications/firefox.desktop and usr/lib/firefox/distribution/policies.json.
+        """
+    supersedes [ @legeos.evidence.firefox-install-list-manual-20261001/1 ]
+    author "dk"
+}
+
+record legeos.evidence.firefox-packaging-checks-20261001/1 : evidence {
+    title "Only the two pre-existing filed-asset mismatches, identical on the clean tree; policies.json parses; desktop-file-validate clean; appd 48/48."
+    state superseded
+    result pass
+    method command
+    observed_at git:f457c56fb774b92d6b9b0f418dd93a61912632f3
+    command "cargo run -q -p xtask -- check-packaging"
+    summary """
+        Only the two pre-existing filed-asset mismatches, identical on the clean tree; policies.json parses; desktop-file-validate clean; appd 48/48.
+        """
+    author "dk"
+}
+
+record legeos.evidence.firefox-packaging-checks-20261001/2 : evidence {
+    title "Only the two pre-existing filed-asset mismatches, identical on the clean tree; policies.json parses; desktop-file-validate clean; appd 48/48."
+    state verified
+    result pass
+    method command
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    command "cargo run -q -p xtask -- check-packaging"
+    summary """
+        Only the two pre-existing filed-asset mismatches, identical on the clean tree; policies.json parses; desktop-file-validate clean; appd 48/48.
+        """
+    supersedes [ @legeos.evidence.firefox-packaging-checks-20261001/1 ]
+    author "dk"
 }
 
 record legeos.evidence.first-iso-built-and-booted-under-secure-boot-20260907/1 : evidence {
@@ -2297,6 +2481,19 @@ record legeos.evidence.installer-resume-autoinstall-vm-20260930/1 : evidence {
         """
 }
 
+record legeos.evidence.interface-signatures-unchanged-20261002/1 : evidence {
+    title "Working tree on 50af378: 207 shipped members across 35 interfaces, all unchanged."
+    state verified
+    result pass
+    method command
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    command "cargo run -q -p xtask -- check-interface-signatures"
+    summary """
+        Working tree on 50af378: 207 shipped members across 35 interfaces, all unchanged.
+        """
+    author "dk"
+}
+
 record legeos.evidence.iso-autoinstall-wired-network-qemu-20260929/1 : evidence {
     title "Direct-kernel QEMU boot of the g4084f63 medium with templaros.autoinstall=1 and virtio wired user networking: autoinstall logged ens3:ethernet:connected:Wired connection 1 with 10.0.2.15/24 (NetworkManager manages wired via the netplan renderer file), then STOPPED at 'no filesystem labelled lubuntu_2504' having written nothing."
     state verified
@@ -2888,6 +3085,19 @@ record legeos.evidence.perimeter-two-axis-resize-geometry-20260907/1 : evidence 
         """
 }
 
+record legeos.evidence.pointer-grab-reentry-test-20261002/1 : evidence {
+    title "Working tree on 50af378 (fix uncommitted): backend::check::tests::changing_the_window_model_inside_a_pointer_grab_does_not_hang_the_compositor passes (grab released, loop dispatched, no 10 s timeout); templar-comp 157 and templar-window 191 tests pass."
+    state verified
+    result pass
+    method command
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    command "cargo test -p templar-comp changing_the_window_model_inside_a_pointer_grab && cargo test -p templar-comp -p templar-window"
+    summary """
+        Working tree on 50af378 (fix uncommitted): backend::check::tests::changing_the_window_model_inside_a_pointer_grab_does_not_hang_the_compositor passes (grab released, loop dispatched, no 10 s timeout); templar-comp 157 and templar-window 191 tests pass.
+        """
+    author "dk"
+}
+
 record legeos.evidence.portal-model-tests-20260903/1 : evidence {
     title "The portal's FileChooser and AppChooser models are testable without a compositor, and pass"
     state verified
@@ -3199,6 +3409,60 @@ record legeos.evidence.session-edges-and-launch-observer-20260908/1 : evidence {
         actually fire on real hardware - a real lid close, a real unlock - and that busctl calling
         NotifyUnlocked from a terminal is refused.
         """
+}
+
+record legeos.evidence.sessiond-suite-green-20261001/1 : evidence {
+    title "82 passed, 0 failed; clippy and cargo fmt clean."
+    state superseded
+    result pass
+    method command
+    observed_at git:0abe0c3f778ff9b1f21b662ad42dd7a67633ad79
+    command "cargo test -p templar-sessiond --bin templar-sessiond"
+    summary """
+        82 passed, 0 failed; clippy and cargo fmt clean.
+        """
+    author "dk"
+}
+
+record legeos.evidence.sessiond-suite-green-20261001/2 : evidence {
+    title "82 passed, 0 failed; clippy and cargo fmt clean."
+    state verified
+    result pass
+    method command
+    observed_at git:af041c727bd86dcc801de513417b9852dc5d48c8
+    command "cargo test -p templar-sessiond --bin templar-sessiond"
+    summary """
+        82 passed, 0 failed; clippy and cargo fmt clean.
+        """
+    supersedes [ @legeos.evidence.sessiond-suite-green-20261001/1 ]
+    author "dk"
+}
+
+record legeos.evidence.sessiond-watcher-tests-20261001/1 : evidence {
+    title "6 passed: snapshot stability, add, edit, remove, non-desktop invisibility, late-appearing directories."
+    state superseded
+    result pass
+    method command
+    observed_at git:0abe0c3f778ff9b1f21b662ad42dd7a67633ad79
+    command "cargo test -p templar-sessiond --bin templar-sessiond desktop_watch"
+    summary """
+        6 passed: snapshot stability, add, edit, remove, non-desktop invisibility, late-appearing directories.
+        """
+    author "dk"
+}
+
+record legeos.evidence.sessiond-watcher-tests-20261001/2 : evidence {
+    title "6 passed: snapshot stability, add, edit, remove, non-desktop invisibility, late-appearing directories."
+    state verified
+    result pass
+    method command
+    observed_at git:af041c727bd86dcc801de513417b9852dc5d48c8
+    command "cargo test -p templar-sessiond --bin templar-sessiond desktop_watch"
+    summary """
+        6 passed: snapshot stability, add, edit, remove, non-desktop invisibility, late-appearing directories.
+        """
+    supersedes [ @legeos.evidence.sessiond-watcher-tests-20261001/1 ]
+    author "dk"
 }
 
 record legeos.evidence.settings-widget-consolidation-20260831/1 : evidence {
@@ -3785,6 +4049,19 @@ record legeos.evidence.window-groups-model-and-compositor-20260903/1 : evidence 
     summary """
         lege-window 104 tests incl. properties raising_a_group_never_changes_geometry, membership_survives_shelving_maximizing_arranging_and_hotplug, placing_and_moving_a_group_keeps_every_member_recoverable, placing_beside_never_overlaps_the_target; lege-comp 29 tests incl. super_tab_cycles_groups_and_ctrl_tab_is_never_reserved, super_g_groups_with_the_previous_window_and_shift_leaves_the_group, super_grave_toggles_the_terminal_and_a_bare_backtick_is_never_reserved; SHELL_PROTOCOL_VERSION 5 on both ends; lege-comp --check ok; a nested run mapped two kitty windows without error (chords not injectable, so unexercised).
         """
+}
+
+record legeos.evidence.workspace-check-all-targets-20261002/1 : evidence {
+    title "Working tree on 50af378: exits 0; only warnings are still265's two deprecated wide::i32x8::blend uses."
+    state verified
+    result pass
+    method command
+    observed_at git:50af3784cb5c3f0ebe72a1e15f12a88f57e11290
+    command "cargo check --workspace --all-targets"
+    summary """
+        Working tree on 50af378: exits 0; only warnings are still265's two deprecated wide::i32x8::blend uses.
+        """
+    author "dk"
 }
 
 record legeos.evidence.ws1-drawer-migration-20260901/1 : evidence {
