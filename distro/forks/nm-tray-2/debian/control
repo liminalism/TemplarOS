@@ -24,6 +24,6 @@ Description: network control for the TemplarOS Home Field
  Home Field's network control launches this with --popup and an already-running
  instance takes the request over the session bus instead of duplicating itself.
  .
- The package installs nm-tray.desktop, which is the name the shell resolves when
- no application declares org.templaros.NetworkTray
- (shell/templar-shell/src/surface/app.rs).
+ The package installs nm-tray.desktop, which claims the network-status-ui provider
+ role (X-TemplarOS-Provides) that the shell's network chip and the Settings
+ providers page resolve (shell/templar-shell/src/surface/app.rs).

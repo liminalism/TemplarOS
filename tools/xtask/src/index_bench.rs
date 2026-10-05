@@ -974,6 +974,17 @@ struct IdleSample {
     wchar_delta: Option<u64>,
 }
 
+fn idle_binary(binary: Option<PathBuf>, profile: &str) -> Result<PathBuf> {
+    if let Some(binary) = binary {
+        return Ok(binary);
+    }
+    let root = find_workspace_root()?;
+    Ok(std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| root.join("target"), |path| root.join(path))
+        .join(profile)
+        .join("templar-filed"))
+}
+
 fn idle(
     seconds: u64,
     entries: u64,
@@ -983,13 +994,7 @@ fn idle(
     out: Option<&Path>,
 ) -> Result<()> {
     let profile = if release { "release" } else { "debug" };
-    let binary = match binary {
-        Some(binary) => binary,
-        None => find_workspace_root()?
-            .join("target")
-            .join(profile)
-            .join("templar-filed"),
-    };
+    let binary = idle_binary(binary, profile)?;
     if !binary.exists() {
         bail!(
             "{} does not exist — build it first: cargo build{} -p templar-filed",

@@ -47,7 +47,7 @@ out_dir="$build_dir/debs"
 # libclang-dev and libpam0g-dev are not linked libraries: templar-shell's PAM binding (pam-sys) runs
 # bindgen over PAM's headers at build time. Without them `cargo deb -p templar-shell` fails in the
 # chroot while succeeding on a developer host that happens to have clang and the PAM headers.
-dev_packages="build-essential pkgconf rustup just git curl ca-certificates libsqlite3-dev
+dev_packages="build-essential pkgconf rustup just git curl ca-certificates libsqlite3-dev libarchive-dev
     libclang-dev libpam0g-dev libdisplay-info-dev libgbm-dev libinput-dev libpixman-1-dev libseat-dev
     libudev-dev libxkbcommon-dev libegl-dev libgles-dev libwayland-dev"
 

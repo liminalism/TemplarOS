@@ -5,14 +5,16 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
-bin="${CARGO_TARGET_DIR:-$root/target}/debug"
+bin="${TEMPLAROS_NESTED_BIN_DIR:-$("scripts/native-target-dir.sh")/debug}"
 
 if [ "${TEMPLAR_NESTED_ISOLATED:-0}" != 1 ]; then
     if [ -z "${DISPLAY:-}" ]; then
         echo "nested session: FAILED — an X11 display is required (use xvfb-run -a)" >&2
         exit 1
     fi
-    cargo build --workspace
+    if [ "${TEMPLAR_NESTED_SKIP_BUILD:-0}" != 1 ]; then
+        scripts/cargo-native.sh build --workspace
+    fi
     nested_root="$(mktemp -d /tmp/templaros-nested.XXXXXX)"
     nested_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
     nested_rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
@@ -37,6 +39,9 @@ if [ "${TEMPLAR_NESTED_ISOLATED:-0}" != 1 ]; then
     chmod 700 "$nested_root/runtime"
     dbus-run-session -- env \
         TEMPLAR_NESTED_ISOLATED=1 \
+        TEMPLAR_NESTED_SKIP_BUILD=1 \
+        TEMPLAR_NESTED_INPUT_JOURNEY="${TEMPLAR_NESTED_INPUT_JOURNEY:-0}" \
+        TEMPLAROS_NESTED_BIN_DIR="$bin" \
         TEMPLAR_NESTED_ROOT="$nested_root" \
         CARGO_HOME="$nested_cargo_home" \
         RUSTUP_HOME="$nested_rustup_home" \
@@ -101,7 +106,8 @@ wait_for_name() {
 # Force the host side to X11. WAYLAND_DISPLAY belongs to the caller's runtime directory, which is
 # deliberately hidden from this isolated session.
 start_service compositor env -u WAYLAND_DISPLAY "$bin/templar-comp" \
-    --backend winit --socket-name templaros-integration
+    --backend winit --socket-name templaros-integration \
+    --test-input-socket "$TEMPLAR_NESTED_ROOT/runtime/input.sock"
 wait_for_path "$XDG_RUNTIME_DIR/templaros-integration"
 # The trusted-shell socket is a *prefix* of the main socket's name, not a suffix — a trailing
 # `-shell` on `wayland-0` would land inside snapd's `wayland-[0-9]*` permission, which is the one
@@ -152,6 +158,13 @@ if ! kill -0 "${pids[0]}" 2>/dev/null; then
     echo "nested session: FAILED — compositor exited during the journey" >&2
     cat "$TEMPLAR_NESTED_ROOT/logs/compositor.log" >&2
     exit 1
+fi
+
+if [ "${TEMPLAR_NESTED_INPUT_JOURNEY:-0}" = 1 ]; then
+    # Direct first-party Wayland clients, not transient user units or host tools.
+    start_service client-settings env -u DISPLAY WAYLAND_DISPLAY=templaros-integration "$bin/templar-settings"
+    start_service client-files env -u DISPLAY WAYLAND_DISPLAY=templaros-integration "$bin/templar-files" "$root/tests/fixtures"
+    "$root/tests/integration/nested-input.py" --socket "$TEMPLAR_NESTED_ROOT/runtime/input.sock"
 fi
 
 echo "nested session: ok (live compositor, shell, services, CLI state journey)"

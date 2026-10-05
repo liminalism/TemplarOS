@@ -9,6 +9,24 @@ and resourced on a private bus. It drives app discovery, file search, settings m
 provider resolution, and resource reporting through `templar`. Run it under an existing X display or
 with `xvfb-run -a`; CI uses Xvfb.
 
+The opt-in input journey uses actual built Settings and Files clients plus the real shell. It
+asserts activation stays unchanged while Alt is held, changes to the selected window on release,
+then parks it, reveals Home and clicks its shell-published card to restore it. There is no XTEST
+or host focus requirement: input goes only to the explicitly enabled private nested socket.
+After building the workspace, run:
+
+```sh
+export CARGO_TARGET_DIR="$(scripts/native-target-dir.sh)"
+xvfb-run -a env TEMPLAR_NESTED_SKIP_BUILD=1 TEMPLAR_NESTED_INPUT_JOURNEY=1 \
+  TEMPLAROS_NESTED_BIN_DIR="$CARGO_TARGET_DIR/debug" tests/integration/nested-session.sh
+```
+
+This wrapper creates a private bus and HOME/XDG runtime/state, keeps failed-run logs, and never
+starts or stops user units. The developer launcher `scripts/nested-session.sh` separately supports
+Wayland or X11 hosts, `TEMPLAROS_HOST_WAYLAND` / `TEMPLAROS_HOST_DISPLAY`, and
+`TEMPLAROS_NESTED_BIN_DIR`. It deliberately still refuses to run over a live installed TemplarOS
+session because it shares the user's bus; use the isolated integration wrapper instead.
+
 `greeter.sh` covers the greetd framed-JSON conversation with the crate's fake peer and verifies the
 compositor preserves `GREETD_SOCK` and supplies `WAYLAND_DISPLAY`. `package-install.sh` builds the six
 login/session-facing packages and extracts them into an empty root, then checks their executable,

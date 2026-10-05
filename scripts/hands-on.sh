@@ -97,7 +97,7 @@ EOF
 These need the TemplarOS packages installed and a login. Deploying is yours to
 run — this script will not do it:
 
-    just deb && sudo ./target/release/templar dev deploy
+    just deb && sudo "$(scripts/native-target-dir.sh)/release/templar" dev deploy
     log out, pick TemplarOS at the greeter, log back in
 
 None of this needs the distro installed anywhere new. It is the Stage-2

@@ -17,6 +17,12 @@ if ! grep -q 'X-TemplarOS-Provides' "$src/resources/nm-tray-autostart.desktop" 2
     echo "  the autostart entry at this pin carries no X-TemplarOS-Provides key" >&2
     fail=1
 fi
+if ! grep -q 'X-TemplarOS-Provides' "$src/resources/nm-tray.desktop" 2>/dev/null; then
+    echo "  the application entry at this pin carries no X-TemplarOS-Provides key" >&2
+    echo "  (sessiond imports the role claim from the application file, not the autostart one;" >&2
+    echo "  without it the provider role stays empty and the network chip stays dimmed)" >&2
+    fail=1
+fi
 if [ "$fail" -ne 0 ]; then
     cat >&2 <<'WHY'
 

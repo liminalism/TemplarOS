@@ -1,6 +1,7 @@
 # TemplarOS developer entry points. `just` (no args) lists recipes.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
+export CARGO_TARGET_DIR := `scripts/native-target-dir.sh`
 
 default:
     @just --list
@@ -103,3 +104,7 @@ ci:
 # Regenerate docs/generated from the AKR ledger
 akr-build:
     akr build
+
+# Every outstanding manual acceptance check, grouped into one post-login pass.
+predeploy-checklist:
+    ./scripts/predeploy-checklist.py

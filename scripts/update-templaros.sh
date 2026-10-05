@@ -151,6 +151,7 @@ if ((skip_build == 0)); then
 fi
 
 cd -- "$repo_root"
+export CARGO_TARGET_DIR="$("$repo_root/scripts/native-target-dir.sh")"
 
 if ((skip_build == 0)); then
     section "Build the native package set"
@@ -163,14 +164,14 @@ if ((dry_run == 0 || skip_build == 1)); then
 fi
 
 templar_bin=""
-if [[ -x "$repo_root/target/release/templar" ]]; then
-    templar_bin="$repo_root/target/release/templar"
+if [[ -x "$CARGO_TARGET_DIR/release/templar" ]]; then
+    templar_bin="$CARGO_TARGET_DIR/release/templar"
 elif command -v templar >/dev/null 2>&1; then
     templar_bin="$(command -v templar)"
 elif [[ -x /usr/bin/templar ]]; then
     templar_bin=/usr/bin/templar
 fi
-[[ -n "$templar_bin" ]] || die "templar CLI not found; just deb should have built target/release/templar"
+[[ -n "$templar_bin" ]] || die "templar CLI not found; just deb should have built $CARGO_TARGET_DIR/release/templar"
 
 deploy_args=(dev --repo "$archive_root" deploy --build-set "$build_set")
 if ((snapshot_state == 1)); then

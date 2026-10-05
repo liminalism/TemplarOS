@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 MANIFEST="$REPO_ROOT/helpers/templar-preview-codecs/Cargo.toml"
-PREVIEW_TARGET_DIR="$REPO_ROOT/target/preview-codecs-build"
+PREVIEW_TARGET_DIR="$("$SCRIPT_DIR/native-target-dir.sh")/preview-codecs-build"
 STAGE_DIR="$REPO_ROOT/target/preview-codecs"
 TOOLCHAIN=${TEMPLAROS_PREVIEW_TOOLCHAIN:-1.97.1}
 

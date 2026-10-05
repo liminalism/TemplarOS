@@ -27,9 +27,13 @@ socket=templaros-nested
 # the one no confined application may ever open (compositor/templar-comp/src/shell_socket.rs).
 shell_socket="templaros-shell-$socket"
 profile=${TEMPLAROS_NESTED_PROFILE:-debug}
-bin="$root/target/$profile"
+cargo_profile=$profile
+[ "$profile" != debug ] || cargo_profile=dev
+bin=${TEMPLAROS_NESTED_BIN_DIR:-$("$here/native-target-dir.sh")/$profile}
+input_socket="$run/input.sock"
 
 mkdir -p "$run"
+chmod 700 "$run"
 
 pidfile() { echo "$run/$1.pid"; }
 logfile() { echo "$run/$1.log"; }
@@ -90,10 +94,22 @@ start_comp() {
     clear_stale_sockets
     : >"$(logfile comp)"
     echo "starting compositor (winit, socket $socket)"
-    # The host's WAYLAND_DISPLAY is what winit nests *into*, so this one keeps it.
-    env -u DISPLAY WAYLAND_DISPLAY="${TEMPLAROS_HOST_WAYLAND:-$WAYLAND_DISPLAY}" \
-        RUST_LOG="${RUST_LOG:-info}" \
+    # Keep only the chosen host backend. Clients below still inherit neither host display.
+    local host_wayland=${TEMPLAROS_HOST_WAYLAND:-${WAYLAND_DISPLAY:-}}
+    local host_x11=${TEMPLAROS_HOST_DISPLAY:-${DISPLAY:-}}
+    local -a host_env
+    if [ -n "$host_wayland" ]; then
+        host_env=(env -u DISPLAY WAYLAND_DISPLAY="$host_wayland")
+    elif [ -n "$host_x11" ]; then
+        host_env=(env -u WAYLAND_DISPLAY DISPLAY="$host_x11")
+    else
+        echo "no host Wayland or X11 display; use xvfb-run -a for an isolated test" >&2
+        return 1
+    fi
+    rm -f "$input_socket"
+    "${host_env[@]}" RUST_LOG="${RUST_LOG:-info}" \
         "$bin/templar-comp" --backend winit --socket-name "$socket" \
+        --test-input-socket "$input_socket" \
         >"$(logfile comp)" 2>&1 &
     echo $! >"$(pidfile comp)"
     wait_for_log "trusted-shell socket ready" \
@@ -205,8 +221,10 @@ start)
         && echo "nested session up — logs in $run"
     ;;
 shell)
-    # The hot-swap loop: rebuild only the shell and restart it against the live compositor.
-    ( cd "$root" && cargo build -p templar-shell ${profile:+$([ "$profile" = release ] && echo --release)} ) || exit 1
+    # The hot-swap loop rebuilds the native shell; an explicit binary directory is restart-only.
+    if [ -z "${TEMPLAROS_NESTED_BIN_DIR:-}" ]; then
+        ( cd "$root" && "$here/cargo-native.sh" build -p templar-shell --profile "$cargo_profile" ) || exit 1
+    fi
     start_shell && echo "shell restarted"
     ;;
 launch)
@@ -215,6 +233,10 @@ launch)
     ;;
 apps)
     "$bin/templar" app list 2>/dev/null | head -40
+    ;;
+input)
+    shift
+    "$here/nested-input.py" --socket "$input_socket" "$@"
     ;;
 logs)
     for name in comp sessiond filed portal shell; do
@@ -225,6 +247,7 @@ logs)
 stop)
     for name in shell portal filed sessiond comp; do stop_one "$name"; done
     clear_stale_sockets
+    rm -f "$input_socket"
     echo "nested session stopped"
     ;;
 status)

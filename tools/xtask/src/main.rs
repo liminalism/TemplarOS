@@ -5,6 +5,7 @@ mod build_set;
 mod index_bench;
 mod seeds;
 mod signatures;
+mod wayland_versions;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -404,6 +405,7 @@ fn check_wayland_versions(root: &Path) -> Result<()> {
     let mut versions: BTreeMap<String, u32> = BTreeMap::new();
     let mut problems: Vec<String> = Vec::new();
     let mut members = 0usize;
+    let mut toplevel_requests = Vec::new();
 
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
         .with_context(|| format!("reading {}", dir.display()))?
@@ -416,44 +418,15 @@ fn check_wayland_versions(root: &Path) -> Result<()> {
     for file in &files {
         let text =
             std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
-        let mut current: Option<(String, u32)> = None;
-        for line in text.lines() {
-            if let Some(name) = quoted_after(line, "<interface name=\"") {
-                let version = quoted_after(line, "version=\"")
-                    .and_then(|raw| raw.parse::<u32>().ok())
-                    .unwrap_or(1);
-                versions.insert(name.clone(), version);
-                current = Some((name, version));
-                continue;
-            }
-            let Some(since) =
-                quoted_after(line, "since=\"").and_then(|raw| raw.parse::<u32>().ok())
-            else {
-                continue;
-            };
-            members += 1;
-            if let Some((interface, version)) = &current
-                && since > *version
-            {
-                problems.push(format!(
-                    "{interface} is version {version} but declares a member since={since}: no peer can reach it"
-                ));
-            }
-        }
+        let parsed = wayland_versions::parse(&text)
+            .with_context(|| format!("parsing {}", file.display()))?;
+        versions.extend(parsed.versions);
+        toplevel_requests.extend(parsed.toplevel_requests);
+        members += parsed.versioned_members;
+        problems.extend(parsed.problems);
     }
 
-    // Objects are created at the list resource's negotiated version, so a lower list version
-    // silently makes newer toplevel events unreachable. The XML says so; this is what checks it.
-    if let (Some(list), Some(toplevel)) = (
-        versions.get("templar_shell_toplevel_list_v1"),
-        versions.get("templar_shell_toplevel_v1"),
-    ) && list < toplevel
-    {
-        problems.push(format!(
-            "templar_shell_toplevel_list_v1 is version {list}, below templar_shell_toplevel_v1's {toplevel}: \
-             toplevels are created at the list's version, so its newer events would be unreachable"
-        ));
-    }
+    check_shell_object_versions(&versions, &toplevel_requests, &mut problems);
 
     for (interface, path, needle) in PROTOCOL_VERSION_CONSTANTS {
         let Some(declared) = versions.get(*interface) else {
@@ -494,10 +467,58 @@ fn check_wayland_versions(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The contents of the first `"…"` after `needle` on `line`.
-fn quoted_after(line: &str, needle: &str) -> Option<String> {
-    let (_, rest) = line.split_once(needle)?;
-    rest.split('"').next().map(ToString::to_string)
+fn check_shell_object_versions(
+    versions: &BTreeMap<String, u32>,
+    requests: &[u32],
+    problems: &mut Vec<String>,
+) {
+    let Some(manager) = versions.get("templar_shell_manager_v1") else {
+        problems.push("templar_shell_manager_v1 is missing".into());
+        return;
+    };
+    for interface in [
+        "templar_shell_toplevel_list_v1",
+        "templar_shell_toplevel_v1",
+    ] {
+        if versions.get(interface) != Some(manager) {
+            problems.push(format!(
+                "{interface} must equal manager version {manager}: child objects inherit its negotiated version"
+            ));
+        }
+    }
+    for since in requests {
+        if !(1..=*manager).contains(since) {
+            problems.push(format!(
+                "toplevel request since={since} has no corresponding manager protocol version"
+            ));
+        }
+    }
+}
+
+#[cfg(test)]
+mod shell_version_tests {
+    use super::*;
+
+    #[test]
+    fn manager_children_equal_and_requests_use_manager_revision_numbers() {
+        let mut versions = BTreeMap::from([
+            ("templar_shell_manager_v1".into(), 13),
+            ("templar_shell_toplevel_list_v1".into(), 13),
+            ("templar_shell_toplevel_v1".into(), 13),
+        ]);
+        let mut problems = Vec::new();
+        check_shell_object_versions(&versions, &[1, 12, 13], &mut problems);
+        assert!(problems.is_empty());
+        // Equal child versions are insufficient when both exceed the manager.
+        versions.insert("templar_shell_toplevel_list_v1".into(), 14);
+        versions.insert("templar_shell_toplevel_v1".into(), 14);
+        check_shell_object_versions(&versions, &[0, 14], &mut problems);
+        assert_eq!(problems.len(), 4);
+        versions.insert("templar_shell_toplevel_list_v1".into(), 12);
+        problems.clear();
+        check_shell_object_versions(&versions, &[], &mut problems);
+        assert_eq!(problems.len(), 2);
+    }
 }
 
 /// Every `.rs` file under `dir`, recursively.
@@ -2286,17 +2307,6 @@ fn copyright(root: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod extraction_tests {
-    #[test]
-    fn a_quoted_attribute_is_read_up_to_its_closing_quote() {
-        let line = r#"  <interface name="templar_shell_manager_v1" version="8">"#;
-        assert_eq!(
-            super::quoted_after(line, "<interface name=\""),
-            Some("templar_shell_manager_v1".into())
-        );
-        assert_eq!(super::quoted_after(line, "version=\""), Some("8".into()));
-        assert_eq!(super::quoted_after(line, "since=\""), None);
-    }
-
     use super::{
         GARDEN_HOOK_PAYLOAD, VendoredAssets, chord_route_problems, client_interface_names,
         colliding_destinations, declared_actions, dependency_drift, garden_hook_delivery_problems,

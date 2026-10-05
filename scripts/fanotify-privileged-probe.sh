@@ -30,7 +30,7 @@ set -euo pipefail
 
 REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 BTRFS_FIXTURE=${TEMPLAR_BTRFS_FIXTURE:-/tmp/templaros-btrfs-fixture}
-HARNESS="$REPO_ROOT/target/release/examples/fanotify-lab"
+HARNESS="$("$REPO_ROOT/scripts/native-target-dir.sh")/release/examples/fanotify-lab"
 DRY_RUN=0
 PATHS=()
 

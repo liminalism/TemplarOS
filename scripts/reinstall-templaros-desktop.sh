@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "$script_dir/.." && pwd -P)"
-nm_tray2_dir="${NM_TRAY2_DIR:-${repo_root}/../not-rust-projects/nm-tray-2}"
+nm_tray2_dir="${NM_TRAY2_DIR:-${repo_root}/forks/nm-tray-2}"
 
 skip_build=0
 skip_nm_tray2=0
@@ -19,7 +19,7 @@ Usage:
   scripts/reinstall-templaros-desktop.sh [OPTIONS]
 
 Options:
-  --skip-build          Reuse the existing CMake build and Debian packages.
+  --skip-build          Reuse existing Debian packages in target/debian/.
   --skip-nm-tray2       Do not build or install nm-tray2.
   --nm-tray2-dir PATH   Use a different nm-tray2 source directory.
   --yes                 Let apt repair dependencies without prompting.
@@ -27,8 +27,8 @@ Options:
   --dry-run             Validate inputs and print commands without changing anything.
   -h, --help            Show this help.
 
-The default nm-tray2 path is:
-  ../not-rust-projects/nm-tray-2
+The default nm-tray2 source is forks/nm-tray-2. It is packaged through the
+maintained Debian overlay, not installed as untracked CMake output.
 
 NM_TRAY2_DIR can also override that path. Run this script as your normal desktop
 user; it asks sudo only for the system-wide install steps. It does not terminate
@@ -102,7 +102,7 @@ done
 [[ -f "$repo_root/Cargo.toml" && -f "$repo_root/justfile" ]] ||
     die "could not locate the TemplarOS repository from $script_dir"
 
-for command_name in sudo dpkg apt-get systemctl; do
+for command_name in sudo dpkg apt-get systemctl python3; do
     require_command "$command_name"
 done
 
@@ -112,26 +112,21 @@ if ((skip_build == 0)); then
     done
 fi
 
-cmake_bin=""
-nm_tray2_build=""
 if ((skip_nm_tray2 == 0)); then
-    require_command cmake
-    cmake_bin="$(command -v cmake)"
     if ! nm_tray2_dir="$(cd -- "$nm_tray2_dir" 2>/dev/null && pwd -P)"; then
         die "nm-tray2 source directory not found; pass --nm-tray2-dir PATH or --skip-nm-tray2"
     fi
     [[ -f "$nm_tray2_dir/CMakeLists.txt" ]] ||
         die "nm-tray2 CMakeLists.txt not found in $nm_tray2_dir"
-    nm_tray2_build="$nm_tray2_dir/build"
 fi
 
 cd -- "$repo_root"
 
 if ((skip_build == 0)); then
     if ((skip_nm_tray2 == 0)); then
-        section "Build nm-tray2"
-        run "$cmake_bin" -S "$nm_tray2_dir" -B "$nm_tray2_build" -DCMAKE_BUILD_TYPE=Release
-        run "$cmake_bin" --build "$nm_tray2_build" --parallel
+        section "Build nm-tray2 Debian package"
+        require_command dpkg-buildpackage
+        run "$repo_root/scripts/build-fork-deb.sh" nm-tray-2 --source "$nm_tray2_dir"
     fi
 
     section "Build all TemplarOS Debian packages"
@@ -144,10 +139,6 @@ else
     section "Reuse existing build artifacts"
 fi
 
-if ((skip_nm_tray2 == 0 && dry_run == 0)); then
-    [[ -f "$nm_tray2_build/cmake_install.cmake" ]] ||
-        die "nm-tray2 is not configured in $nm_tray2_build; rerun without --skip-build"
-fi
 
 # The package list is not written down here. distro/deploy/components.toml is the one place it
 # lives; cargo xtask, templar doctor and templar dev all read the same file, so a package added to the
@@ -156,6 +147,12 @@ components_toml="$repo_root/distro/deploy/components.toml"
 [[ -f "$components_toml" ]] || die "component matrix not found at $components_toml"
 mapfile -t expected_packages < <(sed -n 's/^package = "\(.*\)"$/\1/p' "$components_toml")
 ((${#expected_packages[@]} > 0)) || die "no packages listed in $components_toml"
+if ((skip_nm_tray2 == 0)); then
+    fork_control="$repo_root/distro/forks/nm-tray-2/debian/control"
+    mapfile -t fork_packages < <(sed -n 's/^Package: //p' "$fork_control")
+    ((${#fork_packages[@]} > 0)) || die "no packages listed in $fork_control"
+    expected_packages+=("${fork_packages[@]}")
+fi
 
 deb_dir="$repo_root/target/debian"
 debs=()
@@ -185,9 +182,6 @@ shopt -u nullglob
 
 section "Install nm-tray2 and TemplarOS"
 run sudo -v
-if ((skip_nm_tray2 == 0)); then
-    run sudo "$cmake_bin" --install "$nm_tray2_build"
-fi
 
 if ! run sudo dpkg -i "${debs[@]}"; then
     warn "dpkg reported an incomplete install; apt will now repair dependencies"
@@ -199,6 +193,31 @@ if ((assume_yes == 1)); then
 fi
 run "${apt_command[@]}"
 run sudo dpkg -i "${debs[@]}"
+
+section "Seed the first-upgrade username hint without replacing login history"
+run sudo python3 - "$(id -un)" <<'PY'
+import os
+import pwd
+import sys
+import tempfile
+
+username = sys.argv[1]
+if not username or len(username.encode()) > 256 or any(ord(c) < 32 or ord(c) == 127 for c in username):
+    raise SystemExit("refusing an invalid username hint")
+account = pwd.getpwnam("templar-greeter")
+state = "/var/lib/templar-greeter"
+os.makedirs(state, mode=0o700, exist_ok=True)
+os.chown(state, account.pw_uid, account.pw_gid)
+with tempfile.NamedTemporaryFile(dir=state, prefix=".last-user-", mode="wb") as hint:
+    os.fchown(hint.fileno(), account.pw_uid, account.pw_gid)
+    hint.write(username.encode() + b"\n")
+    hint.flush()
+    os.fsync(hint.fileno())
+    try:
+        os.link(hint.name, os.path.join(state, "last-user"), follow_symlinks=False)
+    except FileExistsError:
+        pass
+PY
 
 section "Reload user units and verify the installed session"
 if ! run systemctl --user daemon-reload; then

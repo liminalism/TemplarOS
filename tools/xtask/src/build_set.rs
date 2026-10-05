@@ -419,7 +419,9 @@ fn reject_stale_build_scripts(root: &Path, matrix: &Matrix, id: &str) -> Result<
         if component.stamp.is_none() {
             continue;
         }
-        let binary = root.join("target/release").join(&component.crate_name);
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map_or_else(|| root.join("target"), |path| root.join(path));
+        let binary = target.join("release").join(&component.crate_name);
         if !binary.is_file() {
             continue;
         }
