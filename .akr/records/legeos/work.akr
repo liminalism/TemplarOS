@@ -3873,7 +3873,7 @@ record legeos.work.desktop-polish-t1-per-os-target-dir-20261005/1 : work {
 
 record legeos.work.desktop-polish-t10-ledger-rename-debt-20261005/1 : work {
     title "t10-ledger-rename-debt"
-    state active
+    state completed
     scope [
         path "compositor/templar-comp/**",
         path "crates/templar-window/**",
@@ -3891,6 +3891,7 @@ record legeos.work.desktop-polish-t10-ledger-rename-debt-20261005/1 : work {
                 """
             method command
             command "akr validate"
+            verified_by [ @legeos.evidence.final-ledger-rename-validation-20261005/1 ]
         }
     }
     part_of [ @legeos.work.desktop-polish-and-test-infrastructure-backlog-20261004 ]
@@ -3925,7 +3926,7 @@ record legeos.work.desktop-polish-t11-commit-in-slices-20261005/1 : work {
 
 record legeos.work.desktop-polish-t11-commit-in-slices-20261005/2 : work {
     title "t11-commit-in-slices"
-    state active
+    state completed
     scope [
         path "compositor/templar-comp/**",
         path "crates/templar-window/**",
@@ -3943,6 +3944,7 @@ record legeos.work.desktop-polish-t11-commit-in-slices-20261005/2 : work {
                 """
             method command
             command "just check"
+            verified_by [ @legeos.evidence.committed-source-prefix-checks-20261005/1 ]
         }
     }
     part_of [ @legeos.work.desktop-polish-and-test-infrastructure-backlog-20261004 ]
@@ -3952,7 +3954,7 @@ record legeos.work.desktop-polish-t11-commit-in-slices-20261005/2 : work {
 
 record legeos.work.desktop-polish-t12-predeploy-checklist-20261005/1 : work {
     title "t12-predeploy-checklist"
-    state active
+    state completed
     scope [
         path "compositor/templar-comp/**",
         path "crates/templar-window/**",
@@ -3969,6 +3971,7 @@ record legeos.work.desktop-polish-t12-predeploy-checklist-20261005/1 : work {
                 A generated pre-deploy checklist lists every open manual acceptance check across active work records, grouped by what to try after logging in, so a TemplarOS test session is one pass.
                 """
             method manual
+            verified_by [ @legeos.evidence.committed-predeploy-checklist-20261005/1 ]
         }
     }
     part_of [ @legeos.work.desktop-polish-and-test-infrastructure-backlog-20261004 ]
@@ -3977,7 +3980,7 @@ record legeos.work.desktop-polish-t12-predeploy-checklist-20261005/1 : work {
 
 record legeos.work.desktop-polish-t2-nested-session-and-input-injector-20261005/1 : work {
     title "t2-nested-session-and-input-injector"
-    state active
+    state completed
     scope [
         path "compositor/templar-comp/**",
         path "crates/templar-window/**",
@@ -3995,6 +3998,7 @@ record legeos.work.desktop-polish-t2-nested-session-and-input-injector-20261005/
                 """
             method command
             command "scripts/nested-session.sh start && scripts/nested-session.sh stop"
+            verified_by [ @legeos.evidence.committed-nested-hosts-and-input-20261005/1 ]
         }
     }
     part_of [ @legeos.work.desktop-polish-and-test-infrastructure-backlog-20261004 ]
@@ -4129,7 +4133,7 @@ record legeos.work.desktop-polish-t7-card-position-memory-20261005/1 : work {
 
 record legeos.work.desktop-polish-t8-unverified-window-icons-20261005/1 : work {
     title "t8-unverified-window-icons"
-    state active
+    state completed
     scope [
         path "compositor/templar-comp/**",
         path "crates/templar-window/**",
@@ -4146,6 +4150,7 @@ record legeos.work.desktop-polish-t8-unverified-window-icons-20261005/1 : work {
                 A recorded decision on unverified windows: whether a window whose identity did not resolve may show its claimed app icon for display only, marked as unverified, never merging into a trusted chip (ARCHITECTURE.md identity invariant); implemented if accepted.
                 """
             method observation
+            verified_by [ @legeos.evidence.committed-unverified-icon-policy-20261005/1 ]
         }
     }
     part_of [ @legeos.work.desktop-polish-and-test-infrastructure-backlog-20261004 ]
@@ -4154,7 +4159,7 @@ record legeos.work.desktop-polish-t8-unverified-window-icons-20261005/1 : work {
 
 record legeos.work.desktop-polish-t9-protocol-version-gate-20261005/1 : work {
     title "t9-protocol-version-gate"
-    state active
+    state completed
     scope [
         path "compositor/templar-comp/**",
         path "crates/templar-window/**",
@@ -4172,6 +4177,7 @@ record legeos.work.desktop-polish-t9-protocol-version-gate-20261005/1 : work {
                 """
             method command
             command "cargo run -q -p xtask -- check-wayland-versions"
+            verified_by [ @legeos.evidence.committed-source-prefix-checks-20261005/1 ]
         }
     }
     part_of [ @legeos.work.desktop-polish-and-test-infrastructure-backlog-20261004 ]

@@ -508,6 +508,110 @@ record legeos.evidence.clock-calendar-library-research-20261003/1 : evidence {
     author "dk"
 }
 
+record legeos.evidence.committed-archive-roundtrip-and-refusal-20261005/1 : evidence {
+    title "committed-archive-roundtrip-and-refusal"
+    state verified
+    result pass
+    method observation
+    observed_at git:25160b1dae89108073512bfa86794a18aa64e678
+    summary "The actual native templar archive CLI, each invocation on a private session bus, round-tripped a ZIP containing a filename with spaces, semicolon and literal shell-substitution syntax plus a NUL-bearing second file. Output bytes matched exactly. Extraction collision exited nonzero and preserved the existing file; a ../escape.txt ZIP member exited nonzero and created no escaped file. Temporary paths were removed. This fresh observation covers these ZIP cases only, not the older 21-format record."
+    author "dk"
+}
+
+record legeos.evidence.committed-desktop-renders-20261005/1 : evidence {
+    title "committed-desktop-renders"
+    state verified
+    result pass
+    method command
+    observed_at git:25160b1dae89108073512bfa86794a18aa64e678
+    command "templar-shell --render-home-work; templar-shell --render-switcher; templar-shell --render-rails; templar-shell --render-calendar; templar-comp --check"
+    summary "Actual committed native binaries produced 9 Home-work frames, 4 switcher frames, 4 rail frames and 24 calendar frames; Home action assertions covered activate/park/restore/overflow/close/recents. Visually inspected wide Home, open switcher, Apps/System rails and leap-day calendar PNGs. Folder path appeared once on a faint plate; connected cards shared baselines with letterboxed previews; switcher showed icons, parked dimming and an unverified marker; group chips overlapped member icons; System rail used symbolic actions with text clock. Headless compositor check returned ok. These are deterministic headless fixtures, not a native DRM smoothness or black-band reproduction."
+    author "dk"
+}
+
+record legeos.evidence.committed-elan-package-20261005/1 : evidence {
+    title "committed-elan-package"
+    state verified
+    result pass
+    method command
+    observed_at git:1853e264bb9673e04007d8137bbd6f98f288e6ae
+    command "scripts/build-elan-fingerprint-deb.py /mnt/lubuntu/home/dk/elan-fp/vendor/lenovo-r1slf01w/extracted/package/libfprint-2-tod1-elan.so"
+    summary "The native package builder accepted the pinned OpenSSL-3 Lenovo ELAN 0.0.8 blob with SHA-256 a5060ccdfc0c613bd4522be29f87cd94f098e6b83294cf02cd5a958b24b27f80 and emitted target/debian/templaros-elan-fingerprint_0.0.8+templaros1_amd64.deb. Nothing was installed or restarted; no biometric template was copied."
+    author "dk"
+}
+
+record legeos.evidence.committed-greeter-last-user-20261005/1 : evidence {
+    title "committed-greeter-last-user"
+    state verified
+    result pass
+    method observation
+    observed_at git:25160b1dae89108073512bfa86794a18aa64e678
+    summary "Real compositor and greeter ran under private Xvfb, D-Bus and a bubblewrap-private /var/lib, against a framed-JSON greetd peer. Greeter saved dk with mode 0600 only after StartSessionSuccess; a fresh greeter process displayed dk in the username field. Information was acknowledged automatically; Escape queued during authentication prevented the intervening success from launching, then a new flow started successfully. The captured prefilled-user PNG was visually inspected. No real PAM fingerprint authentication was attempted."
+    author "dk"
+}
+
+record legeos.evidence.committed-nested-hosts-and-input-20261005/1 : evidence {
+    title "committed-nested-hosts-and-input"
+    state verified
+    result pass
+    method observation
+    observed_at git:25160b1dae89108073512bfa86794a18aa64e678
+    summary "The actual developer launcher started/stopped a nested session with a binary-directory override on a private Wayland host created by an outer winit compositor in Xvfb. Compositor, sessiond, filed, portal and shell stayed alive and owned PID files were removed on stop. The separate isolated X11 integration journey used the private test-input socket: activation stayed unchanged while Alt was held, selected window changed from 5 to 4 on release, and a shell Home-card click restored window 4. The last journey used the full-draining CLI assertions subsequently committed as 1853e26. Private user-manager activation was absent by design. No host input or installed user service was touched."
+    author "dk"
+}
+
+record legeos.evidence.committed-one-time-icon-logging-20261005/1 : evidence {
+    title "committed-one-time-icon-logging"
+    state verified
+    result pass
+    method observation
+    observed_at git:1853e264bb9673e04007d8137bbd6f98f288e6ae
+    summary "A throwaway real Rust consumer invoked the actual Shell log_icon_miss_once function five times each for missing-app-a and missing-app-b with the same non-TTY subscriber configuration as the shell. Piped stdout contained exactly two INFO rows, one per app id, and zero ESC bytes. First miss allocation is retained; repeated misses now return before allocating another owned app id. This observes producer bytes, not the installed journal."
+    author "dk"
+}
+
+record legeos.evidence.committed-predeploy-checklist-20261005/1 : evidence {
+    title "committed-predeploy-checklist"
+    state verified
+    result pass
+    method command
+    observed_at git:1853e264bb9673e04007d8137bbd6f98f288e6ae
+    command "just predeploy-checklist"
+    summary "The actual predeploy checklist command emitted 90 outstanding manual checks from active AKR work/milestone heads, grouped under Applications and integration, Files and storage, Installation and rollback, Login and session recovery, and Windows/Home/appearance. Reviewed its software polish checks and older revalidation checks, including native motion, bottom band, lost-flip cursor continuity, installed Alt+Tab and next-login UI. Header explicitly says checks are not claims of working behavior, and deployment/logout remain owner actions."
+    author "dk"
+}
+
+record legeos.evidence.committed-source-prefix-checks-20261005/1 : evidence {
+    title "committed-source-prefix-checks"
+    state verified
+    result pass
+    method command
+    observed_at git:1853e264bb9673e04007d8137bbd6f98f288e6ae
+    command "just check"
+    summary "Isolated native worktree just check passed at cd0131b, 4dd6c8d, 54ca198, eb02741, 2e0f069, 046317c and 1853e26. Each ran workspace fmt, clippy with warnings denied, tests, patch-pinned MSRV 1.97.1, packaging/assets/proxy/tree gates and Wayland version checks. Final output reported 4 inherited interfaces and 41 versioned members; external still265 emitted two existing deprecated blend warnings."
+    author "dk"
+}
+
+record legeos.evidence.committed-unverified-icon-policy-20261005/1 : evidence {
+    title "committed-unverified-icon-policy"
+    state verified
+    result pass
+    method observation
+    observed_at git:1853e264bb9673e04007d8137bbd6f98f288e6ae
+    summary "Active decision decorative-client-claim-icons-20261005/2 records bounded claimed app identity as an unverified display-only hint. Visually inspected the question marker in the committed switcher fixture. Final workspace tests passed claimed_icon_does_not_merge_unknown_windows_with_a_trusted_application, a_group_holding_a_terminal_is_on_the_active_lane_and_an_unverified_claim_is_not, and unverified_identity_is_never_merged. Canonical unknown-window identity and trusted grouping remain separate from the decorative hint."
+    author "dk"
+}
+
+record legeos.evidence.committed-work-position-memory-20261005/1 : evidence {
+    title "committed-work-position-memory"
+    state verified
+    result pass
+    method observation
+    observed_at git:1853e264bb9673e04007d8137bbd6f98f288e6ae
+    summary "Two fresh processes linked the actual native Shell and window libraries with private temporary XDG state. Process one observed an arranged 12x8 layout for window 41 and saved folder hints. Process two loaded the hints for new window 202 on a 24x16 output and returned Placement col=17,row=8,span=3x2, preserving the southeast folder region. The test used per-folder hints only, no persistent field document. Native project-zoom interaction remains a live review item."
+    author "dk"
+}
+
 record legeos.evidence.comp-and-window-suites-20261002/1 : evidence {
     title "Working tree on 50af378: templar-comp 157 passed and templar-window 191 passed, 0 failed."
     state verified
@@ -1315,6 +1419,62 @@ record legeos.evidence.files-windows-bookmarks-home-objects-gate-20260907/1 : ev
     summary """
         just check exit 0 on the uncommitted tree at 9855da2: fmt, clippy -D warnings, 1817 workspace tests (62 suites) including lege-window home-hidden-unless-revealed, lege-comp scene, lege-shell Files-object-launches-Files and lege-files menu/bookmark paths; MSRV; tree/deps/interfaces/signatures (186 members, PlaceFolder and SetBookmark frozen as additions)/proxies/packaging/assets/actions checks.
         """
+}
+
+record legeos.evidence.final-elan-package-permissions-20261005/1 : evidence {
+    title "ELAN package staging permissions"
+    state verified
+    result pass
+    method observation
+    observed_at git:9619b40b715ffc9e3f34c515ea263c6c00370d80
+    summary "Actual pinned driver package build under umask 077 emitted root-owned 0755 directories including the archive root, with 0644 plugin and udev rule. SHA-256 remained a5060ccdfc0c613bd4522be29f87cd94f098e6b83294cf02cd5a958b24b27f80. No plugin installation, service restart or biometric data migration occurred. The complete native just check also passed at 9619b40 in its own per-worktree/per-OS target."
+    author "dk"
+}
+
+record legeos.evidence.final-ledger-rename-validation-20261005/1 : evidence {
+    title "After supported scope/watch revisions and generated-view rebuild, actual akr validate completed stages A-D and reported no diagnostics. The pre-rename G022/G023 path/package warnings were absent. Historical evidence was preserved and 29 completed heads requiring refreshed acceptance were reopened rather than fabricated as fresh passes."
+    state verified
+    result pass
+    method command
+    observed_at git:9619b40b715ffc9e3f34c515ea263c6c00370d80
+    command "akr validate"
+    summary """
+        After supported scope/watch revisions and generated-view rebuild, actual akr validate completed stages A-D and reported no diagnostics. The pre-rename G022/G023 path/package warnings were absent. Historical evidence was preserved and 29 completed heads requiring refreshed acceptance were reopened rather than fabricated as fresh passes.
+        """
+    author "dk"
+}
+
+record legeos.evidence.final-native-build-set-20261005/1 : evidence {
+    title "final-native-build-set"
+    state verified
+    result pass
+    method command
+    observed_at git:1853e264bb9673e04007d8137bbd6f98f288e6ae
+    command "env PYTHONDONTWRITEBYTECODE=1 just deb"
+    summary "The complete native Ubuntu 26.04 release build emitted 21 Debian packages (13 binary packages and 8 metapackages) at 0.1.0~dev1791205563+g1853e26, with Rust 1.97.1 and target/debian/build-set.json. Preview-codec self-test passed and its release helper reported the PDF renderer available. Packages were built, not installed. The only subsequent software change is the separate fingerprint package staging permission fix."
+    author "dk"
+}
+
+record legeos.evidence.final-reinstaller-dry-run-20261005/1 : evidence {
+    title "final-reinstaller-dry-run"
+    state verified
+    result pass
+    method command
+    observed_at git:1853e264bb9673e04007d8137bbd6f98f288e6ae
+    command "scripts/reinstall-templaros-desktop.sh --skip-build --dry-run"
+    summary "Dry run selected the latest g1853e26 package for every one of the 13 binary matrix entries plus the built nm-tray package, printed owner sudo install/dependency repair, missing-only username bootstrap, unit reload and doctor commands, then reported that no build or installation command was executed."
+    author "dk"
+}
+
+record legeos.evidence.final-release-desktop-journey-20261005/1 : evidence {
+    title "final-release-desktop-journey"
+    state verified
+    result pass
+    method command
+    observed_at git:1853e264bb9673e04007d8137bbd6f98f288e6ae
+    command "xvfb-run -a env TEMPLAR_NESTED_SKIP_BUILD=1 TEMPLAR_NESTED_INPUT_JOURNEY=1 TEMPLAROS_NESTED_BIN_DIR=target/native/ubuntu-26.04/release tests/integration/nested-session.sh"
+    summary "The final release binaries on isolated X11/private D-Bus/private XDG state passed actual service/CLI state operations, graphical compositor and shell startup, Alt+Tab release activation 5 to 4, and shell Home-card restoration of window 4. Private org.freedesktop.systemd1 activation was unavailable by design; the journey returned zero. Host input and the installed desktop remained untouched."
+    author "dk"
 }
 
 record legeos.evidence.firefox-install-list-manual-20261001/1 : evidence {
