@@ -26,7 +26,7 @@ fmt:
 
 # MSRV = workspace rust-version in Cargo.toml; the pinned development patch satisfies it.
 msrv:
-    if rustup toolchain list | grep -q '^1.97'; then cargo +1.97 check --workspace; else echo "install with: rustup toolchain install 1.97"; fi
+    cargo +"$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')" check --workspace
 
 tree-check:
     cargo run -q -p xtask -- tree-check
