@@ -537,6 +537,27 @@ record legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocke
     author "dk"
 }
 
+record legeos.observation.desktop-polish-selected-forks-20261005/1 : observation {
+    title "Selected conservative native desktop forks and owner-controlled activation"
+    state verified
+    scope [
+        path "scripts/build-elan-fingerprint-deb.py",
+        path "scripts/configure-desktop-access.py",
+        path "scripts/reinstall-templaros-desktop.sh",
+        path "tools/xtask/src/build_set.rs"
+    ]
+    statement "The user explicitly accepted one atomic desktop protocol/presentation cutover while retaining separate archive, login and infrastructure commits, then delegated further choices without another prompt. This run kept installation/logout and physical fingerprint enrollment owner-controlled; chose the pinned owner-supplied OpenSSL-3 ELAN 0.0.8 TOD driver without importing biometric data; enabled internal automount only for active/local dk and explicitly selected Second UUID 2EEE1B6CEE1B2C19; preserved an existing login hint while bootstrapping only a missing one; and retained target/debian as package staging while isolating Cargo caches by OS and worktree. Revisitable forks: separate desktop feature history if protocol/data dependencies are disentangled; replace the vendor TOD plugin only when another implementation supports this exact sensor revision; explicitly opt additional data UUIDs into automount rather than broaden authority; use per-OS package staging only if the deployment workflow is changed end to end. Native DRM smoothness/black-band diagnosis and real fingerprint authentication remain physical next-login observations, not inferred successes."
+    observed_at git:046317cd668a4dec15446e381dc8ef23eb29380c
+    method observation
+    watches [
+        "scripts/reinstall-templaros-desktop.sh",
+        "scripts/configure-desktop-access.py",
+        "scripts/build-elan-fingerprint-deb.py",
+        "tools/xtask/src/build_set.rs"
+    ]
+    author "dk"
+}
+
 record legeos.observation.fanotify-cannot-span-btrfs-subvolumes/1 : observation {
     title "fanotify refuses a filesystem mark on a Btrfs subvolume, and one group cannot hold marks on two subvolumes at all — so it cannot cover LegeOS's declared layout"
     state superseded

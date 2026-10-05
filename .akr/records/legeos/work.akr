@@ -226,7 +226,7 @@ record legeos.work.adaptive-files-and-omnibox/1 : work {
 
 record legeos.work.adaptive-files-and-omnibox/2 : work {
     title "WS2 — adaptive Files surface with persistent state, and the federated omnibox"
-    state completed
+    state superseded
     scope [ path "shell/templar-shell/**" ]
     intent """
         Shell phases 3-4. Phase 3: delete surface/home_screen.rs entirely (the embedded rail and second search field); new pure files_surface.rs with FilesLocation (Directory, Recent, Drives, Trash, Operations, Search; Projects/Network/WindowShelf die as locations) and FilesSurfaceState (location, back/forward stacks, selection, focus, anchor, sort, view, show_hidden, query, scroll) consumed by every rung — navigation and selection semantics ported from apps/lege-files BrowserModel (accepted duplication, papercut it); FileBrowserScreen becomes FilesBrowseView holding no per-screen state, its places sidebar drawn at Full only; draw_expanded becomes breadcrumb band plus files_screen at Representation::Full — one nesting level instead of three; app.rs browse/search state re-keys from Drawer to FilesLocation. Phase 4: new pure omnibox.rs federating apps, projects, files (last completed Files.Search1 result with its query; mismatch renders as still-searching) and declared actions; app_search::MatchKind as the universal strength, source order Project > App > Directory > File > Action, per-source caps before merge, 180ms debounce, stale results dropped, visible rows never reorder on late arrival; scope derived from context (Everything on bare Home, current location inside Files with a permanent Search-everything escape row); delete the launcher widget and its system tile via migrate_launcher_tile (no successor object); launcher.* chords keep working.
@@ -262,6 +262,45 @@ record legeos.work.adaptive-files-and-omnibox/2 : work {
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
     supersedes [ @legeos.work.adaptive-files-and-omnibox/1 ]
+    author "dk"
+}
+
+record legeos.work.adaptive-files-and-omnibox/3 : work {
+    title "WS2 — adaptive Files surface with persistent state, and the federated omnibox"
+    state active
+    scope [ path "shell/templar-shell/**" ]
+    intent """
+        Shell phases 3-4. Phase 3: delete surface/home_screen.rs entirely (the embedded rail and second search field); new pure files_surface.rs with FilesLocation (Directory, Recent, Drives, Trash, Operations, Search; Projects/Network/WindowShelf die as locations) and FilesSurfaceState (location, back/forward stacks, selection, focus, anchor, sort, view, show_hidden, query, scroll) consumed by every rung — navigation and selection semantics ported from apps/lege-files BrowserModel (accepted duplication, papercut it); FileBrowserScreen becomes FilesBrowseView holding no per-screen state, its places sidebar drawn at Full only; draw_expanded becomes breadcrumb band plus files_screen at Representation::Full — one nesting level instead of three; app.rs browse/search state re-keys from Drawer to FilesLocation. Phase 4: new pure omnibox.rs federating apps, projects, files (last completed Files.Search1 result with its query; mismatch renders as still-searching) and declared actions; app_search::MatchKind as the universal strength, source order Project > App > Directory > File > Action, per-source caps before merge, 180ms debounce, stale results dropped, visible rows never reorder on late arrival; scope derived from context (Everything on bare Home, current location inside Files with a permanent Search-everything escape row); delete the launcher widget and its system tile via migrate_launcher_tile (no successor object); launcher.* chords keep working.
+        """
+    note "Verify Tab as the scope-escape key against pixelkit_ui focus traversal before committing; Ctrl-Space is the fallback. Until WS4 lands, the omnibox's project source is Projects1.List; switch to ListDetailed when available.\nThe supported legacy scope migration changed the sealed planning head; after committing it, AKR R022 correctly no longer accepts the older completion evidence. Historical results are retained, but this head is active for fresh acceptance observations; this is provenance revalidation, not a newly observed code regression."
+    acceptance {
+        check omnibox-unit-tests {
+            statement """
+                federate() unit tests pass: cross-source ordering at equal strength, per-source caps before merge, staleness gate, escape row present exactly once under Files scope, empty query lists all offerable apps.
+                """
+            method command
+            command "cargo test -p lege-shell omnibox"
+            verified_by [ @legeos.evidence.ws2-omnibox-unit-tests-20260901/1 ]
+        }
+        check one-search-control {
+            statement """
+                Exactly one search field exists in every Home state; typing on bare Home yields federated app, project and file results in deterministic order; late file results never reorder visible rows.
+                """
+            method manual
+            verified_by [ @legeos.evidence.ws2-one-search-control-20260901/1 ]
+        }
+        check state-continuity {
+            statement """
+                Expanding Files, navigating three directories deep, selecting entries, collapsing and re-expanding lands in the same directory with the same selection and scroll.
+                """
+            method manual
+            verified_by [ @legeos.evidence.ws2-state-continuity-20260901/1 ]
+        }
+    }
+    depends_on [ @legeos.work.home-presentation-subtraction ]
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+    supersedes [ @legeos.work.adaptive-files-and-omnibox/2 ]
     author "dk"
 }
 
@@ -333,7 +372,7 @@ record legeos.work.adaptive-index-maintenance/1 : work {
 
 record legeos.work.adaptive-index-maintenance/2 : work {
     title "Adaptive persistent index maintenance — coverage tiers, split freshness, a watcher that sleeps, and a measured backend choice"
-    state completed
+    state superseded
     scope [
         path "cli/templar/**",
         path "crates/templar-file-index/**",
@@ -396,6 +435,68 @@ record legeos.work.adaptive-index-maintenance/2 : work {
     depends_on [ @legeos.work.file-index-core, @legeos.work.file-index-maintenance ]
     part_of [ @legeos.work.shared-incremental-file-index ]
     supersedes [ @legeos.work.adaptive-index-maintenance/1 ]
+    author "dk"
+}
+
+record legeos.work.adaptive-index-maintenance/3 : work {
+    title "Adaptive persistent index maintenance — coverage tiers, split freshness, a watcher that sleeps, and a measured backend choice"
+    state active
+    scope [
+        path "cli/templar/**",
+        path "crates/templar-file-index/**",
+        path "docs/measurements/**",
+        path "interfaces/dbus/**",
+        path "scripts/**",
+        path "services/templar-filed/**",
+        path "services/templar-hostd/**",
+        path "tools/xtask/**"
+    ]
+    intent """
+        Keep the shared file index persistent while making its maintenance adaptive: direct write-through when lege-filed performs the operation, kernel events while a consumer is observing, and filesystem metadata deltas to bridge dormant periods, with no recurring crawler in normal operation. Separate acquisition coverage (what the OS knows exists) from client visibility (what a search returns), so a drive visualiser can size target/ while filename search never returns build artefacts. Split namespace freshness from metadata freshness so a filename query stops paying for a per-child stat. Remove the 500ms idle wake and wire the Index1 change signals, which never fire in the current build. Choose the live event backend (inotify, unprivileged fanotify, privileged filesystem-wide fanotify) and the dormant-period bridge (Btrfs send delta vs recursive reconciliation) on measurements taken on the reference machine, not on assumption.
+        """
+    note "Plan of record for this campaign: ~/.claude/plans/implement-a-plan-based-fizzy-journal.md, which extends docs/planning/shared-incremental-file-index.md rather than replacing it. Measured premise: $HOME holds 230,323 directories (189,089 after the current skip list) against a WatchBudget of 125,037, so recursive inotify cannot reach the intended steady state on the machine the design was written for. The development host is ext4 end-to-end and LegeOS is not yet installed, so all Btrfs work is validated against loopback images with @/@home/@snapshots subvolumes; agents have no sudo, so privileged steps are collected into scripts the user runs.\n\n2026-09-07: this record had no acceptance block, so there was nothing it could be completed against. It has one now, written from what the intent actually promised, and each check cites the evidence that already existed for it. Both backend choices are settled and each is a decision citing its measurements: inotify stays the event backend (@legeos.decision.inotify-remains-the-index-event-backend, @legeos.evidence.fanotify-against-inotify-20260904), and the btrfs delta is now the default for a downtime repair where the root is btrfs and a checkpoint survives (@legeos.decision.btrfs-delta-is-an-opt-in-catch-up-backend-not-the-default, revised from opt-in this day).\n\nWhat is still unmeasured is the same thing it always was: none of the btrfs work has run on a real Btrfs root, a real @home or across a reboot. The fixture gate is a user gate in RUNBOOK-L3.md, and the decision that depends on it says so in its own context.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed."
+    acceptance {
+        check coverage-tiers-and-split-freshness {
+            statement """
+                Acquisition coverage is separate from client visibility, so a drive visualiser can size a build directory while a filename search never returns its artefacts, and namespace freshness is separate from metadata freshness so a filename query does not pay for a per-child stat.
+                """
+            method command
+            command "cargo test -p lege-file-index coverage"
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.index-scale-two-million-20260907,
+                @legeos.evidence.index-scale-two-million-20260907/1
+            ]
+        }
+        check measured-backend-choices {
+            statement """
+                The live event backend and the dormant-period bridge are each chosen on measurements rather than assumption, and each choice is a decision record citing them.
+                """
+            method command
+            command "cargo test -p lege-hostd -p lege-file-index -p lege-filed"
+            verified_by [
+                @legeos.evidence.btrfs-delta-correctness-gate-passes,
+                @legeos.evidence.btrfs-delta-transport-and-backend-20260907,
+                @legeos.evidence.btrfs-delta-transport-and-backend-20260907/1,
+                @legeos.evidence.fanotify-against-inotify-20260904
+            ]
+        }
+        check no-idle-crawler {
+            statement """
+                An idle index costs no recurring wakeups: the 500ms idle wake is gone, the watcher blocks on an explicit waker, and the Index1 change signals fire instead of being implemented and never wired.
+                """
+            method command
+            command "cargo test -p lege-filed watcher && cargo test -p lege-file-index watch"
+            verified_by [
+                @legeos.evidence.idle-index-wakeups-eliminated-20260904,
+                @legeos.evidence.idle-index-wakeups-eliminated-20260904/1,
+                @legeos.evidence.service-inventory-and-pressure-wakeups-20260907
+            ]
+        }
+    }
+    depends_on [ @legeos.work.file-index-core, @legeos.work.file-index-maintenance ]
+    part_of [ @legeos.work.shared-incremental-file-index ]
+    supersedes [ @legeos.work.adaptive-index-maintenance/2 ]
     author "dk"
 }
 
@@ -1641,7 +1742,7 @@ record legeos.work.bounded-watch-handoff-and-repair-supersession-20260909/1 : wo
 
 record legeos.work.bounded-watch-handoff-and-repair-supersession-20260909/2 : work {
     title "P1 — the inotify handoff and each poll are bounded, and queued repairs are deduplicated with roots subsuming subtrees"
-    state completed
+    state superseded
     scope [
         path "crates/templar-file-index/src/watch.rs",
         path "crates/templar-file-index/tests/watch.rs",
@@ -1677,6 +1778,45 @@ record legeos.work.bounded-watch-handoff-and-repair-supersession-20260909/2 : wo
     implements [ @legeos.decision.inotify-remains-the-index-event-backend ]
     part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
     supersedes [ @legeos.work.bounded-watch-handoff-and-repair-supersession-20260909/1 ]
+    author "dk"
+}
+
+record legeos.work.bounded-watch-handoff-and-repair-supersession-20260909/3 : work {
+    title "P1 — the inotify handoff and each poll are bounded, and queued repairs are deduplicated with roots subsuming subtrees"
+    state active
+    scope [
+        path "crates/templar-file-index/src/watch.rs",
+        path "crates/templar-file-index/tests/watch.rs",
+        path "services/templar-filed/src/watcher.rs"
+    ]
+    intent """
+        crates/lege-file-index/src/watch.rs open (~1013-1041) hands events from the reader thread over an unbounded std mpsc channel, and poll (~1153-1198) drains until empty into a Vec, so a continuously replenished queue bounds neither memory nor per-turn work, and synchronous full repairs amplify the backlog. Replace with a bounded sync_channel and a per-poll batch cap; when the bound is hit the reader must latch Overflow and, if it dies, ReaderStopped, never silently drop event truth. services/lege-filed/src/watcher.rs queue_repair/queue_arm (~393-435) push (root, scope, trigger) onto a LIFO Vec with no deduplication: key repairs by root and scope, let a root repair subsume its subtrees and an ancestor subtree subsume descendants, keep the strongest trigger, and keep fairness across roots. Tests: burst overload with a stalled consumer keeps memory finite and delivers Overflow reliably; sustained production yields finite batches per poll; duplicate and nested repair requests collapse as specified.
+        """
+    note "Astra rank P1, bounded memory and work. Keep the bound in one constant next to the 16 KiB read buffer; a VecDeque keyed by root is enough, no priority queue.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed."
+    acceptance {
+        check bounded-handoff {
+            statement """
+                Tests: a burst larger than the bound with a stalled consumer latches Overflow and never grows the queue past the bound; one poll returns at most the batch cap under sustained production.
+                """
+            method command
+            command "cargo test -p lege-file-index --test watch"
+            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+        }
+        check repair-supersession {
+            statement """
+                Tests: an exact duplicate repair is ignored, a root repair replaces queued subtree repairs of that root, an ancestor subtree replaces a descendant, and two roots alternate rather than one starving the other.
+                """
+            method command
+            command "cargo test -p lege-filed watcher"
+            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+        }
+    }
+    derived_from [
+        @legeos.assessment.astra-memory-polling-indexing-review-20260909#unbounded-handoff
+    ]
+    implements [ @legeos.decision.inotify-remains-the-index-event-backend ]
+    part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
+    supersedes [ @legeos.work.bounded-watch-handoff-and-repair-supersession-20260909/2 ]
     author "dk"
 }
 
@@ -1794,7 +1934,7 @@ record legeos.work.build-set-archive-verification/1 : work {
 
 record legeos.work.build-set-archive-verification/2 : work {
     title "D2 — BuildSetId feeds debian/changelog, the local archive verifies whole sets, and the image can consume a published set"
-    state completed
+    state superseded
     scope [
         path "ci/**",
         path "cli/templar/src/dev/repo.rs",
@@ -1858,6 +1998,71 @@ record legeos.work.build-set-archive-verification/2 : work {
         @legeos.work.deployment-activation-and-resourced
     ]
     supersedes [ @legeos.work.build-set-archive-verification/1 ]
+    author "dk"
+}
+
+record legeos.work.build-set-archive-verification/3 : work {
+    title "D2 — BuildSetId feeds debian/changelog, the local archive verifies whole sets, and the image can consume a published set"
+    state active
+    scope [
+        path "ci/**",
+        path "cli/templar/src/dev/repo.rs",
+        path "crates/templar-build/**",
+        path "debian/changelog",
+        path "debian/rules",
+        path "distro/apt/**",
+        path "tools/xtask/src/archive.rs",
+        path "tools/xtask/src/build_set.rs",
+        path "tools/xtask/src/signatures.rs"
+    ]
+    intent """
+        Make the BuildSetId the one version authority (generate the debian/changelog head entry from it for source builds), add `lege dev repo verify` (one id across the set, no missing component against components.toml, valid InRelease/Release.gpg, previous set still installable), give the archive a staged/candidate marker distinct from the boot-deployment candidate vocabulary, record provenance (toolchain, host, Ubuntu index time), add a disposable Ubuntu 26.04 source-build lane under ci/ that reports not-executed when mmdebstrap/podman are absent, and provide the mkosi drop-in that points the image at a named published set.
+        """
+    note "HEAD reconciliation 2026-09-03: BuildSetId, keep-3 pruning, signing and mixed-set rejection already exist (crates/lege-build, cli/lege/src/dev/repo.rs); debian/changelog carries an independent 0.1.0~dev1; no verify command, no clean-root lane, no local-snapshot consumption by just image.\n\n2026-09-07: `image-drop-in` was already satisfied and nobody had said so. `distro/image/compose.sh:22` writes `mkosi.conf.d/40-local-archive.conf` from `$LEGEOS_BUILD_SET` or the archive's `current` marker, and writes nothing when neither exists (@legeos.observation.the-image-drop-in-for-a-named-build-set-already-exists). It has never been *run*, because mkosi is not installed on this host — which is the alternative the check's own wording allows, and is why its method is now observation rather than manual. `just image summary` is a user gate in RUNBOOK-L3.md.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed."
+    acceptance {
+        check archive-verify {
+            statement """
+                `lege dev repo verify` detects a mixed set, a missing component and a bad signature in fixtures, and reports the current and previous sets as installable.
+                """
+            method command
+            command "cargo test -p lege repo"
+            verified_by [
+                @legeos.evidence.archive-verification-checks-rerun-20260907/1,
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
+        }
+        check image-drop-in {
+            statement """
+                A documented mkosi drop-in makes `just image` consume a named published set from the local archive, or the drop-in is documented as not exercised because mkosi is absent.
+                """
+            method observation
+            verified_by [
+                @legeos.evidence.de01-image-summary-mkosi-absent-20260904,
+                @legeos.evidence.image-drop-in-exists-unexercised-20260907/1,
+                @legeos.observation.the-image-drop-in-for-a-named-build-set-already-exists
+            ]
+        }
+        check one-version-authority {
+            statement """
+                The debian/changelog head entry used by the source build is derived from the BuildSetId; a test proves the derivation and `just deb-plan` prints the same id.
+                """
+            method command
+            command "cargo test -p lege-build && just deb-plan"
+            verified_by [
+                @legeos.evidence.archive-verification-checks-rerun-20260907/1,
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-version-authority-20260904,
+                @legeos.evidence.de01-version-authority-20260904/1
+            ]
+        }
+    }
+    implements [ @legeos.decision.debian-packaging ]
+    part_of [
+        @legeos.milestone.developer-edition-0-1,
+        @legeos.work.deployment-activation-and-resourced
+    ]
+    supersedes [ @legeos.work.build-set-archive-verification/2 ]
     author "dk"
 }
 
@@ -2183,7 +2388,7 @@ record legeos.work.critical-grace-bound-to-victim-20260909/1 : work {
 
 record legeos.work.critical-grace-bound-to-victim-20260909/2 : work {
     title "Policy change — the critical-pressure kill delay belongs to the selected victim, not to the pressure episode"
-    state completed
+    state superseded
     scope [
         path "services/templar-resourced/src/policy.rs",
         path "services/templar-resourced/tests/**",
@@ -2227,6 +2432,53 @@ record legeos.work.critical-grace-bound-to-victim-20260909/2 : work {
     implements [ @legeos.constraint.identity-and-launch-safety ]
     part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
     supersedes [ @legeos.work.critical-grace-bound-to-victim-20260909/1 ]
+    author "dk"
+}
+
+record legeos.work.critical-grace-bound-to-victim-20260909/3 : work {
+    title "Policy change — the critical-pressure kill delay belongs to the selected victim, not to the pressure episode"
+    state active
+    scope [
+        path "services/templar-resourced/src/policy.rs",
+        path "services/templar-resourced/tests/**",
+        path "tests/fixtures/resources/**"
+    ]
+    intent """
+        services/lege-resourced/src/policy.rs critical_steps (~725-774) keeps one critical_since for the whole Critical episode. If victim A exits or the ranking changes after the emergency_kill_delay has elapsed, the newly selected victim B receives SetMemoryHigh, RequestCheckpoint and KillCgroup on its first selected tick, with no grace period of its own. Associate the grace period with the victim's instance identity: reset it when the selected victim changes or there is no target, so every victim gets the full checkpoint deadline before a kill. Test: persistent Critical with an A-to-B transition after the delay; B is contained and asked to checkpoint but not killed until its own delay has elapsed. Existing critical-delay tests keep one victim and do not cover this.
+        """
+    note "Astra flagged this as P1 before active termination is enabled, and as a policy behaviour change to accept explicitly rather than bury in a polling fix. @legeos.constraint.identity-and-launch-safety keeps the governor observe-only until traces are reviewed, so this lands as a replay-checked policy change with its own fixture, and the user accepts it as such.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed."
+    acceptance {
+        check replay-fixture {
+            statement """
+                A recorded fixture covering the A-to-B transition replays to the new decisions and the existing fixtures are unchanged.
+                """
+            method command
+            command "cargo test -p lege-resourced --test replay_fixtures"
+            verified_by [ @legeos.evidence.critical-grace-replay-20260909/1 ]
+        }
+        check user-accepts-policy {
+            statement """
+                The user has read the behaviour change and accepted it before the record completes.
+                """
+            method manual
+            verified_by [ @legeos.evidence.critical-grace-policy-accepted-20260909/1 ]
+        }
+        check victim-transition {
+            statement """
+                A test with persistent Critical pressure and a victim change after the delay shows the new victim is not killed until its own delay has elapsed.
+                """
+            method command
+            command "cargo test -p lege-resourced policy"
+            verified_by [ @legeos.evidence.critical-grace-victim-transition-20260909/1 ]
+        }
+    }
+    after [ @legeos.work.governor-wake-reliability-20260909 ]
+    derived_from [
+        @legeos.assessment.astra-memory-polling-indexing-review-20260909#critical-grace
+    ]
+    implements [ @legeos.constraint.identity-and-launch-safety ]
+    part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
+    supersedes [ @legeos.work.critical-grace-bound-to-victim-20260909/2 ]
     author "dk"
 }
 
@@ -2437,7 +2689,7 @@ record legeos.work.deployment-rollback-completion/1 : work {
 
 record legeos.work.deployment-rollback-completion/2 : work {
     title "D5 — persisted deployment identities, bounded retention, snapshot before userspace mutation, and one diagnostic naming every set and deployment"
-    state completed
+    state superseded
     scope [
         path "cli/templar/src/dev/**",
         path "cli/templar/src/main.rs",
@@ -2497,6 +2749,69 @@ record legeos.work.deployment-rollback-completion/2 : work {
         @legeos.work.deployment-activation-and-resourced
     ]
     supersedes [ @legeos.work.deployment-rollback-completion/1 ]
+    author "dk"
+}
+
+record legeos.work.deployment-rollback-completion/3 : work {
+    title "D5 — persisted deployment identities, bounded retention, snapshot before userspace mutation, and one diagnostic naming every set and deployment"
+    state active
+    scope [
+        path "cli/templar/src/dev/**",
+        path "cli/templar/src/main.rs",
+        path "distro/deploy/components.toml",
+        path "services/templar-boot-health/**",
+        path "services/templar-hostd/src/**",
+        path "services/templar-hostd/tests/**"
+    ]
+    intent """
+        Assign and persist previous/current/known-good deployment identities; add restart tests for Trial→Promoted/RolledBack; replace the fabricated zero deployment size with a real estimate and bounded retention that never drops the known-good or booted deployment; classify disk exhaustion during Staging; snapshot the root subvolume before a userspace apt install when on Btrfs and show it in `lege dev deploy --dry-run`; add a broken-sessiond fixture to the activation gate; and one status section naming installed set, running set, rollback set, root snapshot, booted deployment and known-good deployment.
+        """
+    note "HEAD reconciliation 2026-09-03: the phase machine, journal and resume are tested for Downloading/Staging/Verifying/AwaitingReboot; userspace and boot rollback are already separate paths; previous_deployment is declared but never assigned; retention trims with a fabricated 0 size.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed."
+    acceptance {
+        check dry-run-names-everything {
+            statement """
+                `lege dev deploy --dry-run` and the status section name the installed, running and rollback sets, the root snapshot, the booted and the known-good deployment; the live rollback, logout and reboot remain user-run.
+                """
+            method command
+            command "cargo test -p lege dev::"
+            verified_by [
+                @legeos.evidence.de01-deploy-dry-run-20260904,
+                @legeos.evidence.de01-deploy-dry-run-20260904/1,
+                @legeos.evidence.de01-integrated-gate-20260904
+            ]
+        }
+        check identities-persist {
+            statement """
+                previous, current and known-good deployment identities survive a hostd restart and a resume from the Trial phase promotes or rolls back correctly.
+                """
+            method command
+            command "cargo test -p lege-hostd"
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
+        }
+        check retention-and-disk {
+            statement """
+                Retention keeps N deployments but never the known-good or booted one, and disk exhaustion during Staging is a classified failure with the previous set named.
+                """
+            method command
+            command "cargo test -p lege-hostd storage"
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
+        }
+    }
+    implements [
+        @legeos.decision.boot-deploy-secure-boot,
+        @legeos.decision.one-privileged-host-daemon
+    ]
+    part_of [
+        @legeos.milestone.developer-edition-0-1,
+        @legeos.work.deployment-activation-and-resourced
+    ]
+    supersedes [ @legeos.work.deployment-rollback-completion/2 ]
     author "dk"
 }
 
@@ -2675,7 +2990,7 @@ record legeos.work.design-consolidation-roadmap/1 : work {
 
 record legeos.work.design-consolidation-roadmap/2 : work {
     title "Integrated design roadmap — Home, Files, perimeter resize, event services and Developer Edition storage"
-    state completed
+    state superseded
     scope [
         path "apps/templar-files/**",
         path "cli/templar/**",
@@ -2741,6 +3056,179 @@ record legeos.work.design-consolidation-roadmap/2 : work {
     ]
     part_of [ @legeos.work.home-field ]
     supersedes [ @legeos.work.design-consolidation-roadmap/1 ]
+    author "dk"
+    source {
+        kind external
+        role origin
+        document "design-review-home-and-platform-20260901"
+        start_byte 0
+        end_byte 28861
+        start_line 1
+        end_line 579
+        excerpt_hash "sha256:63db09f6fe91f5b42ff5e6ad53665baebc3271a567f94b9a81d33bd6ee92bbcf"
+        use """
+            Preserves the original six-workstream consolidation review.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "full-side-two-axis-window-resizing-first-draft"
+        start_byte 2255
+        end_byte 8357
+        start_line 120
+        end_line 380
+        excerpt_hash "sha256:27664c9b1e98e16e29cea0649cbd0c8d6fbe7a36b6a5dbed52f0c5c67e053fb2"
+        use """
+            Adds P1's deterministic perimeter interaction.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-files-design"
+        start_byte 6138
+        end_byte 12841
+        start_line 230
+        end_line 569
+        excerpt_hash "sha256:8166a9bd403dbc1804e5954cf8eaeab83d401db8866f8ae594642801caf6a5aa"
+        use """
+            Reconciles Files, Home, taskbar and project action responsibilities.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-filesystem-design"
+        start_byte 0
+        end_byte 9080
+        start_line 1
+        end_line 390
+        excerpt_hash "sha256:2b0601ef86ceea0adac33267c9853a3d52ba789ffbe48153edd3928b285ae413"
+        use """
+            Adds the staged storage and provisioning boundary.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-homefield-design"
+        start_byte 0
+        end_byte 24693
+        start_line 1
+        end_line 460
+        excerpt_hash "sha256:895c5836e81e64d1ba1b59f65c46832a7847762b52c549f01964a57465176220"
+        use """
+            Preserves Home geometry, semantic grammar and representation principles.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-polling-services-design"
+        start_byte 0
+        end_byte 19332
+        start_line 1
+        end_line 808
+        excerpt_hash "sha256:a169ee2491335d85c83eba4e2272368abdcdf5f84d18ba3f4c7c304217d7a1eb"
+        use """
+            Adds P2's state-and-event authority model.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-distro-agent-plan"
+        start_byte 0
+        end_byte 10767
+        start_line 1
+        end_line 260
+        excerpt_hash "sha256:cb5a70abc8504bb50afacc8384317b3458cb0bb2f5c98966d03e0dd99f979ede"
+        use """
+            Retains the narrow Developer Edition outcome and supported platform direction.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "legacy-distro-agent-midplan"
+        start_byte 0
+        end_byte 15293
+        start_line 1
+        end_line 300
+        excerpt_hash "sha256:4e8b0ae2424192aa2700d6537cd4e8568fd5dcaed1b4ed2b1cbbae67b735d0f9"
+        use """
+            Retains producer/consumer lanes, freeze points and evidence discipline.
+            """
+    }
+}
+
+record legeos.work.design-consolidation-roadmap/3 : work {
+    title "Integrated design roadmap — Home, Files, perimeter resize, event services and Developer Edition storage"
+    state active
+    scope [
+        path "apps/templar-files/**",
+        path "cli/templar/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-appd/**",
+        path "crates/templar-associationd/**",
+        path "crates/templar-field/**",
+        path "crates/templar-file-index/**",
+        path "crates/templar-session-core/**",
+        path "crates/templar-state/**",
+        path "crates/templar-types/**",
+        path "crates/templar-window/**",
+        path "debian/**",
+        path "distro/**",
+        path "installer/**",
+        path "interfaces/**",
+        path "services/**",
+        path "shell/templar-shell/**",
+        path "tools/xtask/**"
+    ]
+    intent """
+        Execute the reconciled design in seven phases. P0 migrates durable claims and document references into AKR. P1 adds deterministic two-axis resizing from every side half and real diagonal cursor presentation. P2 establishes recoverable state-and-event service contracts and audits authorities, activation and bounded timer exceptions. P3 makes Home persistent project intent, native Files the folder surface, the taskbar the ordinary window selector, and Enter/Launch Tool/Restore distinct provider-backed actions. P4 adds a reviewed, identity-safe provisioning plan with explicit create/reuse/format choices and optional independent data roles. P5 connects that storage backend to the existing live/recovery and Developer Edition lanes. P6 adopts build placement, index checkpoints, richer developer status and presentation refinements only after native Lubuntu measurements justify them.
+        """
+    note "Sequence P0 first. P1 and P2 may then proceed independently. P3 depends on its own authority/subscription contracts, not completion of the entire P2 audit. P4 follows the current D1 package and D2 archive contracts; P5 follows P4 plus current D3/D5 work. Existing Developer Edition, distribution, index, activation and Home evidence remains valid and must not be restarted. The active native Files and bottom-bar decisions override older PCManFM-default, taskbar-free-chrome and automatic-shelf prose. Existing-partition mode currently reformats both ESP and root; ChangesSince uses an event sequence; DRM named cursors currently render as an arrow.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed."
+    acceptance {
+        check document-concordance {
+            statement """
+                The remaining architecture, ADR, protocol, research, measurement, planning and testing documents have an explicit authority/retention classification, and retired root-draft references are migrated.
+                """
+            method observation
+            verified_by [
+                @legeos.evidence.legacy-root-doc-migration-20260907/1,
+                @legeos.evidence.remaining-doc-authority-audit-20260907/1
+            ]
+        }
+        check knowledge-migration {
+            statement """
+                Every adopted contract, rejected alternative, deferred experiment and unfinished acceptance gate from the seven root drafts is understandable from AKR without relying on those Markdown files.
+                """
+            method observation
+            verified_by [
+                @legeos.evidence.astra-consolidation-advice-20260907/1,
+                @legeos.evidence.legacy-root-doc-migration-20260907/1
+            ]
+        }
+        check native-validation {
+            statement """
+                All implementation phases use native Lubuntu for build, test, packaging, runtime, hardware and deployment evidence; WSL is never cited as LegeOS validation.
+                """
+            method manual
+            verified_by [ @legeos.evidence.native-lubuntu-validation-20260907/1 ]
+        }
+    }
+    depends_on [ @legeos.constraint.native-lubuntu-is-the-development-environment/1 ]
+    derived_from [ @legeos.assessment.hotfixability-current-state-20260831 ]
+    implements [
+        @legeos.decision.event-driven-service-authorities,
+        @legeos.decision.home-projects-and-tool-actions,
+        @legeos.decision.perimeter-resize-selects-two-axes-by-side-half,
+        @legeos.decision.representation-ladder-is-the-organizing-principle
+    ]
+    part_of [ @legeos.work.home-field ]
+    supersedes [ @legeos.work.design-consolidation-roadmap/2 ]
     author "dk"
     source {
         kind external
@@ -4181,7 +4669,7 @@ record legeos.work.display-manager-session-startup-reliability/4 : work {
 
 record legeos.work.display-manager-session-startup-reliability/5 : work {
     title "Make the installed LegeOS display-manager session start deterministically and fail back cleanly"
-    state completed
+    state superseded
     scope [
         path "compositor/templar-comp/**",
         path "docs/testing/README.md",
@@ -4224,6 +4712,52 @@ record legeos.work.display-manager-session-startup-reliability/5 : work {
     implements [ @legeos.decision.session-greeter-lock/2 ]
     part_of [ @legeos.milestone.m2-session-runs/1 ]
     supersedes [ @legeos.work.display-manager-session-startup-reliability/4 ]
+    author "dk"
+}
+
+record legeos.work.display-manager-session-startup-reliability/6 : work {
+    title "Make the installed LegeOS display-manager session start deterministically and fail back cleanly"
+    state active
+    scope [
+        path "compositor/templar-comp/**",
+        path "docs/testing/README.md",
+        path "services/templar-filed/**",
+        path "services/templar-resourced/**",
+        path "session/**",
+        path "tests/**"
+    ]
+    intent """
+        Repair the installed-session contract exposed by the 2026-08-22 SDDM attempts: eliminate inherited-display backend selection, make compositor readiness real, start the graphical shell on its trusted socket, end the session when the compositor cannot run, and prevent auxiliary services from exhausting resources during login.
+        """
+    note "The 2026-08-23 installed-package retest reached the hardware compositor on both attempts: udev was forced, deterministic public/private sockets opened, the 2560x1600 eDP-2 output lit, resourced stayed healthy, and filed reused its existing index. The black screen remained because the udev backend never flushed queued Wayland replies, so lege-shell blocked in its initial registry/configure round trips and emitted no application-stage logs; it also never sent hardware frame callbacks. Readiness was additionally emitted before DRM/output/XWayland setup and before calloop began dispatching. The work tree now flushes clients after every graphical-backend dispatch, sends udev frame callbacks after output rendering, emits READY from inside calloop after the initial render path, imposes TimeoutStartSec=15s, and logs the shell connection stages. A live Type=notify nested smoke reduced the shell handshake from 5.4 seconds to 11 milliseconds and reached both Home Surface and dock declarations. Targeted tests (167), clippy, integration smoke, systemd verification, package checks, and rebuilt package-content inspection pass; corrected .debs are in target/debian. Installed-login remains open for one more SDDM retest with these rebuilt packages.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed."
+    acceptance {
+        check aux-services-bounded {
+            statement """
+                The resource governor no longer self-aborts after mlockall and the file service's default startup indexing has an explicit finite admission bound exercised by tests.
+                """
+            method command
+            command "cargo test -p lege-resourced -p lege-filed"
+            verified_by [ @legeos.evidence.refinement-checks-20260824/1 ]
+        }
+        check installed-login {
+            statement """
+                After rebuilding and installing the packages, selecting LegeOS in SDDM reaches the graphical Home Surface instead of freezing the greeter or leaving a black screen.
+                """
+            method manual
+            verified_by [ @legeos.evidence.installed-home-visible-20260824/1 ]
+        }
+        check startup-contract {
+            statement """
+                Automated session/unit tests prove the installed entry forces the hardware backend, publishes deterministic public and trusted-shell sockets, waits for actual compositor readiness, starts lege-shell --surface, and tears down the target if the compositor exits.
+                """
+            method command
+            command "cargo test -p lege-session -p lege-comp && cargo run -q -p xtask -- check-packaging"
+            verified_by [ @legeos.evidence.refinement-integration-smoke-20260824/1 ]
+        }
+    }
+    implements [ @legeos.decision.session-greeter-lock/2 ]
+    part_of [ @legeos.milestone.m2-session-runs/1 ]
+    supersedes [ @legeos.work.display-manager-session-startup-reliability/5 ]
     author "dk"
 }
 
@@ -4465,7 +4999,7 @@ record legeos.work.file-index-core/1 : work {
 
 record legeos.work.file-index-core/2 : work {
     title "F1 — the lege-file-index core crate, the cache database with generations, and the org.legeos.Files.Index1 contract"
-    state completed
+    state superseded
     scope [
         path "Cargo.toml",
         path "cli/templar/src/files.rs",
@@ -4528,6 +5062,69 @@ record legeos.work.file-index-core/2 : work {
     author "dk"
 }
 
+record legeos.work.file-index-core/3 : work {
+    title "F1 — the lege-file-index core crate, the cache database with generations, and the org.legeos.Files.Index1 contract"
+    state active
+    scope [
+        path "Cargo.toml",
+        path "cli/templar/src/files.rs",
+        path "crates/templar-client/src/proxies/files.rs",
+        path "crates/templar-file-index/**",
+        path "interfaces/dbus/org.templaros.Files.Index1.xml",
+        path "services/templar-filed/Cargo.toml",
+        path "services/templar-filed/src/dbus.rs",
+        path "services/templar-filed/src/index_host.rs",
+        path "services/templar-filed/src/main.rs",
+        path "services/templar-filed/src/search.rs",
+        path "session/units/user/templar-filed.service"
+    ]
+    intent """
+        Phase 0 and 1 of docs/planning/shared-incremental-file-index.md: a pure crates/lege-file-index (schema v1 with generations, native-byte paths plus display text, object keys, root freshness states, one writer with WAL readers, atomic generation commit that preserves the last good generation, uncapped streaming scan under configured budgets yielding an explicit incomplete state, FTS5-trigram substring search behind a QueryPlanner trait, paged cursors bound to a generation, sealed snapshot framing, Mutation and Change types for the maintenance lane); lege-filed opens $XDG_CACHE_HOME/legeos/file-index-v1.sqlite3, Search1 delegates to the core, Index1 (Roots, Search, FetchPage, OpenSnapshot, ChangesSince, signals) is hosted, proxied in lege-client and reachable as `lege files index status|search|reconcile`.
+        """
+    note "Plan of record: docs/planning/shared-incremental-file-index.md via the parent @legeos.work.shared-incremental-file-index. HEAD reconciliation 2026-09-03: search.rs is a delete-then-insert, 50k-capped LIKE index inside the shared state mutex; FTS5 trigram is available from the bundled SQLite 3.53.2 without a feature change; Index1 exists nowhere. The two-million-entry release fixture is an ignored test whose command is recorded; the coordinator runs it at the integrated gate.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed."
+    acceptance {
+        check generations-and-lossless-paths {
+            statement """
+                A killed rebuild leaves the previous committed generation readable, a non-UTF-8 path round-trips through index, search and snapshot, and a cursor stays pinned to the generation it was opened on.
+                """
+            method command
+            command "cargo test -p lege-file-index"
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
+        }
+        check index1-gates {
+            statement """
+                org.legeos.Files.Index1 passes check-interfaces, check-proxies and check-interface-signatures after the baseline is re-frozen.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-interfaces && cargo run -q -p xtask -- check-proxies && cargo run -q -p xtask -- check-interface-signatures"
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
+        }
+        check warm-start-and-compat {
+            statement """
+                A warm lege-filed start serves the prior generation without walking a root, Search1 clients keep working, and a budget-limited scan reports incomplete rather than complete.
+                """
+            method command
+            command "cargo test -p lege-filed search"
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
+        }
+    }
+    part_of [
+        @legeos.milestone.developer-edition-0-1,
+        @legeos.work.shared-incremental-file-index
+    ]
+    supersedes [ @legeos.work.file-index-core/2 ]
+    author "dk"
+}
+
 record legeos.work.file-index-maintenance/1 : work {
     title "F2 — one watcher owner keeps the index current, operations mutate it directly, and freshness degrades honestly"
     state superseded
@@ -4579,7 +5176,7 @@ record legeos.work.file-index-maintenance/1 : work {
 
 record legeos.work.file-index-maintenance/2 : work {
     title "F2 — one watcher owner keeps the index current, operations mutate it directly, and freshness degrades honestly"
-    state completed
+    state superseded
     scope [
         path "crates/templar-file-index/src/coalesce.rs",
         path "crates/templar-file-index/src/reconcile.rs",
@@ -4625,6 +5222,55 @@ record legeos.work.file-index-maintenance/2 : work {
         @legeos.work.shared-incremental-file-index
     ]
     supersedes [ @legeos.work.file-index-maintenance/1 ]
+    author "dk"
+}
+
+record legeos.work.file-index-maintenance/3 : work {
+    title "F2 — one watcher owner keeps the index current, operations mutate it directly, and freshness degrades honestly"
+    state active
+    scope [
+        path "crates/templar-file-index/src/coalesce.rs",
+        path "crates/templar-file-index/src/reconcile.rs",
+        path "crates/templar-file-index/src/watch.rs",
+        path "crates/templar-file-index/tests/**",
+        path "services/templar-filed/src/execute.rs",
+        path "services/templar-filed/src/operations.rs",
+        path "services/templar-filed/src/watcher.rs"
+    ]
+    intent """
+        Phase 2 of docs/planning/shared-incremental-file-index.md against the frozen core contract: a Linux watcher backend chosen from measured inotify/fanotify needs, normalized and coalesced events committed one generation per batch, direct mutation from successful lege-filed operations with the later watch event deduplicated, overflow/rename-ambiguity/mount-disappearance handling, downtime and offline-root reconciliation through observable current→stale→reconciling→current transitions that never discard the prior generation, and a startup that never scans synchronously. The fixture rule from the trash incident is mechanized: test code cannot construct TrashMounts::System or watch a non-temporary root.
+        """
+    note "Start gate: the coordinator's C5 freeze message. Before it, only fixtures and the backend decision. HEAD reconciliation 2026-09-03: no watcher dependency anywhere; operations.rs and execute.rs never touch the index.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed."
+    acceptance {
+        check events-become-queryable {
+            statement """
+                A create, move, rename or delete becomes queryable within the agreed bound under a fake clock, and a filed operation's direct mutation deduplicates the later watch event.
+                """
+            method command
+            command "cargo test -p lege-file-index watch"
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
+        }
+        check honest-freshness {
+            statement """
+                Forced overflow and daemon downtime drive current→stale→reconciling→current while the prior generation stays visible, and starting the daemon returns existing results before reconciliation.
+                """
+            method command
+            command "cargo test -p lege-file-index reconcile && cargo test -p lege-filed watcher"
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.de01-integrated-gate-20260904/1
+            ]
+        }
+    }
+    depends_on [ @legeos.work.file-index-core ]
+    part_of [
+        @legeos.milestone.developer-edition-0-1,
+        @legeos.work.shared-incremental-file-index
+    ]
+    supersedes [ @legeos.work.file-index-maintenance/2 ]
     author "dk"
 }
 
@@ -4701,7 +5347,7 @@ record legeos.work.file-operations-from-home/1 : work {
 
 record legeos.work.file-operations-from-home/2 : work {
     title "Copy, cut, paste, drag/drop, trash and ordinary file actions inside Home folder surfaces"
-    state completed
+    state superseded
     scope [
         path "apps/templar-files/**",
         path "crates/templar-client/**",
@@ -4769,6 +5415,77 @@ record legeos.work.file-operations-from-home/2 : work {
     implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
     part_of [ @legeos.work.home-surface-usability-next ]
     supersedes [ @legeos.work.file-operations-from-home/1 ]
+    author "dk"
+}
+
+record legeos.work.file-operations-from-home/3 : work {
+    title "Copy, cut, paste, drag/drop, trash and ordinary file actions inside Home folder surfaces"
+    state active
+    scope [
+        path "apps/templar-files/**",
+        path "crates/templar-client/**",
+        path "interfaces/dbus/org.templaros.Files.Operations1.xml",
+        path "services/templar-filed/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Complete ordinary file manipulation inside expanded Home folders and shortcut panes, using the multi-selection model that now exists. Ctrl+C/Ctrl+X/Ctrl+V copy or move every selected item through Files.Operations1; the clipboard advertises and accepts standard URI-list data where possible so Files and other desktop applications interoperate. Delete moves real files to Trash through the journalled service and reports an undo route. Rename, New Folder, Properties and Copy Path remain part of the same coherent action surface.
+
+        Implement drag and drop with typed destinations. Dropping onto a real folder copies or moves according to the declared gesture/modifier; dropping onto a shortcut pane adds references unless the user explicitly chooses a file operation; dropping onto an application resolves an Open With/application action; dragging out exports URI-list data. Bare Home never accepts an individual file as a loose tile and instead routes it to a shortcut pane per the governing object model.
+
+        All bulk operations are one journalled operation with one progress/error surface and one undo. The Home field-layout undo and file-operation undo remain distinct internally, but the focused surface routes Ctrl+Z to the most recent applicable action and says which action will be undone. Conflict, permission, partial-failure and cross-device cases are answered by the file service rather than guessed by the shell.
+        """
+    note "Rank 3 of the audit's daily-work gaps. Selection and folders/panes both landed, unblocking this. Acceptance command for trash-delete-and-undo corrected to pass both libtest filters after --; cargo takes only one TESTNAME positionally.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed."
+    acceptance {
+        check clipboard-bulk-operations {
+            statement """
+                Copy, cut and paste operate on the complete selected path set as one journalled service operation, support standard URI-list clipboard interchange, and never duplicate a cut source after success.
+                """
+            method command
+            command "cargo test -p lege-filed -p lege-shell -p lege-files clipboard"
+            verified_by [ @legeos.evidence.file-operations-from-home-20260831/1 ]
+        }
+        check ordinary-file-verbs {
+            statement """
+                Rename, New Folder, Properties and Copy Path are available by keyboard and pointer in Home folder surfaces with the same service semantics as the standalone Files app.
+                """
+            method command
+            command "cargo test -p lege-shell file_actions && cargo run -q -p xtask -- check-actions"
+            verified_by [ @legeos.evidence.file-operations-from-home-20260831/1 ]
+        }
+        check progress-and-failure {
+            statement """
+                Bulk copy/move/trash exposes bounded progress, cancellation and item-specific failures without reporting a partially failed operation as wholly successful.
+                """
+            method command
+            command "cargo test -p lege-filed operations"
+            verified_by [ @legeos.evidence.file-operations-from-home-20260831/1 ]
+        }
+        check trash-delete-and-undo {
+            statement """
+                Delete moves selected real items to Trash as one operation, Remove from Pane only removes references, and one undo restores every successfully trashed item exactly.
+                """
+            method command
+            command "cargo test -p lege-filed -- trash undo"
+            verified_by [ @legeos.evidence.file-operations-from-home-20260831/1 ]
+        }
+        check typed-drag-drop {
+            statement """
+                Drag/drop distinguishes real folders, shortcut panes, applications and external URI-list targets; every target advertises the exact operation before release and bare Home never creates a loose file tile.
+                """
+            method command
+            command "cargo test -p lege-shell drag_drop"
+            verified_by [ @legeos.evidence.file-operations-from-home-20260831/1 ]
+        }
+    }
+    depends_on [
+        @legeos.work.home-field-selection-and-bulk-action,
+        @legeos.work.home-folders-and-shortcut-panes
+    ]
+    derived_from [ @legeos.assessment.home-field-usability-gaps-20260831 ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.file-operations-from-home/2 ]
     author "dk"
 }
 
@@ -5004,7 +5721,7 @@ record legeos.work.file-previews-copy-path-and-folder-properties/3 : work {
 
 record legeos.work.file-previews-copy-path-and-folder-properties/4 : work {
     title "Files follow-up — native-codec still/PDF previews, 3%-seek video previews, Copy Path, and recursive properties"
-    state completed
+    state superseded
     scope [
         path "Cargo.lock",
         path "Cargo.toml",
@@ -5086,6 +5803,95 @@ record legeos.work.file-previews-copy-path-and-folder-properties/4 : work {
     ]
     part_of [ @legeos.milestone.m2-session-runs/1 ]
     supersedes [ @legeos.work.file-previews-copy-path-and-folder-properties/3 ]
+    acknowledged true
+    author "dk"
+}
+
+record legeos.work.file-previews-copy-path-and-folder-properties/5 : work {
+    title "Files follow-up — native-codec still/PDF previews, 3%-seek video previews, Copy Path, and recursive properties"
+    state active
+    scope [
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "apps/templar-files/**",
+        path "crates/templar-client/**",
+        path "debian/**",
+        path "docs/architecture/files.md",
+        path "interfaces/dbus/org.templaros.Files.*",
+        path "justfile",
+        path "scripts/**",
+        path "services/templar-filed/**",
+        path "session/units/user/templar-filed.service"
+    ]
+    intent """
+        Extend the completed first-party Files manager with selected-file previews for BPG, HEIC/HEIF, JPEG XL, the first page of PDF documents, ordinary raster formats, and common videos. Use the user's pure-Rust bpg-rs decoder, JPXL codec, image-viewer decode/downscale design, and Lege PDF renderer for still/PDF content; do not route those formats through ImageMagick or Poppler. Use ffprobe plus ffmpeg only for video and select the frame at 3 percent of the media duration. Preview work remains service-owned, bounded by dimensions/source/output/timeout limits, and off the D-Bus executor. Keep JPXL and the Lege renderer behind a bounded companion-process seam because those sibling workspaces declare Rust 1.97 while LegeOS's archive MSRV remains 1.93; package that binary for the installed service rather than weakening the platform constraint. Add a visible Copy Path action that obtains the as-shown path from Files.Actions1 and places it on the real Wayland clipboard without a shell. Make Properties an explicit visible action and have filed compute symlink-safe recursive folder file count and total logical/allocated size, reporting partial scans honestly.
+        """
+    note "\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check advanced-previews {
+            statement """
+                BPG and HEIC use bpg-rs, JPEG XL uses JPXL, PDFs use the Lege renderer, and ordinary rasters use image-rs without ImageMagick or Poppler routes.
+                """
+            method command
+            command "cargo test -p lege-filed preview"
+            verified_by [ @legeos.evidence.file-preview-live-fixtures-20260824/1 ]
+        }
+        check copy-path {
+            statement """
+                The visible Copy Path action requests the as-shown service path and writes it to the real Wayland clipboard.
+                """
+            method command
+            command "cargo test -p lege-files copy_path"
+            verified_by [ @legeos.evidence.file-copy-path-20260824/1 ]
+        }
+        check folder-properties {
+            statement """
+                Explicit Properties reports recursive file count and total folder size without following symlinks, and the UI labels partial results.
+                """
+            method command
+            command "cargo test -p lege-filed folder_properties && cargo test -p lege-files properties"
+            verified_by [ @legeos.evidence.file-folder-properties-20260824/1 ]
+        }
+        check installable {
+            statement """
+                The native preview companion is reproducibly staged and both Files packages retain valid install metadata and runtime dependencies.
+                """
+            method command
+            command "just preview-codecs && cargo run -q -p xtask -- check-packaging && cargo deb -q -p lege-files && cargo deb -q -p lege-filed"
+            verified_by [ @legeos.evidence.file-preview-packaging-20260824/1 ]
+        }
+        check preview-surface {
+            statement """
+                The standalone manager requests previews without blocking and paints stale-safe results in its selected-item inspector.
+                """
+            method command
+            command "cargo test -p lege-files preview"
+            verified_by [ @legeos.evidence.file-preview-surface-20260824/1 ]
+        }
+        check video-previews {
+            statement """
+                Common video files are rendered by ffmpeg at 3 percent of their ffprobe-reported duration and produce bounded previews.
+                """
+            method command
+            command "cargo test -p lege-filed video_preview"
+            verified_by [ @legeos.evidence.file-video-preview-three-percent-20260824/1 ]
+        }
+        check workspace-quality {
+            statement """
+                Formatting, linting, workspace tests, integration checks, interfaces, dependencies, MSRV, and structural checks pass.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo test -p lege-comp-integration && cargo run -q -p xtask -- tree-check && cargo run -q -p xtask -- deps-check && cargo run -q -p xtask -- check-interfaces && cargo +1.93 check --workspace"
+            verified_by [ @legeos.evidence.file-preview-workspace-quality-20260824/1 ]
+        }
+    }
+    depends_on [ @legeos.work.standalone-file-manager ]
+    implements [
+        @legeos.constraint.packaging-and-render-thread,
+        @legeos.constraint.services-not-indicators
+    ]
+    part_of [ @legeos.milestone.m2-session-runs ]
+    supersedes [ @legeos.work.file-previews-copy-path-and-folder-properties/4 ]
     acknowledged true
     author "dk"
 }
@@ -5575,7 +6381,7 @@ record legeos.work.governor-wake-reliability-20260909/1 : work {
 
 record legeos.work.governor-wake-reliability-20260909/2 : work {
     title "P1 — the governor wakes on pressure in the slice it governs, and never spins or oversleeps on a dead trigger"
-    state completed
+    state superseded
     scope [
         path "services/templar-resourced/src/daemon.rs",
         path "services/templar-resourced/src/psi.rs",
@@ -5611,6 +6417,45 @@ record legeos.work.governor-wake-reliability-20260909/2 : work {
     implements [ @legeos.decision.resourced-separate-process ]
     part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
     supersedes [ @legeos.work.governor-wake-reliability-20260909/1 ]
+    author "dk"
+}
+
+record legeos.work.governor-wake-reliability-20260909/3 : work {
+    title "P1 — the governor wakes on pressure in the slice it governs, and never spins or oversleeps on a dead trigger"
+    state active
+    scope [
+        path "services/templar-resourced/src/daemon.rs",
+        path "services/templar-resourced/src/psi.rs",
+        path "services/templar-resourced/src/scan.rs"
+    ]
+    intent """
+        Three defects in one loop. (1) services/lege-resourced/src/daemon.rs run_loop arms the PSI trigger on session.slice, but scan.rs governs app.slice, a sibling, so application pressure does not wake the loop: arm a trigger whose scope includes the managed app.slice (its own trigger, or the parent user@ service scope). (2) While Normal the loop always waits the 60 s IDLE_HEARTBEAT even when PressureWait has no usable trigger, and the fallback then sleeps the whole timeout: with no healthy trigger, keep the configured active interval. (3) psi.rs Trigger::wait maps POLLERR/HUP/NVAL and non-EINTR errors to Timeout and returns at once, so a persistently failed descriptor spins: on such a result disable the trigger and fall back to the clock. Tests: deterministic scheduling tests for healthy, fallback and failed-trigger states, and a hung-up descriptor test; the existing pipe MSG_OOB test does not exercise POLLPRI when send fails, so replace or supplement it.
+        """
+    note "Astra rank P1, implement first. Replay fixtures must be untouched by the wait change: the decision path is unchanged, only when the loop wakes.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check trigger-scope {
+            statement """
+                A test asserts the armed memory.pressure path is an ancestor of, or equal to, the governed app.slice path.
+                """
+            method command
+            command "cargo test -p lege-resourced daemon"
+            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+        }
+        check wait-scheduling {
+            statement """
+                Unit tests show: a healthy trigger waits the idle heartbeat while Normal; no trigger waits the active interval; a failed descriptor is disabled after its first error result and the loop falls back to the clock instead of returning immediately.
+                """
+            method command
+            command "cargo test -p lege-resourced psi"
+            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+        }
+    }
+    derived_from [
+        @legeos.assessment.astra-memory-polling-indexing-review-20260909#governor-wake
+    ]
+    implements [ @legeos.decision.resourced-separate-process ]
+    part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
+    supersedes [ @legeos.work.governor-wake-reliability-20260909/2 ]
     author "dk"
 }
 
@@ -7127,7 +7972,7 @@ record legeos.work.home-file-sorting-and-view-modes/1 : work {
 
 record legeos.work.home-file-sorting-and-view-modes/2 : work {
     title "Folder sorting plus list and thumbnail modes across Home and Files"
-    state completed
+    state superseded
     scope [
         path "apps/templar-files/**",
         path "crates/templar-client/**",
@@ -7185,6 +8030,70 @@ record legeos.work.home-file-sorting-and-view-modes/2 : work {
     implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
     part_of [ @legeos.work.home-surface-usability-next ]
     supersedes [ @legeos.work.home-file-sorting-and-view-modes/1 ]
+    author "dk"
+}
+
+record legeos.work.home-file-sorting-and-view-modes/3 : work {
+    title "Folder sorting plus list and thumbnail modes across Home and Files"
+    state active
+    scope [
+        path "apps/templar-files/**",
+        path "crates/templar-client/**",
+        path "services/templar-filed/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Give every Home folder/shortcut pane and the standalone Files app an explicit presentation control. List mode shows name, type, size and modified time with bounded columns. Thumbnail mode lays out responsive preview cells using Files.Previews1 and the same representation ladder, request limits and off-thread decoding already used by the inspector. Switching modes preserves selection, focus and the nearest visible item rather than jumping to the top.
+
+        Offer deterministic sorting by natural name, type, size and modified time in ascending or descending order, with a clear folder-first choice and stable tie breakers. A shortcut pane may additionally retain its manual reference order. Home and Files share one sort descriptor/comparator contract so the same directory never silently changes order between surfaces. Store a global default plus per-folder/pane overrides, and expose every choice by pointer and keyboard. Thumbnails remain content inside a folder/pane; they do not become loose Home tiles.
+        """
+    note "\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check bounded-preview-loading {
+            statement """
+                Thumbnail mode requests only visible/near-visible bounded previews, cancels stale requests and never decodes or walks files on the render thread.
+                """
+            method command
+            command "cargo test -p lege-shell -p lege-files thumbnail"
+            verified_by [ @legeos.evidence.file-sorting-and-view-modes-20260831/1 ]
+        }
+        check list-and-thumbnail {
+            statement """
+                Both Home folder surfaces and Files can switch between bounded detail-list and responsive thumbnail modes without losing selection, focus or scroll context.
+                """
+            method command
+            command "cargo test -p lege-shell -p lege-files view_mode"
+            verified_by [ @legeos.evidence.file-sorting-and-view-modes-20260831/1 ]
+        }
+        check no-loose-thumbnail-tiles {
+            statement """
+                Thumbnail cells exist only inside folder or shortcut-pane surfaces and cannot be persisted as loose Home file tiles.
+                """
+            method command
+            command "cargo test -p lege-field -p lege-shell no_loose_file_tiles"
+            verified_by [ @legeos.evidence.file-sorting-and-view-modes-20260831/1 ]
+        }
+        check preferences-persist {
+            statement """
+                Global defaults and per-folder/pane sort/view overrides round-trip, survive restart and reset independently.
+                """
+            method command
+            command "cargo test -p lege-session-core file_view_preferences"
+            verified_by [ @legeos.evidence.file-sorting-and-view-modes-20260831/1 ]
+        }
+        check sort-contract {
+            statement """
+                Natural name, type, size, modified and manual-reference sorts are deterministic total orders with stable tie breakers, ascending/descending handling and an explicit folder-first policy shared by Home and Files.
+                """
+            method command
+            command "cargo test -p lege-filed -p lege-files sort"
+            verified_by [ @legeos.evidence.file-sorting-and-view-modes-20260831/1 ]
+        }
+    }
+    depends_on [ @legeos.work.home-folders-and-shortcut-panes ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.home-file-sorting-and-view-modes/2 ]
     author "dk"
 }
 
@@ -7521,7 +8430,7 @@ record legeos.work.home-folders-and-shortcut-panes/1 : work {
 
 record legeos.work.home-folders-and-shortcut-panes/2 : work {
     title "Placeable folders and composite shortcut panes replace loose desktop file icons"
-    state completed
+    state superseded
     scope [
         path "apps/templar-files/**",
         path "crates/templar-field/**",
@@ -7584,6 +8493,72 @@ record legeos.work.home-folders-and-shortcut-panes/2 : work {
     implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
     part_of [ @legeos.work.home-surface-usability-next ]
     supersedes [ @legeos.work.home-folders-and-shortcut-panes/1 ]
+    author "dk"
+}
+
+record legeos.work.home-folders-and-shortcut-panes/3 : work {
+    title "Placeable folders and composite shortcut panes replace loose desktop file icons"
+    state active
+    scope [
+        path "apps/templar-files/**",
+        path "crates/templar-field/**",
+        path "services/templar-filed/**",
+        path "services/templar-sessiond/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Make folders and shortcut panes first-class placeable Home objects. A folder object points to one real directory and opens or expands into its live contents. A shortcut pane is a named, ordered collection of references to files and folders from multiple locations; it never relocates the referenced item merely by adding it. Both participate in the Home representation ladder, resize/yield rules, panel layouts, persistence and multi-selection.
+
+        Import the user's XDG Desktop directory as the default large Home folder/shortcut pane so software that still writes desktop launchers or files has a visible destination without recreating scattered desktop icons. Provide pointer, keyboard and Files-app routes to pin a folder, create/rename a pane, add references, reorder them and remove references. Removing from a shortcut pane is distinct from Move to Trash and never deletes the underlying item.
+
+        Dragging an individual file to bare Home does not create a loose file tile: it offers or uses a shortcut pane. Existing serialized TileKind::File entries remain readable and migrate to references or the shelf without data loss. Folder, pane, widget and session shells get distinct tint/material roles (optionally glass-, stone- or paper-like) while remaining rectangular, legible and theme-controlled.
+        """
+    note "Acceptance command for folder-and-pane-model corrected to pass both libtest filters after --; cargo takes only one TESTNAME positionally. Rich pane management UI (rename, reorder) and the Files-app pin route ride with the file-operations item, which owns the interactive file surfaces.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check desktop-directory-default {
+            statement """
+                The XDG Desktop directory appears as a default Home folder/pane when available, degrades readably when absent, and does not explode its children into loose Home tiles.
+                """
+            method command
+            command "cargo test -p lege-shell desktop_folder"
+            verified_by [ @legeos.evidence.home-folders-and-panes-20260831/1 ]
+        }
+        check folder-and-pane-model {
+            statement """
+                A folder binds one directory; a shortcut pane stores deterministic references from multiple directories without moving or copying their targets, and both round-trip through Home persistence.
+                """
+            method command
+            command "cargo test -p lege-field -- folder shortcut_pane"
+            verified_by [ @legeos.evidence.home-folders-and-panes-20260831/1 ]
+        }
+        check material-roles {
+            statement """
+                A reviewed Home render distinguishes folder, shortcut-pane, widget and session object types by theme-owned tint/material treatment without changing tile geometry or reducing text legibility.
+                """
+            method observation
+            verified_by [ @legeos.evidence.home-material-roles-20260831/1 ]
+        }
+        check no-new-loose-files {
+            statement """
+                No Home pointer, keyboard, drag/drop or service path creates a new loose file tile; dropping a file on bare Home routes it to a shortcut pane.
+                """
+            method command
+            command "cargo test -p lege-shell no_loose_file_tiles"
+            verified_by [ @legeos.evidence.home-folders-and-panes-20260831/1 ]
+        }
+        check reference-removal-is-safe {
+            statement """
+                Remove from Pane deletes only the reference; trashing the target is a separate explicitly labelled file-service operation with its own undo.
+                """
+            method command
+            command "cargo test -p lege-filed -p lege-shell shortcut_pane_remove"
+            verified_by [ @legeos.evidence.home-folders-and-panes-20260831/1 ]
+        }
+    }
+    depends_on [ @legeos.work.home-panel-and-dock-layouts ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.home-folders-and-shortcut-panes/2 ]
     author "dk"
 }
 
@@ -7870,7 +8845,7 @@ record legeos.work.home-navigation-manipulation-20260907/1 : work {
 
 record legeos.work.home-navigation-manipulation-20260907/2 : work {
     title "Home and Files interaction refinement from the original Home Field plan"
-    state completed
+    state superseded
     scope [ path "shell/templar-shell/**" ]
     intent """
         Refine the existing Home container model: preserve inside clicks in expanded Files; make navigation and selection predictable across list/grid; reserve breadcrumb space; cycle Home focus and cancel pointer manipulation. User requested an uncommitted improvement pass; no deployment or live-session interaction.
@@ -7896,6 +8871,38 @@ record legeos.work.home-navigation-manipulation-20260907/2 : work {
     implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
     part_of [ @legeos.work.home-surface-usability-next ]
     supersedes [ @legeos.work.home-navigation-manipulation-20260907/1 ]
+    author "dk"
+}
+
+record legeos.work.home-navigation-manipulation-20260907/3 : work {
+    title "Home and Files interaction refinement from the original Home Field plan"
+    state active
+    scope [ path "shell/templar-shell/**" ]
+    intent """
+        Refine the existing Home container model: preserve inside clicks in expanded Files; make navigation and selection predictable across list/grid; reserve breadcrumb space; cycle Home focus and cancel pointer manipulation. User requested an uncommitted improvement pass; no deployment or live-session interaction.
+        """
+    note "\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check lint-and-actions {
+            statement """
+                Shell clippy with warnings denied, formatting, and action-manifest validation pass.
+                """
+            method command
+            command "cargo clippy -p lege-shell --all-targets -- -D warnings; cargo fmt --all -- --check; cargo run -q -p xtask -- check-actions"
+            verified_by [ @legeos.evidence.home-navigation-lint-20260907/1 ]
+        }
+        check shell-regressions {
+            statement """
+                Shell tests cover inside/outside Files clicks, reversible Tab traversal, pointer gesture cancellation, grid selection/context menus, navigation accelerators and focus scrolling.
+                """
+            method command
+            command "cargo test -p lege-shell"
+            verified_by [ @legeos.evidence.home-navigation-tests-20260907/1 ]
+        }
+    }
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.home-navigation-manipulation-20260907/2 ]
     author "dk"
 }
 
@@ -7952,7 +8959,7 @@ record legeos.work.home-panel-and-dock-layouts/1 : work {
 
 record legeos.work.home-panel-and-dock-layouts/2 : work {
     title "Adjustable Home panels and docks with automatic arrangements for each output shape"
-    state completed
+    state superseded
     scope [
         path "crates/templar-field/**",
         path "crates/templar-session-core/**",
@@ -8003,6 +9010,60 @@ record legeos.work.home-panel-and-dock-layouts/2 : work {
     author "dk"
 }
 
+record legeos.work.home-panel-and-dock-layouts/3 : work {
+    title "Adjustable Home panels and docks with automatic arrangements for each output shape"
+    state active
+    scope [
+        path "crates/templar-field/**",
+        path "crates/templar-session-core/**",
+        path "services/templar-sessiond/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Turn the fixed drawer block and system shelf into user-adjustable Home-only containers. A panel/rail/dock is a layout group for folders, shortcut panes, widgets or sessions: it can be moved, resized, oriented as a row/column/edge rail, or assigned an automatic arrangement that fits the current output. Automatic choices include balanced rows/columns, edge rails and a cushion-map-like composition where area follows the importance or content measure the object declares.
+
+        Preset buttons on Home switch arrangements immediately without rebuilding or losing the contained objects. A custom layout is retained as the restore target; selecting another preset replaces the current preset in one action rather than building an undo stack of intermediate movements. Layout persists per output identity and safely reflows when scale, resolution or topology changes. These docks never map as ShellOverlay, never reserve an exclusive zone outside Home, and disappear completely behind application work.
+        """
+    note "\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check adjustable-home-groups {
+            statement """
+                Home panels/rails can be created or configured, moved, resized and oriented without changing the identity or contents of their objects.
+                """
+            method command
+            command "cargo test -p lege-field -p lege-shell panel_layout"
+            verified_by [ @legeos.evidence.home-panels-20260831/1 ]
+        }
+        check automatic-layouts-fit {
+            statement """
+                Balanced, edge-rail and cushion-style automatic arrangements are deterministic, non-overlapping and bounded across supported output sizes and scales.
+                """
+            method command
+            command "cargo test -p lege-field panel_layout -- --include-ignored"
+            verified_by [ @legeos.evidence.home-panels-20260831/1 ]
+        }
+        check home-only-no-exclusive-zone {
+            statement """
+                With an application fullscreen or maximized, no Home panel/dock is visible and no panel/dock reduces the application work area.
+                """
+            method observation
+            verified_by [ @legeos.evidence.home-panels-no-exclusive-zone-20260831/1 ]
+        }
+        check preset-switch-is-reversible {
+            statement """
+                Switching directly between any two presets is one operation, preserves the saved custom arrangement, and Restore Custom returns every group to its exact prior placement.
+                """
+            method command
+            command "cargo test -p lege-field panel_presets"
+            verified_by [ @legeos.evidence.home-panels-20260831/1 ]
+        }
+    }
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.home-panel-and-dock-layouts/2 ]
+    author "dk"
+}
+
 record legeos.work.home-presentation-subtraction/1 : work {
     title "WS1 — Home subtraction: shape-aware floors, one Files object, pinned-only App tiles"
     state superseded
@@ -8044,7 +9105,7 @@ record legeos.work.home-presentation-subtraction/1 : work {
 
 record legeos.work.home-presentation-subtraction/2 : work {
     title "WS1 — Home subtraction: shape-aware floors, one Files object, pinned-only App tiles"
-    state completed
+    state superseded
     scope [ path "crates/templar-field/**", path "shell/templar-shell/**" ]
     intent """
         Shell phases 0-2 of the consolidation plan. Phase 0: replace Representation::for_span's cell-count match with a declared RungFloor/RungLadder (cols, rows, cells floors per rung; highest admitted rung wins; monotone by construction), values chosen so no span reachable in today's default layout changes rung (System Large keeps rows floor 2 for the 7x2 Settings tile); reflow's aspect_distortion untouched; the --render baseline must not change in this phase. Phase 1: delete DRAWER_TILES, drawer_grid, drawer_reserved_cols, merge_drawers and the drawers panel group; add files_tile_id, merge_files (TileKind::Widget widget="files", span 2x2 floor / 4x3 preferred / widget-class ceiling) and migrate_drawer_tiles (all ten legacy drawer tiles kind-checked, first cell and largest span inherited, panel removed, idempotent, exact-inverse FieldOps); new surface/files_screen.rs renders Small and Wide from existing DrawerFeeds with conditional Downloads/Trash/Operations rows; DOCUMENT_VERSION stays 1. Phase 2: delete merge_apps; narrow the gone sweep to ParkedSession only (commented as load-bearing); add pin_app, FieldAction::PinApp, a Keep-on-Home session context row and the declared home.pin-app action; LIVE/PARKED hidden when every non-shelved toplevel has a located session tile.
@@ -8080,6 +9141,45 @@ record legeos.work.home-presentation-subtraction/2 : work {
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
     supersedes [ @legeos.work.home-presentation-subtraction/1 ]
+    author "dk"
+}
+
+record legeos.work.home-presentation-subtraction/3 : work {
+    title "WS1 — Home subtraction: shape-aware floors, one Files object, pinned-only App tiles"
+    state active
+    scope [ path "crates/templar-field/**", path "shell/templar-shell/**" ]
+    intent """
+        Shell phases 0-2 of the consolidation plan. Phase 0: replace Representation::for_span's cell-count match with a declared RungFloor/RungLadder (cols, rows, cells floors per rung; highest admitted rung wins; monotone by construction), values chosen so no span reachable in today's default layout changes rung (System Large keeps rows floor 2 for the 7x2 Settings tile); reflow's aspect_distortion untouched; the --render baseline must not change in this phase. Phase 1: delete DRAWER_TILES, drawer_grid, drawer_reserved_cols, merge_drawers and the drawers panel group; add files_tile_id, merge_files (TileKind::Widget widget="files", span 2x2 floor / 4x3 preferred / widget-class ceiling) and migrate_drawer_tiles (all ten legacy drawer tiles kind-checked, first cell and largest span inherited, panel removed, idempotent, exact-inverse FieldOps); new surface/files_screen.rs renders Small and Wide from existing DrawerFeeds with conditional Downloads/Trash/Operations rows; DOCUMENT_VERSION stays 1. Phase 2: delete merge_apps; narrow the gone sweep to ParkedSession only (commented as load-bearing); add pin_app, FieldAction::PinApp, a Keep-on-Home session context row and the declared home.pin-app action; LIVE/PARKED hidden when every non-shelved toplevel has a located session tile.
+        """
+    note "Settled: the default Desktop folder tile stays (per the placeable-objects decision); all ten --print drawer slugs stay as diagnostics. Risk watched: WidgetRegion::from_rung reachability asserted for every widget so no control silently vanishes at a new rung boundary.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check drawer-migration {
+            statement """
+                A saved layout with the legacy drawer block loads with one Files tile at the first drawer's cell, the drawers panel removed, and the migration idempotent with exact inverses.
+                """
+            method command
+            command "cargo test -p lege-shell field_model"
+            verified_by [ @legeos.evidence.ws1-drawer-migration-20260901/1 ]
+        }
+        check field-ladder-tests {
+            statement """
+                lege-field passes the new ladder property tests: rung monotone in both axes, ladders well-formed, every rung reachable within its kind's ceiling, and the cells-only ladder reproduced for aspect within 1:3.
+                """
+            method command
+            command "cargo test -p lege-field"
+            verified_by [ @legeos.evidence.ws1-field-ladder-tests-20260901/1 ]
+        }
+        check no-auto-app-tiles {
+            statement """
+                A running session produces a session tile and no App tile; a pinned App tile survives a shell restart; a field refresh never removes a placed tile other than a closed window's session tile.
+                """
+            method manual
+            verified_by [ @legeos.evidence.ws1-no-auto-app-tiles-20260901/1 ]
+        }
+    }
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+    supersedes [ @legeos.work.home-presentation-subtraction/2 ]
     author "dk"
 }
 
@@ -8353,7 +9453,7 @@ record legeos.work.home-shelf-and-representation-ladder/1 : work {
 
 record legeos.work.home-shelf-and-representation-ladder/2 : work {
     title "A route back off the shelf, a way to reset the field, and the representation ladder for drawer tiles"
-    state completed
+    state superseded
     scope [
         path "crates/templar-field/**",
         path "crates/templar-types/src/action.rs",
@@ -8408,6 +9508,64 @@ record legeos.work.home-shelf-and-representation-ladder/2 : work {
     derived_from [ @legeos.observation.shelved-tiles-have-no-route-back ]
     part_of [ @legeos.work.home-widgets ]
     supersedes [ @legeos.work.home-shelf-and-representation-ladder/1 ]
+    author "dk"
+}
+
+record legeos.work.home-shelf-and-representation-ladder/3 : work {
+    title "A route back off the shelf, a way to reset the field, and the representation ladder for drawer tiles"
+    state active
+    scope [
+        path "crates/templar-field/**",
+        path "crates/templar-types/src/action.rs",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Close the three gaps the reshape work exposed, all of them about showing and hiding information deliberately rather than by accident.
+
+        One: a tile on the shelf is unreachable (@legeos.observation.shelved-tiles-have-no-route-back). Needs the shelf enumerated somewhere a person can see it and a `field.restore` action to bring a tile back, declared in the manifest like every other action so it reaches the menu, the cheat sheet and the CLI at once.
+
+        Two: nothing resets a field to its defaults. `merge` is add-only by design — it never moves a tile the user placed — so every layout improvement is invisible to anyone with a saved field, and a field that has drifted into a mess can only be repaired tile by tile. `lege_field::reflow::tidy` exists as the packing primitive and has no command above it.
+
+        Three: drawer tiles do not climb the representation ladder that `docs/homefield.md` describes and the system widgets already implement. A drawer clips its raw text lines to whatever height it has, so a short tile shows a truncated path rather than the 'name, count, content-colour band' the design calls for at the compact rung. The data is unstructured text today, so this likely needs the drawer feed to carry a count and a headline separately from its lines.
+        """
+    note "Opened from the reshape work rather than planned: the first two were only visible once `--print field` stopped describing a hypothetical field, and the third once tiles were drawn at their true size.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check drawers-climb-the-ladder {
+            statement """
+                A drawer tile too small for its listing shows a headline figure or count rather than the listing clipped, and reveals the listing once it reaches Representation::Wide.
+                """
+            method command
+            command "cargo test -p lege-shell --lib drawers::"
+            verified_by [ @legeos.evidence.shelf-reset-and-drawer-ladder-20260831 ]
+        }
+        check field-can-be-reset {
+            statement """
+                The stored layout and its undo log can be discarded so the current default layout is adopted, and the action confirms first because it is not undoable.
+                """
+            method command
+            command "busctl --user call org.legeos.Session /org/legeos/Session/HomeField org.legeos.HomeField1 Reset sqq <output> <cols> <rows>"
+            verified_by [ @legeos.evidence.shelf-reset-and-drawer-ladder-20260831 ]
+        }
+        check gates-green {
+            statement """
+                Workspace tests, clippy with warnings denied, rustfmt and all seven xtask gates pass.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+            verified_by [ @legeos.evidence.shelf-reset-and-drawer-ladder-20260831 ]
+        }
+        check shelf-has-a-route-back {
+            statement """
+                A stashed tile can be brought back onto the field from a surface, not only by an immediate undo, and the route is offered only when the shelf is occupied.
+                """
+            method command
+            command "cargo test -p lege-shell --lib restoring_brings_every_shelved_tile_back a_row_is_offered_only_where_it_could_be_performed"
+            verified_by [ @legeos.evidence.shelf-reset-and-drawer-ladder-20260831 ]
+        }
+    }
+    derived_from [ @legeos.observation.shelved-tiles-have-no-route-back ]
+    part_of [ @legeos.work.home-widgets ]
+    supersedes [ @legeos.work.home-shelf-and-representation-ladder/2 ]
     author "dk"
 }
 
@@ -10922,7 +12080,7 @@ record legeos.work.logical-app-and-variant-identity/1 : work {
 
 record legeos.work.logical-app-and-variant-identity/2 : work {
     title "WS5 — logical app + variant identity: provenance, trust tiers, variant-keyed rights"
-    state completed
+    state superseded
     scope [
         path "crates/templar-appd/**",
         path "crates/templar-associationd/**",
@@ -10975,6 +12133,62 @@ record legeos.work.logical-app-and-variant-identity/2 : work {
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
     supersedes [ @legeos.work.logical-app-and-variant-identity/1 ]
+    author "dk"
+}
+
+record legeos.work.logical-app-and-variant-identity/3 : work {
+    title "WS5 — logical app + variant identity: provenance, trust tiers, variant-keyed rights"
+    state active
+    scope [
+        path "crates/templar-appd/**",
+        path "crates/templar-associationd/**",
+        path "crates/templar-client/**",
+        path "crates/templar-state/**",
+        path "crates/templar-types/**",
+        path "interfaces/**",
+        path "services/templar-sessiond/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Identity phases 0-4 and 8. Today's AppId is the variant id (pub type AppVariantId = AppId); LogicalAppId is a new newtype sharing the validator; the cgroup/unit name keeps naming the variant. AppProvenance (origin kind, trust tier derived never declared, source path, package ref, version, desktop entry, launch mechanism, executable, sandboxed, update owner, declared privileges and provider claims as inert claims) attaches to every manifest. Import keys candidates on (origin_namespace, desktop_id) — the XDG chain keeps freedesktop shadowing, flatpak exports become their own namespace with ids flatpak.<X-Flatpak id>, fixing the live bug where a flatpak export and a distro package sharing a desktop id collapse and the distro app silently vanishes. Old flatpak ids migrate by resolve-through-alias (app_variant_aliases), never by rewriting stored rows, so rollback stays safe. Logical grouping joins variants only on five explicit rules (declared logical app, shared desktop-entry id across origins, flatpak alias, StartupWMClass+Name, shared executable minus multiplexers); minted logical ids persist. AppIdentity1/Projects1/Launcher1 extended additively (ListLogicalApps, ListVariants, LogicalAppOf, ListInstancesDetailed, LaunchLogical); ResolveWindow unchanged. Phase 4 closes two live security gaps: Providers1.Declare verifies the caller's own variant via peer PID to cgroup; a User-trust variant may not declare an exclusive provider role; and a desktop id whose provenance moves System to User trust has its provider declarations and autostart approvals dropped with a history event. Associationd records logical_app_id beside app_id and substitutes sibling variants with reason variant-substituted.
+        """
+    note "Settled: AppVariantId stays an alias (rename separable); the Declare credential check lands here because it is what makes variant-keyed rights enforceable; migration 0006 is additive with the explicit review step that no column-less INSERT exists anywhere. A wrong logical merge is cosmetic by design because rights key on the variant.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check collision-regression {
+            statement """
+                A distro org.mozilla.firefox.desktop and a flatpak export of the same desktop id import as two distinct variants grouped under one logical app; today's silent disappearance is gone.
+                """
+            method command
+            command "cargo test -p lege-appd"
+            verified_by [ @legeos.evidence.ws5-collision-regression-20260901/1 ]
+        }
+        check migration-fixture {
+            statement """
+                A database seeded with pre-0006 association, provider and desktop-import rows returns identical values for every pre-existing read after migration 0006 applies.
+                """
+            method command
+            command "cargo test -p lege-state"
+            verified_by [ @legeos.evidence.ws5-migration-fixture-20260901/1 ]
+        }
+        check one-firefox {
+            statement """
+                With two variants installed the shell search shows one application whose details offer the variant choice, and an association whose stored variant was uninstalled resolves to a sibling with reason variant-substituted.
+                """
+            method manual
+            verified_by [ @legeos.evidence.ws5-one-firefox-20260901/1 ]
+        }
+        check trust-gates {
+            statement """
+                A user-writable .desktop cannot take an exclusive provider role; a user entry shadowing a system entry does not inherit its grants; Declare from a caller whose cgroup does not own the declared variant is refused.
+                """
+            method command
+            command "cargo test -p lege-sessiond providers"
+            verified_by [ @legeos.evidence.ws5-trust-gates-20260901/1 ]
+        }
+    }
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+    supersedes [ @legeos.work.logical-app-and-variant-identity/2 ]
     author "dk"
 }
 
@@ -11612,7 +12826,7 @@ record legeos.work.project-semantic-service/1 : work {
 
 record legeos.work.project-semantic-service/2 : work {
     title "WS4 — projects as authoritative semantic objects; priority_boost becomes ProjectImportance"
-    state completed
+    state superseded
     scope [
         path "cli/templar/**",
         path "crates/templar-client/**",
@@ -11656,6 +12870,53 @@ record legeos.work.project-semantic-service/2 : work {
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
     supersedes [ @legeos.work.project-semantic-service/1 ]
+    author "dk"
+}
+
+record legeos.work.project-semantic-service/3 : work {
+    title "WS4 — projects as authoritative semantic objects; priority_boost becomes ProjectImportance"
+    state active
+    scope [
+        path "cli/templar/**",
+        path "crates/templar-client/**",
+        path "crates/templar-session-core/**",
+        path "interfaces/**",
+        path "services/templar-filed/**",
+        path "services/templar-sessiond/**"
+    ]
+    intent """
+        Identity phases 5-7. Projects1 is extended additively — no Projects2: Describe(id) returning project_json against interfaces/schemas/project.schema.json, ListDetailed, Update with an explicit key allowlist (unknown key refused, nothing stored), GetCurrent/SetCurrent (stored in settings_values under _internal.projects.current), SetState(active|archived) with archived projects still searchable and openable, AddLogicalApp(logical id + optional preferred variant), and Changed/CurrentChanged signals. The Project struct gains importance, state, created/last-opened/last-active timestamps and references, and loses the inert priority_boost — replaced by ProjectImportance { Normal, Important }; the JSON blob is serde-additive in both directions so no schema migration is needed. Open/close call Files.Recents1.SetProject/ClearProject, waking the dead Suggestion::CurrentProject in lege-filed. ProjectApp gains logical_app and last_variant; opening resolves preferred variant, then the logical default, then warn-and-skip, recording what launched. Importance reaches the governor without touching lege-resourced: an Important open project sets protected=true through the existing Resources1.SetInstanceHints on the instances it launched, restored on close or demotion. HomeField stores only presentation (this project is here, this size); the project service is the record of membership.
+        """
+    note "A graded importance channel is deliberately not built until resourced has a weight to multiply it by — the priority_boost lesson. CLI: lege project show / set --importance --state / current.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check blob-compat {
+            statement """
+                An old project blob still carrying priority_boost loads with the value ignored; a new blob read by the previous binary round-trips without loss; apply_changes refuses an unknown key.
+                """
+            method command
+            command "cargo test -p lege-session-core projects"
+            verified_by [ @legeos.evidence.ws4-blob-compat-20260901/1 ]
+        }
+        check update-roundtrip {
+            statement """
+                Update followed by Describe round-trips every allowlisted field through the D-Bus API, and SetCurrent reaches lege-filed's recents suggestion.
+                """
+            method command
+            command "cargo test -p lege-sessiond projects"
+            verified_by [ @legeos.evidence.ws4-update-roundtrip-20260901/1 ]
+        }
+        check variant-reopen {
+            statement """
+                A project whose pinned flatpak variant was uninstalled reopens on the sibling variant and says so in history.
+                """
+            method manual
+            verified_by [ @legeos.evidence.ws4-variant-reopen-20260901/1 ]
+        }
+    }
+    depends_on [ @legeos.work.logical-app-and-variant-identity ]
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+    supersedes [ @legeos.work.project-semantic-service/2 ]
     author "dk"
 }
 
@@ -12208,7 +13469,7 @@ record legeos.work.resourced-signal-and-trace-bounds-20260909/1 : work {
 
 record legeos.work.resourced-signal-and-trace-bounds-20260909/2 : work {
     title "P2 — the governor's signal backlog and trace ring are bounded in bytes, with an explicit rule for what a full queue drops"
-    state completed
+    state superseded
     scope [
         path "services/templar-resourced/src/daemon.rs",
         path "services/templar-resourced/src/dbus.rs",
@@ -12244,6 +13505,45 @@ record legeos.work.resourced-signal-and-trace-bounds-20260909/2 : work {
     implements [ @legeos.decision.resourced-separate-process ]
     part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
     supersedes [ @legeos.work.resourced-signal-and-trace-bounds-20260909/1 ]
+    author "dk"
+}
+
+record legeos.work.resourced-signal-and-trace-bounds-20260909/3 : work {
+    title "P2 — the governor's signal backlog and trace ring are bounded in bytes, with an explicit rule for what a full queue drops"
+    state active
+    scope [
+        path "services/templar-resourced/src/daemon.rs",
+        path "services/templar-resourced/src/dbus.rs",
+        path "services/templar-resourced/src/trace.rs"
+    ]
+    intent """
+        services/lege-resourced/src/daemon.rs (~581, ~598-610) hands SignalEvents to the D-Bus task over an unbounded tokio channel; a stalled bus consumer turns the governor into a memory-pressure source. trace.rs (~103-108) bounds the ring by record count (5000 in production) while record size grows with the instance count. Bound the signal channel and write down the disposition rule: PressureChanged may coalesce to the latest level, NonMemoryStall diagnostics may drop oldest, but PressureAction must not be dropped blindly because cooperative trim and checkpoint delivery ride on that signal even though the executor reports applied. Give the trace ring a byte budget with an oversized-record policy (truncate detail, keep the header). Tests: a stalled consumer with a burst of ticks keeps the queue at its bound and every PressureAction is delivered; varying record sizes keep the ring under budget.
+        """
+    note "Astra rank P2, resource-daemon memory. ADR-0002 keeps D-Bus off the governor loop; the bound must never block the loop thread, so a try_send with the disposition rule, not an await.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check signal-bound {
+            statement """
+                A stalled-consumer test holds the signal queue at its bound, delivers every PressureAction, and never blocks the loop thread.
+                """
+            method command
+            command "cargo test -p lege-resourced daemon"
+            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+        }
+        check trace-byte-budget {
+            statement """
+                A test with records of varying sizes keeps the trace ring under its byte budget and applies the oversized-record policy.
+                """
+            method command
+            command "cargo test -p lege-resourced trace"
+            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+        }
+    }
+    derived_from [
+        @legeos.assessment.astra-memory-polling-indexing-review-20260909#resourced-bounds
+    ]
+    implements [ @legeos.decision.resourced-separate-process ]
+    part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
+    supersedes [ @legeos.work.resourced-signal-and-trace-bounds-20260909/2 ]
     author "dk"
 }
 
@@ -12311,7 +13611,7 @@ record legeos.work.reversible-window-arrangement-presets/1 : work {
 
 record legeos.work.reversible-window-arrangement-presets/2 : work {
     title "One-press reversible arrangements for all open windows"
-    state completed
+    state superseded
     scope [
         path "compositor/templar-comp/**",
         path "crates/templar-types/src/action.rs",
@@ -12370,6 +13670,71 @@ record legeos.work.reversible-window-arrangement-presets/2 : work {
     implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
     part_of [ @legeos.work.home-surface-usability-next ]
     supersedes [ @legeos.work.reversible-window-arrangement-presets/1 ]
+    author "dk"
+}
+
+record legeos.work.reversible-window-arrangement-presets/3 : work {
+    title "One-press reversible arrangements for all open windows"
+    state active
+    scope [
+        path "compositor/templar-comp/**",
+        path "crates/templar-types/src/action.rs",
+        path "crates/templar-window/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Add a Home control made of manifest-declared buttons that arranges the eligible open windows on an output into useful shapes: one-window focus/full-output, halves, thirds, quarters/grid, a large-focus-plus-side-stack layout, and a cushion/treemap-style packing inspired by Silvaview. The compositor owns window geometry and recoverability; the shell only requests a named preset and renders its preview/button.
+
+        The first preset request snapshots every affected window's prior geometry and state. Choosing a different preset recomputes directly from that baseline and the current eligible window set, so a person can audition arrangements by pressing buttons without walking an undo history. Restore returns surviving windows exactly to the saved baseline, repaired only when output topology makes an old rectangle unreachable. Closed windows disappear cleanly; newly opened windows join on the next explicit preset press rather than causing surprise background retiling. The feature is user-invoked arrangement, not a permanently enforced tiling window manager.
+
+        Arrangement controls live on Home. An application can still be fullscreen with no Home chrome visible, and the compositor's shell-independent recovery routes remain available.
+        """
+    note "\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check buttons-and-accelerators {
+            statement """
+                Every arrangement and Restore has a visible Home button/menu route and may additionally have a Super accelerator declared by the same action manifest.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-actions"
+            verified_by [ @legeos.evidence.window-arrangements-20260831/1 ]
+        }
+        check dynamic-window-set {
+            statement """
+                Closed windows are ignored, newly opened windows join only on the next explicit arrangement request, and output removal repairs without losing any surviving window.
+                """
+            method command
+            command "cargo test -p lege-comp arrangement"
+            verified_by [ @legeos.evidence.window-arrangements-20260831/1 ]
+        }
+        check fullscreen-remains-clean {
+            statement """
+                A fullscreen application occupies the output with no Home panel, dock, arrangement control or reserved strip visible.
+                """
+            method observation
+            verified_by [ @legeos.evidence.arrangements-fullscreen-clean-20260831/1 ]
+        }
+        check preset-geometry {
+            statement """
+                Every declared preset produces deterministic, bounded, non-overlapping recoverable rectangles for one through a practical upper bound of windows on mixed-scale outputs.
+                """
+            method command
+            command "cargo test -p lege-window arrangement"
+            verified_by [ @legeos.evidence.window-arrangements-20260831/1 ]
+        }
+        check switch-from-baseline {
+            statement """
+                A→B preset switching is computed from one retained baseline rather than from A's geometry, and Restore returns the exact baseline when the output still permits it.
+                """
+            method command
+            command "cargo test -p lege-window arrangement_presets_are_reversible"
+            verified_by [ @legeos.evidence.window-arrangements-20260831/1 ]
+        }
+    }
+    depends_on [ @legeos.work.home-panel-and-dock-layouts ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.reversible-window-arrangement-presets/2 ]
     author "dk"
 }
 
@@ -12943,7 +14308,7 @@ record legeos.work.shared-incremental-file-index/1 : work {
 
 record legeos.work.shared-incremental-file-index/2 : work {
     title "One persistent incremental file index shared by LegeOS, FSearch and Silvaview-rs"
-    state completed
+    state superseded
     scope [
         path "apps/templar-files/**",
         path "cli/templar/**",
@@ -13008,6 +14373,67 @@ record legeos.work.shared-incremental-file-index/2 : work {
     author "dk"
 }
 
+record legeos.work.shared-incremental-file-index/3 : work {
+    title "One persistent incremental file index shared by LegeOS, FSearch and Silvaview-rs"
+    state active
+    scope [
+        path "apps/templar-files/**",
+        path "cli/templar/**",
+        path "crates/**",
+        path "distro/forks/**",
+        path "docs/architecture/files.md",
+        path "docs/planning/**",
+        path "interfaces/dbus/**",
+        path "services/templar-filed/**",
+        path "session/units/user/templar-filed.service",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Replace the interim independent lege-filed and FSearch databases with one per-user derived file index owned by lege-filed. Extract a pure Rust index core; store rebuildable entries separately from authoritative session state; add lossless paths, stable best-effort filesystem identity, atomic generations, honest root freshness, Linux monitoring, direct file-operation mutations, downtime/overflow reconciliation, indexed substring search, paging, a sealed bulk snapshot, a bounded change stream, diagnostics and CLI access. Keep Files.Search1 as a compatibility facade while adding org.legeos.Files.Index1.
+        """
+    note "Plan of record: docs/planning/shared-incremental-file-index.md. It is based on the current LegeOS search implementation, the sibling Silvaview-rs scanner/tree boundary, installed FSearch 0.2.3, and upstream FSearch inspected at 05ed650ab101ee3d61795fa5eeeb5c32e1e366c3.\n\n2026-09-07: the `consumers-share-the-index` check was split out into @legeos.work.silvaview-and-fsearch-share-the-index, because it is the one part of this record that cannot be verified from this repository — Silvaview-rs lives in a sibling repository, which this record's own note already said cannot be represented by its path scope, and the FSearch fork is a manifest entry rather than source in this tree. Leaving it here would have kept the whole index campaign open on work in two other repositories.\n\nWhat remains here is proven: the core, its maintenance, incremental freshness, one owner, warm start, and a two-million-entry fixture that is complete rather than capped at 62,727 entries/s with warm search at p50 0.25ms (@legeos.evidence.index-scale-two-million-20260907).\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check incremental-and-honest-freshness {
+            statement """
+                Filesystem and lege-filed operation changes appear incrementally; downtime, overflow, offline roots and partial scans reconcile without discarding the prior committed generation, and every response exposes generation and freshness.
+                """
+            method command
+            command "cargo test -p lege-file-index -p lege-filed"
+            verified_by [
+                @legeos.evidence.btrfs-delta-transport-and-backend-20260907,
+                @legeos.evidence.btrfs-delta-transport-and-backend-20260907/1,
+                @legeos.evidence.de01-integrated-gate-20260904
+            ]
+        }
+        check one-owner-and-warm-start {
+            statement """
+                Exactly one per-user LegeOS process owns filesystem watches and the derived database, and restarting any search client or Silvaview does not synchronously rescan a previously indexed root before useful results appear.
+                """
+            method command
+            command "cargo test -p lege-file-index -p lege-filed"
+            verified_by [
+                @legeos.evidence.de01-integrated-gate-20260904,
+                @legeos.evidence.service-inventory-and-pressure-wakeups-20260907,
+                @legeos.evidence.service-inventory-and-pressure-wakeups-20260907/1
+            ]
+        }
+        check scale-and-lossless-paths {
+            statement """
+                A two-million-entry fixture is complete rather than capped, warm searches meet the recorded latency target, bulk snapshot transfer is bounded, and non-UTF-8 Unix paths survive search, snapshot and file action round trips.
+                """
+            method command
+            command "cargo run -q -p xtask --release -- index-bench workloads --allow-two-million && cargo test -p lege-file-index --release"
+            verified_by [
+                @legeos.evidence.index-scale-two-million-20260907,
+                @legeos.evidence.index-scale-two-million-20260907/1
+            ]
+        }
+    }
+    part_of [ @legeos.work.application-integration-interim ]
+    supersedes [ @legeos.work.shared-incremental-file-index/2 ]
+    author "dk"
+}
+
 record legeos.work.silvaview-and-fsearch-share-the-index/1 : work {
     title "The FSearch fork and Silvaview service mode consume the LegeOS index generation instead of scanning"
     state proposed
@@ -13066,7 +14492,7 @@ record legeos.work.snapshot-single-read-transaction-20260909/1 : work {
 
 record legeos.work.snapshot-single-read-transaction-20260909/2 : work {
     title "P1/P2 — a snapshot frame is one SQLite read transaction, with its change cursor taken from the same view"
-    state completed
+    state superseded
     scope [
         path "crates/templar-file-index/src/snapshot.rs",
         path "crates/templar-file-index/tests/consumer_contract.rs"
@@ -13095,6 +14521,38 @@ record legeos.work.snapshot-single-read-transaction-20260909/2 : work {
     ]
     part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
     supersedes [ @legeos.work.snapshot-single-read-transaction-20260909/1 ]
+    author "dk"
+}
+
+record legeos.work.snapshot-single-read-transaction-20260909/3 : work {
+    title "P1/P2 — a snapshot frame is one SQLite read transaction, with its change cursor taken from the same view"
+    state active
+    scope [
+        path "crates/templar-file-index/src/snapshot.rs",
+        path "crates/templar-file-index/tests/consumer_contract.rs"
+    ]
+    intent """
+        crates/lege-file-index/src/snapshot.rs write_snapshot (~124-164) documents one read transaction but reads generation, latest change sequence, roots and then each root's entries (write_entries_section ~225-239) through separate pooled connections, so a concurrent writer can yield a frame whose header and rows never coexisted. Hold one read transaction (BEGIN DEFERRED on one connection, WAL snapshot isolation) for the whole frame and read generation, change sequence, roots and entries inside it. Test: a writer committing between sections while a reader snapshots, with row-generation or an equivalent correlated marker proving the frame is one view. The full-payload Vec and services/lege-filed/src/index_host.rs (~292-307) serialising synchronously inside an async D-Bus method give O(index size) peak RAM and block the runtime; that streamed writer plus bounded blocking execution is a separate follow-up, not part of this change.
+        """
+    note "Astra rank P1/P2, snapshot correctness. @legeos.observation.a-snapshot-did-not-say-which-change-position-it-was-consistent-with is the prior fix this completes: the cursor exists, it is just not read from the same view.\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check one-view {
+            statement """
+                A concurrent writer/reader test proves every section of a frame, and its change cursor, come from one committed view.
+                """
+            method command
+            command "cargo test -p lege-file-index snapshot"
+            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+        }
+    }
+    depends_on [
+        @legeos.observation.a-snapshot-did-not-say-which-change-position-it-was-consistent-with
+    ]
+    derived_from [
+        @legeos.assessment.astra-memory-polling-indexing-review-20260909#snapshot-frame
+    ]
+    part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
+    supersedes [ @legeos.work.snapshot-single-read-transaction-20260909/2 ]
     author "dk"
 }
 
@@ -13333,7 +14791,7 @@ record legeos.work.standalone-file-manager/3 : work {
 
 record legeos.work.standalone-file-manager/4 : work {
     title "Standalone Files — service-backed browsing, operations and properties in an installable manager"
-    state completed
+    state superseded
     scope [
         path "Cargo.lock",
         path "Cargo.toml",
@@ -13414,6 +14872,90 @@ record legeos.work.standalone-file-manager/4 : work {
     author "dk"
 }
 
+record legeos.work.standalone-file-manager/5 : work {
+    title "Standalone Files — service-backed browsing, operations and properties in an installable manager"
+    state active
+    scope [
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "apps/templar-files/**",
+        path "crates/templar-client/**",
+        path "debian/**",
+        path "distro/**",
+        path "docs/architecture/files.md",
+        path "interfaces/dbus/org.templaros.Files.*",
+        path "scripts/**",
+        path "services/templar-filed/**",
+        path "session/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Build `lege-files` as a first-party Pixelkit application and Debian package. It opens a real XDG folder, shows service-provided places and mounted drives with space state, lists immediate children in the filed-owned folder-first natural order, supports mouse and keyboard selection/navigation/history, and opens files only through Associations1 and Launcher1. Selection workflows provide rename, copy/cut/paste, trash, undo and a persistent properties/storage inspector; filesystem mutations run only through journalled Files.Operations1. Add any bounded Browse1 metadata/root methods needed by both Home and the standalone manager, validate unsafe operation requests in the service, wire the desktop file, app manifest, source package, seeds, cargo-deb build and reinstall helper, and cover the state/contract/package paths with tests.
+        """
+    note "\nThe committed supported legacy scope migration changed this planning head after its older completion evidence. Historical observations remain intact; this head is active for fresh acceptance evidence, not because a new code regression was observed. Live authority relations follow current heads rather than retired revisions."
+    acceptance {
+        check brokered-open {
+            statement """
+                Opening a file goes through Associations1, Launcher1 and Recents rather than spawning an application directly.
+                """
+            method command
+            command "cargo test -p lege-files brokered_open"
+            verified_by [ @legeos.evidence.standalone-files-brokered-open-20260824/1 ]
+        }
+        check installable-manager {
+            statement """
+                The first-party manager has a valid desktop entry, application manifest, source package, Debian package and reinstall path.
+                """
+            method command
+            command "cargo run -q -p xtask -- check-packaging && cargo deb -q -p lege-files"
+            verified_by [ @legeos.evidence.standalone-files-packaging-20260824/1 ]
+        }
+        check keyboard-pointer-parity {
+            statement """
+                Every visible file-manager action is reachable by both pointer and keyboard, including navigation, selection and dialogs.
+                """
+            method command
+            command "cargo test -p lege-files interaction"
+            verified_by [ @legeos.evidence.standalone-files-interaction-20260824/1 ]
+        }
+        check operations-and-properties {
+            statement """
+                Rename, copy/cut/paste, trash, undo, progress and the persistent properties/storage view use the filed-owned service contracts.
+                """
+            method command
+            command "cargo test -p lege-files -p lege-filed operation && cargo test -p lege-filed properties"
+            verified_by [ @legeos.evidence.standalone-files-ops-properties-20260824/1 ]
+        }
+        check real-browsing {
+            statement """
+                The standalone manager renders a real service-provided folder listing, XDG places and mounted drives, with pointer selection and folder-first natural ordering.
+                """
+            method command
+            command "cargo test -p lege-files browser"
+            verified_by [ @legeos.evidence.standalone-files-browser-20260824/1 ]
+        }
+        check workspace-quality {
+            statement """
+                Formatting, strict linting, the full workspace tests and structural interface/dependency checks all pass.
+                """
+            method command
+            command "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && just tree-check && just deps-check && just check-interfaces"
+            verified_by [ @legeos.evidence.standalone-files-workspace-20260824/1 ]
+        }
+    }
+    depends_on [ @legeos.decision.forks-by-manifest ]
+    implements [
+        @legeos.constraint.identity-and-launch-safety,
+        @legeos.constraint.one-provider-per-role,
+        @legeos.constraint.packaging-and-render-thread,
+        @legeos.constraint.services-not-indicators
+    ]
+    part_of [ @legeos.milestone.m2-session-runs ]
+    supersedes [ @legeos.work.standalone-file-manager/4 ]
+    acknowledged true
+    author "dk"
+}
+
 record legeos.work.subtree-repair-preserves-root-truth-20260909/1 : work {
     title "P1 — a complete subtree pass never upgrades a root to Current or clears its whole-root stale reason"
     state superseded
@@ -13446,7 +14988,7 @@ record legeos.work.subtree-repair-preserves-root-truth-20260909/1 : work {
 
 record legeos.work.subtree-repair-preserves-root-truth-20260909/2 : work {
     title "P1 — a complete subtree pass never upgrades a root to Current or clears its whole-root stale reason"
-    state completed
+    state superseded
     scope [
         path "crates/templar-file-index/src/generation.rs",
         path "crates/templar-file-index/tests/**"
@@ -13473,6 +15015,36 @@ record legeos.work.subtree-repair-preserves-root-truth-20260909/2 : work {
     ]
     part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
     supersedes [ @legeos.work.subtree-repair-preserves-root-truth-20260909/1 ]
+    author "dk"
+}
+
+record legeos.work.subtree-repair-preserves-root-truth-20260909/3 : work {
+    title "P1 — a complete subtree pass never upgrades a root to Current or clears its whole-root stale reason"
+    state active
+    scope [
+        path "crates/templar-file-index/src/generation.rs",
+        path "crates/templar-file-index/tests/**"
+    ]
+    intent """
+        crates/lege-file-index/src/generation.rs derives the root's state and complete flag from the scoped pass alone (committed_state at ~441-445, the commit at ~530-555). A successful subtree scan therefore clears an unrelated whole-root overflow, watcher-exhaustion or incomplete-namespace state. The metadata axis already refuses this upgrade for ScanScope::Subtree; give the namespace axis the same rule: a subtree commit may downgrade the root or leave it as it was, and only a ScanScope::Root pass may set Current/complete or replace a whole-root stale reason. Tests: a root marked Stale{overflow} and a root left incomplete by a budget, each followed by a successful disjoint subtree scan, stay stale/incomplete with their original reason; a subsequent root pass restores Current/complete.
+        """
+    note "Astra rank P1, implement first. The consumer contract tests in crates/lege-file-index/tests/consumer_contract.rs already encode what Current means to a reader; extend them rather than adding a parallel suite.\nThe committed legacy scope migration requires fresh evidence on this active head. Historical results are retained; obsolete observations are historical derivation, not live prerequisites. No new code regression is claimed."
+    acceptance {
+        check subtree-no-upgrade {
+            statement """
+                Regression tests: stale-overflow and budget-incomplete roots stay so after a successful disjoint subtree scan; only a following root pass restores Current/complete.
+                """
+            method command
+            command "cargo test -p lege-file-index subtree"
+            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+        }
+    }
+    derived_from [
+        @legeos.assessment.astra-memory-polling-indexing-review-20260909#subtree-upgrade,
+        @legeos.observation.home-tree-exceeds-the-inotify-watch-budget/3
+    ]
+    part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
+    supersedes [ @legeos.work.subtree-repair-preserves-root-truth-20260909/2 ]
     author "dk"
 }
 
@@ -13531,7 +15103,7 @@ record legeos.work.super-press-hold-home-reveal/1 : work {
 
 record legeos.work.super-press-hold-home-reveal/2 : work {
     title "Super reveals Home on press, stays momentary while held, and keeps chords fast"
-    state completed
+    state superseded
     scope [
         path "compositor/templar-comp/src/keybindings.rs",
         path "crates/templar-types/src/action.rs",
@@ -13581,6 +15153,62 @@ record legeos.work.super-press-hold-home-reveal/2 : work {
     implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
     part_of [ @legeos.work.home-surface-usability-next ]
     supersedes [ @legeos.work.super-press-hold-home-reveal/1 ]
+    author "dk"
+}
+
+record legeos.work.super-press-hold-home-reveal/3 : work {
+    title "Super reveals Home on press, stays momentary while held, and keeps chords fast"
+    state active
+    scope [
+        path "compositor/templar-comp/src/keybindings.rs",
+        path "crates/templar-types/src/action.rs",
+        path "crates/templar-window/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Refine the existing release-only bare-Super toggle into two compatible modes. Super key-down reveals Home immediately. While either Super key remains held, Home stays visible as a momentary surface. Releasing after a hold returns to the exact prior application/Home state; a short unmodified tap retains the convenient latched toggle. Pressing another key while Super is held performs the declared accelerator and resolves the momentary reveal without also toggling Home on release. Two Super keys behave as one logical hold.
+
+        This remains compositor-owned so Home is reachable and the gesture terminates safely if the shell dies. Ctrl+Alt+H and Super+D remain fallbacks. The interaction changes no window geometry, activation, shelving or arrangement state.
+        """
+    note "\nThe committed legacy scope migration requires fresh evidence on this active head. Historical results are retained; obsolete observations are historical derivation, not live prerequisites. No new code regression is claimed."
+    acceptance {
+        check chord-does-not-toggle {
+            statement """
+                Every declared Super chord performs only its action; release never additionally latches Home, and chord handling safely ends the momentary reveal.
+                """
+            method command
+            command "cargo test -p lege-comp keybindings::tests::super_chord"
+            verified_by [ @legeos.evidence.super-press-hold-20260831/1 ]
+        }
+        check no-window-mutation {
+            statement """
+                Momentary and latched Home reveal change no window geometry, activation, fullscreen, maximize or shelf state.
+                """
+            method command
+            command "cargo test -p lege-window commands::tests::a_reveal_changes_no_window"
+            verified_by [ @legeos.evidence.super-press-hold-20260831/1 ]
+        }
+        check press-and-hold {
+            statement """
+                Home becomes revealed on Super key-down, remains revealed while either Super key is held, and a held release restores the exact preceding reveal state.
+                """
+            method command
+            command "cargo test -p lege-comp keybindings::tests::super"
+            verified_by [ @legeos.evidence.super-press-hold-20260831/1 ]
+        }
+        check tap-still-latches {
+            statement """
+                A short bare-Super tap toggles the latched Home state without a second toggle on key release.
+                """
+            method command
+            command "cargo test -p lege-comp keybindings::tests::bare_super"
+            verified_by [ @legeos.evidence.super-press-hold-20260831/1 ]
+        }
+    }
+    derived_from [ @legeos.work.home-input-and-refinement ]
+    implements [ @legeos.decision.home-is-momentary-and-placeable-objects-are-containers ]
+    part_of [ @legeos.work.home-surface-usability-next ]
+    supersedes [ @legeos.work.super-press-hold-home-reveal/2 ]
     author "dk"
 }
 
@@ -14093,7 +15721,7 @@ record legeos.work.watcher-recovery-durable-and-ordered-20260909/1 : work {
 
 record legeos.work.watcher-recovery-durable-and-ordered-20260909/2 : work {
     title "P1 — a failed apply queues a repair, and a repair does not run until the invalidation it answers has settled"
-    state completed
+    state superseded
     scope [
         path "crates/templar-file-index/src/coalesce.rs",
         path "services/templar-filed/src/watcher.rs"
@@ -14127,6 +15755,43 @@ record legeos.work.watcher-recovery-durable-and-ordered-20260909/2 : work {
     ]
     part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
     supersedes [ @legeos.work.watcher-recovery-durable-and-ordered-20260909/1 ]
+    author "dk"
+}
+
+record legeos.work.watcher-recovery-durable-and-ordered-20260909/3 : work {
+    title "P1 — a failed apply queues a repair, and a repair does not run until the invalidation it answers has settled"
+    state active
+    scope [
+        path "crates/templar-file-index/src/coalesce.rs",
+        path "services/templar-filed/src/watcher.rs"
+    ]
+    intent """
+        services/lege-filed/src/watcher.rs step (~287-295) takes a coalesced batch, and if Index::apply fails it logs a warning and the batch is gone: no repair is queued, and the root can claim Current forever. The same step pops a repair immediately, so an overflow repair can run while its Invalidate mutation is still below the coalescer deadline; applying that older invalidation after the repair re-stales the root with nothing queued. Changes: on a failed apply, mark the affected roots stale and queue a root repair, with no tight retry on a permanent failure; before running a repair, either flush the coalescer's pending mutations for that root or drop invalidations the repair supersedes, so recovery is complete when it says it is. Tests: real WatchLoop tests with the fake clock covering overflow then settle, and an injected apply failure, rather than core tests that apply the invalidation by hand before repairing.
+        """
+    note "Astra rank P1, implement first. Coalescer semantics live in crates/lege-file-index/src/coalesce.rs; a take-for-root or supersede helper there is smaller than special-casing in the loop.\nThe committed legacy scope migration requires fresh evidence on this active head. Historical results are retained; obsolete observations are historical derivation, not live prerequisites. No new code regression is claimed."
+    acceptance {
+        check apply-failure-repairs {
+            statement """
+                A WatchLoop test with an injected apply failure ends with the root stale and a repair queued, and does not spin when the failure persists.
+                """
+            method command
+            command "cargo test -p lege-filed watcher"
+            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+        }
+        check overflow-then-settle {
+            statement """
+                A fake-clock WatchLoop test: overflow, repair, then the coalescer deadline passes; the root is Current afterwards and no stale invalidation lands late.
+                """
+            method command
+            command "cargo test -p lege-filed watcher"
+            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+        }
+    }
+    derived_from [
+        @legeos.assessment.astra-memory-polling-indexing-review-20260909#watcher-ordering
+    ]
+    part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
+    supersedes [ @legeos.work.watcher-recovery-durable-and-ordered-20260909/2 ]
     author "dk"
 }
 
