@@ -108,7 +108,7 @@ pub fn run(root: &Path, options: &Options) -> Result<()> {
     println!("  {} package(s):", matrix.components.len());
     for component in &matrix.components {
         println!(
-            "    cargo deb -p {} --deb-version {id}",
+            "    cargo deb -p {} --deb-version {id} --output target/debian",
             component.crate_name
         );
     }
@@ -176,6 +176,8 @@ fn build_packages(
         println!("== {} ({})", component.package, component.crate_name);
         let status = Process::new("cargo")
             .args(["deb", "-p", &component.crate_name, "--deb-version", id])
+            .arg("--output")
+            .arg(deb_dir)
             .current_dir(root)
             .env("TEMPLAROS_BUILD_SET_ID", id)
             .status()
