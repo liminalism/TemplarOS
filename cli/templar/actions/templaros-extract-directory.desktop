@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Action
+Name=Extract to other directory…
+Tooltip=Choose a directory and extract all selected archives there
+Icon=folder-open
+Profiles=extract;
+Schemes=file;
+MimeTypes=all/allfiles;
+SelectionCount=>0
+
+[X-Action-Profile extract]
+Exec=templar archive extract --mode directory --gui -- %F

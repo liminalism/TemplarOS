@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Action
+Name=Compress to ZIP
+Tooltip=Compress the selected files and folders into one ZIP archive here
+Icon=package-x-generic
+Profiles=compress;
+Schemes=file;
+SelectionCount=>0
+
+[X-Action-Profile compress]
+MimeTypes=all/all;
+Exec=templar archive compress --gui -- %F

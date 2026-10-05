@@ -156,7 +156,7 @@ distribution from outside:
 - **Custom actions** (DES-EMA, `/usr/share/file-manager/actions/*.desktop`, shipped by
   `templaros-cli`): "Add to Home" runs `templar home place %f` over `HomeField1.PlaceFolder`, and
   "Create project here" runs `templar project create-here %f` over `Projects1.Create` with the id
-  derived from the folder name. This is the whole of the outbound route.
+  derived from the folder name. Archive actions run locally, as described below.
 - **Bookmarks**: filed is the authority. Every `Files.Bookmarks` mutation rewrites
   `$XDG_CONFIG_HOME/gtk-3.0/bookmarks`, which is the file libfm-qt's Places sidebar reads. One
   way, deliberately: importing it would make two writers of one list with no answer to which is
@@ -170,3 +170,58 @@ distribution from outside:
   different questions ("what did I open" against "where was I last working").
 - **Search**: cannot integrate. pcmanfm-qt's Find is its own, and there is no route by which it
   could ask `Files.Search1`. Home's search and FSearch remain the indexed answer.
+
+### Archive context menu
+
+`templaros-cli` ships a directly visible **Compress to ZIP** action and an **Extract**
+submenu with **Extract here**, **Extract to smart new folder here**, and **Extract to
+other directory…**. DES-EMA `%F` passes the entire selection to one process: compression
+creates one ZIP; extraction processes each selected archive, including mixed formats.
+The actions are available for local files; compression also accepts directories.
+Extraction stays visible for unrecognized file types so mixed selections do not disappear
+because of libfm-qt's all-selected-items MIME matching. Non-archives produce an error.
+
+The commands are:
+
+```sh
+templar archive compress [--output PATH] [--gui] -- FILE_OR_FOLDER...
+templar archive extract --mode here [--gui] -- ARCHIVE...
+templar archive extract --mode smart [--gui] -- ARCHIVE...
+templar archive extract --mode directory [--directory PATH] [--gui] -- ARCHIVE...
+```
+
+Without `--output`, one source becomes `source-name.zip`, while a multiple selection
+becomes `Archive.zip` beside the first source. ZIP and smart-folder collisions are
+numbered instead of overwritten, including an explicit compression output path.
+Smart extraction names the folder after the archive, stripping compound suffixes
+(`package.tar.gz` becomes `package`), and flattens a sole top-level directory to avoid
+an unnecessary wrapper. Here and other-directory extraction refuse existing top-level
+names rather than merge or overwrite. Earlier successful outputs remain available if
+a later archive fails, and the error dialog lists them.
+
+The other-directory action opens Zenity's native folder chooser, initially beside the
+first archive. Zenity also provides cancellable progress, error dialogs and encrypted
+ZIP password entry; it is a runtime dependency, not an archive manager. Canceling the
+chooser writes nothing. Canceling an operation removes its uncommitted staging files.
+Successful output paths are printed on stdout. No desktop-service connection is required.
+
+`crates/templar-archive` creates DEFLATE ZIPs with the Rust `zip` crate and a `zlib-rs`
+backend. Extraction streams through the system `libarchive` with reused 128 KiB buffers:
+ZIP, 7z, RAR/RAR5, TAR, CAB, ISO, ar/DEB, CPIO, LHA/LZH, XAR and WARC, with the installed
+codec support for gzip, bzip2, xz/LZMA, zstd, LZ4 and other libarchive filters. Standalone
+compressed streams are supported too; DEB/ar members are not recursively unpacked.
+Gzip checksum validation uses a single-pass Rust decoder because libarchive's gzip
+filter does not validate its trailer. Optional codecs may require host codec libraries
+or helpers. Encrypted RAR/7z and unsupported compression/encryption methods fail
+explicitly; encrypted ZIP uses the backend's supported methods. ZIP symlink integrity
+verification supports stored/DEFLATE entries, not gzip-wrapped ZIP symlinks.
+
+Extraction validates private same-filesystem staging before publishing with atomic
+no-clobber renames. Absolute/parent/drive paths, escaping or cyclic links, conflicting
+members and special files are rejected. Safe symbolic and hard links and ordinary
+permission bits are preserved; ownership, timestamps, ACLs, xattrs and special permission
+bits are not restored. ZIP creation does not follow source symlinks and rejects
+non-UTF-8 names, literal backslashes and links escaping the selected trees. The native
+build needs `libarchive-dev` and pkg-config; runtime needs Linux `/proc/self/fd`,
+`C.UTF-8`, libarchive 3.4+ and a filesystem supporting `renameat2(RENAME_NOREPLACE)`.
+The archive command and menu do not change how PCManFM-Qt receives TemplarOS window chrome.

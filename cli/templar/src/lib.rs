@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod archive;
 pub mod bus;
 pub mod dev;
 pub mod doctor;

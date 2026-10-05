@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Menu
+Name=Extract
+Icon=archive-extract
+ItemsList=templaros-extract-here;templaros-extract-smart;templaros-extract-directory;
+Schemes=file;
+MimeTypes=all/allfiles;
+SelectionCount=>0

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Action
+Name=Extract to smart new folder here
+Tooltip=Extract each archive into a folder named after it, avoiding a redundant enclosing folder
+Icon=folder-new
+Profiles=extract;
+Schemes=file;
+MimeTypes=all/allfiles;
+SelectionCount=>0
+
+[X-Action-Profile extract]
+Exec=templar archive extract --mode smart --gui -- %F

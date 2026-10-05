@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Action
+Name=Extract here
+Tooltip=Extract each selected archive beside its source, without overwriting existing files
+Icon=archive-extract
+Profiles=extract;
+Schemes=file;
+MimeTypes=all/allfiles;
+SelectionCount=>0
+
+[X-Action-Profile extract]
+Exec=templar archive extract --mode here --gui -- %F

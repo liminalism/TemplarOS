@@ -24,6 +24,7 @@ members = [
     "crates/templar-file-index",
     "crates/templar-fanotify",
     "crates/templar-clipboard",
+    "crates/templar-archive",
     "services/templar-sessiond",
     "services/templar-resourced",
     "services/templar-filed",
@@ -67,6 +68,7 @@ templar-client = { path = "crates/templar-client" }
 templar-hwdetect = { path = "crates/templar-hwdetect" }
 templar-file-index = { path = "crates/templar-file-index" }
 templar-fanotify = { path = "crates/templar-fanotify" }
+templar-archive = { path = "crates/templar-archive" }
 templar-comp-integration = { path = "compositor/templar-comp-integration" }
 templar-resourced = { path = "services/templar-resourced" }
 templar-filed = { path = "services/templar-filed" }

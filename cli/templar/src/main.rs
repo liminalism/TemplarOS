@@ -11,13 +11,14 @@
 //! parsing, connection setup and dispatch.
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::{
     fmt::Write as _,
     path::{Path, PathBuf},
 };
 use templar::{
-    bus, dev, doctor, files, history, open, power, project, providers, res, settings, update,
+    archive, bus, dev, doctor, files, history, open, power, project, providers, res, settings,
+    update,
 };
 use templar_client::proxies::{
     AppIdentityProxy, AssociationsProxy, AudioProxy, BacklightProxy, BatteryProxy,
@@ -71,6 +72,11 @@ enum Command {
         command: FilesCommand,
         #[arg(long, global = true)]
         json: bool,
+    },
+    /// Create ZIP archives or extract archives locally, without a desktop service.
+    Archive {
+        #[command(subcommand)]
+        command: ArchiveCommand,
     },
     /// Volume, display brightness and battery.
     Status {
@@ -187,6 +193,46 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum ArchiveCommand {
+    /// Compress the selected files and folders into one ZIP archive.
+    Compress {
+        /// Choose the output ZIP path instead of deriving it from the selection.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Show native progress, cancellation and error dialogs.
+        #[arg(long)]
+        gui: bool,
+        /// Selected paths; use `--` before filenames beginning with a dash.
+        #[arg(required = true, num_args = 1..)]
+        paths: Vec<PathBuf>,
+    },
+    /// Extract one or more archives without replacing existing files.
+    Extract {
+        #[arg(long, value_enum, default_value = "here")]
+        mode: ArchiveMode,
+        /// Destination for directory mode; omit it to open a folder chooser.
+        #[arg(long)]
+        directory: Option<PathBuf>,
+        /// Show native progress, cancellation, password and error dialogs.
+        #[arg(long)]
+        gui: bool,
+        /// Selected archives; use `--` before filenames beginning with a dash.
+        #[arg(required = true, num_args = 1..)]
+        paths: Vec<PathBuf>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ArchiveMode {
+    /// Extract next to each archive.
+    Here,
+    /// Extract into a new folder named after each archive.
+    Smart,
+    /// Extract into the selected directory.
+    Directory,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1022,6 +1068,24 @@ async fn run() -> Result<()> {
             res_command(command.unwrap_or(ResCommand::Status), json).await
         }
         Command::Files { command, json } => files_command(command, json).await,
+        Command::Archive { command } => match command {
+            ArchiveCommand::Compress { output, gui, paths } => {
+                archive::compress(paths, output, gui).await
+            }
+            ArchiveCommand::Extract {
+                mode,
+                directory,
+                gui,
+                paths,
+            } => {
+                let destination = match mode {
+                    ArchiveMode::Here => archive::Destination::Here,
+                    ArchiveMode::Smart => archive::Destination::Smart,
+                    ArchiveMode::Directory => archive::Destination::Directory,
+                };
+                archive::extract(paths, destination, directory, gui).await
+            }
+        },
         Command::Status { command, json } => {
             status_command(command.unwrap_or(StatusCommand::All), json).await
         }

@@ -3,7 +3,7 @@ Section: admin
 Priority: optional
 Maintainer: TemplarOS contributors <dev@templaros.org>
 Rules-Requires-Root: no
-Build-Depends: debhelper-compat (= 13), cargo (>= 1.97), rustc (>= 1.97), pkgconf, libsqlite3-dev, just, libpam0g-dev, libclang-dev
+Build-Depends: debhelper-compat (= 13), cargo (>= 1.97), rustc (>= 1.97), pkgconf, libsqlite3-dev, libarchive-dev, just, libpam0g-dev, libclang-dev
 Standards-Version: 4.7.0
 Homepage: https://templaros.org
 Vcs-Git: https://github.com/templaros/templaros.git
@@ -98,6 +98,6 @@ Description: TemplarOS xdg-desktop-portal backend
 
 Package: templaros-cli
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, zenity
 Description: TemplarOS command line
  templar: one CLI over the OS services, including templar doctor.

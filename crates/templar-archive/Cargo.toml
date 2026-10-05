@@ -1,0 +1,19 @@
+[package]
+name = "templar-archive"
+description = "Streaming ZIP creation and safe native archive extraction for TemplarOS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+libc.workspace = true
+libarchive3-sys = "0.1.2"
+tempfile.workspace = true
+zip = { version = "7.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[lints]
+workspace = true

@@ -28,6 +28,7 @@ templar-filed = { workspace = true }
 templar-resourced = { workspace = true }
 templar-session-core = { workspace = true }
 templar-state = { workspace = true }
+templar-archive = { workspace = true }
 rusqlite = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -49,13 +50,14 @@ workspace = true
 name = "templaros-cli"
 section = "utils"
 priority = "optional"
-depends = "$auto"
+depends = "$auto, zenity"
 # The garden's terminal hook only reaches a graphical terminal's shell through /etc/bash.bashrc;
 # postinst adds the marker-guarded line and postrm takes it back out (see the scripts, and
 # `xtask check-packaging`, which fails if that delivery is ever dropped back to /etc/profile.d).
 maintainer-scripts = "../../packaging/templaros-cli"
 assets = [
     ["target/release/templar", "usr/bin/templar", "755"],
+    ["actions/*.desktop", "usr/share/file-manager/actions/", "644"],
     # The component matrix travels with the tool that reads it.
     # cargo-deb resolves asset paths relative to this crate's directory.
     ["../../distro/deploy/components.toml", "usr/share/templaros/components.toml", "644"],
