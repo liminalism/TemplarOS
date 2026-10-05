@@ -48,7 +48,7 @@ Description: TemplarOS boot health probe
 
 Package: templaros-session
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, templaros-sessiond, templaros-resourced, templaros-filed, templaros-comp, templaros-shell
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, templaros-sessiond, templaros-resourced, templaros-filed, templaros-comp, templaros-shell, lxqt-policykit, udiskie
 Recommends: greetd, templaros-greeter
 Description: TemplarOS session entry and units
  wayland-sessions entry, templaros-session.target and the core user units with their protection values.
@@ -64,7 +64,7 @@ Description: TemplarOS compositor
 
 Package: templaros-greeter
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, greetd, templaros-comp
+Depends: ${shlibs:Depends}, ${misc:Depends}, greetd, templaros-comp, fprintd, libpam-fprintd
 Description: TemplarOS greeter
  The graphical login surface, on the same toolkit as the shell. It speaks greetd's JSON IPC over
  its socket, so greetd performs the authentication and this package links no PAM, no shadow and

@@ -13,8 +13,12 @@ templaros-portal
 templaros-cli
 templaros-greeter
 greetd
+fprintd
+libpam-fprintd
 xdg-desktop-portal
 xdg-desktop-portal-gtk
 xwayland
 polkitd
+lxqt-policykit
+udiskie
 dbus-broker

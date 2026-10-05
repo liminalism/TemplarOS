@@ -1379,6 +1379,7 @@ in_target systemctl --global mask xdg-desktop-autostart.target
 in_target systemctl --global enable templaros-session.target
 in_target systemctl enable templar-hostd.service templar-boot-health.service
 in_target install -D -m 0644 /usr/share/templaros/greetd/config.toml /etc/greetd/config.toml
+in_target install -D -m 0644 /usr/share/templaros/greetd/pam-login /etc/pam.d/greetd
 in_target systemd-sysusers /usr/lib/sysusers.d/templaros-greeter.conf
 in_target systemd-tmpfiles --create /usr/lib/tmpfiles.d/templaros-greeter.conf
 in_target systemctl disable getty@tty1.service

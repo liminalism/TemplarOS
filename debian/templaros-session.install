@@ -4,3 +4,4 @@ session/units/user/templaros-session.target usr/lib/systemd/user/
 session/units/user/templar-shell.service usr/lib/systemd/user/
 distro/branding/os-release usr/share/templaros/branding/
 distro/branding/lsb-release usr/share/templaros/branding/
+distro/policy/udiskie/config.json usr/share/templaros/udiskie/

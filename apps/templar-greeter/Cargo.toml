@@ -64,10 +64,11 @@ priority = "optional"
 # `$auto`/`templaros-comp`'s own dependency the same way `templaros-comp.install` already does — this
 # package's `templar-greeter-session` orchestrator role (`src/main.rs`) spawns `templar-comp` itself, so
 # it depends on that package directly rather than assuming it is merely "recommended" alongside.
-depends = "$auto, greetd, templaros-comp"
+depends = "$auto, greetd, templaros-comp, fprintd, libpam-fprintd"
 assets = [
     ["target/release/templar-greeter", "usr/bin/templar-greeter", "755"],
     ["../../session/units/greetd/config.toml", "usr/share/templaros/greetd/config.toml", "644"],
+    ["../../session/units/greetd/pam-login", "usr/share/templaros/greetd/pam-login", "644"],
     ["../../distro/policy/sysusers.d/templaros-greeter.conf", "usr/lib/sysusers.d/templaros-greeter.conf", "644"],
     ["../../distro/policy/tmpfiles.d/templaros-greeter.conf", "usr/lib/tmpfiles.d/templaros-greeter.conf", "644"],
 ]

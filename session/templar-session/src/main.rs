@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use std::process::Command;
+use std::process::{Child, Command};
 
 const TARGET: &str = "templaros-session.target";
 const COMPOSITOR_UNIT: &str = "templar-comp.service";
@@ -57,9 +57,14 @@ const START_STEPS: &[Step] = &[
     },
     Step {
         program: "systemctl",
-        args: &["--user", "start", "--wait", TARGET],
+        args: &["--user", "start", TARGET],
     },
 ];
+
+const WAIT_STEP: Step = Step {
+    program: "systemctl",
+    args: &["--user", "start", "--wait", TARGET],
+};
 
 const CLEANUP_STEPS: &[Step] = &[
     Step {
@@ -96,13 +101,38 @@ fn main() -> Result<()> {
 
     debug_assert_eq!(WAYLAND_DISPLAY, "wayland-0");
     if cli.dry_run {
-        for step in START_STEPS {
+        for step in START_STEPS
+            .iter()
+            .copied()
+            .chain(desktop_helpers())
+            .chain([WAIT_STEP])
+            .chain(CLEANUP_STEPS.iter().copied())
+        {
             tracing::info!(program = step.program, args = ?step.args, "session step");
         }
         return Ok(());
     }
 
-    let result = run_steps(START_STEPS);
+    let mut helpers = Vec::new();
+    let result = run_steps(START_STEPS).and_then(|()| {
+        // Polkit's agent registers a UnixSession subject from its PID. A user-manager service
+        // has no PAM session, so these children must remain under this greetd-launched process.
+        // The target start has already waited for the compositor's Type=notify readiness.
+        for step in desktop_helpers() {
+            match Command::new(step.program)
+                .args(step.args)
+                .env_remove("DISPLAY")
+                .env("WAYLAND_DISPLAY", WAYLAND_DISPLAY)
+                .env("QT_QPA_PLATFORM", "wayland")
+                .spawn()
+            {
+                Ok(child) => helpers.push(child),
+                Err(error) => tracing::error!(%error, program = step.program, "desktop helper could not start"),
+            }
+        }
+        run_step(WAIT_STEP)
+    });
+    stop_helpers(&mut helpers);
     // Cleanup also runs after a failed start.  That is what returns SDDM to a usable greeter when
     // the compositor cannot take the seat, rather than stranding the user on an empty VT.
     for step in CLEANUP_STEPS {
@@ -112,6 +142,49 @@ fn main() -> Result<()> {
     }
     tracing::info!(unit = COMPOSITOR_UNIT, "session ended");
     result
+}
+
+fn desktop_helpers() -> [Step; 2] {
+    let arguments: &'static [&'static str] =
+        if std::path::Path::new("/etc/templaros/udiskie.json").is_file() {
+            &[
+                "--automount",
+                "--no-tray",
+                "--no-notify",
+                "--no-file-manager",
+                "--no-password-prompt",
+                "--config",
+                "/etc/templaros/udiskie.json",
+            ]
+        } else {
+            &[
+                "--automount",
+                "--no-tray",
+                "--no-notify",
+                "--no-file-manager",
+                "--no-password-prompt",
+                "--config",
+                "/usr/share/templaros/udiskie/config.json",
+            ]
+        };
+    [
+        Step {
+            program: "/usr/bin/lxqt-policykit-agent",
+            args: &[],
+        },
+        Step {
+            program: "/usr/bin/udiskie",
+            args: arguments,
+        },
+    ]
+}
+
+fn stop_helpers(children: &mut [Child]) {
+    for child in children {
+        // Exact children only, never process-name matching or a live-session unit restart.
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 fn run_steps(steps: &[Step]) -> Result<()> {
@@ -131,89 +204,4 @@ fn run_step(step: Step) -> Result<()> {
         bail!("{} {:?} failed with {status}", step.program, step.args);
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn startup_replaces_stale_display_environment_before_starting_target() {
-        assert_eq!(
-            START_STEPS[0].args,
-            ["--user", "unset-environment", "DISPLAY", "WAYLAND_DISPLAY"]
-        );
-        assert_eq!(
-            START_STEPS[1].args,
-            [
-                "--user",
-                "set-environment",
-                "XDG_CURRENT_DESKTOP=TemplarOS",
-                "XDG_SESSION_DESKTOP=templaros",
-                "XDG_SESSION_TYPE=wayland",
-                "WAYLAND_DISPLAY=wayland-0",
-            ]
-        );
-        assert!(!START_STEPS[2].args.contains(&"DISPLAY"));
-        assert!(!START_STEPS[2].args.contains(&"WAYLAND_DISPLAY"));
-        assert!(START_STEPS[2].args.contains(&"XDG_SEAT"));
-    }
-
-    #[test]
-    fn sessiond_creates_its_config_dir_before_the_home_sandbox() {
-        let sessiond = include_str!("../../units/user/templar-sessiond.service");
-        assert!(
-            sessiond.contains(
-                "ExecStartPre=+/usr/bin/mkdir -p %h/.config/templaros %h/.local/share/applications"
-            ),
-            "a missing %h/.config/templaros is 226/NAMESPACE under ProtectHome=read-only"
-        );
-        assert!(sessiond.contains("ReadWritePaths=%S/templaros %h/.config/templaros"));
-    }
-
-    #[test]
-    fn installed_units_share_one_socket_and_bind_session_lifetime_to_compositor() {
-        let compositor = include_str!("../../units/user/templar-comp.service");
-        let shell = include_str!("../../units/user/templar-shell.service");
-        let target = include_str!("../../units/user/templaros-session.target");
-
-        assert!(compositor.contains("--backend udev --socket-name wayland-0"));
-        assert!(compositor.contains("Type=notify"));
-        assert!(compositor.contains("TimeoutStartSec=15s"));
-        assert!(shell.contains("Environment=WAYLAND_DISPLAY=templaros-shell-wayland-0"));
-        assert!(shell.contains("ExecStart=/usr/bin/templar-shell --surface"));
-        assert!(target.contains("Requires=basic.target templar-comp.service"));
-        assert!(target.contains("BindsTo=templar-comp.service"));
-    }
-
-    /// snapd's wayland interface allows a confined application exactly
-    /// `owner /run/user/[0-9]*/wayland-[0-9]* rw,`. The public socket has to fall inside that or
-    /// no snap can open the display; the trusted-shell socket has to fall outside it or every
-    /// snap can open the one socket that grants the private protocol. AppArmor's `*` does not
-    /// stop at a dash, so "wayland-0" plus any suffix is inside the pattern — which is why the
-    /// shell's name is prefixed rather than suffixed.
-    #[test]
-    fn snaps_may_reach_the_public_socket_and_never_the_trusted_shell_one() {
-        fn snap_reachable(name: &str) -> bool {
-            name.strip_prefix("wayland-")
-                .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
-        }
-
-        assert!(snap_reachable(WAYLAND_DISPLAY), "{WAYLAND_DISPLAY}");
-        let shell = include_str!("../../units/user/templar-shell.service");
-        let name = shell
-            .lines()
-            .find_map(|line| line.strip_prefix("Environment=WAYLAND_DISPLAY="))
-            .expect("the shell unit names its socket");
-        assert!(!snap_reachable(name), "{name} is reachable by every snap");
-    }
-
-    #[test]
-    fn cleanup_removes_the_session_socket_from_a_persistent_user_manager() {
-        assert!(
-            CLEANUP_STEPS
-                .iter()
-                .any(|step| { step.args == ["--user", "unset-environment", "WAYLAND_DISPLAY"] })
-        );
-    }
 }

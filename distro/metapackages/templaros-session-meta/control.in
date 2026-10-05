@@ -2,9 +2,9 @@
 Package: templaros-session-full
 Architecture: all
 Depends: templaros-session, templaros-sessiond, templaros-resourced, templaros-filed,
- templaros-hostd, templaros-boot-health, templaros-shell, templaros-comp,
- templaros-portal, templaros-cli, templaros-greeter, greetd, xdg-desktop-portal,
- xdg-desktop-portal-gtk, xwayland, polkitd, dbus-broker, ${misc:Depends}
-Recommends: templaros-nm-tray
+ templaros-hostd, templaros-boot-health, templaros-shell, templaros-nm-tray,
+ templaros-comp, templaros-portal, templaros-cli, templaros-greeter, greetd, fprintd,
+ libpam-fprintd, xdg-desktop-portal, xdg-desktop-portal-gtk, xwayland, polkitd,
+ lxqt-policykit, udiskie, dbus-broker, ${misc:Depends}
 Description: TemplarOS session only (Stage 1: replacement session on an existing Lubuntu 26.04)
  The session and its daemons, without the default applications or the hardware stack.

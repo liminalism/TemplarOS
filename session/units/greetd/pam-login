@@ -1,0 +1,16 @@
+#%PAM-1.0
+# greetd owns authentication. Keep login's nologin gate before either credential path.
+# The bracket skips exactly one substack on fingerprint success, not account/session checks.
+auth optional pam_faildelay.so delay=3000000
+auth requisite pam_nologin.so
+-auth [success=1 default=ignore] pam_fprintd.so max-tries=1 timeout=10
+auth substack common-auth
+auth optional pam_group.so
+account include login
+session include login
+password include login
+
+-auth optional pam_gnome_keyring.so
+-auth optional pam_kwallet5.so
+-session optional pam_gnome_keyring.so auto_start
+-session optional pam_kwallet5.so auto_start

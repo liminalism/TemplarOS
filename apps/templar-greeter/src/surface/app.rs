@@ -4,20 +4,19 @@
 //! actions. See `surface::window`'s module doc for why this crate drives winit directly rather than
 //! `pixelkit_shell::run_app` — the fullscreen requirement `WindowConfig` has no way to express.
 //!
-//! No async runtime, no background thread, no `Waker`: `GreetdClient`'s calls block
-//! (`crate::client`'s module doc), so everything here happens synchronously in response to a
-//! window event, the same way a native blocking login prompt behaves — including a brief freeze
-//! during PAM's own fail-delay on a wrong password, which is expected, not a bug.
+//! greetd exchanges run on one worker: PAM can wait for a fingerprint for several seconds, while
+//! the event loop must still paint its instructions and accept cancellation. Info/error messages
+//! are acknowledged automatically only after their text has been presented.
 
 use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 
 use anyhow::Context;
 use pixelkit_raster::{Painter, RasterKernel, Rect};
 use pixelkit_ui::{Theme, Ui};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::{Fullscreen, Window, WindowId as WinitWindowId};
 
 use crate::client::GreetdClient;
@@ -48,16 +47,71 @@ pub fn run() -> anyhow::Result<i32> {
     }
     let selected_session = crate::sessions::default_index(&sessions);
 
-    let event_loop = EventLoop::new().context("creating the winit event loop")?;
-    let mut app = GreeterApp::new(client, sessions, selected_session);
+    let event_loop = EventLoop::<AuthUpdate>::with_user_event()
+        .build()
+        .context("creating the winit event loop")?;
+    let mut app = GreeterApp::new(
+        client,
+        sessions,
+        selected_session,
+        event_loop.create_proxy(),
+    );
     event_loop
         .run_app(&mut app)
         .context("running the greeter's event loop")?;
     Ok(app.exit_code.unwrap_or(1))
 }
 
+enum AuthCommand {
+    Action(GreeterAction),
+    Start { cmd: Vec<String>, env: Vec<String> },
+}
+
+enum AuthUpdate {
+    Flow { flow: LoginFlow, canceled: bool },
+    Started(String),
+}
+
+fn authentication_worker(
+    client: GreetdClient<UnixStream>,
+    commands: mpsc::Receiver<AuthCommand>,
+    proxy: &EventLoopProxy<AuthUpdate>,
+) {
+    let mut controller = LoginController::new(client);
+    for command in commands {
+        let canceled = matches!(&command, AuthCommand::Action(GreeterAction::Cancel));
+        match command {
+            AuthCommand::Action(action) => match action {
+                GreeterAction::None => continue,
+                GreeterAction::SubmitUsername(username) => controller.submit_username(username),
+                GreeterAction::SubmitResponse(text) => controller.submit_response(text),
+                GreeterAction::Cancel => controller.cancel(),
+            },
+            AuthCommand::Start { cmd, env } => {
+                let username = controller.flow.username().unwrap_or_default().to_owned();
+                if controller.start_session(cmd, env) {
+                    let _ = proxy.send_event(AuthUpdate::Started(username));
+                    return;
+                }
+            }
+        }
+        if proxy
+            .send_event(AuthUpdate::Flow {
+                flow: controller.flow.clone(),
+                canceled,
+            })
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
 struct GreeterApp {
-    controller: LoginController<UnixStream>,
+    commands: mpsc::Sender<AuthCommand>,
+    flow: LoginFlow,
+    pending: bool,
+    cancel_pending: bool,
     sessions: Vec<SessionEntry>,
     window: Option<HostedWindow>,
     text: pixelkit_text::TextCache,
@@ -76,13 +130,23 @@ impl GreeterApp {
         client: GreetdClient<UnixStream>,
         sessions: Vec<SessionEntry>,
         selected_session: usize,
+        proxy: EventLoopProxy<AuthUpdate>,
     ) -> GreeterApp {
-        let screen = GreeterScreen {
+        let mut screen = GreeterScreen {
             selected_session,
             ..GreeterScreen::default()
         };
+        if let Some(username) = crate::last_user::load(std::path::Path::new(crate::last_user::PATH))
+        {
+            screen.username.set_text(&username);
+        }
+        let (commands, receiver) = mpsc::channel();
+        std::thread::spawn(move || authentication_worker(client, receiver, &proxy));
         GreeterApp {
-            controller: LoginController::new(client),
+            commands,
+            flow: LoginFlow::idle(),
+            pending: false,
+            cancel_pending: false,
             sessions,
             window: None,
             text: pixelkit_text::TextCache::new(fonts::set()),
@@ -108,7 +172,7 @@ impl GreeterApp {
         // "dk" and it shows "d" — on a login screen, indistinguishable from dropped keys.
         let had_keys = !window.input.keys().is_empty();
         let data = GreeterData {
-            flow: &self.controller.flow,
+            flow: &self.flow,
             sessions: &self.sessions,
         };
         let action = {
@@ -131,10 +195,22 @@ impl GreeterApp {
         window.input.end_frame();
         window.present();
 
+        let action = if matches!(action, GreeterAction::Cancel) {
+            action
+        } else if self.pending {
+            GreeterAction::None
+        } else if action == GreeterAction::None
+            && matches!(&self.flow, LoginFlow::Authenticating { prompt, .. } if !prompt.needs_response)
+        {
+            // The PAM instructions have now reached the screen. Advancing may block in fprintd,
+            // but only the worker waits; the UI continues drawing and processing Escape.
+            GreeterAction::SubmitResponse(None)
+        } else {
+            action
+        };
         let acted = action != GreeterAction::None;
         if acted {
             self.apply_action(action);
-            self.maybe_start_session();
         }
         if (acted || had_keys)
             && let Some(window) = &self.window
@@ -147,28 +223,31 @@ impl GreeterApp {
     }
 
     fn apply_action(&mut self, action: GreeterAction) {
-        match action {
-            GreeterAction::None => {}
-            GreeterAction::SubmitUsername(username) => self.controller.submit_username(username),
-            GreeterAction::SubmitResponse(text) => self.controller.submit_response(text),
-            GreeterAction::Cancel => self.controller.cancel(),
+        if self.cancel_pending || action == GreeterAction::None {
+            return;
         }
-        // Nothing typed for a prompt survives past the exchange it was an answer to — an error,
-        // a cancel, and a session actually starting all leave `Authenticating` behind for good.
-        if !matches!(self.controller.flow, LoginFlow::Authenticating { .. }) {
-            self.screen.clear_response();
+        if self.pending {
+            if action == GreeterAction::Cancel {
+                self.cancel_pending = true;
+                self.screen.clear_response();
+                // Queue cancellation; never start a session from an intervening Ready update.
+                let _ = self.commands.send(AuthCommand::Action(action));
+            }
+            return;
         }
+        self.pending = self.commands.send(AuthCommand::Action(action)).is_ok();
+        self.screen.clear_response();
     }
 
     /// Once `LoginFlow::ReadyToStart`, there is nothing left to ask the user — start the selected
     /// session immediately, the way `greetd-ipc(7)`'s flow expects, rather than waiting for a
     /// separate confirmation the protocol has no room for.
     fn maybe_start_session(&mut self) {
-        let LoginFlow::ReadyToStart { .. } = &self.controller.flow else {
+        let LoginFlow::ReadyToStart { .. } = &self.flow else {
             return;
         };
         let Some(entry) = self.sessions.get(self.screen.selected_session).cloned() else {
-            self.controller.flow = LoginFlow::Idle {
+            self.flow = LoginFlow::Idle {
                 error: Some("no session selected to start".to_owned()),
             };
             return;
@@ -180,19 +259,45 @@ impl GreeterApp {
             SessionKind::Wayland => vec!["XDG_SESSION_TYPE=wayland".to_owned()],
             SessionKind::X11 => vec!["XDG_SESSION_TYPE=x11".to_owned()],
         };
-        if self.controller.start_session(entry.exec, env) {
-            tracing::info!(
-                session = %entry.name,
-                "session started; exiting so greetd can hand off the VT (greetd(5))"
-            );
-            self.exit_code = Some(0);
-        } else {
-            self.screen.clear_response();
-        }
+        self.pending = self
+            .commands
+            .send(AuthCommand::Start {
+                cmd: entry.exec,
+                env,
+            })
+            .is_ok();
     }
 }
 
-impl ApplicationHandler for GreeterApp {
+impl ApplicationHandler<AuthUpdate> for GreeterApp {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AuthUpdate) {
+        match event {
+            AuthUpdate::Started(username) => {
+                if let Err(error) =
+                    crate::last_user::save(std::path::Path::new(crate::last_user::PATH), &username)
+                {
+                    tracing::warn!(%error, "could not remember successful login username");
+                }
+                self.exit_code = Some(0);
+                event_loop.exit();
+            }
+            AuthUpdate::Flow { flow, canceled } => {
+                self.flow = flow;
+                if self.cancel_pending {
+                    if canceled {
+                        self.cancel_pending = false;
+                        self.pending = false;
+                    }
+                } else {
+                    self.pending = false;
+                    self.maybe_start_session();
+                }
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+        }
+    }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -251,6 +356,17 @@ impl ApplicationHandler for GreeterApp {
             _ => {}
         }
 
+        if self.pending
+            && let WindowEvent::KeyboardInput { event, .. } = &event
+        {
+            if key_pressed(event.state)
+                && event.logical_key
+                    == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+            {
+                self.apply_action(GreeterAction::Cancel);
+            }
+            return;
+        }
         let Some(window) = &mut self.window else {
             return;
         };

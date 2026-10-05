@@ -25,10 +25,11 @@ workspace = true
 name = "templaros-session"
 section = "x11"
 priority = "optional"
-depends = "$auto, systemd, templaros-sessiond, templaros-resourced, templaros-filed, templaros-comp, templaros-shell"
+depends = "$auto, systemd, templaros-sessiond, templaros-resourced, templaros-filed, templaros-comp, templaros-shell, lxqt-policykit, udiskie"
 assets = [
     ["target/release/templar-session", "usr/bin/templar-session", "755"],
     ["../../session/units/wayland-sessions/templaros.desktop", "usr/share/wayland-sessions/templaros.desktop", "644"],
     ["../../session/units/user/templaros-session.target", "usr/lib/systemd/user/templaros-session.target", "644"],
     ["../../session/units/user/templar-shell.service", "usr/lib/systemd/user/templar-shell.service", "644"],
+    ["../../distro/policy/udiskie/config.json", "usr/share/templaros/udiskie/config.json", "644"],
 ]

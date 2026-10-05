@@ -81,8 +81,8 @@ pub struct Prompt {
     /// Whether the field answering this prompt should be masked (`AuthMessageType::Secret`).
     pub secret: bool,
     /// Whether the user must type something before continuing. False for `Info`/`Error` messages,
-    /// which `greetd-ipc(7)` says need no `response` value set at all — Enter alone advances past
-    /// them with `post_auth_message_response { response: None }`.
+    /// which greetd acknowledges with `response: None`. The surface advances only after painting
+    /// the message, so fingerprint instructions remain visible while authentication waits.
     pub needs_response: bool,
 }
 

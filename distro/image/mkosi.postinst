@@ -14,6 +14,7 @@ systemctl enable templar-hostd.service templar-boot-health.service 2>/dev/null |
 # /usr/share so installing TemplarOS alongside another desktop never overwrites an administrator's
 # greetd configuration; the image build is the deliberate point where it becomes live.
 install -D -m 0644 /usr/share/templaros/greetd/config.toml /etc/greetd/config.toml
+install -D -m 0644 /usr/share/templaros/greetd/pam-login /etc/pam.d/greetd
 systemd-sysusers /usr/lib/sysusers.d/templaros-greeter.conf
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/templaros-greeter.conf
 systemctl disable getty@tty1.service 2>/dev/null || true

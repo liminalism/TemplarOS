@@ -8,6 +8,7 @@
 //! (`crate::protocol`'s doc explains why not as a dependency on the existing `greetd_ipc` crate).
 
 pub mod client;
+mod last_user;
 pub mod login;
 pub mod protocol;
 pub mod screen;

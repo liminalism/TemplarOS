@@ -200,7 +200,7 @@ impl GreeterScreen {
                     ui.panel(inner);
                     ui.label(
                         inner.inset(ui.theme.padding / 2),
-                        "Press Enter to continue",
+                        "Waiting for authentication…",
                         ui.theme.text_dim,
                         Align::Left,
                     );

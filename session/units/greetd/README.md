@@ -26,6 +26,16 @@ sudo useradd --system --no-create-home --home-dir /var/lib/templar-greeter \
 sudo install -d -o templar-greeter -g templar-greeter /var/lib/templar-greeter
 ```
 
+After a successful `start_session` request, the greeter saves the username in
+`/var/lib/templar-greeter/last-user` (0600, atomic replacement). It pre-fills that username on the
+next login but never starts authentication automatically. Failed authentication, cancellation and
+a failed session launch cannot overwrite the remembered username; no password or biometric data
+is persisted by the greeter.
+
+The owner-run `scripts/reinstall-templaros-desktop.sh` seeds a missing hint with the installing
+desktop account for the first upgrade. It publishes a private greeter-owned file atomically without
+replacing an existing hint; subsequent successful session launches replace that bootstrap value.
+
 What it needs, and why:
 
 * **A fresh `XDG_RUNTIME_DIR` and a registered login session.** greetd runs the greeter's PAM stack
@@ -46,6 +56,46 @@ What it needs, and why:
   This has not been exercised against a real greetd/logind/seatd stack in the environment this crate was
   built in (see `apps/templar-greeter/src/main.rs`'s own doc comment on what remains unverified) — treat it
   as the documented starting point, not a tested guarantee.
+
+## Fingerprint login on the reference laptop
+
+`pam-login` is installed as a template at `/usr/share/templaros/greetd/pam-login`, not over an
+administrator's existing PAM file. The image and installer select it explicitly. It preserves
+the `pam_nologin` gate, tries `pam_fprintd` for ten seconds, then falls through to the normal
+`common-auth` password substack on failure, missing enrollment or unavailable hardware. Fingerprint
+success skips only that password substack; login's account, session and password-management checks
+still run. PAM information/error messages are painted and acknowledged automatically; one worker
+waits for greetd while the UI remains responsive. Escape queues cancellation, so an intervening
+authentication success cannot launch a session after cancellation was requested.
+
+This laptop's ELAN `04f3:0c4b` revision `24.30` needs the owner's Lenovo 0.0.8 **OpenSSL-3** TOD
+plugin, not the old OpenSSL-1.1 blob and not the generic swipe driver. The installed Lubuntu plugin
+and `elan-fp/vendor/lenovo-r1slf01w/extracted/package/` copy have SHA-256
+`a5060ccdfc0c613bd4522be29f87cd94f098e6b83294cf02cd5a958b24b27f80`.
+Its retained `vendor-runs/run3/verify.log` records a matching fingerprint on Lubuntu. A native
+Resolute 1.95.1+tod1 smoke loaded this exact plugin and discovered `efd_tod (ELAN Fingerprint Sensor)`;
+that observation is device/ABI discovery, not a new enrollment or authentication claim.
+
+Build the separate owner-supplied package without copying biometric captures/templates:
+
+```sh
+scripts/build-elan-fingerprint-deb.py \
+  /mnt/lubuntu/home/dk/elan-fp/vendor/lenovo-r1slf01w/extracted/package/libfprint-2-tod1-elan.so
+sudo apt-get install ./target/debian/templaros-elan-fingerprint_0.0.8+templaros1_amd64.deb
+sudo cp -a /etc/pam.d/greetd /etc/pam.d/greetd.before-templaros-fingerprint
+sudo install -m 644 /usr/share/templaros/greetd/pam-login /etc/pam.d/greetd
+fprintd-list dk
+# If no matching enrollment is present on this OS:
+fprintd-enroll -f right-index-finger dk
+fprintd-verify dk
+```
+
+The package adds the sensor-revision-specific no-autosuspend rule; it does not install obsolete
+OpenSSL, start/restart any desktop service, or import private enrollment data from Lubuntu. If the
+new udev rule is not yet applied, reboot is the owner-controlled way to apply it. Keep password
+login as the recovery path. Fingerprint login does not supply a password to unlock an encrypted
+GNOME/KWallet keyring. Test `fprintd-verify`, password fallback and cancellation before relying on
+the new login path; do not stop a working display manager from the current desktop.
 
 ## What actually happens on a bare VT
 
@@ -88,6 +138,8 @@ Two things worth knowing before debugging this on real hardware:
 3. Apply the packaged account declarations if package hooks have not already done so:
    `sudo systemd-sysusers /usr/lib/sysusers.d/templaros-greeter.conf` and
    `sudo systemd-tmpfiles --create /usr/lib/tmpfiles.d/templaros-greeter.conf`.
+   Installing the fingerprint PAM template is a separate administrator decision; review the
+   fingerprint section above before replacing `/etc/pam.d/greetd`.
 4. **Check VT1 is not already spoken for.** `config.toml` runs on `vt = 1`; if a getty is still enabled
    there (`systemctl status getty@tty1.service`), greetd and the getty will both be attached to the same
    VT and corrupt each other's display. Disable it first:
@@ -103,7 +155,7 @@ None of this has been run end-to-end while building this crate — see the note 
 `apps/templar-greeter/src/main.rs` for exactly why (no greetd running in that environment, and taking over a
 real display manager's VT was explicitly out of scope for it) and exactly what *was* verified instead
 (the IPC client and login state machine against an in-process fake greetd, the session-file picker against
-real files on that machine, `cargo test -p templar-greeter` — 68 tests, all headless), plus the `--exec` handshake itself,
+real files on that machine, `cargo test -p templar-greeter`), plus the `--exec` handshake itself,
 which is verified in `compositor/templar-comp` and in `tests/integration/run.sh`.
 
 ## Recovering — read this before enabling step 5 above

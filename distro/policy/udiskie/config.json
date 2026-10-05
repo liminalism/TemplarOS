@@ -1,0 +1,10 @@
+{
+  "program_options": {
+    "automount": true,
+    "tray": false,
+    "notify": false,
+    "file_manager": false,
+    "password_prompt": false
+  },
+  "device_config": []
+}
