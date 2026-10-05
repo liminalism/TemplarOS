@@ -26,6 +26,9 @@ starts or stops user units. The developer launcher `scripts/nested-session.sh` s
 Wayland or X11 hosts, `TEMPLAROS_HOST_WAYLAND` / `TEMPLAROS_HOST_DISPLAY`, and
 `TEMPLAROS_NESTED_BIN_DIR`. It deliberately still refuses to run over a live installed TemplarOS
 session because it shares the user's bus; use the isolated integration wrapper instead.
+The CLI pipeline assertions drain stdout before reporting a match. An early-closing `grep -q`
+can race Rust's stdout writer and turn a successful JSON response into a spurious broken-pipe
+panic; this is a harness failure, not a desktop or D-Bus failure.
 
 `greeter.sh` covers the greetd framed-JSON conversation with the crate's fake peer and verifies the
 compositor preserves `GREETD_SOCK` and supplies `WAYLAND_DISPLAY`. `package-install.sh` builds the six

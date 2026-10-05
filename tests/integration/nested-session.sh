@@ -94,7 +94,7 @@ wait_for_name() {
     for _ in $(seq 1 100); do
         if gdbus call --session --dest org.freedesktop.DBus \
             --object-path /org/freedesktop/DBus \
-            --method org.freedesktop.DBus.NameHasOwner "$name" 2>/dev/null | grep -q true; then
+            --method org.freedesktop.DBus.NameHasOwner "$name" 2>/dev/null | grep true >/dev/null; then
             return 0
         fi
         sleep 0.1
@@ -136,13 +136,13 @@ wait_for_name org.templaros.Resources
 wait_for_name org.freedesktop.impl.portal.desktop.templaros
 
 # Exercise typed state over D-Bus and verify the read-after-write/history path.
-"$bin/templar" app list --json | grep -q 'org.templaros.Viewer'
-"$bin/templar" files search image-root --json | grep -q 'image-root'
+"$bin/templar" app list --json | grep 'org.templaros.Viewer' >/dev/null
+"$bin/templar" files search image-root --json | grep 'image-root' >/dev/null
 "$bin/templar" settings set shell.wallpaper.enabled '{"type":"bool","value":true}' >/dev/null
-"$bin/templar" settings get shell.wallpaper.enabled --json | grep -q 'true'
-"$bin/templar" history search wallpaper --json | grep -q 'shell.wallpaper.enabled'
-"$bin/templar" providers report --json | grep -q 'notification-server'
-"$bin/templar" res --json | grep -q 'observe-only'
+"$bin/templar" settings get shell.wallpaper.enabled --json | grep 'true' >/dev/null
+"$bin/templar" history search wallpaper --json | grep 'shell.wallpaper.enabled' >/dev/null
+"$bin/templar" providers report --json | grep 'notification-server' >/dev/null
+"$bin/templar" res --json | grep 'observe-only' >/dev/null
 
 # The graphical shell connects through the compositor's trusted socket and must survive long
 # enough to fetch its D-Bus-backed model and present frames. Its log is retained on failure.

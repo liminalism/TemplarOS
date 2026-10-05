@@ -40,14 +40,16 @@ pub fn log_icon_miss_once(app: &str, icon: Option<&str>, desktop_file: Option<&s
     let mut misses = MISSES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if misses.insert(app.to_owned()) {
-        tracing::info!(
-            app_id = app,
-            icon = icon.unwrap_or("<none>"),
-            desktop_file = desktop_file.unwrap_or("<none>"),
-            "no icon resolved for an application"
-        );
+    if misses.contains(app) {
+        return;
     }
+    misses.insert(app.to_owned());
+    tracing::info!(
+        app_id = app,
+        icon = icon.unwrap_or("<none>"),
+        desktop_file = desktop_file.unwrap_or("<none>"),
+        "no icon resolved for an application"
+    );
 }
 
 /// The prefix `templar_appd::desktop_entry::derive_app_id` puts on an imported application's id.
