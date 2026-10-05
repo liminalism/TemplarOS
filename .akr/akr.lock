@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.1"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:6505cca67c4dc54c0b90b27133375a143cee2a23503baa2e04098df0762ad562"
+    source_graph "sha256:53e49e9048e9f3a16227ed6fc5ce139f9d86cdea51256cdb3307a696ed28df3a"
 }
 
 source ".akr/project.akr" {
@@ -14,8 +14,8 @@ source ".akr/project.akr" {
 }
 
 source ".akr/records/legeos/assessments.akr" {
-    hash "sha256:ebea5dc0d931149fa332c2bab8dd57a0d84bf529de888afede026f665a759a98"
-    records 13
+    hash "sha256:163675eb7b911fc76ea99df23f40cd8d15a5d9b37fbe2c2cd87edecdbd952eda"
+    records 14
 }
 
 source ".akr/records/legeos/constraints.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:92710c2a064732732c1fdf2fd65e6a7bca2254dced269c7b1be0f59c9628f318"
-    records 380
+    hash "sha256:834b8c4c315b85d38c8c94ae52c048d2dd80671e39628933c8d42eb7de5f9c27"
+    records 381
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:658fb4da38772bad848e80a985e55ecfa65dfb3363ec58e0bf03c2ae77902579"
-    records 222
+    hash "sha256:da1770e5657eba0dadefbaf165a2339c9d718308ed65a771dcab77ac31311880"
+    records 223
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -107,6 +107,12 @@ resolution @legeos.assessment.astra-memory-polling-indexing-review-20260909/2 {
 }
 
 resolution @legeos.assessment.desktop-polish-software-delivery-and-live-review-20261005/2 {
+    slot derived_from
+    to @legeos.observation.desktop-polish-selected-forks-20261005/2
+    hash "sha256:8fd4eb2321178ca6454e25566e4ac9d56ee41cfb307e63bee8aa5d74ed7e2e82"
+}
+
+resolution @legeos.assessment.desktop-polish-software-delivery-and-live-review-20261005/3 {
     slot derived_from
     to @legeos.observation.desktop-polish-selected-forks-20261005/2
     hash "sha256:8fd4eb2321178ca6454e25566e4ac9d56ee41cfb307e63bee8aa5d74ed7e2e82"
@@ -7490,8 +7496,13 @@ seal @legeos.assessment.desktop-polish-software-delivery-and-live-review-2026100
 }
 
 seal @legeos.assessment.desktop-polish-software-delivery-and-live-review-20261005/2 {
+    state superseded
+    hash "sha256:1ba118f2cf898907c94a450ba39ae72f6ea3587aee15089fd39ccf39209178a0"
+}
+
+seal @legeos.assessment.desktop-polish-software-delivery-and-live-review-20261005/3 {
     state verified
-    hash "sha256:e48ca1ff9b399865e736adcf7d95cc23b10a0f150aa33d1fc474cde802214bfb"
+    hash "sha256:55484edfd414d79e28973d6d90a7e952aaa4e2ee9b9f21143b6319b1c647f2b2"
 }
 
 seal @legeos.assessment.desktop-test-readiness-20260827/1 {
@@ -9287,6 +9298,11 @@ seal @legeos.evidence.pointer-grab-reentry-test-20261002/1 {
 seal @legeos.evidence.portal-model-tests-20260903/1 {
     state verified
     hash "sha256:96cbba2cc5d230412e67a3dcd9fcc1e745b28bbf2856f213355765a34e6fc028"
+}
+
+seal @legeos.evidence.postcommit-ledger-validation-diagnostics-20261005/1 {
+    state verified
+    hash "sha256:c36b284a90902299aacc11de1275f22258478f57849fed22ace91adbe9f80f98"
 }
 
 seal @legeos.evidence.pre-iso-integrated-gate-20260907/1 {
@@ -11157,6 +11173,11 @@ seal @legeos.papercut.splitting-cluster-calendar-frame-geometry-for/1 {
 seal @legeos.papercut.stage-1-cargo-deb-packages-do-not-ship-most-of/1 {
     state verified
     hash "sha256:c8fb8cd532c753d53e3cb3e501b59f95e6729667c009cad91ccd79e3b7497f1b"
+}
+
+seal @legeos.papercut.strict-akr-validate-after-committing-the-same/1 {
+    state verified
+    hash "sha256:1d8a32ef3527aee11b065098f1f9bb1667be1fdf8f34c5d74b15d3b42e40bf0f"
 }
 
 seal @legeos.papercut.systemd-analyze-user-verify-accepted-the/1 {

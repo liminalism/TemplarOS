@@ -3519,6 +3519,19 @@ record legeos.evidence.portal-model-tests-20260903/1 : evidence {
         """
 }
 
+record legeos.evidence.postcommit-ledger-validation-diagnostics-20261005/1 : evidence {
+    title "Post-commit strict validation at 1368c08 completed parse/type/link/resolve with no view or pre-rename G022/G023 errors, but exited 1 for 39 historical G024/G025 warnings promoted to errors: absent/renamed test filters, old temporary commands and malformed historical command strings. Uncommitted-ledger validation had hidden these warnings. Review facts remain 29 stale and 23 at risk."
+    state verified
+    result fail
+    method command
+    observed_at git:1368c081f2f4f6b702a52c99de6d96e203782773
+    command "akr validate"
+    summary """
+        Post-commit strict validation at 1368c08 completed parse/type/link/resolve with no view or pre-rename G022/G023 errors, but exited 1 for 39 historical G024/G025 warnings promoted to errors: absent/renamed test filters, old temporary commands and malformed historical command strings. Uncommitted-ledger validation had hidden these warnings. Review facts remain 29 stale and 23 at risk.
+        """
+    author "dk"
+}
+
 record legeos.evidence.pre-iso-integrated-gate-20260907/1 : evidence {
     title "Pre-ISO campaign integrated gate green at 93a4103"
     state verified

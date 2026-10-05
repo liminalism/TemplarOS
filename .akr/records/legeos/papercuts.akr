@@ -1722,6 +1722,17 @@ record legeos.papercut.stage-1-cargo-deb-packages-do-not-ship-most-of/1 : paperc
     created_at 2026-10-01
 }
 
+record legeos.papercut.strict-akr-validate-after-committing-the-same/1 : papercut {
+    title "Strict akr validate after committing the same built ledger restored 39…"
+    state verified
+    statement """
+        Strict akr validate after committing the same built ledger restored 39 historical G024/G025 command warnings that were absent in the uncommitted-ledger validation. Parse/type/link/resolve and generated views remain clean; no pre-rename G022/G023 diagnostics remain. Treat post-commit validation as authoritative and preserve historical evidence.
+        """
+    observed_at git:1368c081f2f4f6b702a52c99de6d96e203782773
+    author "omp"
+    created_at 2026-10-05
+}
+
 record legeos.papercut.systemd-analyze-user-verify-accepted-the/1 : papercut {
     title "systemd-analyze --user verify accepted the session units but warned…"
     state verified
