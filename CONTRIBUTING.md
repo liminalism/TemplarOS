@@ -24,6 +24,9 @@ shell, then `cargo build -p templar-shell`, or use `scripts/cargo-native.sh buil
 An explicit `CARGO_TARGET_DIR` is never overridden. `debian/rules` retains its explicit `target/`
 for `.install` paths; cargo-deb honors the native target for binary assets, while build-set output
 remains in `target/debian/`.
+The preview helper also keeps its Cargo cache under the native OS target; only its packaging
+staging files remain in `target/preview-codecs/`. Give each Git worktree its own target directory:
+sharing build fingerprints between checkouts can reuse stale metadata even on the same OS.
 
 The native Rust archive path requires `libarchive-dev` (including its pkg-config metadata)
 and `libclang-dev`. The maintained network fork additionally needs `cmake`, `qt6-base-dev`,
