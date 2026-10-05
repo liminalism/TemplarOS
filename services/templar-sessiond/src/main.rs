@@ -167,6 +167,39 @@ fn ensure_derived_provider_declarations(
     }
 }
 
+/// Declare the roles installed applications claim in their own metadata
+/// (`templar_session_core::providers::claimed_capabilities`).
+///
+/// The half of startup `ensure_derived_provider_declarations` does not cover: derived roles are
+/// read off what an entry says for other reasons, while these are applications asking outright —
+/// today that is `X-TemplarOS-Provides=` on a desktop entry. This pass was missing entirely: a
+/// claim was parsed at import, recorded on the manifest's provenance, and then never read again,
+/// so no declaration ever reached the registry and the role resolved to `NoProvider` however
+/// correctly the application was installed. (`Providers1.Declare` is the only other path in, and
+/// a desktop application never calls it — which is why nm-tray-2 stayed invisible to Settings
+/// and left the network chip dimmed through two install attempts.)
+///
+/// Memory-only, for the same reason derived declarations are: the installed set is re-read on
+/// every start, so persisting would only create rows an uninstall leaves behind — and a removed
+/// application going on winning a role is exactly the failure the declarations table must not
+/// have. The desktop watcher re-runs this after every rescan for the same reason startup runs it
+/// after the import.
+fn ensure_claimed_provider_declarations(
+    catalog: &dyn AppCatalog,
+    providers: &Arc<RwLock<ProviderRegistry>>,
+) {
+    let mut declared = 0usize;
+    for manifest in catalog.manifests() {
+        for capability in templar_session_core::providers::claimed_capabilities(&manifest) {
+            providers.write().declare(manifest.id.clone(), capability);
+            declared += 1;
+        }
+    }
+    if declared > 0 {
+        tracing::info!(count = declared, "claimed provider declarations");
+    }
+}
+
 /// Everything the daemon needs, loaded and cross-linked once. Kept as one struct so `main`
 /// reads as a short sequence of named steps instead of two dozen `let` bindings.
 struct Services {
@@ -296,6 +329,7 @@ fn load_services(cli: &Cli) -> Result<Services> {
     ));
     ensure_sessiond_provider_declaration(&store, &providers);
     ensure_derived_provider_declarations(catalog.as_ref(), &providers);
+    ensure_claimed_provider_declarations(catalog.as_ref(), &providers);
     let schema = Arc::new(RwLock::new(baseline_schema()));
     let settings_values = Arc::new(RwLock::new(
         templar_session_core::settings::load_values(&store).context("loading settings values")?,
@@ -513,6 +547,7 @@ async fn serve_policy_interfaces(
         services.schema.clone(),
         services.settings_values.clone(),
         connection.clone(),
+        services.registry.clone(),
     );
     apis::homegarden::spawn_sources(garden.clone(), &services.session_edges, &services.launches);
     object_server
@@ -775,6 +810,7 @@ fn spawn_background_tasks(
         services.resolver.clone(),
         connection.clone(),
         services.application_dirs.clone(),
+        services.providers.clone(),
     ));
 }
 
@@ -881,6 +917,70 @@ async fn main() -> Result<()> {
     let flushing = garden.clone();
     let _ = tokio::task::spawn_blocking(move || flushing.flush()).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod claimed_provider_tests {
+    use super::{ProviderRegistry, Registry, ensure_claimed_provider_declarations};
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+    use templar_types::{
+        AppAliases, AppManifest, AppOriginKind, AppProvenance, ProviderRole, ResourceClass,
+    };
+
+    /// The installed nm-tray-2 entry as the import leaves it: a manifest whose provenance
+    /// carries the `X-TemplarOS-Provides=` claim, at the trust its directory implies.
+    fn tray(id: &str, origin: AppOriginKind) -> AppManifest {
+        let mut provenance = AppProvenance::from_origin(origin);
+        provenance
+            .provider_claims
+            .insert("network-status-ui".to_owned());
+        AppManifest {
+            id: id.parse().unwrap(),
+            display_name: "nm-tray-alt".to_owned(),
+            primary_desktop_file_id: "nm-tray2.desktop".to_owned(),
+            executable: std::path::PathBuf::from("/usr/local/bin/nm-tray"),
+            aliases: AppAliases::default(),
+            mime_types: std::collections::BTreeSet::default(),
+            resource_class: ResourceClass::Normal,
+            supports_checkpoint: false,
+            icon: None,
+            categories: std::collections::BTreeSet::default(),
+            keywords: std::collections::BTreeSet::default(),
+            no_display: false,
+            provenance: Some(provenance),
+        }
+    }
+
+    #[test]
+    fn a_trusted_desktop_claim_resolves_its_role() {
+        let registry = Registry::default();
+        registry.insert_manifest(tray(
+            "desktop-import.nm-tray2.desktop",
+            AppOriginKind::DistroPackage,
+        ));
+        let providers = Arc::new(RwLock::new(ProviderRegistry::default()));
+        ensure_claimed_provider_declarations(&registry, &providers);
+        assert_eq!(
+            providers.read().provider(ProviderRole::NetworkStatusUi),
+            Some("desktop-import.nm-tray2.desktop".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn an_untrusted_claim_leaves_the_role_empty() {
+        let registry = Registry::default();
+        registry.insert_manifest(tray(
+            "desktop-import.nm-tray2.desktop",
+            AppOriginKind::UserDesktopEntry,
+        ));
+        let providers = Arc::new(RwLock::new(ProviderRegistry::default()));
+        ensure_claimed_provider_declarations(&registry, &providers);
+        assert_eq!(
+            providers.read().provider(ProviderRole::NetworkStatusUi),
+            None
+        );
+    }
 }
 
 #[cfg(test)]

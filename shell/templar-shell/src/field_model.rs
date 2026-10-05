@@ -8,8 +8,6 @@
 //! `templar_field::apply`, so the same invariants hold here as for a drop (no overlap, bounded,
 //! exact inverses) and a test needs neither a bus nor a compositor.
 
-use std::collections::BTreeSet;
-
 use std::path::Path;
 use templar_field::field::Placement;
 use templar_field::field::Tray;
@@ -145,55 +143,41 @@ pub fn tile_id_for(key: &str) -> TileId {
     TileId::for_key(key)
 }
 
-/// One window as the field sees it: which tile is its, and whether that window is parked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionTile {
-    pub tile: TileId,
-    pub window: WindowId,
-    pub identifier: String,
-}
-
-/// Bring `doc` up to date with `live`: a tile for every drawer, active application and window that
-/// lacks one, placed by the reflow near a sensible landing; the tile of every window that is
-/// gone removed. Existing tiles keep their places. Returns the ops that were applied (already
-/// applied to `doc`), so a caller persisting the document can forward them.
+/// Merge persistent Home objects with an entry for every open window. Window entries live
+/// outside the placement grid: the screen presents them together, so opening work cannot
+/// reflow a person's pinned objects or grown Places. Only closed window entries are removed.
 pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     let mut applied = Vec::new();
-    let mut wanted: BTreeSet<TileId> = BTreeSet::new();
     migrate_system_tiles(doc, &mut applied);
     migrate_desktop_tray(doc, &mut applied);
     // The eight drawer tiles are superseded by the single Files
     // object, and the migration has to run before `merge_files` so the replacement can inherit
     // the place the block held instead of landing in the default corner.
     migrate_drawer_tiles(doc, &mut applied);
-    merge_files(doc, &mut wanted, &mut applied);
+    merge_files(doc, &mut applied);
     merge_projects(doc, live, &mut applied);
     adopt_loose_files(doc, &mut applied);
+    merge_windows(doc, live.toplevels, &mut applied);
 
-    // Running windows leave Home. Home is where a person's *things* are — their folders, their
-    // applications, their places — and a window is not a thing you keep, it is work in progress;
-    // it belongs on the bar, which is where the machine's own business is reported
-    // (`docs/garden/garden.md`). So no refresh places a `ParkedSession` or a `WindowGroup` tile
-    // any more, and this sweep — which used to remove only the tiles whose windows had closed —
-    // is what takes the ones a saved field is still carrying. It needs no migration of its own:
-    // `wanted` never names them, so the first refresh after this build removes every one.
-    //
-    // Ordinary `Remove` ops through `try_apply`, so the removals invert exactly like any other
-    // and a group tile hands its members back on undo (`ops::remove` stashes a container's
-    // children into its inverse).
-    //
-    // Only these two kinds, and that is load-bearing — please do not widen the match. An
-    // application tile is on Home because someone pinned it (`pin_app`) and a widget is on Home
-    // because Home put it there; sweeping either because this refresh did not happen to ask for
-    // it would delete a person's own arrangement every time a service failed to answer.
+    // Only transient window kinds are swept. Files, folder references, pinned applications,
+    // Places and recent feeds have independent lifetimes and never disappear with a window.
     let gone: Vec<TileId> = doc
         .tiles
         .iter()
-        .filter(|tile| {
-            matches!(
-                tile.kind,
-                TileKind::ParkedSession { .. } | TileKind::WindowGroup { .. }
-            ) && !wanted.contains(&tile.id)
+        .filter(|tile| match &tile.kind {
+            TileKind::ParkedSession { identifier, .. } => identifier_window(identifier)
+                .is_none_or(|id| !live.toplevels.iter().any(|window| window.window_id == id)),
+            TileKind::WindowGroup { identifier } => {
+                identifier.parse::<u64>().ok().is_none_or(|id| {
+                    !live.toplevels.iter().any(|window| {
+                        window
+                            .group
+                            .as_ref()
+                            .is_some_and(|group| group.group_id == id)
+                    })
+                })
+            }
+            _ => false,
         })
         .map(|tile| tile.id)
         .collect();
@@ -409,9 +393,8 @@ fn files_kind() -> TileKind {
 /// service: Downloads, Recent, Documents, Media, Drives, Operations, Trash and Projects were
 /// eight headings for one thing, and the block of them was a third of the field's width before a
 /// single window existed.
-fn merge_files(doc: &mut FieldDocument, wanted: &mut BTreeSet<TileId>, applied: &mut Vec<FieldOp>) {
+fn merge_files(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
     let id = files_tile_id();
-    wanted.insert(id);
     if doc.tile(id).is_some() {
         return;
     }
@@ -636,12 +619,6 @@ pub fn pin_app(doc: &mut FieldDocument, app_id: &AppId) -> Vec<FieldOp> {
     applied
 }
 
-/// The tile id a window group's tile always has. The group id is the compositor's
-/// (`templar_window::GroupInfo::group_id`), so the same group is one tile across refreshes.
-pub fn group_tile_id(group_id: u64) -> TileId {
-    tile_id_for(&format!("group:{group_id}"))
-}
-
 /// The title a group's tile carries: the name the group was given, or how many windows it holds
 /// until somebody names it. Never empty — a tile with no title is a tile that says nothing.
 pub(crate) fn group_title(name: &str, members: usize) -> String {
@@ -682,7 +659,11 @@ fn try_apply(doc: &mut FieldDocument, op: FieldOp, applied: &mut Vec<FieldOp>) {
 /// the service exactly as it did locally. A tile with nowhere to go stays on the shelf instead of
 /// failing the whole batch.
 pub fn restore_shelved(doc: &FieldDocument) -> Option<FieldOp> {
-    let shelved: Vec<TileId> = doc.shelved().map(|tile| tile.id).collect();
+    let shelved: Vec<TileId> = doc
+        .shelved()
+        .filter(|tile| !matches!(tile.kind, TileKind::ParkedSession { .. }))
+        .map(|tile| tile.id)
+        .collect();
     if shelved.is_empty() {
         return None;
     }
@@ -713,9 +694,14 @@ pub fn restore_shelved(doc: &FieldDocument) -> Option<FieldOp> {
 
 /// The tile standing for `window`, if the field has one.
 pub fn session_tile_for(doc: &FieldDocument, toplevel: &ShellToplevel) -> Option<TileId> {
-    let identifier = session_identifier(toplevel, None);
-    let id = tile_id_for(&format!("session:{identifier}"));
-    doc.tile(id).map(|tile| tile.id)
+    doc.tiles.iter().find_map(|tile| match &tile.kind {
+        TileKind::ParkedSession { identifier, .. }
+            if identifier_window(identifier) == Some(toplevel.window_id) =>
+        {
+            Some(tile.id)
+        }
+        _ => None,
+    })
 }
 
 /// The window a session tile stands for, if it is still open.
@@ -727,97 +713,51 @@ pub fn window_for_tile<'a>(
     let TileKind::ParkedSession { identifier, .. } = &doc.tile(tile)?.kind else {
         return None;
     };
+    let window = identifier_window(identifier)?;
     toplevels
         .iter()
-        .find(|toplevel| session_identifier(toplevel, None) == *identifier)
+        .find(|toplevel| toplevel.window_id == window)
 }
 
-/// Place a `ParkedSession` tile per window, and a `WindowGroup` container per group holding its
-/// members — what the merge used to do on every refresh, kept for the tests of the code that
-/// draws and acts on those tiles.
-///
-/// Nothing in a running session places these any more: running windows are the bar's business
-/// (`merge`'s sweep comment). The *field* still understands them, and `FieldScreen` still draws
-/// and acts on them, because the bar's taskbar and its hover row are the successor consumer of
-/// exactly that code.
-///
-// ponytail: a test-only placer over production code no production path reaches. It goes when
-// Lane 2's taskbar owns the window verbs and the preview row outright — at which point the
-// `ParkedSession`/`WindowGroup` arms of `FieldScreen` go with it.
-#[cfg(test)]
-pub(crate) fn place_window_tiles(doc: &mut FieldDocument, toplevels: &[ShellToplevel]) {
-    let mut applied = Vec::new();
-    // From the bottom row upward, the way the merge used to fill them, so seeding them disturbs
-    // nothing a test already placed at the top of the field.
-    let mut row = doc.rows.saturating_sub(1);
+fn identifier_window(identifier: &str) -> Option<WindowId> {
+    identifier
+        .strip_prefix("window:")?
+        .parse()
+        .ok()
+        .map(WindowId)
+}
+
+/// Every open window gets a real session tile, including windows with no catalogue identity.
+/// New entries are unlocated deliberately: the active-work presentation does not consume the
+/// persistent grid, and still reaches every window when that grid is full.
+fn merge_windows(doc: &mut FieldDocument, toplevels: &[ShellToplevel], applied: &mut Vec<FieldOp>) {
     for toplevel in toplevels {
-        let identifier = session_identifier(toplevel, None);
-        let kind = TileKind::ParkedSession {
-            app_id: toplevel.canonical_app_id.clone(),
-            identifier: identifier.clone(),
-        };
-        let class = SpanRange::for_kind(&kind, doc.cols, doc.rows);
-        let spans = SpanRange::new(class.min, class.min, class.max);
-        let tile = Tile {
-            id: tile_id_for(&format!("session:{identifier}")),
-            kind,
-            title: toplevel.title.clone(),
-            spans,
-            accent: None,
-        };
-        try_apply(
-            doc,
-            FieldOp::Place {
-                tile,
-                landing: Landing {
+        // State, title and preview are read directly from the compositor snapshot. Unchanged
+        // windows therefore need neither new strings nor another persisted layout operation.
+        if session_tile_for(doc, toplevel).is_none() {
+            let identifier = session_identifier(toplevel, None);
+            let id = tile_id_for(&format!("session:{identifier}"));
+            let kind = TileKind::ParkedSession {
+                app_id: toplevel.canonical_app_id.clone(),
+                identifier,
+            };
+            let spans = SpanRange::for_kind(&kind, doc.cols, doc.rows);
+            try_apply(
+                doc,
+                FieldOp::AddTile {
+                    tile: Tile {
+                        id,
+                        kind,
+                        title: toplevel.title.clone(),
+                        spans,
+                        accent: None,
+                    },
+                    at: None,
                     container: None,
-                    cell: Cell::new(0, row),
                 },
-            },
-            &mut applied,
-        );
-        row = row.saturating_sub(spans.min.rows.max(1));
-    }
-    let mut groups: std::collections::BTreeMap<u64, Vec<TileId>> =
-        std::collections::BTreeMap::new();
-    for toplevel in toplevels {
-        if let Some(group) = &toplevel.group {
-            groups
-                .entry(group.group_id)
-                .or_default()
-                .push(tile_id_for(&format!(
-                    "session:{}",
-                    session_identifier(toplevel, None)
-                )));
+                applied,
+            );
         }
-    }
-    for (group_id, members) in groups {
-        let info = toplevels
-            .iter()
-            .find_map(|t| t.group.as_ref().filter(|g| g.group_id == group_id))
-            .expect("grouped by the presence of `group`");
-        let kind = TileKind::WindowGroup {
-            identifier: group_id.to_string(),
-        };
-        let project = Tile {
-            id: group_tile_id(group_id),
-            spans: SpanRange::for_kind(&kind, doc.cols, doc.rows),
-            kind,
-            title: group_title(&info.name, members.len()),
-            accent: Some(info.accent),
-        };
-        try_apply(
-            doc,
-            FieldOp::CreateProject {
-                project,
-                landing: Landing {
-                    container: None,
-                    cell: Cell::new(0, row),
-                },
-                absorb: members,
-            },
-            &mut applied,
-        );
     }
 }
 
@@ -886,6 +826,7 @@ mod tests {
         ShellToplevel {
             window_id: WindowId(id),
             canonical_app_id: app.map(|a| a.parse().unwrap()),
+            claimed_app_id: None,
             instance_id: None,
             title: title.to_owned(),
             verified_identity: app.is_some(),
@@ -992,11 +933,15 @@ mod tests {
                 .0;
             assert!(doc.location(*id).is_none());
         }
-        assert_eq!(doc.shelved().count(), shelved.len());
+        assert_eq!(doc.shelved().count(), shelved.len() + windows.len());
 
         let op = restore_shelved(&doc).expect("three tiles are on the shelf");
         let restored = apply(&doc, &op).expect("the restore applies").0;
-        assert_eq!(restored.shelved().count(), 0, "the shelf is empty again");
+        assert_eq!(
+            restored.shelved().count(),
+            windows.len(),
+            "only rail entries stay unlocated"
+        );
         for id in &shelved {
             assert!(
                 restored.location(*id).is_some(),
@@ -1014,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_adds_the_files_object_and_leaves_running_windows_to_the_bar() {
+    fn merge_represents_open_and_parked_windows_without_consuming_the_saved_grid() {
         let mut doc = FieldDocument::new("eDP-1", 16, 8);
         let windows = vec![
             toplevel(1, Some("org.templaros.Files"), "Downloads", false),
@@ -1025,22 +970,25 @@ mod tests {
             projects: &[],
         };
         let ops = merge(&mut doc, &live);
-        // The Files object, and nothing else. Two open windows — one of them shelved — grow no
-        // tile of their own: a running window is the bar's business, not Home's. Nor does either
-        // grow an application badge; an application is on Home only because someone pinned it.
-        assert_eq!(ops.len(), 1);
-        assert_eq!(doc.tiles.len(), 1);
+        assert_eq!(ops.len(), 3);
+        assert_eq!(doc.tiles.len(), 3);
+        for window in &windows {
+            let tile = session_tile_for(&doc, window).expect("every open window has an entry");
+            assert_eq!(
+                window_for_tile(&doc, tile, &windows).unwrap().window_id,
+                window.window_id
+            );
+            assert!(
+                doc.location(tile).is_none(),
+                "work does not reflow pinned objects"
+            );
+        }
         assert!(
-            !doc.tiles.iter().any(|tile| matches!(
-                tile.kind,
-                TileKind::App { .. }
-                    | TileKind::ParkedSession { .. }
-                    | TileKind::WindowGroup { .. }
-            )),
-            "a running window put something on Home"
+            !doc.tiles
+                .iter()
+                .any(|tile| matches!(tile.kind, TileKind::App { .. }))
         );
-        assert!(doc.panels.is_empty(), "Home grew a panel with no members");
-        assert_eq!(doc.located.len(), doc.tiles.len(), "everything was placed");
+        assert_eq!(doc.located.len(), 1);
 
         let files = files_tile_id();
         let located = doc.location(files).expect("the Files object is placed");
@@ -1365,68 +1313,63 @@ mod tests {
         .0
     }
 
-    /// Running windows and their groups leave Home: the merge places none, and the sweep takes
-    /// the ones a saved field is still carrying. They are the bar's business now
-    /// (`docs/garden/garden.md` — Home deals with your stuff, the bar deals with the machine).
-    ///
-    /// No migration of its own is needed for this and that is worth stating: `wanted` never names
-    /// a window tile, so the same sweep that used to remove a closed window's tile removes every
-    /// one of them on the first refresh after this build.
     #[test]
-    fn window_tiles_are_never_placed_and_a_saved_field_loses_the_ones_it_has() {
+    fn closure_removes_only_live_entries_and_preserves_user_places_and_pins() {
         let mut doc = FieldDocument::new("eDP-1", 16, 8);
+        merge(&mut doc, &LiveState::default());
+        pin_app(&mut doc, &"org.example.Editor".parse().unwrap());
+        let folder = Path::new("/home/u/work");
+        for op in open_folder_ops(&doc, folder) {
+            doc = apply(&doc, &op).unwrap().0;
+        }
+        let before = doc.clone();
         let windows = vec![
             grouped(
-                toplevel(1, Some("org.templaros.Files"), "one", false),
+                toplevel(1, Some("org.example.Editor"), "one", false),
                 7,
-                "",
+                "Writing",
             ),
-            grouped(toplevel(2, Some("org.example.Editor"), "two", false), 7, ""),
-            toplevel(3, None, "three", true),
+            grouped(toplevel(2, None, "two", true), 7, "Writing"),
+            toplevel(3, None, "three", false),
         ];
-        let live = LiveState {
-            toplevels: &windows,
-            projects: &[],
-        };
-        merge(&mut doc, &live);
-        assert!(
-            !doc.tiles.iter().any(|tile| matches!(
-                tile.kind,
-                TileKind::ParkedSession { .. } | TileKind::WindowGroup { .. }
-            )),
-            "three running windows, one of them shelved and two of them grouped, put a tile on \
-             Home"
-        );
-
-        // A field saved by an older build: two session tiles inside a group tile.
-        let group = group_tile_id(7);
-        let one = tile_id_for("session:templaros:1");
-        doc = seed(
-            &doc,
-            group,
-            TileKind::WindowGroup {
-                identifier: "7".to_owned(),
+        merge(
+            &mut doc,
+            &LiveState {
+                toplevels: &windows,
+                projects: &[],
             },
-            Cell::new(8, 0),
         );
-        doc = seed(
-            &doc,
-            one,
-            TileKind::ParkedSession {
-                app_id: None,
-                identifier: "templaros:1".to_owned(),
-            },
-            Cell::new(12, 0),
+        for window in &windows {
+            assert!(session_tile_for(&doc, window).is_some());
+        }
+        assert_eq!(
+            doc.located, before.located,
+            "opening work preserves saved positions"
         );
-        let ops = merge(&mut doc, &live);
-        assert!(doc.tile(group).is_none(), "the group tile is still there");
-        assert!(doc.tile(one).is_none(), "the session tile is still there");
         assert!(
-            ops.iter().all(|op| matches!(op, FieldOp::Remove { .. })),
-            "the sweep did something other than remove: {ops:?}"
+            !doc.tiles
+                .iter()
+                .any(|tile| matches!(tile.kind, TileKind::WindowGroup { .. })),
+            "presentation never creates a window group"
         );
-        // Idempotent, and silent on a field that never had one.
-        assert!(merge(&mut doc, &live).is_empty());
+        let closed = session_tile_for(&doc, &windows[0]).unwrap();
+        merge(
+            &mut doc,
+            &LiveState {
+                toplevels: &windows[1..],
+                projects: &[],
+            },
+        );
+        assert!(doc.tile(closed).is_none());
+        assert!(
+            session_tile_for(&doc, &windows[1]).is_some(),
+            "parked remains accessible"
+        );
+        merge(&mut doc, &LiveState::default());
+        assert_eq!(
+            doc, before,
+            "closing every window leaves all persistent objects intact"
+        );
     }
 
     /// Every retired system widget leaves a saved field and nothing takes its place. Session,

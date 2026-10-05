@@ -38,6 +38,8 @@ pub enum FilesAction {
     None,
     /// Open the Files surface at this location.
     Open(FilesLocation),
+    /// Open the exact structured Recent path; directory MIME is carried rather than guessed.
+    OpenRecent(std::path::PathBuf, bool),
     /// Perform one declared action (`templar_types::action::MANIFEST`) — the trash's own EMPTY, so
     /// far. Named rather than performed: like every other surface here, this module decides
     /// nothing that touches a service.
@@ -190,7 +192,7 @@ fn draw_full(ui: &mut Ui<'_>, inner: Rect, data: FilesData<'_>) -> FilesAction {
         draw_progress(ui, Rect::new(inner.x, y, inner.w, row), label, fraction);
         y += row;
     }
-    draw_listing(ui, inner, y, data);
+    take(&mut action, draw_listing(ui, inner, y, data));
     action
 }
 
@@ -350,7 +352,8 @@ fn draw_conditions(ui: &mut Ui<'_>, inner: Rect, y: &mut i32, data: FilesData<'_
 /// What has changed, most recent first, filling whatever is left. It gets a label of its own:
 /// without one the first changed file reads as one more condition row, and the object stops
 /// having parts.
-fn draw_listing(ui: &mut Ui<'_>, inner: Rect, y: i32, data: FilesData<'_>) {
+fn draw_listing(ui: &mut Ui<'_>, inner: Rect, y: i32, data: FilesData<'_>) -> FilesAction {
+    let mut action = FilesAction::None;
     let row = ui.px(design::FILES_ROW_HEIGHT);
     let mut top = y + ui.px(design::FILES_SECTION_GAP);
     if top + row * 2 <= inner.bottom() {
@@ -365,7 +368,7 @@ fn draw_listing(ui: &mut Ui<'_>, inner: Rect, y: i32, data: FilesData<'_>) {
     }
     let listing = Rect::new(inner.x, top, inner.w, (inner.bottom() - top).max(0));
     if listing.h < row {
-        return;
+        return action;
     }
     ui.painter.push_clip(listing);
     let feed = data.feed(Drawer::Recent);
@@ -379,6 +382,17 @@ fn draw_listing(ui: &mut Ui<'_>, inner: Rect, y: i32, data: FilesData<'_>) {
         let name = feed
             .and_then(|feed| feed.row_target(index))
             .map_or(line.as_str(), file_name_of);
+        if let Some(entry) = feed.and_then(|feed| feed.recents.get(index)) {
+            if ui.input.hovering(strip) {
+                ui.painter.fill_rect(strip, design::accent_soft());
+            }
+            if ui.input.take_click(strip) {
+                action = FilesAction::OpenRecent(
+                    entry.path.clone(),
+                    entry.mime.as_deref() == Some("inode/directory"),
+                );
+            }
+        }
         ui.label_styled(
             strip,
             name,
@@ -399,6 +413,7 @@ fn draw_listing(ui: &mut Ui<'_>, inner: Rect, y: i32, data: FilesData<'_>) {
             Align::Left,
         );
     }
+    action
 }
 
 /// The location behind a condition row. Conditions only ever name a feed, and a feed is a
@@ -464,6 +479,65 @@ mod tests {
 
     fn feeds(pairs: &[(Drawer, DrawerFeed)]) -> HashMap<Drawer, DrawerFeed> {
         pairs.iter().cloned().collect()
+    }
+
+    #[test]
+    fn clicking_recent_rows_uses_structured_paths_and_directory_mime() {
+        use crate::drawers::recent::{RecentAction, RecentEntry};
+        use pixelkit_raster::{Painter, RasterKernel, WindowBuffer};
+        use pixelkit_shell::{Input, MouseButton, Scale};
+        for directory in [false, true] {
+            let path = std::path::PathBuf::from("/project/notes with spaces\nand newline");
+            let mut feed = DrawerFeed::new("1 item", vec!["decorative text is not a path".into()]);
+            feed.recents.push(RecentEntry {
+                path: path.clone(),
+                app_id: Some("org.templaros.Editor".into()),
+                at_ms: 1234,
+                mime: Some(
+                    if directory {
+                        "inode/directory"
+                    } else {
+                        "text/plain"
+                    }
+                    .into(),
+                ),
+                action: RecentAction::Opened,
+            });
+            let map = feeds(&[(Drawer::Recent, feed)]);
+            let sources = nowhere();
+            let mut buffer = WindowBuffer::new(400, 200);
+            let mut text = pixelkit_text::TextCache::new(crate::surface::fonts::set());
+            let mut input = Input::new();
+            input.cursor_moved(
+                20.0,
+                (design::FILES_SECTION_GAP
+                    + design::FILES_ROW_HEIGHT
+                    + design::FILES_ROW_HEIGHT / 2) as f32,
+            );
+            input.mouse(MouseButton::Left, true);
+            input.mouse(MouseButton::Left, false);
+            let mut kernel = RasterKernel::new();
+            let mut ui = Ui::new(
+                Painter::new(&mut buffer),
+                &mut text,
+                &mut input,
+                design::theme(),
+                Scale::ONE,
+                &mut kernel,
+            );
+            assert_eq!(
+                draw_listing(
+                    &mut ui,
+                    Rect::new(0, 0, 400, 200),
+                    0,
+                    FilesData {
+                        feeds: &map,
+                        sources: &sources
+                    }
+                ),
+                FilesAction::OpenRecent(path, directory)
+            );
+        }
     }
 
     #[test]

@@ -301,6 +301,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             .window(window_id)
             .is_some_and(|record| record.activated);
         self.window_service.set_mapped(window_id, false);
+        self.prune_switch_walk(window_id);
         self.space.unmap_elem(window);
         tracing::info!(?window_id, backend = "wayland", "toplevel unmapped");
         if was_activated {

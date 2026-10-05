@@ -330,8 +330,9 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Always,
     },
-    // Alt+Tab walks every unshelved window, most recently used first, on a list frozen while the
-    // modifier is held (campaign 4, Lane A); Super+Tab crosses window groups.
+    // Alt+Tab walks every open window, parked ones included, most recently used first, on a list
+    // frozen at the first press; the selection is activated when the modifier comes up. Super+Tab
+    // opens the window overview.
     ActionDecl {
         id: "window.cycle-forward",
         label: "Next window",

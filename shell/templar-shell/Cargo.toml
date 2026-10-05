@@ -35,6 +35,8 @@ templar-treemap = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
+# Gregorian month/day arithmetic for the native clock popup; localtime_r remains the OS clock.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 # `StreamExt` for the `Files.Trash1.Changed` signal stream (src/surface/app.rs).
 futures-util = { workspace = true }
 libc = { workspace = true }

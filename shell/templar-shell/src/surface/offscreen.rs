@@ -17,7 +17,7 @@
 //! drawers, the launcher's inventory, the Session widget — is live if that service is answering.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use pixelkit_raster::{Painter, RasterKernel, Rect, WindowBuffer};
@@ -109,6 +109,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         notifications: &[],
         field: &field,
         toplevels: &[],
+        providers: &std::collections::BTreeMap::new(),
         icons: &empty_icons,
         previews: &empty_previews,
         drawer_feeds: &drawer_feeds,
@@ -158,7 +159,12 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
 /// hundred pixels in the corner of a live session, and every question about it (is the ground
 /// there, do the labels fit, does the stripe eat the plate) is answerable from an image.
 pub fn render_bar(path: &Path, scale: f64) -> Result<()> {
-    let buffer = bar_frame(crate::surface::bar_screen::Presence::Open, false, scale);
+    let buffer = bar_frame(
+        crate::surface::bar_screen::Presence::Open,
+        false,
+        scale,
+        &fixture_icons(),
+    );
     write_png(path, &buffer).with_context(|| format!("writing {}", path.display()))
 }
 
@@ -174,6 +180,7 @@ pub(super) fn bar_frame(
     presence: crate::surface::bar_screen::Presence,
     open_fan: bool,
     scale: f64,
+    icons: &HashMap<String, pixelkit_raster::Bitmap>,
 ) -> WindowBuffer {
     use crate::surface::bar_screen::{
         BarData, BarScreen, HINT_OPEN_MS, HOVER_OPEN_MS, Presence, wanted_size,
@@ -196,7 +203,6 @@ pub(super) fn bar_frame(
     let mut kernel = RasterKernel::new();
     let mut input = Input::new();
     let mut screen = BarScreen::default();
-    let icons = HashMap::new();
     // One of the group's two windows has a capture and the other has not, so a single image
     // shows both halves of the rule: a preview when there is one, the icon fallback when there
     // is not. The gradient stands in for a real window's pixels.
@@ -204,7 +210,7 @@ pub(super) fn bar_frame(
     previews.insert("window:1".to_owned(), preview_fixture());
     let data = BarData {
         entries: &entries,
-        icons: &icons,
+        icons,
         previews: &previews,
         // A fixed clock, not the wall clock: this fixture is hashed as a visual baseline, and
         // a baseline that changes every minute is not one.
@@ -285,13 +291,14 @@ fn fixture_toplevels() -> Vec<templar_window::ShellToplevel> {
         templar_window::ShellToplevel {
             window_id: templar_window::WindowId(id),
             canonical_app_id: Some(app.parse().expect("a fixture's app id")),
+            claimed_app_id: None,
             instance_id: None,
             title: title.to_owned(),
             verified_identity: true,
             activated: id == 1,
             mru_rank: u32::try_from(id).unwrap_or(u32::MAX),
             fullscreen: false,
-            // A parked window exists only on the bar now that Home holds no window tiles.
+            // The same parked state the switcher and active Home work both present.
             shelved: id == 4,
             maximized: false,
             geometry: templar_window::Rect::new(0, 0, 800, 600),
@@ -319,6 +326,111 @@ fn fixture_toplevels() -> Vec<templar_window::ShellToplevel> {
     ]
 }
 
+/// Exercise the shell's real switcher painter with deterministic compositor-order fixtures.
+/// Captures stand in for the standard preview protocol; this does not claim a live session.
+pub fn render_switcher(prefix: &Path) -> Result<()> {
+    let icons = fixture_icons();
+    for (name, scale, colour) in [
+        ("open", 1.0, 0x0012_3456),
+        ("refreshed", 1.0, 0x0065_4321),
+        ("hidpi", 2.0, 0x0012_3456),
+        ("fractional", 1.5, 0x0012_3456),
+    ] {
+        let (buffer, mask) = switcher_frame(scale, colour, &icons);
+        assert!(
+            mask.pixels.iter().any(|pixel| *pixel != 0),
+            "switcher records its painted coverage"
+        );
+        let path = PathBuf::from(format!("{}-{name}.png", prefix.display()));
+        write_png_masked(&path, &buffer, &mask)?;
+    }
+    let empty = HashMap::new();
+    let (before, _) = switcher_frame(1.0, 0x0012_3456, &empty);
+    let (after, _) = switcher_frame(1.0, 0x0065_4321, &empty);
+    assert_ne!(
+        before.pixels, after.pixels,
+        "a refreshed capture changes the real shell presentation"
+    );
+    Ok(())
+}
+
+fn switcher_frame(
+    scale: f64,
+    colour: u32,
+    icons: &HashMap<String, pixelkit_raster::Bitmap>,
+) -> (WindowBuffer, WindowBuffer) {
+    let scale = Scale::new(scale);
+    let mut windows = fixture_toplevels();
+    // More rows than this output fits: the selected parked window must remain visible.
+    for id in 5..=12 {
+        let mut window = windows[2].clone();
+        window.window_id = templar_window::WindowId(id);
+        window.title = format!("Window {id}");
+        windows.push(window);
+    }
+    let status = crate::wayland_bridge::SwitcherStatus {
+        active: true,
+        selected: Some(templar_window::WindowId(4)),
+        windows: windows.iter().map(|window| window.window_id).collect(),
+    };
+    let previews = windows
+        .iter()
+        .map(|window| {
+            (
+                crate::field_model::session_identifier(window, None),
+                pixelkit_raster::Bitmap {
+                    width: 160,
+                    height: 90,
+                    pixels: vec![0xff00_0000 | colour; 160 * 90],
+                },
+            )
+        })
+        .collect();
+    let mut buffer = WindowBuffer::new(scale.px(1000) as u32, scale.px(600) as u32);
+    let area = Rect::new(0, 0, buffer.width as i32, buffer.height as i32);
+    let mut text = pixelkit_text::TextCache::new(fonts::set());
+    let mut input = Input::new();
+    let mut kernel = RasterKernel::new();
+    let mut screen = crate::surface::taskfield_screen::TaskfieldScreen::default();
+    {
+        let mut ui = Ui::new(
+            Painter::new(&mut buffer),
+            &mut text,
+            &mut input,
+            design::theme(),
+            scale,
+            &mut kernel,
+        );
+        screen.draw_switcher(&mut ui, area, &status, &windows, icons, &previews);
+    }
+    let mut mask = WindowBuffer::new(buffer.width, buffer.height);
+    let mut painter = Painter::new(&mut mask);
+    for (rect, _) in screen.opaque_shapes() {
+        painter.fill_rect(*rect, 0x00ff_ffff);
+    }
+    (buffer, mask)
+}
+
+/// The fixture applications' icons as this machine's themes draw them
+/// (`icons::SystemIconRoots`, so `XDG_DATA_DIRS` chooses which installation is asked). Only the
+/// command-line renders use this: what they are for is seeing the bar a person would see, and a
+/// person's bar wears pictures. The hashed baselines keep an empty map, because a picture that
+/// depends on the installed theme is not a baseline.
+fn fixture_icons() -> HashMap<String, pixelkit_raster::Bitmap> {
+    let mut ids: Vec<String> = fixture_toplevels()
+        .iter()
+        .filter_map(|toplevel| toplevel.canonical_app_id.as_ref().map(ToString::to_string))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids.into_iter()
+        .filter_map(|id| {
+            let icon = crate::icons::load_app_icon(&id, &crate::icons::SystemIconRoots)?;
+            Some((id, icon))
+        })
+        .collect()
+}
+
 /// The output width the rail renders assume, in logical pixels.
 const RAIL_OUTPUT_WIDTH: i32 = 1920;
 
@@ -337,7 +449,7 @@ pub fn render_rails(path: &Path) -> Result<Vec<std::path::PathBuf>> {
     let width = RAIL_OUTPUT_WIDTH;
     let origin = width / 2;
     let entries = crate::taskbar::entries(&fixture_toplevels());
-    let icons = HashMap::new();
+    let icons = fixture_icons();
     let previews = HashMap::new();
     let machine = crate::data::MachineReadings::default();
     let mut text = pixelkit_text::TextCache::new(fonts::set());
@@ -394,7 +506,8 @@ pub fn render_rails(path: &Path) -> Result<Vec<std::path::PathBuf>> {
                     // is not one anybody can compare.
                     clock_label: "Mon 28 Sep 10:00",
                     network_control_available: true,
-                    calendar_available: true,
+                    local_now: chrono::NaiveDate::from_ymd_opt(2026, 9, 28)
+                        .and_then(|day| day.and_hms_opt(10, 0, 0)),
                     account_label: "templar",
                     machine: &machine,
                     now_ms: 0,
@@ -423,6 +536,825 @@ pub fn render_rails(path: &Path) -> Result<Vec<std::path::PathBuf>> {
         }
     }
     Ok(written)
+}
+/// Exercise the actual clock popup through pointer and keyboard input, then write its masked
+/// frames. Fixed leap-day local time makes this fixture bus-free and deterministic.
+pub fn render_calendar(path: &Path) -> Result<Vec<std::path::PathBuf>> {
+    use crate::surface::rail::{RailSide, RailView};
+    let mut written = Vec::new();
+    for (name, scale, width, rail) in [
+        ("corner", 1.0, 640, None),
+        ("narrow", 1.0, 320, None),
+        ("fractional", 1.25, 640, None),
+        ("hidpi", 2.0, 640, None),
+        ("rail-right", 1.0, 1920, Some(RailSide::Right)),
+        ("rail-left", 1.0, 1920, Some(RailSide::Left)),
+    ] {
+        let rail = rail.map(|side| RailView {
+            origin: width / 2,
+            side,
+            revealed: crate::surface::cluster_screen::rail_length(),
+        });
+        let mut fixture = CalendarFixture::new(scale, width, rail);
+        fixture.frame()?;
+        let clock = fixture.clock_rect();
+        fixture.click(clock)?;
+        anyhow::ensure!(
+            fixture.screen.calendar_open(),
+            "clock click did not open the calendar"
+        );
+        fixture.frame()?;
+        fixture.check_geometry()?;
+        let open = fixture.output(path, name, "open")?;
+        written.push(open);
+
+        let next = fixture.geometry()?.next;
+        fixture.click(next)?;
+        anyhow::ensure!(
+            fixture.dates()?.0 == chrono::NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
+            "Next did not show March"
+        );
+        written.push(fixture.output(path, name, "next")?);
+        let previous = fixture.geometry()?.previous;
+        fixture.click(previous)?;
+        anyhow::ensure!(
+            fixture.dates()?.0 == chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
+            "Previous did not restore February"
+        );
+        fixture.input.key(pixelkit_shell::KeyInput::PageUp);
+        fixture.frame()?;
+        anyhow::ensure!(
+            fixture.dates()?.0 == chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+            "keyboard month navigation did not show January"
+        );
+        let today = fixture.geometry()?.today;
+        fixture.click(today)?;
+        anyhow::ensure!(
+            fixture.dates()?.1 == fixture.now.date(),
+            "Today did not select leap day"
+        );
+        fixture.check_geometry()?;
+        written.push(fixture.output(path, name, "today")?);
+        fixture.input.cursor_left();
+        fixture.frame()?;
+        anyhow::ensure!(
+            fixture.screen.calendar_open(),
+            "pointer leave dismissed keyboard work"
+        );
+        fixture.input.key(pixelkit_shell::KeyInput::Escape);
+        fixture.frame()?;
+        anyhow::ensure!(
+            !fixture.screen.calendar_open(),
+            "Escape did not dismiss the calendar"
+        );
+        anyhow::ensure!(
+            fixture.screen.calendar_frame().is_none(),
+            "dismissed calendar retained input"
+        );
+        written.push(fixture.output(path, name, "closed")?);
+    }
+    Ok(written)
+}
+
+struct CalendarFixture {
+    screen: crate::surface::cluster_screen::ClusterScreen,
+    text: pixelkit_text::TextCache,
+    kernel: RasterKernel,
+    input: Input,
+    buffer: WindowBuffer,
+    machine: crate::data::MachineReadings,
+    scale: Scale,
+    output_width: i32,
+    rail: Option<crate::surface::rail::RailView>,
+    now: chrono::NaiveDateTime,
+}
+
+impl CalendarFixture {
+    fn new(scale: f64, output_width: i32, rail: Option<crate::surface::rail::RailView>) -> Self {
+        let scale = Scale::new(scale);
+        let logical = if rail.is_some() {
+            crate::surface::cluster_screen::rail_wanted_size(false, true, output_width)
+        } else {
+            crate::surface::cluster_screen::wanted_size(false, true, output_width)
+        };
+        Self {
+            screen: crate::surface::cluster_screen::ClusterScreen::default(),
+            text: pixelkit_text::TextCache::new(fonts::set()),
+            kernel: RasterKernel::new(),
+            input: Input::new(),
+            buffer: WindowBuffer::new(scale.px(logical.0) as u32, scale.px(logical.1) as u32),
+            machine: crate::data::MachineReadings::default(),
+            scale,
+            output_width,
+            rail,
+            now: chrono::NaiveDate::from_ymd_opt(2024, 2, 29)
+                .unwrap()
+                .and_hms_opt(10, 15, 0)
+                .unwrap(),
+        }
+    }
+
+    fn area(&self) -> Rect {
+        let size = if self.rail.is_some() {
+            crate::surface::cluster_screen::rail_wanted_size(
+                self.screen.account_open(),
+                self.screen.calendar_open(),
+                self.output_width,
+            )
+        } else {
+            crate::surface::cluster_screen::wanted_size(
+                self.screen.account_open(),
+                self.screen.calendar_open(),
+                self.output_width,
+            )
+        };
+        let height = self.scale.px(size.1);
+        Rect::new(
+            0,
+            self.buffer.height as i32 - height,
+            self.buffer.width as i32,
+            height,
+        )
+    }
+
+    fn clock_rect(&mut self) -> Rect {
+        let area = self.area();
+        let ui = Ui::new(
+            Painter::new(&mut self.buffer),
+            &mut self.text,
+            &mut self.input,
+            design::theme(),
+            self.scale,
+            &mut self.kernel,
+        );
+        crate::surface::cluster_screen::ClusterScreen::clock_rect(&ui, area, self.rail)
+    }
+
+    fn geometry(&mut self) -> Result<crate::surface::calendar::Layout> {
+        let area = self.area();
+        let ui = Ui::new(
+            Painter::new(&mut self.buffer),
+            &mut self.text,
+            &mut self.input,
+            design::theme(),
+            self.scale,
+            &mut self.kernel,
+        );
+        self.screen
+            .calendar_layout(&ui, area, self.rail)
+            .context("calendar has no frame")
+    }
+
+    fn dates(&self) -> Result<(chrono::NaiveDate, chrono::NaiveDate)> {
+        self.screen
+            .calendar_dates()
+            .context("calendar has no date selection")
+    }
+
+    fn frame(&mut self) -> Result<()> {
+        let area = self.area();
+        let data = crate::surface::cluster_screen::ClusterData {
+            clock_label: "THU 29 FEB 10:15",
+            local_now: Some(self.now),
+            network_control_available: true,
+            account_label: "templar",
+            machine: &self.machine,
+            now_ms: 1000,
+            rail: self.rail,
+        };
+        let mut ui = Ui::new(
+            Painter::new(&mut self.buffer),
+            &mut self.text,
+            &mut self.input,
+            design::theme(),
+            self.scale,
+            &mut self.kernel,
+        );
+        let actions = self.screen.draw(&mut ui, area, &data);
+        drop(ui);
+        self.input.end_frame();
+        for action in actions {
+            anyhow::ensure!(
+                matches!(
+                    action,
+                    crate::surface::bar_screen::BarAction::Field(
+                        crate::surface::field_screen::FieldAction::RunAction("clock.open-calendar")
+                    )
+                ),
+                "calendar fixture unexpectedly invoked {action:?}"
+            );
+            // Exactly the screen state transition used by ShellApp::open_calendar, without a
+            // window server or a synthetic replacement for any calendar control.
+            self.screen.show_calendar(self.now.date());
+        }
+        Ok(())
+    }
+
+    fn click(&mut self, rect: Rect) -> Result<()> {
+        self.input
+            .cursor_moved((rect.x + rect.w / 2) as f32, (rect.y + rect.h / 2) as f32);
+        self.input.mouse(pixelkit_shell::MouseButton::Left, true);
+        self.input.mouse(pixelkit_shell::MouseButton::Left, false);
+        self.frame()
+    }
+
+    fn check_geometry(&mut self) -> Result<()> {
+        let geometry = self.geometry()?;
+        let frame = geometry.frame;
+        let area = self.area();
+        anyhow::ensure!(
+            frame.x >= area.x
+                && frame.y >= area.y
+                && frame.right() <= area.right()
+                && frame.bottom()
+                    <= area.bottom() - self.scale.px(crate::surface::bar_screen::BAR_HEIGHT),
+            "calendar does not fit its host: {frame:?}, {area:?}"
+        );
+        anyhow::ensure!(
+            self.screen
+                .opaque_shapes()
+                .iter()
+                .any(|(shape, _)| *shape == frame),
+            "calendar frame is absent from alpha/input coverage"
+        );
+        for control in [geometry.previous, geometry.today, geometry.next]
+            .into_iter()
+            .chain((0..42).map(|index| geometry.cell(index)))
+        {
+            anyhow::ensure!(
+                control.w > 0
+                    && control.h > 0
+                    && control.x >= frame.x
+                    && control.y >= frame.y
+                    && control.right() <= frame.right()
+                    && control.bottom() <= frame.bottom(),
+                "calendar control lies outside input coverage: {control:?}, {frame:?}"
+            );
+        }
+        Ok(())
+    }
+
+    fn output(&mut self, path: &Path, name: &str, step: &str) -> Result<std::path::PathBuf> {
+        let mut mask = WindowBuffer::new(self.buffer.width, self.buffer.height);
+        let mut painter = Painter::new(&mut mask);
+        for (rect, radius) in self.screen.opaque_shapes() {
+            painter.fill_rounded_rect_aa(
+                &mut self.kernel,
+                *rect,
+                *radius as f32,
+                0x00ff_ffff,
+                u8::MAX,
+            );
+        }
+        drop(painter);
+        let output = std::path::PathBuf::from(format!("{}-{name}-{step}.png", path.display()));
+        write_png_masked(&output, &self.buffer, &mask)?;
+        Ok(output)
+    }
+}
+
+/// Render active Home work at normal/HiDPI and narrow sizes, exercising the real merge, the
+/// centred folder-clustered placement on the field's free cells, pointer activation/restoration,
+/// parking and activation stability, the narrow overflow card and a close snapshot. No service
+/// or display is read.
+#[allow(clippy::too_many_lines)]
+pub fn render_home_work(path: &Path) -> Result<Vec<std::path::PathBuf>> {
+    use crate::surface::field_screen::FieldAction;
+    let mut written = Vec::new();
+    for (name, width, height, scale) in [
+        ("wide", 1280, 832, 1.0),
+        ("hidpi", 1280, 832, 2.0),
+        ("narrow", 400, 640, 1.0),
+    ] {
+        let mut fixture = HomeWorkFixture::new(width, height, scale)?;
+        fixture.frame();
+        fixture.frame();
+        written.push(fixture.output(path, name, "open")?);
+        let persistent = fixture.field.located.clone();
+        let recents = fixture.feeds.clone();
+        let sources = fixture.sources.clone();
+        let cards = fixture.cards();
+        let overflow = fixture.screen.work_overflow_rect();
+        fixture.check_geometry(&cards, overflow)?;
+        if name != "narrow" {
+            anyhow::ensure!(
+                cards.len() == fixture.windows.len(),
+                "{name}: a wide field should hold every window's card: {cards:?}"
+            );
+        }
+
+        // The most recent window opens the first cluster, at the centre of the field.
+        let bounds = fixture.screen.bounds;
+        let centre = (bounds.x + bounds.w / 2, bounds.y + bounds.h / 2);
+        let distance = |rect: &Rect| {
+            let (x, y) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
+            i64::from(x - centre.0).pow(2) + i64::from(y - centre.1).pow(2)
+        };
+        let recent = (0..fixture.windows.len())
+            .min_by_key(|index| fixture.windows[*index].mru_rank)
+            .context("no windows")?;
+        if let Some(nearest) = cards
+            .iter()
+            .min_by_key(|(_, rect)| distance(rect))
+            .map(|(index, _)| *index)
+        {
+            anyhow::ensure!(
+                nearest == recent,
+                "{name}: the most recent window's card is not the one nearest the centre: \
+                 {cards:?}"
+            );
+        }
+
+        // Windows sharing a folder gather: every card of a folder touches another of it.
+        let reach = fixture.scale.px(field_model::GAP) + 1;
+        for group in HomeWorkFixture::FOLDERS {
+            let members: Vec<Rect> = cards
+                .iter()
+                .filter(|(index, _)| group.contains(index))
+                .map(|(_, rect)| *rect)
+                .collect();
+            if members.len() < 2 {
+                continue;
+            }
+            for (i, rect) in members.iter().enumerate() {
+                anyhow::ensure!(
+                    members
+                        .iter()
+                        .enumerate()
+                        .any(|(j, other)| i != j && touches(*rect, *other, reach)),
+                    "{name}: a card of folder {group:?} sits apart from the rest: {members:?}"
+                );
+            }
+        }
+
+        // Every card restores or activates its own window.
+        for (index, rect) in &cards {
+            let id = fixture.windows[*index].window_id;
+            let actions = fixture.click(*rect);
+            let expected = if fixture.windows[*index].shelved {
+                FieldAction::Restore(id)
+            } else {
+                FieldAction::Activate(id)
+            };
+            anyhow::ensure!(
+                actions.contains(&expected),
+                "{name}: card did not directly restore/activate {id:?}: {actions:?}"
+            );
+        }
+
+        // Whatever has no room is one overflow card, which opens the overview.
+        if cards.len() < fixture.windows.len() {
+            let card = overflow.context("windows without a card but no overflow card")?;
+            let actions = fixture.click(card);
+            anyhow::ensure!(
+                actions.contains(&FieldAction::RunAction("window.show-all")),
+                "{name}: the overflow card did not open the overview: {actions:?}"
+            );
+        } else {
+            anyhow::ensure!(
+                overflow.is_none(),
+                "{name}: overflow card with nothing over"
+            );
+        }
+        if name == "narrow" {
+            anyhow::ensure!(
+                overflow.is_some(),
+                "narrow: every window fit, nothing overflowed"
+            );
+        }
+
+        // Parking minimises into the card's own cells (or leaves the overflow card where it is),
+        // and a parked card then restores.
+        let parked = cards.first().map_or(0, |(index, _)| *index);
+        fixture.windows[parked].shelved = true;
+        fixture.windows[parked].activated = false;
+        fixture.frame();
+        anyhow::ensure!(
+            fixture.cards() == cards && fixture.screen.work_overflow_rect() == overflow,
+            "{name}: parking a window moved a card"
+        );
+        if let Some((_, rect)) = cards.first() {
+            let actions = fixture.click(*rect);
+            anyhow::ensure!(
+                actions.contains(&FieldAction::Restore(fixture.windows[parked].window_id)),
+                "{name}: the parked card did not restore its window: {actions:?}"
+            );
+        }
+        written.push(fixture.output(path, name, "parked")?);
+
+        // Activating another window changes recency and moves nothing.
+        let other = (0..fixture.windows.len())
+            .find(|index| *index != parked)
+            .context("only one window")?;
+        for window in &mut fixture.windows {
+            window.mru_rank += 1;
+            window.activated = false;
+        }
+        fixture.windows[other].mru_rank = 0;
+        fixture.windows[other].activated = true;
+        fixture.frame();
+        anyhow::ensure!(
+            fixture.cards() == cards && fixture.screen.work_overflow_rect() == overflow,
+            "{name}: activating another window moved a card"
+        );
+        anyhow::ensure!(
+            fixture.field.located == persistent,
+            "using active work changed persistent tile positions"
+        );
+
+        let closed = fixture.windows.remove(1);
+        field_model::merge(
+            &mut fixture.field,
+            &LiveState {
+                toplevels: &fixture.windows,
+                projects: &[],
+            },
+        );
+        fixture.frame();
+        anyhow::ensure!(
+            field_model::session_tile_for(&fixture.field, &closed).is_none(),
+            "closed work retained an active card"
+        );
+        anyhow::ensure!(
+            fixture.field.located == persistent,
+            "closing a window moved persistent folders"
+        );
+        anyhow::ensure!(
+            fixture.feeds == recents && fixture.sources == sources,
+            "closing work changed existing recent files/folders"
+        );
+        written.push(fixture.output(path, name, "closed")?);
+    }
+    Ok(written)
+}
+
+/// Whether two rects are within `reach` pixels of each other on both axes without overlapping:
+/// neighbouring cards, one grid gap apart.
+fn touches(a: Rect, b: Rect, reach: i32) -> bool {
+    let x = a.x < b.right() + reach && b.x < a.right() + reach;
+    let y = a.y < b.bottom() + reach && b.y < a.bottom() + reach;
+    x && y && !intersects(a, b)
+}
+
+fn intersects(a: Rect, b: Rect) -> bool {
+    a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
+}
+
+struct HomeWorkFixture {
+    field: templar_field::FieldDocument,
+    screen: FieldScreen,
+    windows: Vec<templar_window::ShellToplevel>,
+    apps: Vec<crate::app_search::AppEntry>,
+    providers:
+        std::collections::BTreeMap<templar_types::provider::ProviderRole, templar_types::AppId>,
+    feeds: HashMap<crate::home_surface::Drawer, crate::drawers::DrawerFeed>,
+    sources: crate::file_browser::BrowserSources,
+    garden: HashMap<std::path::PathBuf, crate::garden::GardenPlace>,
+    previews: HashMap<String, pixelkit_raster::Bitmap>,
+    buffer: WindowBuffer,
+    text: pixelkit_text::TextCache,
+    input: Input,
+    kernel: RasterKernel,
+    scale: Scale,
+}
+
+impl HomeWorkFixture {
+    /// The fixture's windows (by index) that share a folder: the terminal and the file manager
+    /// are associated with the Documents Place, the editor is near it by its Recent entry; the
+    /// parked terminal and the image viewer have no folder and gather as unfiled tools.
+    const FOLDERS: [&'static [usize]; 2] = [&[0, 2, 3], &[1, 4]];
+
+    #[allow(clippy::too_many_lines)]
+    fn new(width: i32, height: i32, scale: f64) -> Result<Self> {
+        use crate::files_surface::{FilesLocation, PinnedKind, PinnedLocation};
+        use templar_types::provider::ProviderRole;
+        let (mut windows, apps) = Self::windows_and_apps();
+        let associated = [
+            templar_types::InstanceId::new(),
+            templar_types::InstanceId::new(),
+        ];
+        windows[0].instance_id = Some(associated[0]);
+        windows[2].instance_id = Some(associated[1]);
+        let providers = std::collections::BTreeMap::from([
+            (
+                ProviderRole::Terminal,
+                "org.fixture.Terminal".parse().unwrap(),
+            ),
+            (
+                ProviderRole::FileManager,
+                "org.fixture.Files".parse().unwrap(),
+            ),
+        ]);
+        let (cols, rows) = field_model::grid_for(width, height, field_model::TILE_SIZE);
+        let mut field = templar_field::FieldDocument::new("active-work-fixture", cols, rows);
+        let root = std::path::PathBuf::from("/home/fixture/Documents");
+        for op in field_model::open_folder_ops(&field, &root) {
+            field = templar_field::apply(&field, &op)?.0;
+        }
+        field_model::merge(
+            &mut field,
+            &LiveState {
+                toplevels: &windows,
+                projects: &[],
+            },
+        );
+        let mut recent = crate::drawers::DrawerFeed::new(
+            "Recent files and folders",
+            vec![
+                "/home/fixture/Documents/draft.md".to_owned(),
+                root.display().to_string(),
+            ],
+        );
+        recent.row_targets = vec![
+            Some("/home/fixture/Documents/draft.md".to_owned()),
+            Some(root.display().to_string()),
+        ];
+        // What `recent::feed_json` derives from those entries: the editor saved the draft, so
+        // its application last worked in the draft's folder.
+        recent.folders = vec![
+            (Some("org.fixture.Editor".to_owned()), root.clone()),
+            (Some("org.fixture.Files".to_owned()), root.clone()),
+        ];
+        let feeds = HashMap::from([(crate::home_surface::Drawer::Recent, recent)]);
+        let sources = crate::file_browser::BrowserSources {
+            pinned: vec![
+                PinnedLocation {
+                    label: "Recent".to_owned(),
+                    detail: "Files and folders".to_owned(),
+                    location: FilesLocation::Recent,
+                    kind: PinnedKind::Feed,
+                },
+                PinnedLocation {
+                    label: "Documents".to_owned(),
+                    detail: "Persistent place".to_owned(),
+                    location: FilesLocation::Directory(root.clone()),
+                    kind: PinnedKind::Place,
+                },
+            ],
+        };
+        let garden = HashMap::from([(
+            root.clone(),
+            crate::garden::GardenPlace {
+                root,
+                stage: "trace".to_owned(),
+                form: "plain".to_owned(),
+                summary: "Recent writing".to_owned(),
+                instances: associated.iter().map(ToString::to_string).collect(),
+                ..crate::garden::GardenPlace::default()
+            },
+        )]);
+        let previews = windows
+            .iter()
+            .map(|window| {
+                (
+                    field_model::session_identifier(window, None),
+                    preview_fixture(),
+                )
+            })
+            .collect();
+        let scale = Scale::new(scale);
+        Ok(Self {
+            field,
+            screen: FieldScreen::default(),
+            windows,
+            apps,
+            providers,
+            feeds,
+            sources,
+            garden,
+            previews,
+            buffer: WindowBuffer::new(scale.px(width) as u32, scale.px(height) as u32),
+            text: pixelkit_text::TextCache::new(fonts::set()),
+            input: Input::new(),
+            kernel: RasterKernel::new(),
+            scale,
+        })
+    }
+
+    fn windows_and_apps() -> (
+        Vec<templar_window::ShellToplevel>,
+        Vec<crate::app_search::AppEntry>,
+    ) {
+        let records = [
+            (
+                "org.fixture.Terminal",
+                "Terminal",
+                "TerminalEmulator",
+                "/home/fixture/work",
+                false,
+            ),
+            (
+                "org.fixture.Terminal",
+                "Terminal",
+                "TerminalEmulator",
+                "Paused build",
+                true,
+            ),
+            (
+                "org.fixture.Files",
+                "Files",
+                "FileManager",
+                "/home/fixture/Documents",
+                false,
+            ),
+            (
+                "org.fixture.Editor",
+                "Editor",
+                "TextEditor",
+                "Draft notes",
+                false,
+            ),
+            (
+                "org.fixture.Images",
+                "Images",
+                "Graphics;Viewer",
+                "Holiday photos",
+                false,
+            ),
+        ];
+        let windows: Vec<_> = records
+            .iter()
+            .enumerate()
+            .map(
+                |(index, (app, _, _, title, shelved))| templar_window::ShellToplevel {
+                    window_id: templar_window::WindowId(index as u64 + 1),
+                    canonical_app_id: Some(app.parse().unwrap()),
+                    claimed_app_id: None,
+                    instance_id: None,
+                    title: (*title).to_owned(),
+                    verified_identity: true,
+                    activated: index == 0,
+                    mru_rank: index as u32,
+                    fullscreen: false,
+                    shelved: *shelved,
+                    maximized: false,
+                    geometry: templar_window::Rect::new(0, 0, 800, 600),
+                    layer: templar_window::Layer::Normal,
+                    group: None,
+                },
+            )
+            .collect();
+        let apps = records
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != 1)
+            .map(
+                |(_, (app, name, category, _, _))| crate::app_search::AppEntry {
+                    id: app.parse().unwrap(),
+                    name: (*name).to_owned(),
+                    categories: category.split(';').map(str::to_owned).collect(),
+                    desktop_file_id: String::new(),
+                    icon: String::new(),
+                    keywords: Vec::new(),
+                    no_display: false,
+                    logical: String::new(),
+                    variants: 1,
+                },
+            )
+            .collect();
+        (windows, apps)
+    }
+
+    fn frame(&mut self) -> Vec<crate::surface::field_screen::FieldAction> {
+        let empty_bitmaps = HashMap::new();
+        let empty_thumbnails = HashMap::new();
+        let empty_listings = HashMap::new();
+        let widgets = HashMap::new();
+        let browser = FileBrowserData {
+            sources: &self.sources,
+            listing: None,
+            pending: None,
+            error: None,
+            status: None,
+            search_query: None,
+            search_entries: None,
+            search_error: None,
+            feeds: &self.feeds,
+            thumbnails: &empty_thumbnails,
+            icons: &empty_bitmaps,
+            home: Some(Path::new("/home/fixture")),
+        };
+        let data = FieldData {
+            field: &self.field,
+            toplevels: &self.windows,
+            providers: &self.providers,
+            icons: &empty_bitmaps,
+            previews: &self.previews,
+            drawer_feeds: &self.feeds,
+            treemap: None,
+            composition: &[],
+            browser: &browser,
+            folder_listings: &empty_listings,
+            notifications: &[],
+            connected: true,
+            home_revealed: true,
+            apps: &self.apps,
+            variants: &HashMap::new(),
+            projects: &[],
+            garden: &self.garden,
+            actions: templar_types::action::MANIFEST,
+            file_search: None,
+            apps_available: true,
+            recents: &[],
+            recent_ids: &[],
+            widgets: &widgets,
+            reduced_motion: true,
+            now_ms: 0,
+        };
+        let area = Rect::new(0, 0, self.buffer.width as i32, self.buffer.height as i32);
+        let mut ui = Ui::new(
+            Painter::new(&mut self.buffer),
+            &mut self.text,
+            &mut self.input,
+            design::theme(),
+            self.scale,
+            &mut self.kernel,
+        );
+        let actions = self.screen.draw(&mut ui, area, &data);
+        drop(ui);
+        self.input.end_frame();
+        actions
+    }
+
+    /// Every window that has a card, by index, with the card's rect.
+    fn cards(&self) -> Vec<(usize, Rect)> {
+        (0..self.windows.len())
+            .filter_map(|index| {
+                let tile = field_model::session_tile_for(&self.field, &self.windows[index])?;
+                Some((index, self.screen.work_card_rect(tile)?))
+            })
+            .collect()
+    }
+
+    /// Cards and the overflow card lie inside the field, overlap neither each other nor any
+    /// persistent tile.
+    fn check_geometry(&mut self, cards: &[(usize, Rect)], overflow: Option<Rect>) -> Result<()> {
+        let bounds = self.screen.bounds;
+        let ui = Ui::new(
+            Painter::new(&mut self.buffer),
+            &mut self.text,
+            &mut self.input,
+            design::theme(),
+            self.scale,
+            &mut self.kernel,
+        );
+        let persistent: Vec<Rect> = self
+            .field
+            .placements_in(None)
+            .into_iter()
+            .filter(|(id, _)| {
+                !matches!(
+                    self.field.kind_of(*id),
+                    Some(templar_field::TileKind::ParkedSession { .. })
+                )
+            })
+            .filter_map(|(id, _)| self.screen.tile_rect(&self.field, id, &ui))
+            .collect();
+        anyhow::ensure!(!persistent.is_empty(), "the fixture has no persistent tile");
+        let all: Vec<Rect> = cards
+            .iter()
+            .map(|(_, rect)| *rect)
+            .chain(overflow)
+            .collect();
+        anyhow::ensure!(
+            !all.is_empty(),
+            "no window has a card and nothing overflowed"
+        );
+        for (i, rect) in all.iter().enumerate() {
+            anyhow::ensure!(
+                rect.x >= bounds.x
+                    && rect.y >= bounds.y
+                    && rect.right() <= bounds.right()
+                    && rect.bottom() <= bounds.bottom(),
+                "card {rect:?} leaves the field {bounds:?}"
+            );
+            anyhow::ensure!(
+                all[i + 1..].iter().all(|other| !intersects(*rect, *other)),
+                "cards overlap: {all:?}"
+            );
+            anyhow::ensure!(
+                persistent.iter().all(|tile| !intersects(*rect, *tile)),
+                "card {rect:?} covers a persistent tile: {persistent:?}"
+            );
+        }
+        Ok(())
+    }
+
+    fn click(&mut self, rect: Rect) -> Vec<crate::surface::field_screen::FieldAction> {
+        self.input.cursor_moved(
+            (rect.x + rect.w / 2) as f32,
+            (rect.bottom() - self.scale.px(10)) as f32,
+        );
+        self.input.mouse(pixelkit_shell::MouseButton::Left, true);
+        self.input.mouse(pixelkit_shell::MouseButton::Left, false);
+        self.frame()
+    }
+
+    fn output(&self, path: &Path, name: &str, step: &str) -> Result<std::path::PathBuf> {
+        let output = std::path::PathBuf::from(format!("{}-{name}-{step}.png", path.display()));
+        write_png(&output, &self.buffer)?;
+        Ok(output)
+    }
 }
 
 /// Like [`write_png`], with `mask`'s coverage (any channel of it; the host paints it white) as
@@ -775,6 +1707,7 @@ fn garden_tile_frame(
         notifications: &[],
         field: &field,
         toplevels: &[],
+        providers: &std::collections::BTreeMap::new(),
         icons: &bitmaps,
         previews: &bitmaps,
         drawer_feeds: &feeds,
@@ -919,489 +1852,41 @@ fn contact_sheet(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use templar_field::{Cell, Span};
 
-    /// One window, exactly as the compositor would report it, with no clock or host in it.
-    fn baseline_toplevel(
-        id: u64,
-        app: &str,
-        title: &str,
-        group: Option<templar_window::GroupInfo>,
-    ) -> templar_window::ShellToplevel {
-        templar_window::ShellToplevel {
-            window_id: templar_window::WindowId(id),
-            canonical_app_id: Some(app.parse().expect("a canonical app id")),
-            instance_id: None,
-            title: title.to_owned(),
-            verified_identity: true,
-            activated: false,
-            mru_rank: u32::try_from(id).unwrap_or(u32::MAX),
-            fullscreen: false,
-            shelved: false,
-            maximized: false,
-            geometry: templar_window::Rect::new(0, 0, 640, 480),
-            layer: templar_window::Layer::Normal,
-            group,
-        }
-    }
-
-    /// The Places `TEMPLAR_BASELINE_GARDEN` grows into the baseline field: the named form at the
-    /// top span, and a lightly used place at the smallest one, so every variant reviews the
-    /// scale range as well as the form. Fixed roots, trees and scores — what is under review is
-    /// the drawing, not the ledger's arithmetic, which has its own tests in `templar-session-core`.
-    fn garden_fixture(
-        form: &str,
-    ) -> (
-        Vec<templar_field::garden::ContextView>,
-        HashMap<PathBuf, crate::garden::GardenPlace>,
-    ) {
-        // A folder of projects whose branches are the repositories: the shape the activity tree
-        // already records, and the one the branch form has to read as at a glance.
-        let fixture = match form {
-            "shelf" => super::fixture_place("photos"),
-            "folio" => super::fixture_place("manuscript"),
-            "plain" => super::FixturePlace {
-                slug: "documents",
-                root: "/home/fixture/Documents",
-                form: "plain",
-                tree: Vec::new(),
-                summary: "9 opens, 3 sessions",
-                bloomed: &[],
-                seed: 3,
-            },
-            _ => super::fixture_place("code"),
-        };
-        let (root, tree, summary) = (fixture.root, fixture.tree, fixture.summary);
-        // Fixed landings: the bottom-left of the baseline field is open, and a fixture whose
-        // Places land wherever the search happens to reach is a fixture that stops showing the
-        // form the day another object moves.
-        let grown = (
-            PathBuf::from(root),
-            Span::new(6, 4),
-            Cell::new(0, 5),
-            "expanded",
-            tree,
-            summary,
-        );
-        // The other end of the ladder: a place used lightly enough to be a line, in every
-        // variant, so the two extremes are always reviewed against each other.
-        let line = (
-            PathBuf::from("/home/fixture/Downloads"),
-            Span::new(2, 1),
-            Cell::new(7, 8),
-            "trace",
-            Vec::new(),
-            "3 opens, 1 session",
-        );
-        let mut views = Vec::new();
-        let mut places = HashMap::new();
-        for (root, span, landing, stage, tree, summary) in [grown, line] {
-            views.push(templar_field::garden::ContextView {
-                root: root.clone(),
-                wanted: Some(span),
-                landing: Some(landing),
-                pinned: false,
-                user_span: None,
-                summary: summary.to_owned(),
-            });
-            places.insert(
-                root.clone(),
-                crate::garden::GardenPlace {
-                    root,
-                    stage: stage.to_owned(),
-                    form: if tree.is_empty() {
-                        "plain".to_owned()
-                    } else {
-                        form.to_owned()
-                    },
-                    tree,
-                    summary: summary.to_owned(),
-                    ..crate::garden::GardenPlace::default()
-                },
-            );
-        }
-        (views, places)
-    }
-
-    /// Fixed-pixel baseline for the default Home Field.
-    ///
-    /// Last reviewed 2026-09-09, when the growth forms landed: the light palette's ground moved
-    /// from a cool grey to a warm mineral off-white (`0x00ec_eef0` to `0x00ee_ebe4`), which is
-    /// the substrate a garden is grown on. Nothing else in the resting field changed — the forms
-    /// themselves are reviewed through `TEMPLAR_BASELINE_GARDEN`, which returns before this hash. Unlike `render_field`, this fixture reads
-    /// no clock, filesystem, D-Bus service, persisted layout, or host font. A visual change must
-    /// therefore be reviewed and deliberately update this hash; environment changes cannot make
-    /// it flicker.
     #[test]
-    #[allow(clippy::too_many_lines)]
-    fn visual_regression_home_field_baseline() {
-        // 1280x832 -> a 12x8 grid: roomy enough that every object class — drawers, widgets,
-        // the system shelf, a project, a window group, a bound folder and a shortcut pane —
-        // actually places, so the baseline reviews all of their material roles at once.
-        let size = std::env::var("TEMPLAR_BASELINE_SIZE").ok();
-        let (width, height) = size.as_deref().map_or((1280_u32, 832_u32), |size| {
-            let (width, height) = size.split_once('x').expect("WIDTHxHEIGHT");
-            (
-                width.parse().expect("width"),
-                height.parse().expect("height"),
-            )
-        });
-        let (cols, rows) =
-            field_model::grid_for(width as i32, height as i32, field_model::TILE_SIZE);
-        let mut field = templar_field::FieldDocument::new("visual-baseline", cols, rows);
-        let projects = vec![field_model::ProjectInfo {
-            id: "templaros".to_owned(),
-            name: "TemplarOS".to_owned(),
-            is_open: true,
-            ..field_model::ProjectInfo::default()
-        }];
-        // Two windows in one group, so the baseline reviews the window-group tile as well: a
-        // container drawn in the group's own accent, holding its members' session tiles. Fixed
-        // ids, titles and accent, like everything else here — this fixture reads no clock, no
-        // filesystem and no service.
-        let group = templar_window::GroupInfo {
-            group_id: 3,
-            name: "Writing".to_owned(),
-            accent: 0x0033_88ff,
-        };
-        let toplevels = vec![
-            baseline_toplevel(1, "org.templaros.Files", "Notes", Some(group.clone())),
-            baseline_toplevel(2, "org.templaros.Reader", "Draft", Some(group)),
-        ];
-        let live = LiveState {
-            toplevels: &toplevels,
-            projects: &projects,
-        };
-        field_model::merge(&mut field, &live);
-        // One of each placeable object class the material roles distinguish: the merge already
-        // adds widgets and the system shelf; a bound folder and a shortcut pane join here so
-        // this baseline is also the reviewed render for their tints. The folder is placed the
-        // way any folder now reaches Home — Home merges no Desktop tray of its own.
-        for op in
-            field_model::open_folder_ops(&field, std::path::Path::new("/home/fixture/Desktop"))
-        {
-            if let Ok((next, _)) = templar_field::apply(&field, &op) {
-                field = next;
-            }
-        }
-        field_model::route_file_drop(&mut field, std::path::Path::new("/home/fixture/notes.md"));
-        // One pinned application, so the baseline also reviews the compact rung — which since
-        // the chrome reduction is its own drawing path: no heading, the name as the body's first
-        // line, and the controls only on hover or focus.
-        field_model::pin_app(&mut field, &"org.templaros.Files".parse().unwrap());
-        // `TEMPLAR_BASELINE_GARDEN=branch|shelf|plain` grows two Places into the field through the
-        // real tender, so each growth form can be reviewed as a PNG with no compositor, no
-        // daemon and no day of use. Like the other variants it returns before the hash.
-        let garden = match std::env::var("TEMPLAR_BASELINE_GARDEN") {
-            Ok(form) => {
-                let (views, places) = garden_fixture(&form);
-                for tended in templar_field::garden::tend(
-                    &field,
-                    &views,
-                    templar_field::garden::HomeCorner::BottomLeft,
-                ) {
-                    field = templar_field::apply(&field, &tended.op)
-                        .expect("the fixture field has room for the garden")
-                        .0;
-                }
-                places
-            }
-            Err(_) => HashMap::new(),
-        };
-
-        let drawer_feeds = crate::home_surface::Drawer::DEFAULT
+    fn switcher_real_painter_refreshes_captures_and_retains_selected_overflow_row() {
+        let icons = ["org.templaros.Settings", "org.templaros.Notes"]
             .into_iter()
-            .map(|drawer| {
+            .map(|app| {
                 (
-                    drawer,
-                    crate::drawers::DrawerFeed::new(
-                        format!("{} fixture", drawer.name()),
-                        vec!["One stable row".to_owned()],
-                    ),
+                    app.to_owned(),
+                    pixelkit_raster::Bitmap {
+                        width: 16,
+                        height: 16,
+                        pixels: vec![0xffab_cdef; 256],
+                    },
                 )
             })
             .collect();
-        let mut widgets = HashMap::new();
-        widgets.insert(
-            "session".to_owned(),
-            crate::surface::widgets::WidgetSnapshot {
-                headline: "dk".to_owned(),
-                detail: vec!["Lock and leave from here".to_owned()],
-                available: true,
-                refused: Vec::new(),
-            },
-        );
-        widgets.insert(
-            "notifications".to_owned(),
-            crate::surface::widgets::WidgetSnapshot {
-                headline: "quiet".to_owned(),
-                detail: Vec::new(),
-                available: true,
-                refused: Vec::new(),
-            },
-        );
-        // Fixed readings, so the baseline reviews the Settings widget's three-line body and its
-        // control row rather than the "…" a tile with no snapshot yet would show.
-        widgets.insert(
-            "settings".to_owned(),
-            crate::surface::widgets::settings::snapshot(
-                [
-                    "72% · 2 h 23 min remaining".to_owned(),
-                    "45%".to_owned(),
-                    "60%".to_owned(),
-                ],
-                Vec::new(),
-            ),
-        );
-        let empty_bitmaps = HashMap::new();
-        // Fixed pinned locations, so the baseline reviews the Files object's real chip row and
-        // the expanded surface's real sidebar rather than the degraded form of both.
-        let browser_sources = crate::file_browser::BrowserSources {
-            pinned: vec![
-                crate::files_surface::PinnedLocation {
-                    label: "Recent".to_owned(),
-                    detail: "Lately opened and saved".to_owned(),
-                    location: crate::files_surface::FilesLocation::Recent,
-                    kind: crate::files_surface::PinnedKind::Feed,
-                },
-                crate::files_surface::PinnedLocation {
-                    label: "Home".to_owned(),
-                    detail: "Personal files".to_owned(),
-                    location: crate::files_surface::FilesLocation::Directory(
-                        "/home/fixture".into(),
-                    ),
-                    kind: crate::files_surface::PinnedKind::Place,
-                },
-                crate::files_surface::PinnedLocation {
-                    label: "Documents".to_owned(),
-                    detail: "Standard folder".to_owned(),
-                    location: crate::files_surface::FilesLocation::Directory(
-                        "/home/fixture/Documents".into(),
-                    ),
-                    kind: crate::files_surface::PinnedKind::Place,
-                },
-                crate::files_surface::PinnedLocation {
-                    label: "Downloads".to_owned(),
-                    detail: "Standard folder".to_owned(),
-                    location: crate::files_surface::FilesLocation::Directory(
-                        "/home/fixture/Downloads".into(),
-                    ),
-                    kind: crate::files_surface::PinnedKind::Place,
-                },
-                crate::files_surface::PinnedLocation {
-                    label: "Trash".to_owned(),
-                    detail: "Restorable".to_owned(),
-                    location: crate::files_surface::FilesLocation::Trash,
-                    kind: crate::files_surface::PinnedKind::Feed,
-                },
-            ],
-        };
-        let empty_thumbnails = std::collections::HashMap::new();
-        let browser = FileBrowserData {
-            sources: &browser_sources,
-            listing: None,
-            pending: None,
-            error: None,
-            status: None,
-            search_query: None,
-            search_entries: None,
-            search_error: None,
-            feeds: &drawer_feeds,
-            thumbnails: &empty_thumbnails,
-            icons: &HashMap::new(),
-            home: None,
-        };
-        let apps: Vec<crate::app_search::AppEntry> =
-            if std::env::var("TEMPLAR_BASELINE_OMNIBOX").is_ok() {
-                ["Reader", "Recorder", "Terminal", "Remote Desktop"]
-                    .into_iter()
-                    .map(|name| crate::app_search::AppEntry {
-                        id: format!("org.templaros.{}", name.replace(' ', ""))
-                            .parse()
-                            .unwrap(),
-                        name: name.to_owned(),
-                        desktop_file_id: String::new(),
-                        icon: String::new(),
-                        categories: Vec::new(),
-                        keywords: Vec::new(),
-                        no_display: false,
-                        logical: String::new(),
-                        variants: 1,
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-        let recent_entries: Vec<crate::app_search::AppEntry> = [
-            ("org.templaros.Files", "Files"),
-            ("org.templaros.Terminal", "Terminal"),
-        ]
-        .into_iter()
-        .map(|(id, name)| crate::app_search::AppEntry {
-            id: id.parse().unwrap(),
-            name: name.to_owned(),
-            desktop_file_id: String::new(),
-            icon: String::new(),
-            categories: Vec::new(),
-            keywords: Vec::new(),
-            no_display: false,
-            logical: String::new(),
-            variants: 1,
-        })
-        .collect();
-        let recents: Vec<&crate::app_search::AppEntry> = recent_entries.iter().collect();
-        let data = FieldData {
-            notifications: &[],
-            field: &field,
-            toplevels: &toplevels,
-            icons: &empty_bitmaps,
-            previews: &empty_bitmaps,
-            drawer_feeds: &drawer_feeds,
-            treemap: None,
-            composition: &[],
-            browser: &browser,
-            folder_listings: &HashMap::new(),
-            connected: true,
-            home_revealed: true,
-            apps: &apps,
-            apps_available: true,
-            widgets: &widgets,
-            variants: &HashMap::new(),
-            projects: &projects,
-            garden: &garden,
-            actions: templar_types::action::MANIFEST,
-            file_search: None,
-            recents: &recents,
-            recent_ids: &[],
-            reduced_motion: true,
-            now_ms: 0,
-        };
-
-        let mut buffer = WindowBuffer::new(width, height);
-        let mut text = pixelkit_text::TextCache::new(fonts::set());
-        let mut kernel = RasterKernel::new();
-        let mut input = Input::new();
-        let mut screen = FieldScreen::default();
-        // `TEMPLAR_BASELINE_OMNIBOX=1` renders the same fixture with the omnibox open over it, for
-        // reviewing the dropdown — the one surface the resting field cannot show. It returns
-        // before the hash, so it can never be mistaken for the baseline itself.
-        if std::env::var("TEMPLAR_BASELINE_OMNIBOX").is_ok() {
-            screen.search_focused = true;
-            screen.search.set_text("re");
-        }
-        // `TEMPLAR_BASELINE_FILES=1` renders the fixture with the Files object expanded over the
-        // field instead — the one surface whose rail, crumb and toolbar are otherwise only
-        // seen at a real seat. Like the omnibox variant it returns before the hash.
-        if std::env::var("TEMPLAR_BASELINE_FILES").is_ok() {
-            screen.files_expanded = true;
-            screen
-                .files
-                .go_to(crate::files_surface::FilesLocation::Directory(
-                    "/home/fixture".into(),
-                ));
-        }
-        // Review Help without opening a desktop session; the resting-field hash stays intact.
-        if std::env::var("TEMPLAR_BASELINE_HELP").is_ok() {
-            screen.help_open = true;
-        }
-        for _ in 0..2 {
-            let mut ui = Ui::new(
-                Painter::new(&mut buffer),
-                &mut text,
-                &mut input,
-                design::theme(),
-                Scale::ONE,
-                &mut kernel,
-            );
-            screen.draw(&mut ui, Rect::new(0, 0, width as i32, height as i32), &data);
-            if std::env::var("TEMPLAR_BASELINE_MENU").is_ok() {
-                let mut menu = crate::surface::context_menu::ContextMenu::default();
-                menu.open_at(
-                    (width as i32 - 30, 100),
-                    crate::surface::context_menu::MenuTarget {
-                        tile: Some(templar_field::TileId(7)),
-                        window: Some(templar_window::WindowId(1)),
-                        shelved: true,
-                        in_window_group: true,
-                        ..crate::surface::context_menu::MenuTarget::default()
-                    },
-                );
-                menu.paint(&mut ui, Rect::new(0, 0, width as i32, height as i32));
-            }
-            input.end_frame();
-        }
-
-        if let Ok(path) = std::env::var("TEMPLAR_BASELINE_DUMP") {
-            write_png(std::path::Path::new(&path), &buffer).expect("dumping the baseline render");
-        }
-        if std::env::var("TEMPLAR_BASELINE_OMNIBOX").is_ok()
-            || std::env::var("TEMPLAR_BASELINE_GARDEN").is_ok()
-            || std::env::var("TEMPLAR_BASELINE_FILES").is_ok()
-            || std::env::var("TEMPLAR_BASELINE_HELP").is_ok()
-            || std::env::var("TEMPLAR_BASELINE_MENU").is_ok()
-            || size.is_some()
-        {
-            return;
-        }
-        let hash = buffer
-            .pixels
-            .iter()
-            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, pixel| {
-                pixel.to_le_bytes().into_iter().fold(hash, |hash, byte| {
-                    (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-                })
-            });
-        assert_eq!(
-            hash, 0x7985_0938_80e9_9795,
-            "review the Home Field pixels before updating this baseline"
-        );
-    }
-
-    /// Fixed-pixel baseline for the bottom bar: its three presences, and the hover row.
-    ///
-    /// The bar has no reservation any more, so what it looks like *is* the whole of how it
-    /// behaves: open over Home, a six-pixel chevron under a window, and the bar back out again
-    /// when the pointer asks. The fourth is the fan a dwell opens — the most recent window on top
-    /// with its capture, the one behind it showing the sliver the top card does not cover. One hash each, reviewed
-    /// by eye through the dump below. Fails on any pixel change — read it as "look at the render",
-    /// not as "something is broken".
-    ///
-    /// `TEMPLAR_BAR_PRESENCE_DUMP=<dir>` writes the four renders as PNGs (at scale 1 and 2) and
-    /// skips the hashes, which is how the reviewed images under `docs/measurements/` are made.
-    #[test]
-    fn visual_regression_bar_presence_baseline() {
-        use crate::surface::bar_screen::Presence;
-
-        let dump = std::env::var("TEMPLAR_BAR_PRESENCE_DUMP").ok();
-        for (presence, open_fan, name, expected) in [
-            (Presence::Open, false, "open", 0x7314_af6e_8b30_7d6eu64),
-            (Presence::Hint, false, "hint", 0xe0c9_dac0_7b3a_e3a5),
-            (Presence::Revealed, false, "revealed", 0x02ef_54cf_0ea3_3b74),
-            (Presence::Open, true, "fan", 0x1b4f_7c23_d972_3b1d),
-        ] {
-            let buffer = bar_frame(presence, open_fan, 1.0);
-            if let Some(dir) = &dump {
-                let dir = std::path::Path::new(dir);
-                std::fs::create_dir_all(dir).expect("the dump directory");
-                write_png(&dir.join(format!("bar-{name}.png")), &buffer).expect("dumping");
-                let at_2x = bar_frame(presence, open_fan, 2.0);
-                write_png(&dir.join(format!("bar-{name}@2x.png")), &at_2x).expect("dumping");
-                continue;
-            }
-            let hash = buffer
+        let (before, mask) = switcher_frame(1.0, 0x0012_3456, &icons);
+        let (after, _) = switcher_frame(1.0, 0x0065_4321, &icons);
+        assert_ne!(before.pixels, after.pixels);
+        assert!(mask.pixels.iter().any(|pixel| *pixel != 0));
+        // The parked selected window is drawn even though the twelve-window ring overflows.
+        assert!(
+            before
                 .pixels
                 .iter()
-                .fold(0xcbf2_9ce4_8422_2325_u64, |hash, pixel| {
-                    pixel.to_le_bytes().into_iter().fold(hash, |hash, byte| {
-                        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-                    })
-                });
-            assert_eq!(
-                hash, expected,
-                "review the bar's {name} pixels before updating this baseline"
-            );
-        }
+                .any(|pixel| *pixel & 0x00ff_ffff == 0x00ab_cdef)
+        );
+        let parked_icon = before.pixels[318 * before.width as usize + 442] & 0x00ff_ffff;
+        assert_ne!(parked_icon, design::shell_fill());
+        assert_ne!(
+            parked_icon, 0x00ab_cdef,
+            "parked dimming covers the icon too"
+        );
+        let (scaled, _) = switcher_frame(1.5, 0x0012_3456, &icons);
+        assert_eq!((scaled.width, scaled.height), (1500, 900));
     }
 
     /// The hint is a strip of the bar's ground with a chevron on it, and nothing else: whatever
@@ -1411,7 +1896,7 @@ mod tests {
     fn the_hint_is_six_logical_pixels_and_every_one_of_them_is_painted() {
         use crate::surface::bar_screen::{HINT_HEIGHT, Presence};
 
-        let buffer = bar_frame(Presence::Hint, false, 1.0);
+        let buffer = bar_frame(Presence::Hint, false, 1.0, &HashMap::new());
         assert_eq!(buffer.height, HINT_HEIGHT as u32);
         let ground = design::ground();
         assert!(

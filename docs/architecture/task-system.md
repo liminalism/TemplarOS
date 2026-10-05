@@ -8,7 +8,7 @@ Four scales, each answering one question, none duplicating another:
 | Task Island | what is running? | the bottom bar, kept small on purpose |
 | Taskfield | where are all my windows? | the compositor's window overview — a **view** |
 | Apps bar | what can I start? | Home's launcher |
-| `Alt+Tab` | what was I just using? | the seven most recent windows |
+| `Alt+Tab` | which window next? | every open window, most recent first |
 
 **HomeGarden is a place; Taskfield is a view.** Home exists with nothing running: projects, places
 and files live there and can be arranged. Taskfield is a temporary projection of windows that
@@ -34,6 +34,21 @@ launcher's Enter and a chip's unshelve target cannot invent an order of their ow
 `ChipAction` decides what a chip does by how many windows are on screen: 0–1 activates, 2–4 fans
 out of the chip, more hands over to Taskfield. The bar is insufficient by design; a linear strip is
 intrinsically bad at thirty windows.
+
+A chip is the application's icon, never a word: the name is a hover tooltip. A group, which is more
+than one application, wears its most recently activated member's icon beside its accent stripe, and each
+fan card falls back to its own window's icon until a capture arrives. An initial is drawn only when
+no icon resolves at all — the lookup tries the desktop entry's `Icon=`, then the desktop file's own
+name, and is repeated with the manifest's hints once the application catalogue arrives.
+
+## Alt+Tab
+
+`Alt+Tab` walks `WindowService::alt_tab_order`: every mapped application window, parked ones
+included, most recently activated first — the same windows the island shows, so the two never
+disagree about what is open. The list is frozen at the first press; `Tab` only moves the selection
+in the compositor's HUD, and releasing the modifier activates it (unparking a parked window).
+`Escape`, a click or any other chord cancels the walk without activating anything, and a window that
+closes mid-walk leaves the list. `` Alt+` `` is the same walk scoped to the focused window's unit.
 
 ## One presentation
 
@@ -69,7 +84,7 @@ compositor draws its own and the mode works exactly as well.
 
 ## Chords
 
-`Super` Home · `Super+Space` start · `Super+Tab` the overview · `Alt+Tab` recent ·
+`Super` Home · `Super+Space` start · `Super+Tab` the overview · `Alt+Tab` next window ·
 `` Alt+` `` this one · `Ctrl+Alt+Space` the overview again, as the recovery spelling.
 
 `Super+Tab` used to cycle between window groups; the overview answers that question by showing

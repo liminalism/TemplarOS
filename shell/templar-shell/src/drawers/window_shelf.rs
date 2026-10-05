@@ -77,6 +77,7 @@ mod tests {
         ShellToplevel {
             window_id: WindowId(id),
             canonical_app_id: app.map(|a| a.parse().unwrap()),
+            claimed_app_id: None,
             instance_id: None,
             title: title.to_owned(),
             verified_identity: app.is_some(),

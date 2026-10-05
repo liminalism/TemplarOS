@@ -336,14 +336,17 @@ pub fn scatter_label(
     cache.draw_fitted(painter, title, text_area, y, style, ink, Align::Left);
 }
 
-/// One row of the fallback switcher (`WindowService::cycle_focus`) — a title, highlighted if it
-/// is the current selection.
+/// One row of the fallback switcher (`TemplarCompState::step_switcher`) — a window's label,
+/// highlighted if it is the current selection, in muted ink if the window is parked on Home's
+/// shelf (choosing it brings it back).
+#[allow(clippy::too_many_arguments)]
 pub fn switcher_row(
     painter: &mut Painter<'_>,
     pixel_w: i32,
     pixel_h: i32,
-    title: &str,
+    label: &str,
     selected: bool,
+    parked: bool,
     fonts: Fonts<'_>,
     scale: f32,
 ) {
@@ -355,10 +358,14 @@ pub fn switcher_row(
     };
     painter.fill_rect(area, background);
     let Some((cache, face)) = fonts else { return };
-    if title.is_empty() {
+    if label.is_empty() {
         return;
     }
-    let ink = layout::text_ink_for(background);
+    let ink = if parked {
+        layout::muted_ink_for(background)
+    } else {
+        layout::text_ink_for(background)
+    };
     let style = TextStyle::new(face, (15.0 * scale).max(8.0));
     let padding = (10.0 * scale).round() as i32;
     let text_area = PxRect::new(
@@ -369,7 +376,7 @@ pub fn switcher_row(
     );
     let line_height = cache.line_height(style);
     let y = area.y + ((area.h - line_height) / 2).max(0);
-    cache.draw_fitted(painter, title, text_area, y, style, ink, Align::Left);
+    cache.draw_fitted(painter, label, text_area, y, style, ink, Align::Left);
 }
 
 /// The switcher's title row: the group's name on its own accent, or "Groups" on the panel
@@ -535,14 +542,14 @@ mod tests {
         let mut selected = WindowBuffer::new(200, 28);
         {
             let mut painter = Painter::new(&mut selected);
-            switcher_row(&mut painter, 200, 28, "Terminal", true, None, 1.0);
+            switcher_row(&mut painter, 200, 28, "Terminal", true, false, None, 1.0);
         }
         assert_eq!(pixel_at(&selected, 0, 0), SWITCHER_SELECTED_COLOR);
 
         let mut plain = WindowBuffer::new(200, 28);
         {
             let mut painter = Painter::new(&mut plain);
-            switcher_row(&mut painter, 200, 28, "Terminal", false, None, 1.0);
+            switcher_row(&mut painter, 200, 28, "Terminal", false, true, None, 1.0);
         }
         assert_eq!(pixel_at(&plain, 0, 0), SWITCHER_PANEL_COLOR);
     }

@@ -992,13 +992,15 @@ impl<I: IdentityCache> WindowService<I> {
         }
     }
 
-    /// The windows `Alt+Tab` offers: [`Self::switch_order`] capped at [`crate::task::RECENT_MAX`].
-    /// Its job is going back to something just used; everything else is Taskfield's question.
+    /// The windows `Alt+Tab` offers: every protocol-mapped record whose semantic role is
+    /// `Application`, **parked (shelved) ones included**, most-recently activated first with the
+    /// same tie-break as [`Self::switch_order`]. A parked window keeps its place in the order —
+    /// parking is putting a window aside, not forgetting it, so the chord that lists the open
+    /// windows must still reach it (activating it unshelves, [`Self::activate`]). No cap: the
+    /// HUD scrolls rather than hiding a window that is open.
     #[must_use]
-    pub fn recent(&self) -> Vec<WindowId> {
-        let mut order = self.switch_order();
-        order.truncate(crate::task::RECENT_MAX);
-        order
+    pub fn alt_tab_order(&self) -> Vec<WindowId> {
+        self.application_windows_by_recency(true)
     }
 
     pub fn begin_drag(&mut self, window_id: WindowId, pointer_global: Point) -> bool {
@@ -1770,15 +1772,23 @@ impl<I: IdentityCache> WindowService<I> {
         bounding_rect(&rects)
     }
 
-    /// Every window a switcher may land on, most-recently activated first. Semantic role,
+    /// Every window a focus fallback may land on, most-recently activated first. Semantic role,
     /// protocol mapping and shelving are the only eligibility inputs; visual stacking,
-    /// fullscreen, geometry and pinning are intentionally absent.
+    /// fullscreen, geometry and pinning are intentionally absent. `Alt+Tab` lists
+    /// [`Self::alt_tab_order`] instead, which keeps the parked windows this leaves out.
     pub fn switch_order(&self) -> Vec<WindowId> {
+        self.application_windows_by_recency(false)
+    }
+
+    /// Mapped application windows, newest activation first (ties: newest id first).
+    fn application_windows_by_recency(&self, include_shelved: bool) -> Vec<WindowId> {
         let mut windows: Vec<&WindowRecord> = self
             .windows
             .values()
             .filter(|window| {
-                window.role == WindowRole::Application && window.mapped && !window.shelved
+                window.role == WindowRole::Application
+                    && window.mapped
+                    && (include_shelved || !window.shelved)
             })
             .collect();
         windows.sort_by_key(|window| {
@@ -1790,7 +1800,8 @@ impl<I: IdentityCache> WindowService<I> {
         windows.into_iter().map(|window| window.id).collect()
     }
 
-    /// Why a known toplevel is not an Alt-Tab target. `None` means it is eligible.
+    /// Why a known toplevel is not in [`Self::alt_tab_order`]. `None` means it is listed.
+    /// Shelving is deliberately not a reason: a parked window is still an open one.
     pub fn switch_exclusion_reason(&self, window_id: WindowId) -> Option<&'static str> {
         let Some(window) = self.windows.get(&window_id) else {
             return Some("unknown-window");
@@ -1800,9 +1811,6 @@ impl<I: IdentityCache> WindowService<I> {
         }
         if !window.mapped {
             return Some("unmapped");
-        }
-        if window.shelved {
-            return Some("shelved");
         }
         None
     }
@@ -1873,6 +1881,7 @@ impl<I: IdentityCache> WindowService<I> {
         ShellToplevel {
             window_id: window.id,
             canonical_app_id: window.identity.app_id.clone(),
+            claimed_app_id: None,
             instance_id: window.identity.instance_id,
             title: window.title.clone(),
             verified_identity: window.identity.verified,
@@ -2682,8 +2691,9 @@ mod tests {
         assert!(service.shell_toplevels().is_empty());
     }
 
-    /// Every step activates and changes semantic MRU. A frozen ring must keep walking the list
-    /// the hold began with rather than observing those mutations midway through the gesture.
+    /// Activation can change semantic MRU while the chord is held — a client's xdg-activation, a
+    /// window mapping. A frozen ring must keep walking the list the hold began with rather than
+    /// observing those mutations midway through the gesture.
     #[test]
     fn a_frozen_list_reaches_the_third_window_where_a_rebuilt_one_never_could() {
         let (mut service, ids) = service_with(3);
@@ -3468,14 +3478,25 @@ mod tests {
     }
 
     #[test]
-    fn recent_is_the_switch_order_capped() {
+    fn alt_tab_order_lists_every_open_window_parked_included_in_recency_order() {
         let (mut service, ids) = service_with(9);
         for id in &ids {
             service.activate(*id);
         }
-        let recent = service.recent();
-        assert_eq!(recent.len(), crate::task::RECENT_MAX);
-        assert_eq!(recent, service.switch_order()[..crate::task::RECENT_MAX]);
+        service.shelve(ids[4]);
+        service.shelve(ids[0]);
+
+        let order = service.alt_tab_order();
+        let newest_first: Vec<WindowId> = ids.iter().rev().copied().collect();
+        assert_eq!(
+            order, newest_first,
+            "all nine, parked ones in their recency position, no cap"
+        );
+        assert_eq!(service.switch_exclusion_reason(ids[4]), None);
+        assert!(
+            !service.switch_order().contains(&ids[4]),
+            "the focus fallback still skips parked windows"
+        );
     }
 
     #[test]

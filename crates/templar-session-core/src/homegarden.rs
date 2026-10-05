@@ -234,9 +234,8 @@ pub struct HomeActivity {
     pub app_id: Option<AppId>,
     pub role: Option<ProviderRole>,
     pub at: GardenMoment,
-    /// The application instance this act belongs to, when the act was a launch this daemon
-    /// brokered. `None` for every act observed from outside, which is every act whose instance
-    /// nobody can vouch for.
+    /// Instance from the brokered launch, or from a verified terminal prompt's bus-peer cgroup.
+    /// Caller-provided instance claims and unverified external observations never attach one.
     pub instance_id: Option<InstanceId>,
 }
 
@@ -606,9 +605,9 @@ pub struct HomeContext {
     /// of these.
     ///
     /// **Strong evidence only.** "Firefox was open while you edited something here" is not an
-    /// association and never becomes one; only the broker's own record of a launch *at* the place
-    /// is. Most recent last, capped at [`INSTANCE_MEMORY`] — this is a list of live windows to
-    /// recognise, not a history, and an instance nobody can see is simply never matched.
+    /// association and never becomes one; only a brokered launch/open, a verified terminal cwd
+    /// transition or an explicit user adoption is. Most recent last, capped at [`INSTANCE_MEMORY`].
+    /// This recognizes live windows, not event history; an unseen instance is never matched.
     #[serde(default)]
     pub instances: Vec<InstanceId>,
 }
@@ -1215,6 +1214,9 @@ pub struct Ledger {
     /// the log's own `at_ms` is wall-clock and is dropped before anything reaches here.
     #[serde(default)]
     pub change_cursor: u64,
+    /// Exact cwd is presentation metadata, independent of whether activity can grow a Place.
+    #[serde(default)]
+    pub working_directories: std::collections::BTreeMap<String, PathBuf>,
 }
 
 impl Ledger {
@@ -1283,6 +1285,16 @@ impl Ledger {
         probe: &dyn RootProbe,
         config: &GardenConfig,
     ) -> Option<PathBuf> {
+        if let Some(instance) = activity.instance_id
+            && activity.kind == ActivityKind::TerminalEntered
+        {
+            self.working_directories
+                .insert(instance.to_string(), activity.path.clone());
+            // A cd to HOME/cache/target still moves presentation, but grows no Place.
+            for place in &mut self.contexts {
+                place.instances.retain(|known| *known != instance);
+            }
+        }
         if !config.enabled {
             return None;
         }
@@ -1294,13 +1306,14 @@ impl Ledger {
                 .push(HomeContext::new(root.clone(), activity.at));
         }
         let context = self.context_mut(&root).expect("just ensured");
-        // The window this act produced belongs to the place, if the act was one this daemon
-        // brokered and one of the two the doc calls strong: launched here, or launched to open a
-        // file under it. Recorded before the hidden check — a hidden place still owns its windows.
+        // A brokered launch/open or verified terminal cwd attaches this instance to the Place.
+        // Recorded before the hidden check — a hidden Place still owns its windows.
         if let Some(instance) = activity.instance_id
             && matches!(
                 activity.kind,
-                ActivityKind::LaunchedHere | ActivityKind::FileOpened
+                ActivityKind::LaunchedHere
+                    | ActivityKind::FileOpened
+                    | ActivityKind::TerminalEntered
             )
         {
             context.remember_instance(instance);
@@ -1802,6 +1815,60 @@ mod tests {
             at,
             instance_id: None,
         }
+    }
+
+    #[test]
+    fn terminal_cd_moves_only_its_verified_instance_and_survives_reload() {
+        let probe = Probe::new();
+        let config = GardenConfig::default();
+        let mut ledger = Ledger::default();
+        let terminal = InstanceId::new();
+        let other = InstanceId::new();
+        let mut activity = event(
+            "/home/dk/one",
+            ActivityKind::TerminalEntered,
+            None,
+            at(1, 0.0),
+        );
+        activity.instance_id = Some(terminal);
+        let first = ledger.observe(&activity, &probe, &config).unwrap();
+        activity.instance_id = Some(other);
+        ledger.observe(&activity, &probe, &config);
+        activity.path = PathBuf::from("/home/dk/two/sub");
+        activity.instance_id = Some(terminal);
+        let second = ledger.observe(&activity, &probe, &config).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(ledger.context(&first).unwrap().instances, vec![other]);
+        assert_eq!(ledger.context(&second).unwrap().instances, vec![terminal]);
+        let reloaded: Ledger =
+            serde_json::from_str(&serde_json::to_string(&ledger).unwrap()).unwrap();
+        assert_eq!(
+            reloaded.working_directories[&terminal.to_string()],
+            activity.path
+        );
+        activity.instance_id = None;
+        activity.path = PathBuf::from("/home/dk/three");
+        let unknown = ledger.observe(&activity, &probe, &config).unwrap();
+        assert!(ledger.context(&unknown).unwrap().instances.is_empty());
+        assert_eq!(ledger.context(&second).unwrap().instances, vec![terminal]);
+        activity.instance_id = Some(terminal);
+        activity.path = PathBuf::from("/home/dk/two/target/generated");
+        assert!(ledger.observe(&activity, &probe, &config).is_none());
+        assert_eq!(
+            ledger.working_directories[&terminal.to_string()],
+            activity.path
+        );
+        assert!(ledger.context(&second).unwrap().instances.is_empty());
+        let disabled = GardenConfig {
+            enabled: false,
+            ..config
+        };
+        activity.path = PathBuf::from("/home/dk");
+        assert!(ledger.observe(&activity, &probe, &disabled).is_none());
+        assert_eq!(
+            ledger.working_directories[&terminal.to_string()],
+            activity.path
+        );
     }
 
     /// A place knows which windows came out of it, and only the ones that did.

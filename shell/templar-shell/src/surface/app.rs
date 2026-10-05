@@ -70,6 +70,7 @@ enum DataUpdate {
     NotificationRows(Vec<crate::surface::widgets::notifications::NotificationRow>),
     /// `HomeGarden1.Contexts` by root.
     Garden(HashMap<PathBuf, crate::garden::GardenPlace>),
+    WorkingDirectories(HashMap<String, PathBuf>),
     HomeFieldSettings(HomeFieldSettings),
     /// `shell.rails.*`: gesture rails or the classic bar, and the gate the compositor watches.
     RailSettings(RailSettings),
@@ -203,6 +204,73 @@ fn bar_covered(home_revealed: bool, toplevels: &[templar_window::ShellToplevel])
         && toplevels
             .iter()
             .any(templar_window::ShellToplevel::covers_screen)
+}
+
+/// A rectangle as `set_minimize_target` carries it: x, y, width, height in surface-local
+/// logical pixels.
+type LogicalRect = (i32, i32, i32, i32);
+
+/// `rect` (buffer pixels) in logical pixels at `scale`, rounded outward so the logical rectangle
+/// still covers every pixel of the card. `None` for an empty rectangle.
+fn logical_rect(rect: Rect, scale: f64) -> Option<LogicalRect> {
+    if rect.w <= 0 || rect.h <= 0 || scale <= 0.0 {
+        return None;
+    }
+    let x0 = (f64::from(rect.x) / scale).floor() as i32;
+    let y0 = (f64::from(rect.y) / scale).floor() as i32;
+    let x1 = (f64::from(rect.x + rect.w) / scale).ceil() as i32;
+    let y1 = (f64::from(rect.y + rect.h) / scale).ceil() as i32;
+    Some((x0, y0, x1 - x0, y1 - y0))
+}
+
+/// What Home last told the compositor about where each window parks
+/// (`ShellBridge::set_minimize_target`), so a frame sends only what changed.
+#[derive(Debug, Default)]
+struct MinimizeTargets {
+    sent: HashMap<templar_window::WindowId, LogicalRect>,
+    /// The compositor predates the request. Stays set for the life of this connection.
+    unsupported: bool,
+}
+
+impl MinimizeTargets {
+    /// The requests this frame owes: a target that is new or moved, and a clear for a window
+    /// that still exists but no longer has a card. A window that closed is forgotten without a
+    /// word — the compositor's own object went with it.
+    fn changes(
+        &mut self,
+        targets: impl Iterator<Item = (templar_window::WindowId, LogicalRect)>,
+        toplevels: &[templar_window::ShellToplevel],
+    ) -> Vec<(templar_window::WindowId, Option<LogicalRect>)> {
+        if self.unsupported {
+            return Vec::new();
+        }
+        self.sent.retain(|window, _| {
+            toplevels
+                .iter()
+                .any(|toplevel| toplevel.window_id == *window)
+        });
+        let targets: HashMap<_, _> = targets.collect();
+        let mut changes: Vec<_> = targets
+            .iter()
+            .filter(|(window, rect)| self.sent.get(window) != Some(rect))
+            .map(|(window, rect)| (*window, Some(*rect)))
+            .collect();
+        changes.extend(
+            self.sent
+                .keys()
+                .filter(|window| !targets.contains_key(window))
+                .map(|window| (*window, None)),
+        );
+        changes
+    }
+
+    /// `window`'s target as the compositor now has it.
+    fn record(&mut self, window: templar_window::WindowId, rect: Option<LogicalRect>) {
+        match rect {
+            Some(rect) => self.sent.insert(window, rect),
+            None => self.sent.remove(&window),
+        };
+    }
 }
 
 /// When the wall clock next changes the minute the cluster is showing.
@@ -511,6 +579,7 @@ struct ShellApp {
     /// Whether a `wl_data_device` drag has already been started for the lift now in progress, so
     /// one lift starts exactly one drag rather than one per frame.
     drag_exported: bool,
+    reduced_motion_sent: Option<bool>,
     field_settings: HomeFieldSettings,
     /// Recently launched applications, newest first. Loaded once from Settings1; launches
     /// update it in memory immediately so the strip does not wait on the round trip.
@@ -588,6 +657,8 @@ struct ShellApp {
     cluster_screen: crate::surface::cluster_screen::ClusterScreen,
     cluster_mask: WindowBuffer,
     cluster_wanted: (i32, i32),
+    /// A calendar popup borrows keyboard focus only while it is visibly presented.
+    calendar_focus_claimed: bool,
     /// `shell.rails.*` as last read. Defaults (gesture rails) until the first read lands.
     rail_settings: RailSettings,
     /// `shell.rails.lanes` as last read: the schema default until the first read lands.
@@ -633,6 +704,8 @@ struct ShellApp {
     bar_wanted: (i32, i32),
     /// The bridge generation the bar and Home were last drawn for.
     bridge_generation: u64,
+    /// What Home last told the compositor about where each window parks.
+    minimize_targets: MinimizeTargets,
     /// The newest notification id a toast has been shown for, so re-fetches do not re-toast.
     /// `None` until the first fetch: whatever was already active at startup is old news and
     /// only sets the watermark.
@@ -642,6 +715,10 @@ struct ShellApp {
     browser_status: Option<String>,
     icons: HashMap<String, pixelkit_raster::Bitmap>,
     icon_attempted: HashSet<String>,
+    /// Application icons asked for before the catalogue had an entry for them, so the lookup ran
+    /// without the manifest's `Icon=` and desktop file id. Session-start windows are asked for
+    /// before `ListApplications` answers; once it does, these are the attempts worth repeating.
+    icon_hintless: HashSet<String>,
 
     exit: bool,
     /// When EMPTY was last pressed on the Trash tile, if it is still awaiting its second press.
@@ -678,7 +755,9 @@ impl ShellApp {
             bar_mask: WindowBuffer::new(0, 0),
             bar_centred: false,
             theme: design::theme(),
-            field_screen: FieldScreen::default(),
+            field_screen: FieldScreen::with_position_memory(
+                crate::work_positions::WorkPositions::load(),
+            ),
             field: FieldDocument::new(OUTPUT, 16, 8),
             field_synced: None,
             undo: Vec::new(),
@@ -687,6 +766,7 @@ impl ShellApp {
             clipboard: None,
             drag_exported: false,
             field_settings: HomeFieldSettings::default(),
+            reduced_motion_sent: None,
             recent: crate::recents::RecentApps::default(),
             field_requested: false,
             apps: Vec::new(),
@@ -726,6 +806,7 @@ impl ShellApp {
             cluster_screen: crate::surface::cluster_screen::ClusterScreen::default(),
             cluster_mask: WindowBuffer::new(0, 0),
             cluster_wanted: (0, 0),
+            calendar_focus_claimed: false,
             rail_settings: RailSettings::default(),
             lanes: crate::taskbar::LaneMode::default(),
             active_lane_apps: std::collections::HashSet::new(),
@@ -741,12 +822,14 @@ impl ShellApp {
             taskfield_screen: crate::surface::taskfield_screen::TaskfieldScreen::default(),
             taskfield_mask: WindowBuffer::new(0, 0),
             bridge_generation: 0,
+            minimize_targets: MinimizeTargets::default(),
             last_toasted_id: None,
             browser_pending: None,
             browser_error: None,
             browser_status: None,
             icons: HashMap::new(),
             icon_attempted: HashSet::new(),
+            icon_hintless: HashSet::new(),
             exit: false,
             empty_trash_armed_at: None,
         }
@@ -843,6 +926,49 @@ impl ShellApp {
         });
     }
 
+    fn spawn_garden_watch(&self) {
+        let tx = self.data_tx.clone();
+        let wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            use futures_util::StreamExt as _;
+            let Ok(connection) = crate::data::session().await else {
+                return;
+            };
+            let Ok(garden) = templar_client::proxies::HomeGardenProxy::new(&connection).await
+            else {
+                return;
+            };
+            let Ok(mut changed) = garden.receive_context_changed().await else {
+                return;
+            };
+            loop {
+                if tx
+                    .send(DataUpdate::Garden(crate::garden::fetch_places().await))
+                    .is_err()
+                {
+                    return;
+                }
+                match garden.working_directories().await {
+                    Ok(json) => match serde_json::from_str(&json) {
+                        Ok(cwds) => {
+                            if tx.send(DataUpdate::WorkingDirectories(cwds)).is_err() {
+                                return;
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "reading terminal working directories");
+                        }
+                    },
+                    Err(error) => tracing::warn!(%error, "fetching terminal working directories"),
+                }
+                let _ = wake.send_event(Wake);
+                if changed.next().await.is_none() {
+                    return;
+                }
+            }
+        });
+    }
+
     /// Ask `HomeField1` for the persisted document once the grid size is known.
     fn spawn_field_fetch(&self, cols: u16, rows: u16) {
         let tx = self.data_tx.clone();
@@ -878,6 +1004,20 @@ impl ShellApp {
                     tracing::warn!(%error, op = op.label(), "taking a change made elsewhere");
                 }
             }
+        }
+    }
+
+    fn relay_reduced_motion(&mut self) {
+        let enabled = self.field_settings.reduced_motion;
+        if self.reduced_motion_sent == Some(enabled) {
+            return;
+        }
+        let Some(bridge) = &self.bridge else {
+            return;
+        };
+        match bridge.set_reduced_motion(enabled) {
+            Ok(()) => self.reduced_motion_sent = Some(enabled),
+            Err(error) => tracing::warn!(%error, "relaying reduced motion"),
         }
     }
 
@@ -1216,6 +1356,23 @@ impl ShellApp {
                             .map(|entry| entry.logical.clone())
                             .collect();
                         self.apps = apps;
+                        // An icon looked up before the catalogue knew the application went without
+                        // its hints; now that it does, the next frame asks again with them.
+                        let apps = &self.apps;
+                        let icons = &self.icons;
+                        let retry: Vec<String> = self
+                            .icon_hintless
+                            .iter()
+                            .filter(|key| {
+                                !icons.contains_key(*key)
+                                    && apps.iter().any(|entry| entry.id.as_str() == key.as_str())
+                            })
+                            .cloned()
+                            .collect();
+                        for key in retry {
+                            self.icon_hintless.remove(&key);
+                            self.icon_attempted.remove(&key);
+                        }
                         self.apps_available = true;
                         self.app_variants
                             .retain(|logical, _| wanted.contains(logical));
@@ -1241,6 +1398,7 @@ impl ShellApp {
                 }
                 DataUpdate::Projects(projects) => self.projects = projects,
                 DataUpdate::Garden(places) => self.garden = places,
+                DataUpdate::WorkingDirectories(cwds) => self.field_screen.set_terminal_cwds(cwds),
                 DataUpdate::Widget(id, snapshot) => {
                     self.widgets.insert(id, snapshot);
                 }
@@ -1260,6 +1418,12 @@ impl ShellApp {
                     self.field_screen
                         .place_styles
                         .set_theme(settings.garden_theme);
+                    self.relay_reduced_motion();
+                    if settings.reduced_motion
+                        && let Some(rail) = &mut self.rail
+                    {
+                        rail.reveal.show_all();
+                    }
                 }
                 DataUpdate::RailSettings(settings) => {
                     self.rail_settings = settings;
@@ -1326,6 +1490,7 @@ impl ShellApp {
                 }
                 DataUpdate::Icon(key, bitmap) => {
                     if let Some(bitmap) = bitmap {
+                        self.icon_hintless.remove(&key);
                         self.icons.insert(key, bitmap);
                     }
                 }
@@ -1472,6 +1637,9 @@ impl ShellApp {
         }
         self.icon_attempted.insert(key.to_owned());
         let entry = self.apps.iter().find(|entry| entry.id.as_str() == key);
+        if entry.is_none() {
+            self.icon_hintless.insert(key.to_owned());
+        }
         let desktop_file_ids: Vec<String> = entry
             .map(|entry| entry.desktop_file_id.clone())
             .filter(|id| !id.is_empty())
@@ -1492,11 +1660,10 @@ impl ShellApp {
             if bitmap.is_none() {
                 // The one thing a bar chip drawn as an initial cannot tell anybody: which of the
                 // key, the `Icon=` value and the theme search came up empty.
-                tracing::debug!(
-                    key,
-                    icon = icon.as_deref().unwrap_or("<none>"),
-                    desktop_file = desktop_file_ids.first().map_or("<none>", String::as_str),
-                    "no icon resolved for an application"
+                crate::icons::log_icon_miss_once(
+                    &key,
+                    icon.as_deref(),
+                    desktop_file_ids.first().map(String::as_str),
                 );
             }
             // A miss is sent too: `icon_attempted` already recorded it, so the receiver has
@@ -1584,7 +1751,7 @@ impl ShellApp {
         }
         let keys: Vec<String> = toplevels
             .iter()
-            .filter_map(|t| t.canonical_app_id.as_ref().map(ToString::to_string))
+            .filter_map(|t| t.icon_app_id().map(str::to_owned))
             .collect();
         for key in keys {
             self.ensure_icon(&key);
@@ -1856,6 +2023,7 @@ impl ShellApp {
             notifications: &self.notification_rows,
             field: &self.field,
             toplevels: &toplevels,
+            providers: &self.providers,
             icons: &self.icons,
             previews: &self.previews,
             drawer_feeds: &self.drawer_feeds,
@@ -1896,6 +2064,14 @@ impl ShellApp {
         if let Some(bar) = &self.bar {
             bar.request_redraw();
         }
+        // Before the actions: a press on a card that parks its window should find the card
+        // already known to the compositor, so the window shrinks into it.
+        self.send_minimize_targets(&toplevels);
+        if let Some(positions) = self.field_screen.take_position_memory()
+            && let Err(error) = positions.save()
+        {
+            tracing::warn!(%error, "saving soft work-card positions");
+        }
 
         for action in actions {
             self.perform(action);
@@ -1904,6 +2080,35 @@ impl ShellApp {
         // thumbnail work to the preview service now, off-thread.
         self.spawn_thumbnails();
         self.export_drag_if_lifted();
+    }
+
+    /// Tell the compositor what changed about where each window lives on Home since the last
+    /// frame (`ShellBridge::set_minimize_target`), so parking shrinks a window into its card.
+    fn send_minimize_targets(&mut self, toplevels: &[templar_window::ShellToplevel]) {
+        let (Some(bridge), Some(home)) = (&self.bridge, &self.home) else {
+            return;
+        };
+        let Some(targets) = self.field_screen.work_targets() else {
+            return;
+        };
+        let scale = home.window.scale_factor();
+        let changes = self.minimize_targets.changes(
+            targets.filter_map(|(window, rect)| Some((window, logical_rect(rect, scale)?))),
+            toplevels,
+        );
+        for (window, rect) in changes {
+            match bridge.set_minimize_target(window, &home.window, rect) {
+                Ok(true) => self.minimize_targets.record(window, rect),
+                Ok(false) => {
+                    tracing::info!(
+                        "the compositor predates set_minimize_target; parking stays a cut"
+                    );
+                    self.minimize_targets.unsupported = true;
+                    return;
+                }
+                Err(error) => tracing::debug!(%error, ?window, "set_minimize_target failed"),
+            }
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1952,14 +2157,11 @@ impl ShellApp {
                     }
                 });
             }
-            FieldAction::Activate(window_id) => {
+            FieldAction::Activate(window_id) | FieldAction::Restore(window_id) => {
                 self.bridge_call("activate", |bridge| bridge.activate(window_id));
             }
             FieldAction::Park(window_id) => {
                 self.bridge_call("shelve", |bridge| bridge.shelve(window_id));
-            }
-            FieldAction::Restore(window_id) => {
-                self.bridge_call("unshelve", |bridge| bridge.unshelve(window_id));
             }
             FieldAction::BrowseLocation {
                 location,
@@ -2384,7 +2586,7 @@ impl ShellApp {
     fn perform_declared(&mut self, id: &'static str) {
         match id {
             "network.open-control" => self.spawn_network_control(),
-            "clock.open-calendar" => self.spawn_calendar(),
+            "clock.open-calendar" => self.open_calendar(),
             // Two view-state actions: they change what the field's own search bar is doing, so
             // there is no service behind them — but they are still declared, still reachable by
             // pointer, and still routed through this one place like everything else.
@@ -2575,12 +2777,7 @@ impl ShellApp {
             .into_iter()
             .find(|window| window.canonical_app_id.as_ref() == Some(&app_id));
         match open {
-            Some(window) => {
-                if window.shelved {
-                    self.perform(FieldAction::Restore(window.window_id));
-                }
-                self.perform(FieldAction::Activate(window.window_id));
-            }
+            Some(window) => self.perform(FieldAction::Activate(window.window_id)),
             None => self.spawn_launch(app_id),
         }
     }
@@ -2605,15 +2802,47 @@ impl ShellApp {
         self.spawn_launch_with_args(app_id, vec!["--popup".to_owned()]);
     }
 
-    /// Open the installed calendar, through the same launch chain as everything else.
-    fn spawn_calendar(&self) {
-        let Some(app_id) = calendar_app(&self.apps) else {
-            tracing::warn!(
-                "no installed application declares Categories=Calendar — install gsimplecal"
-            );
+    /// Open the native clock popup; the declared action and the chip share this route.
+    fn open_calendar(&mut self) {
+        let Some(local) = local_datetime(std::time::SystemTime::now()) else {
+            tracing::warn!("the OS local date is unavailable");
             return;
         };
-        self.spawn_launch(app_id);
+        if self
+            .rail
+            .as_ref()
+            .is_some_and(|rail| rail.host != RailHost::System)
+        {
+            self.dismiss_rail(true);
+        }
+        self.cluster_screen.show_calendar(local.date());
+        if let Some(cluster) = &self.cluster {
+            cluster.request_redraw();
+        }
+    }
+
+    fn sync_calendar_focus(&mut self) {
+        let open = self.cluster_screen.calendar_open();
+        if open == self.calendar_focus_claimed
+            || (open && self.cluster_screen.calendar_frame().is_none())
+        {
+            return;
+        }
+        let Some(bridge) = &self.bridge else {
+            return;
+        };
+        let window = if open {
+            self.cluster.as_ref().map(|cluster| cluster.window.as_ref())
+        } else {
+            None
+        };
+        if open && window.is_none() {
+            return;
+        }
+        match bridge.focus_surface(window) {
+            Ok(()) => self.calendar_focus_claimed = open,
+            Err(error) => tracing::warn!(%error, "borrowing keyboard focus for the calendar"),
+        }
     }
 
     /// How long a toast stays up before it retires on its own.
@@ -2941,7 +3170,21 @@ impl ShellApp {
             .map(ShellBridge::toplevels)
             .unwrap_or_default();
         let (entries, rows) = self.bar_entries(&toplevels);
-        let keys: Vec<String> = entries.iter().filter_map(|e| e.app_id.clone()).collect();
+        // Each window's own application too: a group's fan cards are different applications.
+        let mut keys: Vec<String> = entries
+            .iter()
+            .flat_map(|entry| {
+                entry.app_id.iter().chain(
+                    entry
+                        .windows
+                        .iter()
+                        .filter_map(|window| window.app_id.as_ref()),
+                )
+            })
+            .cloned()
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
         for key in keys {
             self.ensure_icon(&key);
         }
@@ -2999,7 +3242,7 @@ impl ShellApp {
             self.bar_mask = WindowBuffer::new(bar.buffer.width, bar.buffer.height);
         }
         let shapes = self.bar_screen.opaque_shapes();
-        let floated = gesture || !shapes.is_empty();
+        let floated = self.bridge.is_some() || gesture || !shapes.is_empty();
         if floated {
             let mut painter = Painter::new(&mut self.bar_mask);
             painter.fill_rect(pixelkit_raster::Rect::new(0, 0, area.w, area.h), MASK_CLEAR);
@@ -3125,6 +3368,7 @@ impl ShellApp {
             // a popover left open when something went fullscreen would otherwise be waiting when
             // the window closed, over a desktop nobody had asked it about.
             self.cluster_screen = crate::surface::cluster_screen::ClusterScreen::default();
+            self.sync_calendar_focus();
             return;
         }
         if self.cluster.is_some() {
@@ -3136,7 +3380,7 @@ impl ShellApp {
         let wanted = if self.hosts_gesture {
             (1, 1)
         } else {
-            crate::surface::cluster_screen::wanted_size(false, self.output_width())
+            crate::surface::cluster_screen::wanted_size(false, false, self.output_width())
         };
         let window = match event_loop.create_window(
             Window::default_attributes()
@@ -3193,7 +3437,8 @@ impl ShellApp {
             .as_ref()
             .filter(|rail| rail.host == RailHost::System)
             .map(|rail| rail.reveal.view());
-        if gesture && rail.is_none() {
+        if gesture && rail.is_none() && !self.cluster_screen.calendar_open() {
+            self.sync_calendar_focus();
             if let Some(cluster) = &mut self.cluster {
                 present_nothing(
                     self.bridge.as_mut(),
@@ -3208,12 +3453,12 @@ impl ShellApp {
         }
         self.cluster_idle = None;
         let network_control_available = self.providers.contains_key(&ProviderRole::NetworkStatusUi);
-        let calendar_available = calendar_app(&self.apps).is_some();
         let account_label = std::env::var("USER")
             .ok()
             .filter(|user| !user.is_empty())
             .unwrap_or_else(account_uid_label);
-        let clock_label = local_clock_label(std::time::SystemTime::now());
+        let local_now = local_datetime(std::time::SystemTime::now());
+        let clock_label = clock_label_for(local_now);
         let now_ms = self.started.elapsed().as_millis() as u64;
         let Some(cluster) = &mut self.cluster else {
             return;
@@ -3230,7 +3475,7 @@ impl ShellApp {
         let data = crate::surface::cluster_screen::ClusterData {
             clock_label: &clock_label,
             network_control_available,
-            calendar_available,
+            local_now,
             account_label: &account_label,
             machine: &self.machine,
             now_ms,
@@ -3306,11 +3551,13 @@ impl ShellApp {
         let wanted = if gesture {
             crate::surface::cluster_screen::rail_wanted_size(
                 self.cluster_screen.account_open(),
+                self.cluster_screen.calendar_open(),
                 self.output_width(),
             )
         } else {
             crate::surface::cluster_screen::wanted_size(
                 self.cluster_screen.account_open(),
+                self.cluster_screen.calendar_open(),
                 self.output_width(),
             )
         };
@@ -3328,6 +3575,7 @@ impl ShellApp {
         } else {
             self.perform_bar(actions);
         }
+        self.sync_calendar_focus();
     }
 
     /// Create the Taskfield surface when the compositor says the overview opened, and destroy it
@@ -3339,7 +3587,7 @@ impl ShellApp {
         let active = self
             .bridge
             .as_ref()
-            .is_some_and(|bridge| bridge.taskfield().active);
+            .is_some_and(|bridge| bridge.taskfield().active || bridge.switcher().active);
         if !active {
             if let (Some(bridge), Some(hosted)) = (&mut self.bridge, self.taskfield.take()) {
                 bridge.forget_surface(&hosted.window);
@@ -3383,25 +3631,12 @@ impl ShellApp {
     /// Paint the overview's labels. Answers nothing: the mode's input is the compositor's, and
     /// this surface commits an empty input region so every click reaches the window under it.
     fn redraw_taskfield(&mut self) {
-        let Some(status) = self
-            .bridge
-            .as_ref()
-            .map(|bridge| bridge.taskfield().clone())
-        else {
+        let Some(bridge) = &self.bridge else {
             return;
         };
-        let toplevels = self
-            .bridge
-            .as_ref()
-            .map(ShellBridge::toplevels)
-            .unwrap_or_default();
-        for key in toplevels
-            .iter()
-            .filter_map(|top| top.canonical_app_id.as_ref().map(ToString::to_string))
-            .collect::<Vec<_>>()
-        {
-            self.ensure_icon(&key);
-        }
+        let status = bridge.taskfield().clone();
+        let switcher = bridge.switcher().clone();
+        let toplevels = self.prepare_taskfield_toplevels(&switcher);
         let (width, height) = self.output_size();
         // Frozen at first paint: the compositor laid the cards out once on entry, and a live
         // recompute here is how labels drifted when a window closed or resized. The remaining
@@ -3443,7 +3678,18 @@ impl ShellApp {
                 taskfield.scale,
                 &mut self.kernel,
             );
-            self.taskfield_screen.draw(&mut ui, area, &data);
+            if switcher.active {
+                self.taskfield_screen.draw_switcher(
+                    &mut ui,
+                    area,
+                    &switcher,
+                    &toplevels,
+                    &self.icons,
+                    &self.previews,
+                );
+            } else {
+                self.taskfield_screen.draw(&mut ui, area, &data);
+            }
         }
         taskfield.input.end_frame();
         if self.taskfield_mask.width != taskfield.buffer.width
@@ -3491,6 +3737,29 @@ impl ShellApp {
                 }
             }
         }
+    }
+
+    fn prepare_taskfield_toplevels(
+        &mut self,
+        switcher: &crate::wayland_bridge::SwitcherStatus,
+    ) -> Vec<templar_window::ShellToplevel> {
+        let toplevels = self
+            .bridge
+            .as_ref()
+            .map(ShellBridge::toplevels)
+            .unwrap_or_default();
+        if switcher.active {
+            let shown = crate::surface::taskfield_screen::switcher_visible_range(
+                switcher,
+                (self.output_size().1 / 100).max(1) as usize,
+            );
+            self.drain_previews(&toplevels);
+            self.refresh_fan_previews(&toplevels, &switcher.windows[shown]);
+        }
+        for key in toplevels.iter().filter_map(|top| top.icon_app_id()) {
+            self.ensure_icon(key);
+        }
+        toplevels
     }
 
     /// What the island and the cluster ask for. One place for both: they answer with the same
@@ -3602,6 +3871,7 @@ impl ShellApp {
         }
         self.bar_screen.reset();
         self.cluster_screen = crate::surface::cluster_screen::ClusterScreen::default();
+        self.sync_calendar_focus();
         self.bar_wanted = (0, 0);
         self.cluster_wanted = (0, 0);
         self.bar_idle = None;
@@ -3651,6 +3921,7 @@ impl ShellApp {
             .rail
             .as_ref()
             .is_some_and(|rail| rail.session.expired(now))
+            && !self.cluster_screen.calendar_open()
         {
             self.dismiss_rail(true);
         }
@@ -3680,7 +3951,7 @@ impl ShellApp {
             RailHost::System => (
                 crate::surface::cluster_screen::rail_length(),
                 crate::surface::cluster_screen::rail_initial(),
-                crate::surface::cluster_screen::rail_wanted_size(false, width),
+                crate::surface::cluster_screen::rail_wanted_size(false, false, width),
             ),
         };
         let gate = (
@@ -3690,7 +3961,16 @@ impl ShellApp {
         self.rail = Some(OpenRail {
             opening,
             host,
-            reveal: RailReveal::new(width / 2, side, length, initial),
+            reveal: RailReveal::new(
+                width / 2,
+                side,
+                length,
+                if self.field_settings.reduced_motion {
+                    length
+                } else {
+                    initial
+                },
+            ),
             session: RailSession::new(side, (width, height), gate),
         });
         let (hosted, wanted_now, idle) = match host {
@@ -3800,6 +4080,21 @@ impl ShellApp {
                     return;
                 };
                 match event {
+                    WindowEvent::KeyboardInput { event, .. } if key_pressed(event.state) => {
+                        for key in translate_keys(&event.logical_key, event.text.as_deref()) {
+                            cluster.input.key(key);
+                        }
+                        cluster.request_redraw();
+                    }
+                    WindowEvent::ModifiersChanged(modifiers) => {
+                        cluster.input.modifiers_changed(modifiers_of(*modifiers));
+                    }
+                    WindowEvent::Focused(false) => {
+                        self.cluster_screen.reset();
+                        self.calendar_focus_claimed = false;
+                        cluster.input.end_frame();
+                        cluster.request_redraw();
+                    }
                     WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                         if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
                             cluster.scale = pixelkit_shell::Scale::new(*scale_factor);
@@ -4993,24 +5288,29 @@ fn account_uid_label() -> String {
     format!("uid {}", unsafe { libc::getuid() })
 }
 
-/// The first installed application that offers a calendar, for the bar's clock.
-///
-/// `Categories=Calendar` is the desktop-entry spec's own word for this, so anything a person
-/// installs to get a calendar answers here without TemplarOS knowing its name. `gsimplecal` is
-/// preferred only because it is the one the composition ships (`distro/seeds/selection.toml`) and
-/// a panel clock that opens a full groupware suite is a surprise.
-///
-/// ponytail: first match by category, not a provider role. Upgrade to a `Calendar` role in
-/// `templar-session-core::providers` if a second surface ever needs to open one.
-fn calendar_app(apps: &[crate::app_search::AppEntry]) -> Option<AppId> {
-    let calendars = || {
-        apps.iter()
-            .filter(|app| app.categories.iter().any(|c| c == "Calendar"))
-    };
-    calendars()
-        .find(|app| app.id.as_str().contains("gsimplecal"))
-        .or_else(|| calendars().next())
-        .map(|app| app.id.clone())
+/// The OS remains the authority for local time; Chrono validates and handles calendar arithmetic.
+#[allow(unsafe_code)]
+fn local_datetime(now: std::time::SystemTime) -> Option<chrono::NaiveDateTime> {
+    let seconds = now.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let seconds = libc::time_t::try_from(seconds).ok()?;
+    let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: both pointers are valid; localtime_r retains neither and initializes local on success.
+    if unsafe { libc::localtime_r(&raw const seconds, local.as_mut_ptr()) }.is_null() {
+        return None;
+    }
+    // SAFETY: the successful localtime_r call initialized the complete tm.
+    let local = unsafe { local.assume_init() };
+    let date = chrono::NaiveDate::from_ymd_opt(
+        local.tm_year.checked_add(1900)?,
+        u32::try_from(local.tm_mon.checked_add(1)?).ok()?,
+        u32::try_from(local.tm_mday).ok()?,
+    )?;
+    // Both clock views have minute resolution, so leap seconds need no special UI policy.
+    date.and_hms_opt(
+        u32::try_from(local.tm_hour).ok()?,
+        u32::try_from(local.tm_min).ok()?,
+        0,
+    )
 }
 
 /// The information row's clock, as of now. Shared with `surface::offscreen`, which draws the same
@@ -5019,26 +5319,23 @@ pub fn clock_label_now() -> String {
     local_clock_label(std::time::SystemTime::now())
 }
 
-#[allow(unsafe_code)]
 fn local_clock_label(now: std::time::SystemTime) -> String {
-    let seconds = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs()) as libc::time_t;
-    let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
-    // SAFETY: both pointers are valid for this call, and `local` is read only after
-    // `localtime_r` reports success. `localtime_r` does not retain either pointer.
-    let result = unsafe { libc::localtime_r(&raw const seconds, local.as_mut_ptr()) };
-    if result.is_null() {
-        return "TIME UNAVAILABLE".to_owned();
-    }
-    // SAFETY: the successful `localtime_r` call initialized the whole `libc::tm` value.
-    let local = unsafe { local.assume_init() };
-    format_clock_fields(
-        local.tm_wday,
-        local.tm_mday,
-        local.tm_mon,
-        local.tm_hour,
-        local.tm_min,
+    clock_label_for(local_datetime(now))
+}
+
+fn clock_label_for(local: Option<chrono::NaiveDateTime>) -> String {
+    use chrono::{Datelike, Timelike};
+    local.map_or_else(
+        || "TIME UNAVAILABLE".to_owned(),
+        |local| {
+            format_clock_fields(
+                local.weekday().num_days_from_sunday() as i32,
+                local.day() as i32,
+                local.month0() as i32,
+                local.hour() as i32,
+                local.minute() as i32,
+            )
+        },
     )
 }
 
@@ -5315,6 +5612,7 @@ impl ApplicationHandler<Wake> for ShellApp {
                     tracing::warn!(%error, "the compositor's events will wait for the next input");
                 }
                 self.bridge = Some(bridge);
+                self.minimize_targets = MinimizeTargets::default();
                 // The gate as the defaults have it until the settings reading lands; it is
                 // relayed again then if the person chose otherwise.
                 self.relay_gesture_gate();
@@ -5339,6 +5637,7 @@ impl ApplicationHandler<Wake> for ShellApp {
         // reconciliation task starts last and exists only as a continuity backstop.
         self.spawn_applications_watch();
         self.spawn_field_watch();
+        self.spawn_garden_watch();
         self.spawn_files_watch();
         self.spawn_notifications_watch();
         self.spawn_providers_watch();
@@ -5494,6 +5793,7 @@ impl ApplicationHandler<Wake> for ShellApp {
         {
             tracing::warn!(%error, "pumping the trusted-shell connection; treating it as gone");
             self.bridge = None;
+            self.minimize_targets = MinimizeTargets::default();
         }
         // The lock screen has no winit window, so nothing else would ever redraw it: its keys
         // arrive on the bridge's own queue and its frames are committed straight to the
@@ -5531,6 +5831,7 @@ impl ApplicationHandler<Wake> for ShellApp {
         self.ensure_bar(event_loop, &toplevels);
         self.ensure_cluster(event_loop, &toplevels);
         self.sync_taskfield(event_loop);
+        self.relay_reduced_motion();
         let (entries, rows) = self.bar_entries(&toplevels);
         self.sync_rail(entries.len(), rows);
         // A masked frame deferred because the compositor still held every buffer is owed, and
@@ -5582,6 +5883,9 @@ impl ApplicationHandler<Wake> for ShellApp {
             // would keep its icon fallback until the pointer happened to move.
             if let Some(bar) = self.bar.as_ref().filter(|_| bar_live) {
                 bar.request_redraw();
+            }
+            if let Some(taskfield) = &self.taskfield {
+                taskfield.request_redraw();
             }
         }
         // Event-driven at rest; a steady frame cadence only while a tile is lifted, so the
@@ -5642,11 +5946,42 @@ impl ApplicationHandler<Wake> for ShellApp {
             });
         // An open rail's grace: the pointer is away from it, and it goes when that runs out.
         let rail_deadline = self.rail.as_ref().and_then(|rail| rail.session.deadline());
+        let switcher_deadline = self
+            .bridge
+            .as_ref()
+            .filter(|bridge| {
+                bridge.previews_available() && self.field_settings.previews != PreviewMode::Off
+            })
+            .and_then(|bridge| {
+                let switcher = bridge.switcher();
+                if !switcher.active {
+                    return None;
+                }
+                let shown = crate::surface::taskfield_screen::switcher_visible_range(
+                    switcher,
+                    (self.output_size().1 / 100).max(1) as usize,
+                );
+                let deadline = switcher.windows[shown]
+                    .iter()
+                    .filter_map(|id| {
+                        self.preview_requested
+                            .get(id)
+                            .map(|at| *at + Duration::from_millis(500))
+                    })
+                    .min()?;
+                if deadline <= Instant::now()
+                    && let Some(surface) = &self.taskfield
+                {
+                    surface.request_redraw();
+                }
+                Some(deadline)
+            });
         let deadline = [
             toast_deadline,
             bar_deadline,
             cluster_deadline,
             rail_deadline,
+            switcher_deadline,
         ]
         .into_iter()
         .flatten()
@@ -5673,6 +6008,7 @@ mod tests {
         templar_window::ShellToplevel {
             window_id: templar_window::WindowId(id),
             canonical_app_id: None,
+            claimed_app_id: None,
             instance_id: None,
             title: "kitty".to_owned(),
             verified_identity: false,
@@ -5685,6 +6021,79 @@ mod tests {
             layer: templar_window::Layer::Normal,
             group: None,
         }
+    }
+
+    #[test]
+    fn card_rects_become_logical_rounding_outward() {
+        assert_eq!(
+            logical_rect(Rect::new(10, 20, 30, 40), 1.0),
+            Some((10, 20, 30, 40))
+        );
+        // 1.5: 3..34 × 4..35 covers 2.0..22.67 × 2.67..23.33 logical, so 2..23 × 2..24.
+        assert_eq!(
+            logical_rect(Rect::new(3, 4, 31, 31), 1.5),
+            Some((2, 2, 21, 22))
+        );
+        assert_eq!(logical_rect(Rect::new(0, 0, 0, 10), 2.0), None);
+    }
+
+    #[test]
+    fn minimize_targets_send_only_changes_and_forget_closed_windows() {
+        use templar_window::WindowId;
+        fn sorted(
+            targets: &mut MinimizeTargets,
+            now: &[(u64, LogicalRect)],
+            live: &[templar_window::ShellToplevel],
+        ) -> Vec<(WindowId, Option<LogicalRect>)> {
+            let mut changes =
+                targets.changes(now.iter().map(|(id, rect)| (WindowId(*id), *rect)), live);
+            changes.sort_by_key(|(window, _)| window.0);
+            changes
+        }
+        let mut targets = MinimizeTargets::default();
+        let live = vec![
+            window(1, false, false, false),
+            window(2, false, false, true),
+        ];
+        let first = sorted(
+            &mut targets,
+            &[(1, (0, 0, 10, 10)), (2, (20, 0, 10, 10))],
+            &live,
+        );
+        assert_eq!(
+            first,
+            vec![
+                (WindowId(1), Some((0, 0, 10, 10))),
+                (WindowId(2), Some((20, 0, 10, 10)))
+            ]
+        );
+        for (window, rect) in first {
+            targets.record(window, rect);
+        }
+        // Nothing moved: nothing to send.
+        assert!(
+            sorted(
+                &mut targets,
+                &[(1, (0, 0, 10, 10)), (2, (20, 0, 10, 10))],
+                &live
+            )
+            .is_empty()
+        );
+        // Window 2 lost its card but still exists: clear it. Window 1 moved: resend.
+        let next = sorted(&mut targets, &[(1, (5, 0, 10, 10))], &live);
+        assert_eq!(
+            next,
+            vec![(WindowId(1), Some((5, 0, 10, 10))), (WindowId(2), None)]
+        );
+        for (window, rect) in next {
+            targets.record(window, rect);
+        }
+        // Window 1 closed: forgotten without a request.
+        assert!(sorted(&mut targets, &[], &live[1..]).is_empty());
+        assert!(targets.sent.is_empty());
+        // An old compositor is asked nothing more.
+        targets.unsupported = true;
+        assert!(sorted(&mut targets, &[(2, (0, 0, 1, 1))], &live).is_empty());
     }
 
     /// Every role in [`SHELL_ROLES`] is a role `note_provider` can actually record, and every
@@ -5824,45 +6233,6 @@ mod tests {
             ),
             "an unanswered confirmation must expire, not stay armed"
         );
-    }
-
-    fn app_entry(id: &str) -> crate::app_search::AppEntry {
-        crate::app_search::AppEntry {
-            id: id.parse().unwrap(),
-            name: id.to_owned(),
-            desktop_file_id: String::new(),
-            icon: String::new(),
-            categories: Vec::new(),
-            keywords: Vec::new(),
-            no_display: false,
-            logical: String::new(),
-            variants: 1,
-        }
-    }
-
-    /// The clock resolves a calendar by what the desktop entry says it is, and prefers the one
-    /// the composition ships. Matching by name instead is exactly the mistake the network chip
-    /// used to make.
-    #[test]
-    fn the_clock_resolves_a_calendar_by_category_and_prefers_the_shipped_one() {
-        let calendar = |id: &str| {
-            let mut entry = app_entry(id);
-            entry.categories = vec!["Utility".to_owned(), "Calendar".to_owned()];
-            entry
-        };
-        let simple = calendar("desktop-import.gsimplecal.desktop");
-        let other = calendar("desktop-import.org.gnome.Calendar.desktop");
-        assert_eq!(
-            calendar_app(&[other.clone(), simple.clone()]),
-            Some(simple.id)
-        );
-        assert_eq!(calendar_app(std::slice::from_ref(&other)), Some(other.id));
-        assert_eq!(
-            calendar_app(&[app_entry("desktop-import.gsimplecal.desktop")]),
-            None,
-            "a name that looks like a calendar is not a declared calendar"
-        );
-        assert_eq!(calendar_app(&[]), None);
     }
 
     #[test]

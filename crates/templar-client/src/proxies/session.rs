@@ -395,6 +395,9 @@ mod homegarden {
         /// Every context as JSON.
         fn contexts(&self) -> zbus::Result<String>;
 
+        /// Verified live-instance cwd map as JSON, independent of Place activity attribution.
+        fn working_directories(&self) -> zbus::Result<String>;
+
         /// One context by root, or `""`.
         fn describe(&self, path: &str) -> zbus::Result<String>;
 
@@ -414,6 +417,10 @@ mod homegarden {
 
         #[zbus(signal)]
         fn tended(&self, output: String, changed: u32) -> zbus::Result<()>;
+
+        /// A verified terminal prompt changed the exact working directory for this instance.
+        #[zbus(signal)]
+        fn context_changed(&self, instance_id: String, path: String) -> zbus::Result<()>;
     }
 }
 

@@ -215,14 +215,17 @@ pub struct TemplarCompState<B: Backend + 'static> {
     pub taskfield_press: Option<templar_window::Point>,
     /// Non-`None` while the compositor-drawn fallback switcher (`src/keybindings.rs`) is showing.
     pub switcher: Option<crate::chrome::SwitcherState>,
-    /// The list `Alt+Tab` / `Super+Tab` is walking, frozen at the first press and dropped when
-    /// the modifier comes up (`src/input.rs::on_keyboard`). The flag is `true` for the group
-    /// walk, so pressing the other chord rebuilds the list instead of continuing this one.
+    /// The list `Alt+Tab` / `` Alt+` `` is walking, frozen at the first press. Stepping only
+    /// moves its selection; when the modifier comes up (`src/input.rs::on_keyboard`) the walk
+    /// commits — the selection is activated — and any other ending (Escape, a click, another
+    /// key, the overview, a reveal) cancels it. A window that goes away is pruned from it. The
+    /// flag is `true` for the within-unit walk, so pressing the other chord rebuilds the list
+    /// instead of continuing this one.
     ///
-    /// Frozen because every step records activation and changes the semantic MRU order a newly
-    /// built list would expose (`templar_window::SwitchRing`).
+    /// Frozen so the rows never move under the user's hands while the chord is held, even if
+    /// something else changes semantic MRU meanwhile (`templar_window::SwitchRing`).
     pub switch_ring: Option<(templar_window::SwitchRing, bool)>,
-    /// Whether `Alt` or `Super` was still held at the last key event — the release that ends a
+    /// Whether `Alt` or `Super` was still held at the last key event — its release commits a
     /// switcher walk. Read from the keyboard filter's modifier state rather than tracked by
     /// keysym, so a modifier released while another window has the keyboard cannot be missed.
     pub chord_held: bool,
@@ -241,6 +244,9 @@ pub struct TemplarCompState<B: Backend + 'static> {
     /// because the black-screen-at-login fault was invisible: the units started, the journal said
     /// nothing, and the only account of what went wrong was a screen that did not change.
     pub home_mapped: Option<bool>,
+    /// Where each window's card is on Home, and the park/unpark motions in flight
+    /// (`src/motion.rs`). A drawing hint only: nothing here moves, stacks or hit-tests a window.
+    pub motion: crate::motion::MotionState,
     /// What the pointer is currently resting at the bottom of the screen *for*, and since when
     /// (`input::update_dwell`). Not the outcome — Home's reveal is `WindowService`'s
     /// `home_revealed` and the peek is its `peek_output`; this is only what a pending timer is
@@ -421,6 +427,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             drop_target: None,
             previous_focus: None,
             home_mapped: None,
+            motion: crate::motion::MotionState::default(),
             dwell: None,
             dwell_timer_pending: false,
             gesture_gate: crate::gesture_gate::GestureGate::default(),

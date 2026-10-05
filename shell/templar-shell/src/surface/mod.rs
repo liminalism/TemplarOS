@@ -8,6 +8,7 @@
 
 pub mod app;
 pub mod bar_screen;
+pub(crate) mod calendar;
 pub mod cluster_screen;
 pub mod context_menu;
 pub mod design;
@@ -24,5 +25,6 @@ pub mod rail_session;
 pub mod taskfield_screen;
 pub mod widgets;
 pub mod window;
+pub mod window_visual;
 
 pub use app::run;

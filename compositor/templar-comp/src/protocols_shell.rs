@@ -34,7 +34,7 @@ use templar_window::{
 /// Both peers ship from this repository, so a version bump is a pair of edits, not a
 /// compatibility matrix — but every `since="2"` event below is still guarded on the bound
 /// object's version rather than assumed.
-pub const SHELL_PROTOCOL_VERSION: u32 = 10;
+pub const SHELL_PROTOCOL_VERSION: u32 = 13;
 
 /// The value of `templar_shell_manager_v1.group_cycle_binding` this compositor sends: 0 is
 /// `Super+Tab`, the only binding there is (planning doc §2.1 — one chord, always the same, no
@@ -111,6 +111,7 @@ impl<B: Backend + 'static> GlobalDispatch2<TemplarShellManagerV1, TemplarCompSta
             manager.rail(output, side);
         }
         state.shell_protocol.managers.push(manager);
+        send_switcher_state(state);
     }
 
     fn can_view(&self, client: &Client) -> bool {
@@ -136,6 +137,10 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
         }
         let ctx = trusted_ctx(state);
         match request {
+            templar_shell_manager_v1::Request::SetReducedMotion { enabled } => {
+                state.motion.set_reduced_motion(enabled != 0);
+                B::request_redraw(state);
+            }
             templar_shell_manager_v1::Request::GetToplevelList { id } => {
                 let list = data_init.init(id, ());
                 for record in state.window_service.shell_toplevels() {
@@ -252,6 +257,9 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
             templar_shell_manager_v1::Request::SetTouchpadTap { enabled } => {
                 state.set_touchpad_tap(enabled != 0);
             }
+            templar_shell_manager_v1::Request::FocusSurface { surface } => {
+                focus_shell_surface(state, client, surface);
+            }
         }
     }
 
@@ -280,6 +288,70 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
                 .gesture_gate
                 .configure(crate::gesture_gate::GateConfig::default());
         }
+    }
+}
+
+/// Popups borrow keyboard focus, never client activation or the Home presentation.
+pub(crate) fn focus_shell_surface<B: Backend + 'static>(
+    state: &mut TemplarCompState<B>,
+    client: &Client,
+    surface: Option<WlSurface>,
+) {
+    if state.session_lock.locked
+        || matches!(
+            state.window_service.presentation(),
+            templar_window::Presentation::Taskfield(_)
+        )
+    {
+        return;
+    }
+    let Some(keyboard) = state.seat.get_keyboard() else {
+        return;
+    };
+    if let Some(surface) = surface {
+        let Some(window_id) = state.windows.window_id_for(&surface.id()) else {
+            return;
+        };
+        if state.display_handle.get_client(surface.id()).ok().as_ref() != Some(client)
+            || !matches!(
+                state.window_service.layer_of(window_id),
+                Some(Layer::ShellOverlay | Layer::SystemModal)
+            )
+            || !state.window_service.is_visible(window_id)
+        {
+            return;
+        }
+        keyboard.set_focus(
+            state,
+            Some(surface),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
+    } else if keyboard.current_focus().is_some_and(|focused| {
+        state.display_handle.get_client(focused.id()).ok().as_ref() == Some(client)
+            && state
+                .windows
+                .window_id_for(&focused.id())
+                .is_some_and(|id| {
+                    matches!(
+                        state.window_service.layer_of(id),
+                        Some(Layer::ShellOverlay | Layer::SystemModal)
+                    )
+                })
+    }) {
+        let target = state
+            .window_service
+            .switch_order()
+            .into_iter()
+            .find(|id| state.window_service.is_visible(*id))
+            .or_else(|| {
+                state.window_service.windows().find_map(|window| {
+                    (state.window_service.layer_of(window.id) == Some(Layer::HomeSurface)
+                        && state.window_service.is_visible(window.id))
+                    .then_some(window.id)
+                })
+            });
+        let surface = target.and_then(|id| state.windows.surface_for(id).cloned());
+        keyboard.set_focus(state, surface, smithay::utils::SERIAL_COUNTER.next_serial());
     }
 }
 
@@ -366,6 +438,42 @@ fn window_id_for_toplevel<B: Backend + 'static>(
         .iter()
         .find(|(_, object)| *object == resource)
         .map(|(id, _)| *id)
+}
+
+/// `set_minimize_target` (version 12): remember where `window_id`'s card is on Home, or forget it.
+///
+/// The rectangle is kept local to the shell surface it was given on and resolved against that
+/// surface's position only when a motion starts (`space_sync`), so a Home surface that moves
+/// does not leave every card behind. A null surface or an empty rectangle clears the card. A
+/// surface that is not this connection's own Home surface is refused silently — a card on
+/// someone else's surface, or on a popup, is not a place a window lives.
+pub(crate) fn set_minimize_target<B: Backend + 'static>(
+    state: &mut TemplarCompState<B>,
+    client: &Client,
+    window_id: WindowId,
+    surface: Option<WlSurface>,
+    rect: Rect,
+) {
+    let Some(surface) = surface.filter(|_| rect.width > 0 && rect.height > 0) else {
+        state.motion.set_target(window_id, None);
+        return;
+    };
+    let Some(surface_window) = state.windows.window_id_for(&surface.id()) else {
+        return;
+    };
+    if state.display_handle.get_client(surface.id()).ok().as_ref() != Some(client)
+        || state.window_service.layer_of(surface_window) != Some(Layer::HomeSurface)
+        || state.window_service.window(window_id).is_none()
+    {
+        return;
+    }
+    state.motion.set_target(
+        window_id,
+        Some(crate::motion::MinimizeTarget {
+            surface_window,
+            rect,
+        }),
+    );
 }
 
 fn handle_set_exclusive_zone<B: Backend + 'static>(
@@ -693,6 +801,8 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellToplevelListV1, TemplarCompStat
 }
 
 impl<B: Backend + 'static> Dispatch2<TemplarShellToplevelV1, TemplarCompState<B>> for () {
+    // One arm per request, like the manager's dispatcher above, and for the same reason.
+    #[allow(clippy::too_many_lines)]
     fn request(
         &self,
         state: &mut TemplarCompState<B>,
@@ -808,6 +918,19 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellToplevelV1, TemplarCompState<B>
             templar_shell_toplevel_v1::Request::SetGroupName { name } => {
                 crate::window_groups::set_group_name(state, window_id, name);
             }
+            templar_shell_toplevel_v1::Request::SetMinimizeTarget {
+                surface,
+                x,
+                y,
+                width,
+                height,
+            } => set_minimize_target(
+                state,
+                client,
+                window_id,
+                surface,
+                Rect::new(x, y, width, height),
+            ),
         }
     }
 
@@ -929,6 +1052,21 @@ pub fn sync_toplevels<B: Backend + 'static>(
             toplevel.instance_id.map(|id| id.to_string()),
             u32::from(toplevel.verified_identity),
         );
+        if object.version() >= 13 {
+            let claim = state
+                .windows
+                .surface_for(toplevel.window_id)
+                .and_then(|surface| {
+                    smithay::wayland::compositor::with_states(surface, |states| {
+                        states
+                            .data_map
+                            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                            .and_then(|data| data.lock().ok().and_then(|data| data.app_id.clone()))
+                    })
+                })
+                .unwrap_or_default();
+            object.claimed_app_id(claim);
+        }
         send_group(&object, toplevel);
         object.title(toplevel.title.clone());
         let shelf_rank = snapshot
@@ -1151,6 +1289,38 @@ fn wire_layer(layer: Layer) -> templar_shell_manager_v1::Layer {
         Layer::AppOnTop => templar_shell_manager_v1::Layer::AppOnTop,
         Layer::Normal => templar_shell_manager_v1::Layer::Normal,
         Layer::HomeSurface => templar_shell_manager_v1::Layer::HomeSurface,
+    }
+}
+
+/// The shell receives the compositor's frozen order, never derives a competing MRU list.
+pub fn send_switcher_state<B: Backend + 'static>(state: &TemplarCompState<B>) {
+    let mut managers = state
+        .shell_protocol
+        .managers
+        .iter()
+        .filter(|manager| manager.version() >= 13)
+        .peekable();
+    if managers.peek().is_none() {
+        return;
+    }
+    let selected = state
+        .switcher
+        .as_ref()
+        .map_or(0, |switcher| switcher.selected.0 as u32);
+    let mut windows: Vec<u8> = state
+        .switcher
+        .as_ref()
+        .into_iter()
+        .flat_map(|switcher| switcher.entries.iter())
+        .flat_map(|entry| (entry.window_id.0 as u32).to_ne_bytes())
+        .collect();
+    while let Some(manager) = managers.next() {
+        let payload = if managers.peek().is_some() {
+            windows.clone()
+        } else {
+            std::mem::take(&mut windows)
+        };
+        manager.switcher_state(u32::from(state.switcher.is_some()), selected, payload);
     }
 }
 

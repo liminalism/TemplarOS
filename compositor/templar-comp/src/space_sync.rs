@@ -221,10 +221,13 @@ pub fn on_window_destroyed<B: Backend + 'static>(
 ) {
     let record = state.window_service.window(window_id).cloned();
     state.window_service.on_toplevel_destroyed(window_id);
+    state.motion.forget_window(window_id);
     if state.previous_focus == Some(window_id) {
         // `Super+G` must never name a window that is gone; the next activation refills this.
         state.previous_focus = None;
     }
+    // A switcher walk must not draw, or commit to, a window that no longer exists.
+    state.prune_switch_walk(window_id);
 
     if let Some(record) = record {
         let pid_still_live = state
@@ -341,6 +344,7 @@ pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) 
     }
 
     log_home_visibility(state);
+    start_shelf_motions(state);
 
     for (instance_id, (foreground, visible)) in aggregated_instance_states(state) {
         state
@@ -371,6 +375,95 @@ pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) 
             refresh_pointer_focus(state, &before);
             state.last_pointer_scene = after;
         });
+    }
+}
+
+/// Start a park or unpark motion for every client window whose shelf state changed since the
+/// last resync (`src/motion.rs`).
+///
+/// This is the one funnel every shelve and unshelve passes through — `WindowCommand::Shelve`/
+/// `Unshelve`, `xdg_toplevel.set_minimized`, the band's park button, `Ctrl+Alt+P`, the terminal
+/// chord, a group's park/unpark, activating a parked window — because each of them ends in
+/// [`sync_after_change`]. Observing the result here rather than instrumenting every command is
+/// what keeps a future shelving path from silently skipping the motion.
+///
+/// No motion — the window simply appears or disappears, exactly as before cards were known — when
+/// the window has no card, the card's Home surface is not mapped (or was not on screen to shrink
+/// into / grow out of), the session is locked, or Taskfield is presenting.
+fn start_shelf_motions<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
+    let now = crate::window_bridge::now_monotonic_ns(&state.clock);
+    let seen: std::collections::HashMap<WindowId, crate::motion::Seen> = state
+        .window_service
+        .windows()
+        .map(|record| {
+            (
+                record.id,
+                crate::motion::Seen {
+                    shelved: record.shelved,
+                    visible: state.window_service.is_visible(record.id),
+                },
+            )
+        })
+        .collect();
+    let live: std::collections::HashSet<WindowId> = seen.keys().copied().collect();
+    state.motion.retain_windows(&live);
+    let before = state.motion.replace_seen(seen.clone());
+
+    let quiet = state.session_lock.locked
+        || matches!(
+            state.window_service.presentation(),
+            templar_window::Presentation::Taskfield(_)
+        );
+    for (window_id, after) in seen {
+        let Some(kind) = before
+            .get(&window_id)
+            .and_then(|before| crate::motion::transition(*before, after))
+        else {
+            continue;
+        };
+        let card = state
+            .window_service
+            .window(window_id)
+            .filter(|record| record.role == templar_window::WindowRole::Application && !quiet)
+            .and_then(|_| state.motion.target(window_id))
+            .filter(|target| {
+                let home_mapped = state
+                    .window_service
+                    .window(target.surface_window)
+                    .is_some_and(|home| home.mapped);
+                // The card has to be on screen at the end a motion touches it: after a park,
+                // before an unpark.
+                let home_on_screen = match kind {
+                    crate::motion::MotionKind::Park => {
+                        state.window_service.is_visible(target.surface_window)
+                    }
+                    crate::motion::MotionKind::Unpark => before
+                        .get(&target.surface_window)
+                        .is_some_and(|home| home.visible),
+                };
+                home_mapped && home_on_screen
+            })
+            .map(|target| {
+                let home = client_area(state, target.surface_window);
+                Rect::new(
+                    home.x + target.rect.x,
+                    home.y + target.rect.y,
+                    target.rect.width,
+                    target.rect.height,
+                )
+            });
+        let Some(card) = card else {
+            // A shelf change with nowhere to draw it from or to: whatever was in flight for this
+            // window would now be drawing the wrong thing.
+            state.motion.cancel(window_id);
+            continue;
+        };
+        let own = client_area(state, window_id);
+        let (from, to) = match kind {
+            crate::motion::MotionKind::Park => (own, card),
+            crate::motion::MotionKind::Unpark => (card, own),
+        };
+        state.motion.start(window_id, kind, from, to, now);
     }
 }
 

@@ -68,6 +68,9 @@
 
 * One instance ⇔ one canonical AppId ⇔ one cgroup ⇔ one resource record ⇔ N windows.
 * A window's identity comes from its cgroup; claims only raise `claim_mismatch`.
+  The private shell protocol separately carries a bounded client icon claim for display only.
+  Unverified windows wear a `?` mark and remain distinct `TaskKey::Unknown(window_id)` chips:
+  a decorative icon never supplies canonical identity, grants, launches or trusted merging.
 * Every `AppId` names a **variant** — one installed copy from one origin. Grouping variants into
   a logical application is presentation; rights (MIME defaults, provider declarations, autostart
   approvals, instances) stay keyed on the variant, so a wrong grouping can never widen a grant.

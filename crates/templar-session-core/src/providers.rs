@@ -218,6 +218,42 @@ pub fn derived_capabilities(manifest: &AppManifest) -> Vec<ProviderCapability> {
     derived
 }
 
+/// The roles an installed application claims in its own metadata: `X-TemplarOS-Provides=`
+/// on its desktop entry, recorded as `provider_claims` on the manifest's provenance at import.
+///
+/// The difference from [`derived_capabilities`]: a derived role is read off what the entry says
+/// for other reasons (`Categories=`, the executable's name), while a claimed role is the
+/// application asking for a role outright. Both pass the same trust gate, and both are re-read
+/// from the installed set on every start rather than persisted (see
+/// `ensure_claimed_provider_declarations` in the daemon): a claim that outlived its application
+/// would otherwise go on winning a role for a program that is no longer on the machine.
+///
+/// Priority is 50, the third-party rung: a claim is an application nominating itself, not the
+/// distribution naming its default, so an explicit `Providers1.Declare` at 100 still outranks
+/// it. A role with a single claimant resolves to it whatever the number.
+///
+/// Unknown names are skipped, never failed: a claim for a role this build does not know is a
+/// newer application, not a broken one.
+pub fn claimed_capabilities(manifest: &AppManifest) -> Vec<ProviderCapability> {
+    if !manifest.trust().may_hold_exclusive_role() {
+        return Vec::new();
+    }
+    let Some(provenance) = manifest.provenance.as_ref() else {
+        return Vec::new();
+    };
+    provenance
+        .provider_claims
+        .iter()
+        .filter_map(|name| {
+            ProviderRole::ALL
+                .iter()
+                .copied()
+                .find(|role| role.as_str() == name)
+                .map(|role| ProviderCapability { role, priority: 50 })
+        })
+        .collect()
+}
+
 /// Whether this manifest's executable is `name` — the file the launcher actually runs, not the
 /// display name, which is localised, and not the desktop id, which a repackaging can change.
 fn executable_is(manifest: &AppManifest, name: &str) -> bool {
@@ -584,6 +620,67 @@ mod tests {
     fn a_terminal_this_account_can_rewrite_derives_nothing() {
         let mine = app("desktop-import.mine", "kitty", &["TerminalEmulator"], false);
         assert!(derived_capabilities(&mine).is_empty());
+    }
+
+    /// A helper for the claimed tests: `app` plus the `X-TemplarOS-Provides=` values the import
+    /// would have recorded on its provenance.
+    fn claimed(id: &str, provides: &[&str], packaged: bool) -> AppManifest {
+        let mut manifest = app(id, "nm-tray", &["System", "Monitor", "Qt"], packaged);
+        manifest
+            .provenance
+            .as_mut()
+            .expect("the fixture carries provenance")
+            .provider_claims
+            .extend(provides.iter().map(|name| (*name).to_owned()));
+        manifest
+    }
+
+    #[test]
+    fn a_packaged_claim_for_a_known_role_becomes_a_capability() {
+        let tray = claimed(
+            "desktop-import.nm-tray2.desktop",
+            &["network-status-ui"],
+            true,
+        );
+        assert_eq!(
+            claimed_capabilities(&tray),
+            vec![cap(ProviderRole::NetworkStatusUi, 50)],
+            "a claim nominates; it does not outrank an explicit declaration at 100"
+        );
+    }
+
+    #[test]
+    fn a_claim_from_a_file_this_account_can_rewrite_claims_nothing() {
+        let mine = claimed("desktop-import.mine", &["network-status-ui"], false);
+        assert!(
+            claimed_capabilities(&mine).is_empty(),
+            "the trust gate is the same one Declare applies"
+        );
+    }
+
+    #[test]
+    fn unknown_claim_names_are_skipped_not_failed() {
+        let newer = claimed(
+            "desktop-import.newer",
+            &["network-status-ui", "hologram-projector"],
+            true,
+        );
+        assert_eq!(
+            claimed_capabilities(&newer),
+            vec![cap(ProviderRole::NetworkStatusUi, 50)],
+            "a newer application is not a broken one"
+        );
+    }
+
+    #[test]
+    fn an_application_that_claims_nothing_claims_nothing() {
+        let viewer = app(
+            "desktop-import.viewer",
+            "templar-viewer",
+            &["Graphics", "Viewer"],
+            true,
+        );
+        assert!(claimed_capabilities(&viewer).is_empty());
     }
 
     /// Two terminals installed: exactly one fills the role, and it is the shipped default until

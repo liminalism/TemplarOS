@@ -151,7 +151,8 @@ fn rect_contains(rect: Rect, point: templar_window::Point) -> bool {
 
 /// The compositor-owned fallback switcher's panel: a centred column wide enough for the longest
 /// title (already elided by the caller, so this only needs a maximum), tall enough for every
-/// `row_count` row at `row_height`, and always fully inside `area`.
+/// `row_count` row at `row_height`, and always fully inside `area`. A caller with more rows than
+/// fit passes the [`switcher_visible_rows`] window, not the whole list.
 pub fn switcher_panel(area: Rect, row_count: usize, row_height: i32) -> Rect {
     let row_count = row_count.max(1) as i32;
     let width = (area.width * 3 / 5).clamp(1, area.width.max(1));
@@ -172,6 +173,25 @@ pub fn switcher_row(panel: Rect, index: usize, row_height: i32) -> Rect {
         panel.width,
         row_height,
     )
+}
+
+/// Which of `count` switcher rows to draw when only `capacity` fit: everything when it all fits,
+/// else a contiguous run of `capacity` rows with `selected` in it, centred on it where the ends
+/// of the list allow. Stateless, so the HUD needs no scroll position to keep alive between steps.
+pub fn switcher_visible_rows(
+    count: usize,
+    selected: usize,
+    capacity: usize,
+) -> std::ops::Range<usize> {
+    if count <= capacity {
+        return 0..count;
+    }
+    let capacity = capacity.max(1);
+    let start = selected
+        .min(count - 1)
+        .saturating_sub(capacity / 2)
+        .min(count - capacity);
+    start..start + capacity
 }
 
 /// Split a "show every window" scatter tile into its card (the placeholder area representing the
@@ -320,6 +340,15 @@ pub fn text_ink_for(background: u32) -> u32 {
     } else {
         INK_DARK
     }
+}
+
+/// Ink for text that should read as secondary — a parked window's switcher row — against
+/// `background`: [`text_ink_for`]'s choice pulled part-way towards the background. Visibly
+/// fainter than ordinary ink, still legible (3:1, WCAG's large-text/UI threshold, on every
+/// switcher background — pinned by a test). Opaque like every chrome colour, so "dim" is a
+/// colour rather than an alpha.
+pub fn muted_ink_for(background: u32) -> u32 {
+    pixelkit_raster::color::mix(text_ink_for(background), background, 0.45)
 }
 
 #[cfg(test)]
@@ -512,6 +541,24 @@ mod tests {
     }
 
     #[test]
+    fn an_overflowing_switcher_shows_a_contiguous_run_that_keeps_the_selection() {
+        assert_eq!(switcher_visible_rows(5, 4, 10), 0..5, "everything fits");
+        assert_eq!(switcher_visible_rows(0, 0, 10), 0..0);
+        // Centred where the list allows, pinned to either end where it does not.
+        assert_eq!(switcher_visible_rows(20, 10, 5), 8..13);
+        assert_eq!(switcher_visible_rows(20, 1, 5), 0..5);
+        assert_eq!(switcher_visible_rows(20, 19, 5), 15..20);
+        for selected in 0..20 {
+            for capacity in 1..=20 {
+                let shown = switcher_visible_rows(20, selected, capacity);
+                assert_eq!(shown.len(), capacity);
+                assert!(shown.contains(&selected), "{selected} hidden in {shown:?}");
+                assert!(shown.end <= 20);
+            }
+        }
+    }
+
+    #[test]
     fn scatter_label_sits_under_the_card_and_both_fit_the_tile() {
         let tile = Rect::new(100, 200, 300, 240);
         let (card, label) = scatter_label_band(tile, 24);
@@ -567,6 +614,20 @@ mod tests {
             assert!(
                 ratio >= 4.5,
                 "background {background:#08x} only reaches {ratio:.2}:1 contrast with {ink:#08x}"
+            );
+        }
+    }
+
+    #[test]
+    fn muted_ink_is_fainter_than_ordinary_ink_but_still_legible_on_the_switcher() {
+        use crate::chrome::paint::{SWITCHER_PANEL_COLOR, SWITCHER_SELECTED_COLOR};
+        for background in [SWITCHER_PANEL_COLOR, SWITCHER_SELECTED_COLOR] {
+            let full = contrast_ratio(background, text_ink_for(background));
+            let muted = contrast_ratio(background, muted_ink_for(background));
+            assert!(muted < full, "{background:#08x}: muted ink is not fainter");
+            assert!(
+                muted >= 3.0,
+                "{background:#08x}: muted ink only reaches {muted:.2}:1"
             );
         }
     }

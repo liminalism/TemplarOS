@@ -67,6 +67,10 @@ impl Registry {
         self.instances.read().get(&instance).cloned()
     }
 
+    pub fn contains_instance(&self, instance: InstanceId) -> bool {
+        self.instances.read().contains_key(&instance)
+    }
+
     /// Recompute the logical grouping over everything currently installed, keeping whatever a
     /// previous run (or a person) already decided.
     pub fn regroup(&self, persisted: &BTreeMap<AppVariantId, PersistedLogical>) -> LogicalIndex {

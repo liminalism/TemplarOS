@@ -285,7 +285,7 @@ fn add_home_field_specs(schema: &mut SettingsSchema) {
         ),
         (
             "shell.home-field.reduced-motion",
-            "No zoom or throw animation on the Home Field; the ghost still shows",
+            "No park, restore, zoom, throw or rail reveal animation; state marks remain",
             SettingValue::Bool(false),
             vec![],
             None,

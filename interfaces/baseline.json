@@ -226,9 +226,11 @@
         "Keep": "(s)->()",
         "Observe": "(ssss)->()",
         "Pin": "(sb)->()",
-        "Tend": "(s)->(s)"
+        "Tend": "(s)->(s)",
+        "WorkingDirectories": "()->(s)"
       },
       "signals": {
+        "ContextChanged": "(ss)",
         "Tended": "(su)"
       },
       "properties": {}

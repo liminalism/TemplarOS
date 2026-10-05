@@ -5,6 +5,7 @@
 mod backend;
 mod chrome;
 mod cursor;
+mod flip_recovery;
 mod foreign_toplevel;
 mod gesture_gate;
 mod handlers;
@@ -12,6 +13,7 @@ mod idle;
 mod input;
 mod keybindings;
 mod keymap;
+mod motion;
 mod protocols;
 mod protocols_recovery;
 mod protocols_shell;
@@ -23,6 +25,7 @@ mod shell_sink;
 mod shell_socket;
 mod space_sync;
 mod state;
+mod test_input;
 mod watchdog;
 mod window_bridge;
 mod window_groups;
@@ -30,6 +33,7 @@ mod xdg_shell;
 mod xwayland;
 
 use clap::{Parser, ValueEnum};
+use std::io::IsTerminal;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 enum BackendKind {
@@ -75,14 +79,19 @@ struct Cli {
     /// one but is deliberately outside that pattern — see `src/shell_socket.rs`.
     #[arg(long, value_name = "NAME")]
     socket_name: Option<String>,
+
+    /// Private test input socket. Available only with an explicitly selected nested backend.
+    #[arg(long, value_name = "PATH", requires = "backend")]
+    test_input_socket: Option<std::path::PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
-    if let Ok(env_filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
-        tracing_subscriber::fmt().with_env_filter(env_filter).init();
-    } else {
-        tracing_subscriber::fmt().init();
-    }
+    tracing_subscriber::fmt()
+        .with_ansi(std::io::stdout().is_terminal())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .init();
 
     let cli = Cli::parse();
     let exec = (!cli.exec.is_empty()).then_some(cli.exec);
@@ -94,6 +103,10 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let backend = cli.backend.unwrap_or_else(default_backend);
+    anyhow::ensure!(
+        cli.test_input_socket.is_none() || backend == BackendKind::Winit,
+        "test input is restricted to the nested winit backend"
+    );
 
     // Say which build is running, for `templar dev status`. Diagnostic only: a stamp that cannot be
     // written must never keep templar-comp from starting.
@@ -102,7 +115,11 @@ fn main() -> anyhow::Result<()> {
     }
     tracing::info!(?backend, "starting templar-comp");
     let exit_code = match backend {
-        BackendKind::Winit => backend::winit::run(exec.as_deref(), cli.socket_name.as_deref()),
+        BackendKind::Winit => backend::winit::run(
+            exec.as_deref(),
+            cli.socket_name.as_deref(),
+            cli.test_input_socket.as_deref(),
+        ),
         BackendKind::Udev => backend::udev::run(exec.as_deref(), cli.socket_name.as_deref()),
     }?;
     // The --exec child's exit code is this process's, so whatever started us sees what happened to

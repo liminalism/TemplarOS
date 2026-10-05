@@ -122,6 +122,10 @@ struct SurfaceData {
     /// completion (`on_vblank`) owns the next render; nothing else renders this CRTC. Cleared on
     /// completion, on blanking and on a session pause, none of which complete a flip.
     frame_in_flight: bool,
+    /// Timestamp fence after a synchronous clear: delayed old events must not release a new frame.
+    rearmed_at: Option<crate::flip_recovery::RearmedAt>,
+    /// Explicit hardware-lab fault injection; drops one completion, never enabled by default.
+    drop_completion_once: bool,
     /// The pending `schedule_retry` timer, if any: with no frame in flight, this is the one other
     /// thing that owns the next render, so a second retry is never stacked on the first.
     retry: Option<RegistrationToken>,
@@ -619,13 +623,12 @@ fn add_device(state: &mut State, node: DrmNode, path: &std::path::Path) {
 
     let registration_token = match state.loop_handle.insert_source(
         drm_notifier,
-        move |event, metadata, state: &mut State| {
-            let _ = metadata;
-            match event {
-                DrmEvent::VBlank(crtc) => on_vblank(state, node, crtc),
-                DrmEvent::Error(error) => {
-                    tracing::warn!(%error, ?node, "drm device error event");
-                }
+        move |event, metadata, state: &mut State| match event {
+            DrmEvent::VBlank(crtc) => {
+                on_vblank(state, node, crtc, metadata.as_ref().map(|event| event.time));
+            }
+            DrmEvent::Error(error) => {
+                tracing::warn!(%error, ?node, "drm device error event");
             }
         },
     ) {
@@ -810,6 +813,8 @@ fn connector_connected(
             drm_output,
             flip,
             frame_in_flight: false,
+            rearmed_at: None,
+            drop_completion_once: std::env::var_os("TEMPLAROS_TEST_DROP_PAGEFLIP_ONCE").is_some(),
             retry: None,
             last_render: Instant::now(),
             needs_sync_reported: false,
@@ -853,18 +858,35 @@ fn remove_device(state: &mut State, node: DrmNode) {
 /// Marks the just-completed frame submitted (releasing its buffer back to the swapchain) and
 /// immediately renders and queues the next one — this is what paces redraws to the display's real
 /// refresh rate instead of a fixed-interval timer (module doc).
-fn on_vblank(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
+fn on_vblank(
+    state: &mut State,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    timestamp: Option<smithay::backend::drm::DrmEventTime>,
+) {
     let submitted = state
         .backend_data
         .devices
         .get_mut(&node)
         .and_then(|device| device.surfaces.get_mut(&crtc))
-        .map(|surface| {
+        .filter(|surface| surface.frame_in_flight)
+        .and_then(|surface| {
+            if surface.drop_completion_once {
+                surface.drop_completion_once = false;
+                tracing::warn!(?crtc, "fault injection: dropping one page-flip completion");
+                return None;
+            }
+            if surface
+                .rearmed_at
+                .is_some_and(|cutoff| !cutoff.accepts(timestamp))
+            {
+                return None;
+            }
             surface.frame_in_flight = false;
             if let Some(flip) = &surface.flip {
                 flip.completed();
             }
-            surface.drm_output.frame_submitted()
+            Some(surface.drm_output.frame_submitted())
         });
     match submitted {
         Some(Ok(_)) => crate::notify_ready_once(&mut state.backend_data.ready_notified),
@@ -928,6 +950,11 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
         return false;
     }
     let started = Instant::now();
+    // Finished park/unpark motions go before the frame is built (`src/motion.rs`). Nothing has
+    // to ask for the next frame while one runs: this render chain already draws every refresh,
+    // and the motion's own damage keeps flips queued until it ends.
+    let now_ns = crate::window_bridge::now_monotonic_ns(&state.clock);
+    state.motion.prune(now_ns);
     let backend = &mut state.backend_data;
     let Some(device) = backend.devices.get_mut(&node) else {
         return false;
@@ -967,6 +994,8 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
             switcher: state.switcher.as_ref(),
             drop_target: state.drop_target,
             gesture_gate: &state.gesture_gate,
+            motions: &state.motion,
+            now_ns,
         },
         output,
         renderer,
@@ -1110,14 +1139,52 @@ fn schedule_retry(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
     }
 }
 
-/// The repaint check ([`REPAINT_CHECK`]): a lit output with no frame in flight, no retry pending
-/// and no render attempt for [`REPAINT_STALL`] has lost its render chain — nothing will ever draw
-/// it again although the loop is alive. Logged as evidence, then restarted. A frame stuck in
-/// flight is not touched here: the watchdog reports it (`page flip overdue`), and only its real
-/// completion may release its buffer.
+/// A healthy chain renders at least every frame interval. An overdue pending flip is recovered
+/// by synchronously clearing scanout (which safely clears Smithay's pending frame), resetting
+/// damage, then re-queuing. Never synthesize frame_submitted while DRM still owns that buffer.
 fn restart_stalled_repaints(state: &mut State) {
     if state.backend_data.paused || state.idle.blanked() {
         return;
+    }
+    let mut rearmed = Vec::new();
+    for (node, device) in &mut state.backend_data.devices {
+        for (crtc, surface) in &mut device.surfaces {
+            if !surface.frame_in_flight || surface.last_render.elapsed() < REPAINT_STALL {
+                continue;
+            }
+            let recovered = crate::flip_recovery::rearm(&mut surface.frame_in_flight, || {
+                surface.drm_output.with_compositor(|compositor| {
+                    compositor.clear()?;
+                    compositor.reset_state()
+                })
+            });
+            match recovered {
+                Ok(()) => {
+                    surface.rearmed_at = Some(crate::flip_recovery::RearmedAt {
+                        monotonic: Duration::from_nanos(crate::window_bridge::now_monotonic_ns(
+                            &state.clock,
+                        )),
+                        realtime: std::time::SystemTime::now(),
+                    });
+                    surface.drm_output.reset_buffers();
+                    if let Some(flip) = &surface.flip {
+                        flip.cancel();
+                    }
+                    surface.last_render = Instant::now();
+                    rearmed.push((*node, *crtc));
+                    tracing::warn!(
+                        ?crtc,
+                        "overdue page flip recovered: scanout cleared safely; re-arming repaint"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(%error, ?crtc, "overdue page flip clear failed; pending buffer retained");
+                }
+            }
+        }
+    }
+    for (node, crtc) in rearmed {
+        render_surface(state, node, crtc);
     }
     let stalled: Vec<(DrmNode, crtc::Handle, Duration)> = state
         .backend_data

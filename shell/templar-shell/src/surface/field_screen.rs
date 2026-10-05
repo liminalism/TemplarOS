@@ -232,9 +232,11 @@ pub struct DropMetrics {
 pub struct FieldData<'a> {
     pub field: &'a FieldDocument,
     pub toplevels: &'a [ShellToplevel],
+    /// Selected provider roles supplement the catalogue's semantic window categories.
+    pub providers: &'a std::collections::BTreeMap<templar_types::provider::ProviderRole, AppId>,
     /// App icons by canonical app id.
     pub icons: &'a HashMap<String, Bitmap>,
-    /// Window previews by session identifier (phase 6; empty until then).
+    /// Live window captures keyed by the session identifier, shared with the switcher's previews.
     pub previews: &'a HashMap<String, Bitmap>,
     pub drawer_feeds: &'a HashMap<Drawer, crate::drawers::DrawerFeed>,
     /// The rasterized cushion treemap (`templar_treemap`) of the Files object's current directory,
@@ -388,6 +390,30 @@ pub struct FieldScreen {
     folder_scroll: HashMap<TileId, pixelkit_ui::ScrollState>,
     /// How grown Places are drawn (`shell.home-garden.theme`), and each one's cached body.
     pub place_styles: PlaceStyles,
+    /// Presentation only: each window's card rect this frame, on the grid's free cells.
+    work_rects: Vec<(TileId, Rect)>,
+    /// The "+N windows" card this frame, when some windows have no room of their own.
+    work_overflow: Option<Rect>,
+    work_overflow_label: String,
+    /// Whether this frame laid live work out at all. A help frame returns before it does, and
+    /// its empty `work_rects` mean "not drawn", not "no cards".
+    work_laid_out: bool,
+    work_items: Vec<WorkItem>,
+    work_apps: Vec<(AppId, Vec<String>)>,
+    work_providers: std::collections::BTreeMap<templar_types::provider::ProviderRole, AppId>,
+    work_places: HashMap<PathBuf, Vec<String>>,
+    terminal_cwds: HashMap<String, PathBuf>,
+    /// The Recent feed's folders as last seen, so a change re-derives every window's folder.
+    work_recent: Vec<(Option<String>, PathBuf)>,
+    /// Where every card sits, in cells, and what it was computed over: the container, and the
+    /// persistent placements on its grid. Recomputed only when those or the windows change.
+    work_arrangement: crate::work_layout::Arrangement,
+    work_container: Option<TileId>,
+    work_occupied: Vec<Placement>,
+    work_layout_dirty: bool,
+    work_positions: crate::work_positions::WorkPositions,
+    work_positions_dirty: bool,
+    menu_bounds: Rect,
 }
 
 /// Naming a window group: which group (by one of its members, which is how every group request is
@@ -442,6 +468,23 @@ impl Default for FieldScreen {
             folder_at: HashMap::new(),
             folder_scroll: HashMap::new(),
             place_styles: PlaceStyles::default(),
+            work_rects: Vec::new(),
+            work_overflow: None,
+            work_overflow_label: String::new(),
+            work_laid_out: false,
+            work_items: Vec::new(),
+            work_apps: Vec::new(),
+            work_providers: std::collections::BTreeMap::new(),
+            work_places: HashMap::new(),
+            terminal_cwds: HashMap::new(),
+            work_recent: Vec::new(),
+            work_arrangement: crate::work_layout::Arrangement::default(),
+            work_container: None,
+            work_occupied: Vec::new(),
+            work_layout_dirty: true,
+            work_positions: crate::work_positions::WorkPositions::default(),
+            work_positions_dirty: false,
+            menu_bounds: Rect::new(0, 0, 0, 0),
         }
     }
 }
@@ -516,6 +559,28 @@ const FAILURE_NOTICE_LIFETIME_MS: u64 = 8_000;
 const GRIP_SIZE: i32 = 18;
 
 impl FieldScreen {
+    pub fn set_terminal_cwds(&mut self, cwds: HashMap<String, PathBuf>) {
+        if self.terminal_cwds == cwds {
+            return;
+        }
+        self.terminal_cwds = cwds;
+        for item in &mut self.work_items {
+            item.instance = None;
+        }
+        self.work_layout_dirty = true;
+    }
+
+    pub fn with_position_memory(positions: crate::work_positions::WorkPositions) -> Self {
+        Self {
+            work_positions: positions,
+            ..Self::default()
+        }
+    }
+
+    pub fn take_position_memory(&mut self) -> Option<&crate::work_positions::WorkPositions> {
+        std::mem::take(&mut self.work_positions_dirty).then_some(&self.work_positions)
+    }
+
     /// Whether the caller should keep redrawing on a timer: only while something is lifted.
     pub fn animating(&self) -> bool {
         self.drag.is_lifted() || self.expansion.is_some()
@@ -548,8 +613,45 @@ impl FieldScreen {
     /// inside a project is drawn nested within it, `templar_field::tile_rect`); zoomed into a
     /// project, only that project's children have rects, laid out on the interior grid.
     pub fn tile_rect(&self, doc: &FieldDocument, tile: TileId, ui: &Ui<'_>) -> Option<Rect> {
+        if let Some((_, rect)) = self.work_rects.iter().find(|(id, _)| *id == tile) {
+            return Some(*rect);
+        }
         self.placed_rect(doc, tile, ui)
             .map(|rect| nudge_inside(rect, self.bounds))
+    }
+
+    /// The live-work card drawn for a window's session tile this frame, if it has one.
+    pub fn work_card_rect(&self, tile: TileId) -> Option<Rect> {
+        self.work_rects
+            .iter()
+            .find(|(id, _)| *id == tile)
+            .map(|(_, rect)| *rect)
+    }
+
+    /// The "+N windows" card drawn this frame, when some windows have no room of their own.
+    pub fn work_overflow_rect(&self) -> Option<Rect> {
+        self.work_overflow
+    }
+
+    /// Where each window lives on Home this frame, in the surface's buffer pixels: its own card,
+    /// or the "+N windows" card for a window with no room of its own. A parked window keeps its
+    /// card, so it keeps its target. `None` when this frame did not lay live work out (help), so
+    /// the caller keeps what it last knew rather than reading the empty frame as "no cards".
+    pub fn work_targets(&self) -> Option<impl Iterator<Item = (WindowId, Rect)> + '_> {
+        if !self.work_laid_out {
+            return None;
+        }
+        let cards = self.work_rects.iter().filter_map(|(tile, rect)| {
+            let item = self.work_items.iter().find(|item| item.tile == *tile)?;
+            Some((item.window, *rect))
+        });
+        let overflow = self.work_overflow.into_iter().flat_map(|rect| {
+            self.work_arrangement
+                .overflow
+                .iter()
+                .map(move |window| (*window, rect))
+        });
+        Some(cards.chain(overflow))
     }
 
     fn placed_rect(&self, doc: &FieldDocument, tile: TileId, ui: &Ui<'_>) -> Option<Rect> {
@@ -583,10 +685,334 @@ impl FieldScreen {
         let mut rects: Vec<(TileId, Rect)> = doc
             .placements_in(self.zoomed)
             .into_iter()
+            .filter(|(id, _)| {
+                !matches!(doc.kind_of(*id), Some(TileKind::ParkedSession { .. }))
+                    && self.bounds.w > 0
+                    && self.bounds.h > 0
+            })
             .filter_map(|(id, _)| self.tile_rect(doc, id, ui).map(|rect| (id, rect)))
             .collect();
+        rects.extend(self.work_rects.iter().copied());
         rects.sort_by_key(|(_, rect)| (rect.y, rect.x));
         rects
+    }
+
+    /// Keep presentation order and labels until their actual inputs change. Repainting a
+    /// preview or moving the pointer neither re-sorts work nor allocates another set of labels;
+    /// a change that can move a card (a window arriving or leaving, or its cluster changing)
+    /// marks the arrangement for recomputation.
+    fn sync_work(&mut self, data: &FieldData<'_>) {
+        let (roles_changed, places_changed, recent_changed) = self.sync_work_sources(data);
+        let previous_len = self.work_items.len();
+        self.work_items.retain(|item| {
+            data.toplevels
+                .iter()
+                .any(|window| window.window_id == item.window)
+        });
+        let mut reorder = previous_len != self.work_items.len();
+        for window in data.toplevels {
+            let index = if let Some(index) = self
+                .work_items
+                .iter()
+                .position(|item| item.window == window.window_id)
+            {
+                index
+            } else {
+                let Some(tile) = field_model::session_tile_for(data.field, window) else {
+                    continue;
+                };
+                self.work_items.push(WorkItem {
+                    window: window.window_id,
+                    tile,
+                    app: None,
+                    instance: None,
+                    kind: WorkKind::Other,
+                    flags: None,
+                    place: None,
+                    folder: None,
+                    cluster: crate::work_layout::ClusterKey::UnfiledOther,
+                });
+                reorder = true;
+                self.work_items.len() - 1
+            };
+            let item = &mut self.work_items[index];
+            let new = item.flags.is_none();
+            let classify = new || roles_changed || item.app != window.canonical_app_id;
+            if classify {
+                item.app.clone_from(&window.canonical_app_id);
+                let kind = work_kind(window, data.apps, data.providers);
+                reorder |= kind != item.kind;
+                item.kind = kind;
+            }
+            let associate =
+                classify || places_changed || recent_changed || item.instance != window.instance_id;
+            if associate {
+                item.instance = window.instance_id;
+                item.place = window.instance_id.and_then(|instance| {
+                    let instance = instance.to_string();
+                    self.work_places
+                        .iter()
+                        .filter(|(_, instances)| instances.contains(&instance))
+                        .max_by(|(left, _), (right, _)| {
+                            left.components()
+                                .count()
+                                .cmp(&right.components().count())
+                                .then_with(|| left.cmp(right))
+                        })
+                        .map(|(root, _)| root.clone())
+                });
+                item.folder = window
+                    .instance_id
+                    .and_then(|id| self.terminal_cwds.get(&id.to_string()).cloned())
+                    .or_else(|| item.place.clone())
+                    .or_else(|| recent_folder(&self.work_recent, item.app.as_ref()));
+                let cluster = work_cluster(item.kind, item.folder.as_deref());
+                if cluster != item.cluster {
+                    item.cluster = cluster;
+                    self.work_layout_dirty = true;
+                }
+            }
+            let flags = (window.shelved, window.activated, window.maximized);
+            if associate || item.flags != Some(flags) {
+                item.flags = Some(flags);
+            }
+        }
+        if reorder {
+            self.work_items.sort_by_key(|item| (item.kind, item.window));
+            self.work_layout_dirty = true;
+        }
+    }
+
+    /// Whether provider roles and the catalogue, the garden's associations, or the Recent feed's
+    /// folders changed since the last frame, refreshing the copies kept to tell.
+    fn sync_work_sources(&mut self, data: &FieldData<'_>) -> (bool, bool, bool) {
+        let roles_changed = self.work_providers != *data.providers
+            || self.work_apps.len() != data.apps.len()
+            || self
+                .work_apps
+                .iter()
+                .zip(data.apps)
+                .any(|((id, categories), app)| id != &app.id || categories != &app.categories);
+        if roles_changed {
+            self.work_providers.clone_from(data.providers);
+            self.work_apps = data
+                .apps
+                .iter()
+                .map(|app| (app.id.clone(), app.categories.clone()))
+                .collect();
+        }
+        let places_changed = self.work_places.len() != data.garden.len()
+            || data
+                .garden
+                .iter()
+                .any(|(root, place)| self.work_places.get(root) != Some(&place.instances));
+        if places_changed {
+            self.work_places = data
+                .garden
+                .iter()
+                .map(|(root, place)| (root.clone(), place.instances.clone()))
+                .collect();
+        }
+        let recent = data
+            .drawer_feeds
+            .get(&Drawer::Recent)
+            .map_or(&[][..], |feed| feed.folders.as_slice());
+        let recent_changed = self.work_recent.as_slice() != recent;
+        if recent_changed {
+            self.work_recent = recent.to_vec();
+        }
+        (roles_changed, places_changed, recent_changed)
+    }
+
+    /// Live work on the grid being drawn: each window's card in cells no persistent tile
+    /// occupies, arranged by `crate::work_layout` — centred, gathered by folder, and stable. The
+    /// arrangement is recomputed only when something it depends on changes (the windows and
+    /// their clusters, the persistent tiles' cells, the grid, the container); every other frame
+    /// only turns its cells into pixels. The persistent document is never touched.
+    fn layout_work(&mut self, ui: &Ui<'_>, data: &FieldData<'_>) {
+        use crate::work_layout::{self, Arrangement, WorkWindow};
+        use std::fmt::Write as _;
+        self.work_rects.clear();
+        self.work_overflow = None;
+        self.work_laid_out = true;
+        self.sync_work(data);
+        let doc = data.field;
+        let grid = self.grid_dims(doc);
+        let container = self.zoomed;
+        if self.work_container != container {
+            self.work_container = container;
+            self.work_arrangement = Arrangement::default();
+            self.work_layout_dirty = true;
+        }
+        if self.work_arrangement.grid != grid {
+            self.work_layout_dirty = true;
+        }
+        let persistent = doc
+            .located
+            .iter()
+            .filter(|(id, located)| {
+                located.container == container
+                    && !matches!(doc.kind_of(*id), Some(TileKind::ParkedSession { .. }))
+            })
+            .map(|(_, located)| located.placement);
+        if !persistent.clone().eq(self.work_occupied.iter().copied()) {
+            self.work_occupied.clear();
+            self.work_occupied.extend(persistent);
+            self.work_layout_dirty = true;
+        }
+        if self.work_layout_dirty {
+            self.work_layout_dirty = false;
+            let windows: Vec<WorkWindow> = self
+                .work_items
+                .iter()
+                .filter_map(|item| {
+                    let window = data
+                        .toplevels
+                        .iter()
+                        .find(|window| window.window_id == item.window)?;
+                    Some(WorkWindow {
+                        window: item.window,
+                        cluster: item.cluster.clone(),
+                        mru: window.mru_rank,
+                    })
+                })
+                .collect();
+            self.work_arrangement = work_layout::arrange_with_hints(
+                &self.work_arrangement,
+                grid.0,
+                grid.1,
+                &self.work_occupied,
+                &windows,
+                &self.work_positions,
+            );
+            self.work_positions_dirty |= self.work_positions.observe(&self.work_arrangement);
+            let count = self.work_arrangement.overflow.len();
+            self.work_overflow_label.clear();
+            let _ = write!(
+                self.work_overflow_label,
+                "+{count} {}",
+                if count == 1 { "window" } else { "windows" }
+            );
+        }
+        if self.bounds.w <= 0 || self.bounds.h <= 0 {
+            return;
+        }
+        let bounds = to_pixel(self.bounds);
+        let gap = ui.px(GAP);
+        let cell = |placement: Placement| {
+            from_pixel(templar_field::cell_rect(
+                grid.0,
+                grid.1,
+                bounds,
+                placement.cell,
+                placement.span,
+                gap,
+            ))
+        };
+        for slot in &self.work_arrangement.slots {
+            if let Some(item) = self
+                .work_items
+                .iter()
+                .find(|item| item.window == slot.window)
+            {
+                self.work_rects.push((item.tile, cell(slot.placement)));
+            }
+        }
+        self.work_overflow = self.work_arrangement.overflow_card.map(cell);
+    }
+
+    fn paint_cluster_plates(&self, ui: &mut Ui<'_>) {
+        for (index, slot) in self.work_arrangement.slots.iter().enumerate() {
+            let crate::work_layout::ClusterKey::Folder(folder) = &slot.cluster else {
+                continue;
+            };
+            if self.work_arrangement.slots[..index]
+                .iter()
+                .any(|other| other.cluster == slot.cluster)
+            {
+                continue;
+            }
+            let mut bounds: Option<Rect> = None;
+            for member in self
+                .work_arrangement
+                .slots
+                .iter()
+                .filter(|member| member.cluster == slot.cluster)
+            {
+                let Some(item) = self
+                    .work_items
+                    .iter()
+                    .find(|item| item.window == member.window)
+                else {
+                    continue;
+                };
+                let Some(rect) = self.work_card_rect(item.tile) else {
+                    continue;
+                };
+                bounds = Some(bounds.map_or(rect, |old| {
+                    let x = old.x.min(rect.x);
+                    let y = old.y.min(rect.y);
+                    Rect::new(
+                        x,
+                        y,
+                        old.right().max(rect.right()) - x,
+                        old.bottom().max(rect.bottom()) - y,
+                    )
+                }));
+            }
+            if let Some(bounds) = bounds {
+                let pad = ui.px(4);
+                let heading = ui.px(20);
+                let plate = Rect::new(
+                    bounds.x - pad,
+                    bounds.y - heading,
+                    bounds.w + 2 * pad,
+                    bounds.h + heading + pad,
+                );
+                ui.painter.blend_rect(plate, design::accent_soft(), 65);
+                ui.label_styled(
+                    Rect::new(bounds.x, plate.y, bounds.w, heading),
+                    &folder.to_string_lossy(),
+                    design::state_style(ui),
+                    design::text_dim(),
+                    Align::Left,
+                );
+            }
+        }
+    }
+
+    /// The one card that stands for every window with no room of its own. Not a tile — no
+    /// focus, no menu, no drag — and pressing it opens the compositor's overview of every window.
+    fn paint_work_overflow(&mut self, ui: &mut Ui<'_>, actions: &mut Vec<FieldAction>) {
+        let Some(rect) = self.work_overflow else {
+            return;
+        };
+        design::shell(
+            ui,
+            rect,
+            design::shell_fill(),
+            design::edge_strong(),
+            Elevation::Rest,
+        );
+        let inner = rect.inset(ui.px(6).min(rect.h / 8).min(rect.w / 8));
+        let (count, hint) = inner.split_top(inner.h / 2);
+        ui.label_styled(
+            count,
+            &self.work_overflow_label,
+            design::title_style(ui),
+            design::text(),
+            Align::Centre,
+        );
+        ui.label_styled(
+            hint,
+            "Show all",
+            design::state_style(ui),
+            design::text_dim(),
+            Align::Centre,
+        );
+        if ui.input.take_click(rect) {
+            actions.push(FieldAction::RunAction("window.show-all"));
+        }
     }
 
     /// The grab band at the top of a tile's rect.
@@ -783,6 +1209,9 @@ impl FieldScreen {
         // paints only part of itself keeps whatever was there before.
         ui.painter.clear(ui.theme.background);
         let mut actions = Vec::new();
+        self.work_rects.clear();
+        self.work_overflow = None;
+        self.work_laid_out = false;
         if self.handle_help_mode(ui, area) {
             return actions;
         }
@@ -811,6 +1240,8 @@ impl FieldScreen {
             (below_bar.h - gap).max(0),
         );
 
+        // Live work is drawn on the same grid as the persistent tiles, in cells they leave free,
+        // so the grid is the whole area: a window opening or closing never moves a saved object.
         self.bounds = rest;
         // A bare Super press is "show me Home" or "give me my windows back", and the expanded
         // Files object is neither: it stays put through a reveal in either direction, which on
@@ -905,24 +1336,25 @@ impl FieldScreen {
         } else {
             rest
         };
+        let menu_area = rest;
+        self.menu_bounds = menu_area;
         self.bounds = rest;
+        self.layout_work(ui, data);
+        self.paint_cluster_plates(ui);
         let visible: Vec<TileId> = self
             .current_rects(doc, ui)
             .into_iter()
             .map(|(id, _)| id)
             .collect();
         self.selection.retain(|id| visible.contains(id));
-        if self
-            .focus
-            .is_some_and(|id| doc.location(id).is_none_or(|l| l.container != self.zoomed))
-        {
+        if self.focus.is_some_and(|id| !visible.contains(&id)) {
             self.focus = None;
         }
-        let asking = self.update_rename_group(ui, rest, &mut actions);
-        if !asking && !self.handle_menu(ui, doc, data, rest, &mut actions) {
+        let asking = self.update_rename_group(ui, menu_area, &mut actions);
+        if !asking && !self.handle_menu(ui, doc, data, menu_area, &mut actions) {
             self.handle_keys(ui, doc, data, &mut actions);
             self.handle_pointer(ui, doc, data, &mut actions);
-            self.open_menu_on_secondary_click(ui, doc, data, rest);
+            self.open_menu_on_secondary_click(ui, doc, data, menu_area);
         }
 
         let ghost = self.ghost(doc, ui);
@@ -945,6 +1377,7 @@ impl FieldScreen {
             };
             self.paint_tile(ui, *rect, tile, visual, data, &mut actions);
         }
+        self.paint_work_overflow(ui, &mut actions);
 
         self.draw_overlays(ui, doc, data, ghost.as_ref(), lifted, &mut actions);
         if let Some(marquee) = self.marquee {
@@ -952,10 +1385,10 @@ impl FieldScreen {
         }
         self.draw_resize_preview(ui, doc);
         self.draw_notice(ui, rest);
-        self.menu.paint(ui, rest);
-        self.paint_rename_group(ui, rest);
+        self.menu.paint(ui, menu_area);
+        self.paint_rename_group(ui, menu_area);
 
-        if rects.is_empty() {
+        if rects.is_empty() && self.work_overflow.is_none() {
             self.draw_empty_state(ui, rest, data.connected);
         }
         self.draw_omnibox(ui, data, &mut actions);
@@ -1227,9 +1660,7 @@ impl FieldScreen {
         // not only from the place it takes you to. Help is a secondary-click row and F1
         // (`context_menu.rs`, `MenuScope::Field`); a permanent button in the corner of every
         // session is furniture for something a person reaches for twice.
-        // Centred in the bar, and nothing else is in it. The live/parked summary that used to
-        // sit on the right went with the window tiles it counted: the bar's taskbar lists every
-        // running window by name, which is more than a number ever said.
+        // Search stays centred above the field; active work has its own contiguous presentation.
         let search_w = ui.px(design::SEARCH_WIDTH).min(bar.w);
         let search_area = Rect::new(bar.x + (bar.w - search_w) / 2, bar.y, search_w, bar.h);
         if ui.input.take_click(search_area) {
@@ -2009,7 +2440,15 @@ impl FieldScreen {
                             (None, false) => 0,
                         };
                         self.focus = Some(rects[next].0);
-                        self.selection.replace(rects[next].0);
+                        if self
+                            .work_rects
+                            .iter()
+                            .any(|(tile, _)| *tile == rects[next].0)
+                        {
+                            self.selection.clear();
+                        } else {
+                            self.selection.replace(rects[next].0);
+                        }
                     }
                 }
                 KeyInput::Backspace => {
@@ -2017,6 +2456,7 @@ impl FieldScreen {
                     // the project.
                     if let Some(project) = self.zoomed
                         && let Some(id) = self.focus
+                        && !self.work_rects.iter().any(|(tile, _)| *tile == id)
                         && let Some(home) = doc.location(project)
                     {
                         actions.push(FieldAction::Apply(Self::move_out_op(
@@ -2038,6 +2478,7 @@ impl FieldScreen {
                 }
                 KeyInput::Character(' ') => {
                     if let Some(id) = self.focus
+                        && !self.work_rects.iter().any(|(tile, _)| *tile == id)
                         && let Some(located) = doc.location(id)
                         && located.container == self.zoomed
                     {
@@ -2060,6 +2501,7 @@ impl FieldScreen {
                 // is pointer-only.
                 KeyInput::Character('r' | 'R') if !modifiers.control => {
                     if let Some(id) = self.focus
+                        && !self.work_rects.iter().any(|(tile, _)| *tile == id)
                         && let Some(located) = doc.location(id)
                         && located.container == self.zoomed
                         && doc.tile(id).is_some_and(Self::resizable)
@@ -2091,6 +2533,10 @@ impl FieldScreen {
         };
         self.focus = next;
         let Some(next) = next else { return };
+        if self.work_rects.iter().any(|(tile, _)| *tile == next) {
+            self.selection.clear();
+            return;
+        }
         let order: Vec<TileId> = rects.iter().map(|(id, _)| *id).collect();
         if extend {
             if self.selection.is_empty()
@@ -2105,17 +2551,24 @@ impl FieldScreen {
     }
 
     fn stash_selection(&self) -> Option<FieldOp> {
-        if self.selection.len() > 1 {
-            Some(FieldOp::StashMany {
-                ids: self.selection.to_vec(),
-            })
-        } else {
-            self.focus.map(|id| FieldOp::Stash { id })
+        let is_object = |id: &TileId| !self.work_rects.iter().any(|(tile, _)| tile == id);
+        let mut ids: Vec<_> = self.selection.iter().copied().filter(is_object).collect();
+        if ids.is_empty() {
+            ids.extend(self.focus.filter(is_object));
+        }
+        match ids.len() {
+            0 => None,
+            1 => Some(FieldOp::Stash { id: ids[0] }),
+            _ => Some(FieldOp::StashMany { ids }),
         }
     }
 
     fn select_all(&mut self, rects: &[(TileId, Rect)]) {
-        let order: Vec<TileId> = rects.iter().map(|(id, _)| *id).collect();
+        let order: Vec<TileId> = rects
+            .iter()
+            .filter(|(id, _)| !self.work_rects.iter().any(|(tile, _)| tile == id))
+            .map(|(id, _)| *id)
+            .collect();
         self.selection.select_all(&order);
         self.focus = order.first().copied();
     }
@@ -2238,6 +2691,18 @@ impl FieldScreen {
             self.finish_resize(ui, doc, actions);
             return;
         };
+        // Work cards expose window verbs, not field rearrangement. Merely placing terminals
+        // beside folders must never start a compositor group or reflow pinned objects; the
+        // overflow card is a button, so a press on it is never a marquee either.
+        if self.drag == Drag::Idle
+            && (self
+                .work_rects
+                .iter()
+                .any(|(_, rect)| rect.contains(cx, cy))
+                || self.work_overflow.is_some_and(|rect| rect.contains(cx, cy)))
+        {
+            return;
+        }
 
         if let Some(mut marquee) = self.marquee {
             if held {
@@ -2651,7 +3116,9 @@ impl FieldScreen {
         let window = toplevel.map(|toplevel| toplevel.window_id);
         if let Some(id) = tile {
             self.focus = Some(id);
-            if !self.selection.contains(&id) {
+            if self.work_rects.iter().any(|(work, _)| *work == id) {
+                self.selection.clear();
+            } else if !self.selection.contains(&id) {
                 self.selection.replace(id);
             }
         }
@@ -2683,15 +3150,22 @@ impl FieldScreen {
             });
         let place = tile.and_then(|id| match doc.kind_of(id) {
             Some(TileKind::Folder { path }) => Some(path.clone()),
+            Some(TileKind::ParkedSession { .. }) => self
+                .work_items
+                .iter()
+                .find(|item| item.tile == id)
+                .and_then(|item| item.place.clone()),
             _ => None,
         });
         let place_state = place.as_ref().and_then(|path| data.garden.get(path));
         self.menu.open_at_with(
             (cx, cy),
             MenuTarget {
-                tile,
+                tile: tile.filter(|id| !self.work_rects.iter().any(|(work, _)| work == id)),
                 window,
-                shelved: doc.shelved().next().is_some(),
+                shelved: doc
+                    .shelved()
+                    .any(|tile| !matches!(tile.kind, TileKind::ParkedSession { .. })),
                 window_group,
                 in_window_group,
                 project: tile.and_then(|id| match doc.kind_of(id) {
@@ -3593,8 +4067,15 @@ impl FieldScreen {
                 .stroke_rect(well, ui.scale.hairline(), design::edge());
             let identifier = field_model::session_identifier(member, None);
             if let Some(preview) = data.previews.get(&identifier) {
-                ui.painter
-                    .blit(preview, well.inset(ui.px(1)), ScaleFilter::Bilinear);
+                ui.painter.blit(
+                    preview,
+                    super::window_visual::letterbox(
+                        well.inset(ui.px(1)),
+                        preview.width,
+                        preview.height,
+                    ),
+                    ScaleFilter::Bilinear,
+                );
             } else if let Some(bitmap) = member
                 .canonical_app_id
                 .as_ref()
@@ -3959,6 +4440,77 @@ impl FieldScreen {
             }
             _ => None,
         };
+        if let Some(window) = window {
+            let named = visual.hovered || visual.focused || visual.lifted;
+            design::shell(
+                ui,
+                rect,
+                design::shell_fill(),
+                design::edge_strong(),
+                Elevation::Rest,
+            );
+            let inner = rect.inset(ui.px(6).min(rect.w / 8).min(rect.h / 8));
+            let header_h = ui.px(28).min(inner.h);
+            let (header, picture) = inner.split_top(header_h);
+            let side = ui.px(24).min(header.h).min(header.w);
+            super::window_visual::icon(
+                ui,
+                Rect::new(header.x, header.y, side, side),
+                window.icon_app_id(),
+                data.icons,
+            );
+            if named {
+                let (park, caption) = header.split_right(if window.shelved {
+                    0
+                } else {
+                    ui.px(48).min(header.w / 3)
+                });
+                ui.label_styled(
+                    Rect::new(
+                        caption.x + side + ui.px(4),
+                        caption.y,
+                        (caption.w - side - ui.px(4)).max(0),
+                        caption.h,
+                    ),
+                    &window.title,
+                    design::title_style(ui),
+                    design::text(),
+                    Align::Left,
+                );
+                if !window.shelved {
+                    ui.label(park, "Park", design::text_dim(), Align::Centre);
+                    if ui.input.take_click(park) {
+                        actions.push(FieldAction::Park(window.window_id));
+                    }
+                }
+            }
+            if let TileKind::ParkedSession { identifier, .. } = &tile.kind {
+                ui.painter.fill_rect(picture, design::well_fill());
+                if let Some(preview) = data.previews.get(identifier) {
+                    ui.painter.blit(
+                        preview,
+                        super::window_visual::letterbox(picture, preview.width, preview.height),
+                        ScaleFilter::Bilinear,
+                    );
+                }
+            }
+            super::window_visual::marks(
+                ui,
+                rect,
+                window.shelved,
+                window.activated,
+                window.verified_identity,
+            );
+            if visual.focused {
+                design::focus_ring(ui, rect);
+            }
+            if !visual.lifted && ui.input.take_click(rect) {
+                self.focus = Some(tile.id);
+                self.selection.clear();
+                self.primary_action(tile, data, actions);
+            }
+            return;
+        }
         let running = match &tile.kind {
             TileKind::App { app_id } => data
                 .toplevels
@@ -4033,7 +4585,7 @@ impl FieldScreen {
             TileKind::WindowGroup { .. } if !members.is_empty() => 64,
             _ => 0,
         };
-        let display_title = tile.title.clone();
+        let display_title = window.map_or(tile.title.as_str(), |window| window.title.as_str());
         let title_style = match &tile.kind {
             TileKind::Project { .. }
             | TileKind::WindowGroup { .. }
@@ -4076,7 +4628,7 @@ impl FieldScreen {
         );
         ui.label_styled(
             title_area,
-            &display_title,
+            display_title,
             title_style,
             title_colour,
             Align::Left,
@@ -4231,78 +4783,8 @@ impl FieldScreen {
                     }
                 }
             }
-            TileKind::ParkedSession { app_id, identifier } => {
-                let inner = content.inset(ui.px(12));
-                ui.painter.fill_rounded_rect_aa(
-                    ui.kernel,
-                    inner,
-                    ui.px(design::WELL_RADIUS) as f32,
-                    design::well_fill(),
-                    255,
-                );
-                ui.painter
-                    .stroke_rect(inner, ui.scale.hairline(), design::edge());
-                if let Some(preview) = data.previews.get(identifier) {
-                    ui.painter
-                        .blit(preview, inner.inset(ui.px(1)), ScaleFilter::Bilinear);
-                } else if let Some(bitmap) = app_id
-                    .as_ref()
-                    .and_then(|id| data.icons.get(&id.to_string()))
-                {
-                    let size = ui.px(32).min(inner.w).min(inner.h).max(4);
-                    let icon = Rect::new(
-                        inner.x + ui.px(4),
-                        inner.y + (inner.h - size) / 2,
-                        size,
-                        size,
-                    );
-                    ui.painter.blit(bitmap, icon, ScaleFilter::Bilinear);
-                }
-                let state = match window {
-                    Some(w) if w.shelved => "parked",
-                    Some(w) if w.maximized => "open · maximized",
-                    Some(_) => "open",
-                    None => "closed",
-                };
-                let small = design::state_style(ui);
-                let state_area = Rect::new(inner.x, inner.bottom() - ui.px(16), inner.w, ui.px(16));
-                ui.label_styled(
-                    state_area.inset(ui.px(4)),
-                    state,
-                    small,
-                    design::text_dim(),
-                    Align::Right,
-                );
-                if let Some(w) = window
-                    && !w.shelved
-                    && band_controls.w >= ui.px(30)
-                {
-                    let park = band_controls.inset(ui.px(6));
-                    let hovered = ui.input.hovering(park);
-                    ui.painter.fill_rounded_rect(
-                        park,
-                        ui.px(design::CHIP_RADIUS),
-                        if hovered {
-                            design::accent_soft()
-                        } else {
-                            design::shell_fill()
-                        },
-                    );
-                    ui.painter
-                        .stroke_rect(park, ui.scale.hairline(), design::edge_strong());
-                    let park_label = templar_types::action::action("window.park")
-                        .map_or("Park", |declaration| declaration.control_label());
-                    ui.label_styled(
-                        park,
-                        park_label,
-                        TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
-                        design::text_dim(),
-                        Align::Centre,
-                    );
-                    if ui.input.take_click(park) {
-                        actions.push(FieldAction::Park(w.window_id));
-                    }
-                }
+            TileKind::ParkedSession { .. } => {
+                ui.label(content, "closed", design::text_faint(), Align::Centre);
             }
             TileKind::Widget { widget, .. } => {
                 let inner = content.inset(ui.px(4));
@@ -4317,6 +4799,13 @@ impl FieldScreen {
                         representation_of(data.field, tile),
                         files,
                     ) {
+                        crate::surface::files_screen::FilesAction::OpenRecent(path, directory) => {
+                            actions.push(if directory {
+                                FieldAction::OpenInFiles(path)
+                            } else {
+                                FieldAction::OpenFile(path)
+                            });
+                        }
                         // A folder is a Files window of its own, so the window switcher lists
                         // it; the views only the shell has (Recent, Trash, Drives…) still open
                         // in place.
@@ -4607,9 +5096,14 @@ impl FieldScreen {
         let grip = Self::grip(rect, ui);
         let resizing = self.resize.is_some_and(|(id, _)| id == tile.id)
             || self.keyboard_resize.is_some_and(|(id, _)| id == tile.id);
-        let on_grip =
-            !visual.lifted && Self::resizable(tile) && (ui.input.hovering(grip) || resizing);
-        if !visual.lifted && Self::resizable(tile) && (visual.hovered || visual.focused || resizing)
+        let on_grip = !visual.lifted
+            && window.is_none()
+            && Self::resizable(tile)
+            && (ui.input.hovering(grip) || resizing);
+        if !visual.lifted
+            && window.is_none()
+            && Self::resizable(tile)
+            && (visual.hovered || visual.focused || resizing)
         {
             let thickness = ui.px(2).max(1);
             let colour = if on_grip {
@@ -4628,10 +5122,14 @@ impl FieldScreen {
         }
 
         // A press on the grip is a resize, never an open.
-        if !visual.lifted && !on_grip && ui.input.take_click(content) {
+        let click_area = if window.is_some() { rect } else { content };
+        if !visual.lifted && !on_grip && ui.input.take_click(click_area) {
             self.focus = Some(tile.id);
             let modifiers = ui.input.modifiers();
-            if modifiers.control {
+            if window.is_some() {
+                self.selection.clear();
+                self.primary_action(tile, data, actions);
+            } else if modifiers.control {
                 self.selection.toggle(tile.id);
             } else if modifiers.shift {
                 let order: Vec<TileId> = self
@@ -4646,6 +5144,89 @@ impl FieldScreen {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum WorkKind {
+    Terminal,
+    Folder,
+    Image,
+    Other,
+}
+
+#[derive(Debug)]
+struct WorkItem {
+    window: WindowId,
+    tile: TileId,
+    app: Option<AppId>,
+    instance: Option<templar_types::InstanceId>,
+    kind: WorkKind,
+    flags: Option<(bool, bool, bool)>,
+    /// The garden Place this window is explicitly associated with — the only folder the
+    /// context menu's Place actions ever act on.
+    place: Option<PathBuf>,
+    /// Where the window's card gathers: `place` when there is one, otherwise the folder its
+    /// application most recently worked in according to the Recent feed. Never a window title.
+    folder: Option<PathBuf>,
+    cluster: crate::work_layout::ClusterKey,
+}
+
+/// The cluster a window's card belongs to: its folder's, or one of the two unfiled clusters.
+fn work_cluster(kind: WorkKind, folder: Option<&Path>) -> crate::work_layout::ClusterKey {
+    use crate::work_layout::ClusterKey;
+    match (folder, kind) {
+        (Some(folder), _) => ClusterKey::Folder(folder.to_path_buf()),
+        (None, WorkKind::Terminal | WorkKind::Folder | WorkKind::Image) => ClusterKey::UnfiledTools,
+        (None, WorkKind::Other) => ClusterKey::UnfiledOther,
+    }
+}
+
+/// The folder `app` most recently worked in, from the Recent feed's structured folders (newest
+/// first). Only the application identity links a window to it — never the window's title.
+fn recent_folder(recent: &[(Option<String>, PathBuf)], app: Option<&AppId>) -> Option<PathBuf> {
+    let app = app?.as_str();
+    recent
+        .iter()
+        .find(|(id, _)| id.as_deref() == Some(app))
+        .map(|(_, folder)| folder.clone())
+}
+
+fn work_kind(
+    window: &ShellToplevel,
+    apps: &[crate::app_search::AppEntry],
+    providers: &std::collections::BTreeMap<templar_types::provider::ProviderRole, AppId>,
+) -> WorkKind {
+    use templar_types::provider::ProviderRole;
+    let Some(app_id) = window.canonical_app_id.as_ref() else {
+        return WorkKind::Other;
+    };
+    if providers.get(&ProviderRole::Terminal) == Some(app_id) {
+        return WorkKind::Terminal;
+    }
+    if providers.get(&ProviderRole::FileManager) == Some(app_id) {
+        return WorkKind::Folder;
+    }
+    if let Some(app) = apps.iter().find(|app| &app.id == app_id) {
+        if app
+            .categories
+            .iter()
+            .any(|category| category == "TerminalEmulator")
+        {
+            return WorkKind::Terminal;
+        }
+        if app
+            .categories
+            .iter()
+            .any(|category| category == "FileManager")
+        {
+            return WorkKind::Folder;
+        }
+        let has = |wanted: &str| app.categories.iter().any(|category| category == wanted);
+        if has("Graphics") && (has("Viewer") || has("Photography") || has("RasterGraphics")) {
+            return WorkKind::Image;
+        }
+    }
+    WorkKind::Other
 }
 
 /// `window.cycle-forward` / `window.cycle-backward` from the shell's side.
@@ -5006,6 +5587,7 @@ mod tests {
         ShellToplevel {
             window_id: WindowId(id),
             canonical_app_id: Some(app.parse().unwrap()),
+            claimed_app_id: None,
             instance_id: None,
             title: format!("win {id}"),
             verified_identity: true,
@@ -5042,6 +5624,13 @@ mod tests {
         recents: Vec<crate::app_search::AppEntry>,
         recent_ids: Vec<String>,
         variants: HashMap<String, Vec<(String, String, String)>>,
+        providers: std::collections::BTreeMap<templar_types::provider::ProviderRole, AppId>,
+        garden: HashMap<PathBuf, crate::garden::GardenPlace>,
+        drawer_feeds: HashMap<Drawer, crate::drawers::DrawerFeed>,
+        previews: HashMap<String, Bitmap>,
+        home_revealed: bool,
+        /// Integration fixtures refresh live state; literal field-op snapshots stay literal.
+        merge_live: bool,
         text: pixelkit_text::TextCache,
         kernel: RasterKernel,
         buffer: WindowBuffer,
@@ -5088,6 +5677,12 @@ mod tests {
                 recents: Vec::new(),
                 recent_ids: Vec::new(),
                 variants: HashMap::new(),
+                providers: std::collections::BTreeMap::new(),
+                garden: HashMap::new(),
+                drawer_feeds: HashMap::new(),
+                previews: HashMap::new(),
+                home_revealed: false,
+                merge_live: true,
                 text: pixelkit_text::TextCache::new(crate::surface::fonts::set()),
                 kernel: RasterKernel::new(),
                 buffer: WindowBuffer::new(W as u32, H as u32),
@@ -5095,16 +5690,6 @@ mod tests {
                 now: 0,
                 area: Rect::new(0, 0, W, H),
             }
-        }
-
-        /// Seed the field with a tile per running window, and a container per group.
-        ///
-        /// Home places none of these any more — a running window is the bar's business — but the
-        /// field still understands them and `FieldScreen` still draws and acts on them, which is
-        /// what the tests calling this cover.
-        fn with_window_tiles(mut self) -> Self {
-            field_model::place_window_tiles(&mut self.doc, &self.toplevels);
-            self
         }
 
         fn frame(&mut self) -> Vec<FieldAction> {
@@ -5122,9 +5707,18 @@ mod tests {
         /// Every action, background requests and experiment bookkeeping included.
         fn frame_raw(&mut self) -> Vec<FieldAction> {
             self.now += 16;
+            if self.merge_live {
+                merge(
+                    &mut self.doc,
+                    &LiveState {
+                        toplevels: &self.toplevels,
+                        projects: &[],
+                    },
+                );
+            }
             let icons = HashMap::new();
-            let previews = HashMap::new();
-            let drawer_feeds = HashMap::new();
+            let previews = &self.previews;
+            let drawer_feeds = &self.drawer_feeds;
             let widgets = HashMap::new();
             let browser_sources = crate::file_browser::BrowserSources::default();
             let empty_thumbnails = std::collections::HashMap::new();
@@ -5137,7 +5731,7 @@ mod tests {
                 search_query: None,
                 search_entries: None,
                 search_error: None,
-                feeds: &drawer_feeds,
+                feeds: drawer_feeds,
                 thumbnails: &empty_thumbnails,
                 icons: &HashMap::new(),
                 home: None,
@@ -5147,21 +5741,22 @@ mod tests {
                 notifications: &[],
                 field: &self.doc,
                 toplevels: &self.toplevels,
+                providers: &self.providers,
                 icons: &icons,
-                previews: &previews,
-                drawer_feeds: &drawer_feeds,
+                previews,
+                drawer_feeds,
                 treemap: None,
                 composition: &[],
                 browser: &browser,
                 folder_listings: &HashMap::new(),
                 connected: true,
-                home_revealed: false,
+                home_revealed: self.home_revealed,
                 apps: &self.apps,
                 apps_available: true,
                 widgets: &widgets,
                 variants: &self.variants,
                 projects: &[],
-                garden: &HashMap::new(),
+                garden: &self.garden,
                 actions: templar_types::action::MANIFEST,
                 file_search: None,
                 recents: &recents,
@@ -5220,39 +5815,6 @@ mod tests {
     }
 
     #[test]
-    fn field_chrome_uses_the_design_system_geometry() {
-        let mut h = Harness::new();
-        h.frame();
-
-        assert_eq!(
-            h.screen.bounds,
-            Rect::new(
-                design::FIELD_INSET,
-                design::FIELD_INSET + design::TOP_BAR_HEIGHT + design::TOP_BAR_GAP,
-                W - design::FIELD_INSET * 2,
-                H - design::FIELD_INSET * 2 - design::TOP_BAR_HEIGHT - design::TOP_BAR_GAP,
-            )
-        );
-
-        let files = tile_id_for("app:org.templaros.Files");
-        let rect = h.rect_of(files);
-        let ui = Ui::new(
-            Painter::new(&mut h.buffer),
-            &mut h.text,
-            &mut h.input,
-            design::theme(),
-            Scale::ONE,
-            &mut h.kernel,
-        );
-        assert_eq!(
-            FieldScreen::grab_strip(rect, Representation::Large, &ui)
-                .heading
-                .map(|heading| heading.h),
-            Some(design::HEADING_HEIGHT)
-        );
-    }
-
-    #[test]
     fn successful_field_operations_get_a_bounded_undo_notice() {
         let mut h = Harness::new();
         let files = tile_id_for("app:org.templaros.Files");
@@ -5276,8 +5838,46 @@ mod tests {
     }
 
     #[test]
+    fn live_and_parked_work_draw_their_own_previews_with_distinct_activity_marks() {
+        const LIVE: u32 = 0x0012_3456;
+        const PARKED: u32 = 0x0056_3412;
+        let mut h = Harness::new();
+        h.home_revealed = true;
+        for (window, colour) in h.toplevels.iter().zip([LIVE, PARKED]) {
+            h.previews.insert(
+                field_model::session_identifier(window, None),
+                Bitmap {
+                    width: 8,
+                    height: 8,
+                    pixels: vec![0xff00_0000 | colour; 64],
+                },
+            );
+        }
+        for (index, colour) in [LIVE, PARKED].into_iter().enumerate() {
+            let tile = field_model::session_tile_for(&h.doc, &h.toplevels[index]).unwrap();
+            let rect = h.rect_of(tile);
+            let stride = h.buffer.width as usize;
+            let at =
+                |x: i32, y: i32| h.buffer.pixels[y as usize * stride + x as usize] & 0x00ff_ffff;
+            if index == 0 {
+                assert_eq!(at(rect.x + rect.w / 2, rect.y + rect.h / 2), colour);
+            } else {
+                assert_ne!(
+                    at(rect.x + rect.w / 2, rect.y + rect.h / 2),
+                    colour,
+                    "parked pixels themselves are dimmed"
+                );
+            }
+            if index == 0 {
+                assert_eq!(at(rect.x + 1, rect.y + rect.h / 2), design::activity());
+            } else {
+                assert_ne!(at(rect.x + 1, rect.y + rect.h / 2), design::activity());
+            }
+        }
+    }
+    #[test]
     fn clicking_an_app_tile_launches_it_and_a_session_tile_restores_or_activates() {
-        let mut h = Harness::new().with_window_tiles();
+        let mut h = Harness::new();
         let files = tile_id_for("app:org.templaros.Files");
         let rect = h.rect_of(files);
         let actions = h.click(rect.x + rect.w / 2, rect.bottom() - 10);
@@ -5295,6 +5895,434 @@ mod tests {
         let rect = h.rect_of(open);
         let actions = h.click(rect.x + rect.w / 2, rect.bottom() - 10);
         assert_eq!(actions, vec![FieldAction::Activate(WindowId(1))]);
+    }
+
+    fn work_item(h: &Harness, window: u64) -> &WorkItem {
+        h.screen
+            .work_items
+            .iter()
+            .find(|item| item.window == WindowId(window))
+            .unwrap()
+    }
+
+    fn work_cell(h: &Harness, window: u64) -> Placement {
+        h.screen
+            .work_arrangement
+            .slot(WindowId(window))
+            .unwrap()
+            .placement
+    }
+
+    /// Edge- or corner-adjacent without overlapping: the cards sit next to each other.
+    fn touching(a: Placement, b: Placement) -> bool {
+        let cols_meet = a.cell.col <= b.right() && b.cell.col <= a.right();
+        let rows_meet = a.cell.row <= b.bottom() && b.cell.row <= a.bottom();
+        cols_meet && rows_meet && !a.overlaps(b)
+    }
+
+    #[test]
+    fn terminal_folder_and_image_windows_of_one_folder_gather_together() {
+        use templar_types::provider::ProviderRole;
+        let mut h = Harness::new();
+        let mut terminal = app_entry("org.work.Tool", "Console");
+        terminal.categories.push("TerminalEmulator".to_owned());
+        let mut images = app_entry("org.work.Images", "Images");
+        images
+            .categories
+            .extend(["Graphics".to_owned(), "Viewer".to_owned()]);
+        h.apps.extend([terminal, images]);
+        h.providers.insert(
+            ProviderRole::FileManager,
+            "org.work.Browse".parse().unwrap(),
+        );
+        let root = PathBuf::from("/home/u/project");
+        let instances: Vec<_> = (0..3).map(|_| templar_types::InstanceId::new()).collect();
+        h.toplevels = vec![
+            toplevel(7, "org.other.Editor", false),
+            toplevel(9, "org.work.Tool", true),
+            toplevel(3, "org.work.Browse", false),
+            toplevel(5, "org.work.Images", false),
+            toplevel(1, "org.terminal.NameOnly", false),
+        ];
+        for (window, instance) in h.toplevels[1..4].iter_mut().zip(&instances) {
+            window.instance_id = Some(*instance);
+        }
+        h.toplevels[2].activated = true;
+        h.garden.insert(
+            root.clone(),
+            crate::garden::GardenPlace {
+                root: root.clone(),
+                instances: instances.iter().map(ToString::to_string).collect(),
+                ..Default::default()
+            },
+        );
+        let mru: Vec<_> = h
+            .toplevels
+            .iter()
+            .map(|window| (window.window_id, window.mru_rank))
+            .collect();
+        h.frame();
+        let kinds: Vec<_> = [9, 3, 5, 1, 7]
+            .into_iter()
+            .map(|window| work_item(&h, window).kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                WorkKind::Terminal,
+                WorkKind::Folder,
+                WorkKind::Image,
+                WorkKind::Other,
+                WorkKind::Other,
+            ],
+            "classified by provider role and catalogue category, never by the app id's words"
+        );
+        let folder = [9, 3, 5].map(|window| work_cell(&h, window));
+        let mut edges = 0;
+        for (i, a) in folder.iter().enumerate() {
+            assert!(
+                folder.iter().any(|b| touching(*a, *b)),
+                "{a:?} sits alone: {folder:?}"
+            );
+            edges += folder[i + 1..].iter().filter(|b| touching(*a, **b)).count();
+            for other in [1, 7] {
+                assert!(
+                    !touching(*a, work_cell(&h, other)),
+                    "clusters keep a cell apart"
+                );
+            }
+        }
+        assert!(
+            edges >= 2,
+            "the folder's three cards are one connected group"
+        );
+        assert_eq!(
+            h.toplevels
+                .iter()
+                .map(|window| (window.window_id, window.mru_rank))
+                .collect::<Vec<_>>(),
+            mru
+        );
+        assert!(h.toplevels.iter().all(|window| window.group.is_none()));
+
+        // Catalogue changes refresh the cached classification.
+        h.apps.last_mut().unwrap().categories.clear();
+        h.frame();
+        assert_eq!(work_item(&h, 5).kind, WorkKind::Other);
+    }
+
+    #[test]
+    fn a_card_keeps_its_rect_through_parking_and_another_windows_activation() {
+        let mut h = Harness::new();
+        h.toplevels.push(toplevel(3, "org.other.Work", false));
+        h.frame();
+        let tile = field_model::session_tile_for(&h.doc, &h.toplevels[2]).unwrap();
+        let rects = h.screen.work_rects.clone();
+        let rect = rects.iter().find(|(id, _)| *id == tile).unwrap().1;
+        h.toplevels[2].shelved = true;
+        h.frame();
+        assert_eq!(
+            h.screen.work_rects, rects,
+            "parking minimises into the card's own cells"
+        );
+        // Another window becomes the most recent and the active one.
+        for window in &mut h.toplevels {
+            window.mru_rank += 1;
+        }
+        h.toplevels[0].mru_rank = 0;
+        h.toplevels[0].activated = true;
+        h.frame();
+        assert_eq!(h.screen.work_rects, rects, "activation moves no card");
+        let actions = h.click(rect.x + rect.w / 2, rect.y + rect.h / 2);
+        assert!(actions.contains(&FieldAction::Restore(WindowId(3))));
+        h.toplevels[2].shelved = false;
+        h.frame();
+        assert_eq!(h.screen.work_rects, rects, "restoring moves no card");
+    }
+
+    #[test]
+    fn a_recent_folder_gathers_an_apps_window_with_its_place_without_becoming_a_place() {
+        let mut h = Harness::new();
+        let root = PathBuf::from("/home/u/work");
+        let instance = templar_types::InstanceId::new();
+        h.toplevels[0].instance_id = Some(instance);
+        h.garden.insert(
+            root.clone(),
+            crate::garden::GardenPlace {
+                root: root.clone(),
+                instances: vec![instance.to_string()],
+                ..Default::default()
+            },
+        );
+        h.toplevels.push(toplevel(3, "org.other.Elsewhere", false));
+        let mut feed = crate::drawers::DrawerFeed::new("2 items", Vec::new());
+        feed.folders = vec![
+            (Some("org.example.Editor".to_owned()), root.clone()),
+            (
+                Some("org.example.Editor".to_owned()),
+                PathBuf::from("/older"),
+            ),
+        ];
+        h.drawer_feeds.insert(Drawer::Recent, feed);
+        h.frame();
+        let files = work_item(&h, 1);
+        assert_eq!(files.place.as_ref(), Some(&root));
+        let editor = work_item(&h, 2);
+        assert_eq!(editor.place, None, "recency is never a Place association");
+        assert_eq!(editor.folder.as_ref(), Some(&root));
+        assert_eq!(work_item(&h, 1).cluster, editor.cluster);
+        assert!(touching(work_cell(&h, 1), work_cell(&h, 2)));
+        assert!(!touching(work_cell(&h, 1), work_cell(&h, 3)));
+        assert!(!touching(work_cell(&h, 2), work_cell(&h, 3)));
+        assert_eq!(work_item(&h, 3).folder, None);
+        // A title naming the folder still associates nothing.
+        h.toplevels[2].title = "/home/u/work".to_owned();
+        h.frame();
+        assert_eq!(work_item(&h, 3).folder, None);
+    }
+
+    #[test]
+    fn exact_terminal_cwd_updates_cluster_without_changing_place_actions() {
+        let mut h = Harness::new();
+        let instance = templar_types::InstanceId::new();
+        let root = PathBuf::from("/work/project");
+        h.toplevels[0].instance_id = Some(instance);
+        h.garden.insert(
+            root.clone(),
+            crate::garden::GardenPlace {
+                root: root.clone(),
+                instances: vec![instance.to_string()],
+                ..Default::default()
+            },
+        );
+        h.screen
+            .set_terminal_cwds(HashMap::from([(instance.to_string(), root.join("src"))]));
+        h.frame();
+        assert_eq!(work_item(&h, 1).folder, Some(root.join("src")));
+        assert_eq!(work_item(&h, 1).place.as_ref(), Some(&root));
+        h.screen
+            .set_terminal_cwds(HashMap::from([(instance.to_string(), root.join("tests"))]));
+        h.frame();
+        assert_eq!(work_item(&h, 1).folder, Some(root.join("tests")));
+        assert_eq!(work_item(&h, 1).place.as_ref(), Some(&root));
+    }
+
+    #[test]
+    fn terminal_cwd_without_a_place_is_visible_and_removed_when_hook_association_clears() {
+        let mut h = Harness::new();
+        let instance = templar_types::InstanceId::new();
+        h.toplevels[0].instance_id = Some(instance);
+        let cwd = PathBuf::from("/scratch/exact/subdirectory");
+        h.screen
+            .set_terminal_cwds(HashMap::from([(instance.to_string(), cwd.clone())]));
+        h.frame();
+        assert_eq!(work_item(&h, 1).folder, Some(cwd.clone()));
+        assert!(work_item(&h, 1).place.is_none());
+        h.screen.set_terminal_cwds(HashMap::new());
+        h.frame();
+        assert_ne!(work_item(&h, 1).folder, Some(cwd));
+    }
+
+    #[test]
+    fn closing_work_preserves_recents_places_and_actual_pinned_pixel_positions() {
+        let mut h = Harness::new();
+        let root = PathBuf::from("/home/u/work");
+        let instance = templar_types::InstanceId::new();
+        h.toplevels[1].instance_id = Some(instance);
+        h.garden.insert(
+            root.clone(),
+            crate::garden::GardenPlace {
+                root: root.clone(),
+                pinned: true,
+                kept: true,
+                instances: vec![instance.to_string()],
+                ..Default::default()
+            },
+        );
+        for op in field_model::open_folder_ops(&h.doc, &root) {
+            h.doc = apply(&h.doc, &op).unwrap().0;
+        }
+        let feed = crate::drawers::DrawerFeed::new(
+            "2 items",
+            vec![
+                "/home/u/work/notes.md".to_owned(),
+                "/home/u/work".to_owned(),
+            ],
+        );
+        h.drawer_feeds.insert(Drawer::Recent, feed.clone());
+        h.recents.push(app_entry("org.example.Editor", "Editor"));
+        let pin = tile_id_for("app:org.templaros.Files");
+        let folder = field_model::folder_tile_id(&root);
+        let pinned_pixels = h.rect_of(pin);
+        let place_pixels = h.rect_of(folder);
+        let parked = field_model::session_tile_for(&h.doc, &h.toplevels[1]).unwrap();
+        assert_eq!(work_item(&h, 2).folder.as_ref(), Some(&root));
+        let parked_rect = h.rect_of(parked);
+        let actions = h.click(parked_rect.x + parked_rect.w / 2, parked_rect.bottom() - 10);
+        let window_actions: Vec<_> = actions
+            .into_iter()
+            .filter(|action| {
+                matches!(
+                    action,
+                    FieldAction::Restore(_) | FieldAction::Activate(_) | FieldAction::Park(_)
+                )
+            })
+            .collect();
+        assert_eq!(window_actions, vec![FieldAction::Restore(WindowId(2))]);
+        let positions = h.doc.located.clone();
+        h.toplevels.clear();
+        h.frame();
+        assert!(h.doc.tile(parked).is_none());
+        assert!(h.screen.work_rects.is_empty());
+        assert_eq!(h.doc.located, positions);
+        assert_eq!(h.rect_of(pin), pinned_pixels);
+        assert_eq!(h.rect_of(folder), place_pixels);
+        assert_eq!(h.drawer_feeds.get(&Drawer::Recent), Some(&feed));
+        assert!(h.garden[&root].kept);
+        assert_eq!(h.recents.len(), 1);
+
+        // The first new window also leaves both saved objects at the exact same pixels.
+        h.toplevels.push(toplevel(10, "org.other.New", false));
+        h.frame();
+        assert_eq!(h.rect_of(pin), pinned_pixels);
+        assert_eq!(h.rect_of(folder), place_pixels);
+    }
+
+    #[test]
+    fn windows_without_room_are_counted_on_an_overflow_card_that_opens_the_overview() {
+        let mut h = Harness::new();
+        h.area = Rect::new(0, 0, 240, 160);
+        h.home_revealed = true;
+        // More windows than even the small card fits on the whole grid.
+        let (cols, rows) = (h.doc.cols, h.doc.rows);
+        let windows = u64::from(cols) * u64::from(rows) / 2 + 3;
+        h.toplevels = (1..=windows)
+            .map(|id| toplevel(id, "org.other.Work", id % 2 == 0))
+            .collect();
+        h.frame();
+        let cards = h.screen.work_rects.clone();
+        let overflow = h.screen.work_arrangement.overflow.len();
+        assert!(overflow > 0, "{windows} windows cannot all fit");
+        assert_eq!(
+            (cards.len() + overflow) as u64,
+            windows,
+            "every window is a card or counted"
+        );
+        for (tile, rect) in &cards {
+            assert!(rect.w > 0 && rect.h > 0);
+            assert!(rect.x >= h.area.x && rect.right() <= h.area.right());
+            assert!(rect.y >= h.area.y && rect.bottom() <= h.area.bottom());
+            let window = field_model::window_for_tile(&h.doc, *tile, &h.toplevels).unwrap();
+            let expected = if window.shelved {
+                FieldAction::Restore(window.window_id)
+            } else {
+                FieldAction::Activate(window.window_id)
+            };
+            h.screen.focus = Some(*tile);
+            assert_eq!(h.key(KeyInput::Enter), vec![expected.clone()]);
+            assert_eq!(
+                h.click(rect.x + rect.w / 2, rect.y + rect.h / 2),
+                vec![expected]
+            );
+        }
+        let card = h.screen.work_overflow.expect("an overflow card");
+        assert!(cards.iter().all(|(_, rect)| !intersects(*rect, card)));
+        assert_eq!(
+            h.click(card.x + card.w / 2, card.y + card.h / 2),
+            vec![FieldAction::RunAction("window.show-all")]
+        );
+        h.toplevels.truncate(1);
+        h.frame();
+        assert_eq!(h.screen.work_rects.len(), 1);
+        assert_eq!(h.screen.work_overflow, None);
+    }
+
+    #[test]
+    fn every_window_targets_its_card_or_the_overflow_card_and_parking_keeps_it() {
+        let mut h = Harness::new();
+        h.area = Rect::new(0, 0, 240, 160);
+        h.home_revealed = true;
+        let (cols, rows) = (h.doc.cols, h.doc.rows);
+        let windows = u64::from(cols) * u64::from(rows) / 2 + 3;
+        h.toplevels = (1..=windows)
+            .map(|id| toplevel(id, "org.other.Work", false))
+            .collect();
+        h.frame();
+        let targets: HashMap<WindowId, Rect> = h.screen.work_targets().unwrap().collect();
+        assert_eq!(targets.len() as u64, windows, "every window has a target");
+        let card = h.screen.work_overflow.expect("an overflow card");
+        let overflow = h.screen.work_arrangement.overflow.clone();
+        assert!(!overflow.is_empty());
+        for window in &overflow {
+            assert_eq!(
+                targets[window], card,
+                "an overflow window parks into the +N card"
+            );
+        }
+        for (tile, rect) in &h.screen.work_rects {
+            let window = field_model::window_for_tile(&h.doc, *tile, &h.toplevels).unwrap();
+            assert_eq!(targets[&window.window_id], *rect);
+        }
+
+        // A carded window keeps its target through parking.
+        let parked = h
+            .toplevels
+            .iter()
+            .position(|window| !overflow.contains(&window.window_id))
+            .unwrap();
+        let id = h.toplevels[parked].window_id;
+        h.toplevels[parked].shelved = true;
+        h.frame();
+        let after: HashMap<WindowId, Rect> = h.screen.work_targets().unwrap().collect();
+        assert_eq!(
+            after[&id], targets[&id],
+            "parking keeps the card it parks into"
+        );
+
+        // A frame that lays no work out says so rather than reporting no cards.
+        h.screen.help_open = true;
+        h.frame();
+        assert!(h.screen.work_targets().is_none());
+    }
+
+    #[test]
+    fn work_state_tracks_parking_and_only_explicit_place_associations() {
+        let mut h = Harness::new();
+        let root = PathBuf::from("/home/u/known");
+        let instance = templar_types::InstanceId::new();
+        h.toplevels[0].instance_id = Some(instance);
+        h.garden.insert(
+            root.clone(),
+            crate::garden::GardenPlace {
+                root: root.clone(),
+                instances: vec![instance.to_string()],
+                ..Default::default()
+            },
+        );
+        h.frame();
+        let tile = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
+        assert!(!work_item(&h, 1).flags.unwrap().0);
+        assert_eq!(work_item(&h, 1).place.as_ref(), Some(&root));
+        let rect = h.rect_of(tile);
+        h.secondary_click(rect.x + rect.w / 2, rect.bottom() - 10);
+        assert_eq!(
+            h.screen.menu.target().unwrap().place.as_ref(),
+            Some(&root),
+            "the associated Place is directly reachable through the existing Place menu"
+        );
+        h.screen.menu.close();
+        h.toplevels[0].shelved = true;
+        h.frame();
+        assert!(work_item(&h, 1).flags.unwrap().0);
+        h.garden.get_mut(&root).unwrap().instances.clear();
+        h.frame();
+        assert!(work_item(&h, 1).place.is_none());
+        h.toplevels[0].title = "/home/u/known".to_owned();
+        h.frame();
+        assert!(
+            work_item(&h, 1).place.is_none(),
+            "a window title is not a Place association"
+        );
     }
 
     /// The `y` of the omnibox dropdown's `index`-th row, from the same constants the painter
@@ -5764,7 +6792,7 @@ mod tests {
         );
     }
 
-    /// A harness whose two windows are in one group, so the field carries a group tile.
+    /// Group membership comes from the compositor; Home does not manufacture one.
     fn grouped_harness() -> Harness {
         let mut h = Harness::new();
         for toplevel in &mut h.toplevels {
@@ -5775,71 +6803,57 @@ mod tests {
             });
             toplevel.shelved = false;
         }
-        h.with_window_tiles()
+        h
     }
 
     #[test]
-    fn dropping_one_window_on_another_asks_the_compositor_to_group_them() {
-        let mut h = Harness::new().with_window_tiles();
-        // Two loose windows, both on the field.
-        let one = field_model::session_tile_for(&h.doc, &h.toplevels[0]).expect("a tile");
-        let two = field_model::session_tile_for(&h.doc, &h.toplevels[1]).expect("a tile");
-        let onto = h.rect_of(two);
+    fn work_presentation_never_groups_or_rearranges_windows_when_pressed_and_dragged() {
+        let mut h = Harness::new();
+        let before = h.doc.located.clone();
+        let one = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
+        let two = field_model::session_tile_for(&h.doc, &h.toplevels[1]).unwrap();
         let from = h.rect_of(one);
-        let grab = (from.x + 10, from.y + 8);
-        h.input.cursor_moved(grab.0 as f32, grab.1 as f32);
+        let onto = h.rect_of(two);
+        h.input
+            .cursor_moved((from.x + 10) as f32, (from.y + 8) as f32);
         h.input.mouse(MouseButton::Left, true);
         h.frame();
-        let target = (onto.x + onto.w / 2, onto.y + onto.h / 2);
-        for step in 1..=10 {
-            h.input.cursor_moved(
-                (grab.0 + (target.0 - grab.0) * step / 10) as f32,
-                (grab.1 + (target.1 - grab.1) * step / 10) as f32,
-            );
-            h.now += 100;
-            h.frame();
-        }
+        h.input
+            .cursor_moved((onto.x + onto.w / 2) as f32, (onto.y + onto.h / 2) as f32);
+        h.frame();
         h.input.mouse(MouseButton::Left, false);
         let actions = h.frame();
-        let joined = actions.iter().find_map(|action| match action {
-            FieldAction::JoinWindowGroup { window, other } => Some((*window, *other)),
-            _ => None,
-        });
-        assert_eq!(
-            joined,
-            Some((WindowId(1), WindowId(2))),
-            "dropping one window's tile on another's groups them: {actions:?}"
-        );
+        assert!(!actions.iter().any(|action| matches!(
+            action,
+            FieldAction::JoinWindowGroup { .. } | FieldAction::Apply(_)
+        )));
+        assert_eq!(h.doc.located, before);
+        assert!(h.toplevels.iter().all(|window| window.group.is_none()));
     }
 
     #[test]
-    fn a_group_tile_offers_the_verbs_that_act_on_the_whole_set() {
+    fn every_member_of_an_existing_group_is_directly_activatable() {
         let mut h = grouped_harness();
-        let group = field_model::group_tile_id(5);
-        let tile = h.doc.tile(group).expect("the group has a tile");
-        assert_eq!(tile.title, "Writing");
-        assert_eq!(tile.accent, Some(0x0033_88ff));
-
-        // Pressing the name raises the whole group.
-        let rect = h.rect_of(group);
-        let actions = h.click(rect.x + rect.w / 4, rect.y + 10);
+        for index in 0..h.toplevels.len() {
+            let window = h.toplevels[index].clone();
+            let tile = field_model::session_tile_for(&h.doc, &window).unwrap();
+            let rect = h.rect_of(tile);
+            let actions = h.click(rect.x + rect.w / 2, rect.bottom() - 10);
+            assert_eq!(actions, vec![FieldAction::Activate(window.window_id)]);
+        }
         assert!(
-            actions.iter().any(|action| matches!(
-                action,
-                FieldAction::RunWindowAction {
-                    id: "window.activate-group",
-                    ..
-                }
-            )),
-            "a press on a group's name raises it: {actions:?}"
+            !h.doc
+                .tiles
+                .iter()
+                .any(|tile| matches!(tile.kind, TileKind::WindowGroup { .. }))
         );
     }
 
     #[test]
-    fn the_group_menu_row_for_renaming_opens_the_question_and_sends_the_name() {
+    fn a_grouped_window_menu_offers_ungroup_without_changing_the_presented_task() {
         let mut h = grouped_harness();
-        let group = field_model::group_tile_id(5);
-        let rect = h.rect_of(group);
+        let tile = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
+        let rect = h.rect_of(tile);
         h.input
             .cursor_moved((rect.x + 6) as f32, (rect.y + 6) as f32);
         h.input.mouse(MouseButton::Right, true);
@@ -5854,46 +6868,7 @@ mod tests {
             .iter()
             .map(|item| item.action)
             .collect();
-        assert!(rows.contains(&"window.rename-group"), "rows were {rows:?}");
-
-        // Choosing it opens the question, and Enter sends what is in it.
-        h.screen.rename_group = Some(GroupRename {
-            window: WindowId(1),
-            field: TextFieldState::with_text("Reading".to_owned()),
-        });
-        h.screen.menu.close();
-        let actions = h.key(KeyInput::Enter);
-        let named = actions.iter().find_map(|action| match action {
-            FieldAction::RenameWindowGroup { window, name } => Some((*window, name.clone())),
-            _ => None,
-        });
-        assert_eq!(named, Some((WindowId(1), "Reading".to_owned())));
-        assert!(h.screen.rename_group.is_none(), "the question closed");
-    }
-
-    #[test]
-    fn dragging_a_member_out_of_its_group_asks_the_compositor_to_ungroup_it() {
-        let h = grouped_harness();
-        let group = field_model::group_tile_id(5);
-        let member = field_model::session_tile_for(&h.doc, &h.toplevels[0]).expect("a tile");
-        assert_eq!(
-            h.doc.location(member).and_then(|at| at.container),
-            Some(group),
-            "the member starts inside its group"
-        );
-        // Inside the group tile the member has no rect of its own on the field, so the drag is
-        // exercised through the grammar the drop consults, which is what the pointer path calls.
-        let operation = templar_field::operation_for(
-            member,
-            h.doc.kind_of(member).expect("a kind"),
-            &Target::Empty {
-                container: None,
-                cell: Cell::new(0, 0),
-            },
-            FieldScreen::drop_origin(&h.doc, member),
-            templar_field::DropModifiers::MOVE,
-        );
-        assert_eq!(operation, Some(Operation::LeaveWindowGroup));
+        assert!(rows.contains(&"window.ungroup"), "rows were {rows:?}");
     }
 
     #[test]
@@ -6679,14 +7654,18 @@ mod tests {
     }
 
     #[test]
-    fn tab_visits_every_object_and_shift_tab_reverses_with_selection() {
+    fn tab_visits_objects_and_work_without_selecting_work_for_field_operations() {
         let mut h = Harness::new();
         h.frame();
         let mut visited = Vec::new();
         for _ in 0..100 {
             h.key(KeyInput::Tab);
             let id = h.screen.focus.expect("a tile receives focus");
-            assert_eq!(h.screen.selection.to_vec(), vec![id]);
+            if field_model::window_for_tile(&h.doc, id, &h.toplevels).is_some() {
+                assert!(h.screen.selection.is_empty());
+            } else {
+                assert_eq!(h.screen.selection.to_vec(), vec![id]);
+            }
             if visited.first() == Some(&id) {
                 break;
             }
@@ -6834,6 +7813,8 @@ mod tests {
                 .0;
             }
             self.doc = doc;
+            self.toplevels.clear();
+            self.merge_live = false;
             self.screen = FieldScreen::default();
         }
 
@@ -7540,7 +8521,7 @@ mod tests {
         h.screen.search.set_text("image");
         h.frame();
         let gimp: AppId = "desktop-import.gimp.desktop".parse().unwrap();
-        let (x, y) = (W - 80, H - 80);
+        let (x, y) = (h.screen.bounds.right() - 80, h.screen.bounds.bottom() - 80);
         h.carry_first_result_to(x, y);
         assert!(
             h.screen.pending.is_some(),
@@ -7596,7 +8577,7 @@ mod tests {
         h.screen.search_focused = true;
         h.screen.search.set_text("image");
         h.frame();
-        h.carry_first_result_to(W - 80, H - 80);
+        h.carry_first_result_to(h.screen.bounds.right() - 80, h.screen.bounds.bottom() - 80);
         let actions = h.key(KeyInput::Escape);
         assert!(actions.is_empty(), "{actions:?}");
         assert!(h.screen.pending.is_none());
@@ -7619,7 +8600,7 @@ mod tests {
         h.screen.search.set_text("Files");
         h.frame();
         let files = tile_id_for("app:org.templaros.Files");
-        h.carry_first_result_to(W - 80, H - 80);
+        h.carry_first_result_to(h.screen.bounds.right() - 80, h.screen.bounds.bottom() - 80);
         assert!(
             h.screen.pending.is_none(),
             "the pinned tile itself is carried"
@@ -7664,7 +8645,7 @@ mod tests {
             );
             self.screen
                 .menu
-                .row(&ui, self.screen.bounds, index)
+                .row(&ui, self.screen.menu_bounds, index)
                 .expect("the menu is open and has that row")
         }
     }
@@ -7674,13 +8655,16 @@ mod tests {
     /// that menu carries the window rows.
     #[test]
     fn secondary_click_over_a_session_tile_opens_that_windows_menu() {
-        let mut h = Harness::new().with_window_tiles();
+        let mut h = Harness::new();
         let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
         let rect = h.rect_of(open);
         h.secondary_click(rect.x + rect.w / 2, rect.bottom() - 8);
 
         let target = h.screen.menu.target().expect("the menu opened");
-        assert_eq!(target.tile, Some(open));
+        assert_eq!(
+            target.tile, None,
+            "work exposes window verbs, not persistent layout manipulation"
+        );
         assert_eq!(target.window, Some(WindowId(1)));
         let ids: Vec<&str> = target.rows().iter().map(|row| row.action).collect();
         assert!(ids.contains(&"window.close"));
@@ -7706,7 +8690,7 @@ mod tests {
     /// unsaved work and the compositor cannot know. One press arms; only the second closes.
     #[test]
     fn closing_a_window_from_the_menu_takes_two_presses() {
-        let mut h = Harness::new().with_window_tiles();
+        let mut h = Harness::new();
         let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
         let rect = h.rect_of(open);
         h.secondary_click(rect.x + rect.w / 2, rect.bottom() - 8);
@@ -7766,7 +8750,7 @@ mod tests {
 
     #[test]
     fn escape_dismisses_the_menu_and_the_field_does_not_also_act_on_that_press() {
-        let mut h = Harness::new().with_window_tiles();
+        let mut h = Harness::new();
         let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
         let rect = h.rect_of(open);
         h.screen.focus = Some(open);
@@ -7787,7 +8771,7 @@ mod tests {
     /// own, and must not also open whatever the menu was covering.
     #[test]
     fn clicking_away_dismisses_the_menu_without_activating_anything_underneath() {
-        let mut h = Harness::new().with_window_tiles();
+        let mut h = Harness::new();
         let open = field_model::session_tile_for(&h.doc, &h.toplevels[0]).unwrap();
         let rect = h.rect_of(open);
         h.secondary_click(rect.x + rect.w / 2, rect.bottom() - 8);

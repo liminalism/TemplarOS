@@ -42,3 +42,5 @@ pub mod surface;
 pub mod taskbar;
 pub mod unlock;
 pub mod wayland_bridge;
+pub mod work_layout;
+pub mod work_positions;

@@ -66,12 +66,111 @@ pub struct TaskfieldScreen {
     opaque: Vec<(Rect, i32)>,
 }
 
+/// A bounded, contiguous page of the compositor's order that always contains selection.
+pub fn switcher_visible_range(
+    status: &crate::wayland_bridge::SwitcherStatus,
+    capacity: usize,
+) -> std::ops::Range<usize> {
+    let capacity = capacity.max(1);
+    let selected = status
+        .windows
+        .iter()
+        .position(|id| Some(*id) == status.selected)
+        .unwrap_or(0);
+    let start = selected
+        .saturating_sub(capacity / 2)
+        .min(status.windows.len().saturating_sub(capacity));
+    start..(start + capacity).min(status.windows.len())
+}
+
 impl TaskfieldScreen {
     /// The shapes this frame painted solid, for the host's alpha mask. **Not** the input region:
     /// the mode's input is the compositor's, and this surface claims none of it.
     #[must_use]
     pub fn opaque_shapes(&self) -> &[(Rect, i32)] {
         &self.opaque
+    }
+
+    pub fn draw_switcher(
+        &mut self,
+        ui: &mut Ui<'_>,
+        area: Rect,
+        status: &crate::wayland_bridge::SwitcherStatus,
+        toplevels: &[ShellToplevel],
+        icons: &HashMap<String, Bitmap>,
+        previews: &HashMap<String, Bitmap>,
+    ) {
+        self.opaque.clear();
+        ui.painter.fill_rect(area, design::ground());
+        if !status.active {
+            return;
+        }
+        let row_h = ui.px(100).min(area.h.max(1));
+        let capacity = (area.h / row_h).max(1) as usize;
+        let shown = switcher_visible_range(status, capacity);
+        let count = shown.len();
+        let width = ui.px(480).min(area.w);
+        let panel = Rect::new(
+            area.x + (area.w - width) / 2,
+            area.y + (area.h - count as i32 * row_h) / 2,
+            width,
+            count as i32 * row_h,
+        );
+        for (index, id) in status.windows[shown].iter().enumerate() {
+            let Some(window) = toplevels.iter().find(|window| window.window_id == *id) else {
+                continue;
+            };
+            let row = Rect::new(panel.x, panel.y + index as i32 * row_h, width, row_h);
+            self.opaque.push((row, 0));
+            ui.painter.fill_rect(
+                row,
+                if Some(*id) == status.selected {
+                    design::accent_soft()
+                } else {
+                    design::shell_fill()
+                },
+            );
+            let inner = row.inset(ui.px(6));
+            let (picture, label) = inner.split_left((inner.w / 3).max(1));
+            ui.painter.fill_rect(picture, design::well_fill());
+            if let Some(preview) =
+                previews.get(&crate::field_model::session_identifier(window, None))
+            {
+                ui.painter.blit(
+                    preview,
+                    super::window_visual::letterbox(picture, preview.width, preview.height),
+                    ScaleFilter::Bilinear,
+                );
+            }
+            let side = ui.px(24).min(label.h);
+            super::window_visual::icon(
+                ui,
+                Rect::new(label.x + ui.px(8), label.y, side, side),
+                window.icon_app_id(),
+                icons,
+            );
+            if Some(*id) == status.selected {
+                ui.label_styled(
+                    Rect::new(
+                        label.x + ui.px(8),
+                        label.y + side,
+                        (label.w - ui.px(16)).max(0),
+                        (label.h - side).max(0),
+                    ),
+                    title_of(window),
+                    design::state_style(ui),
+                    design::text(),
+                    Align::Left,
+                );
+            }
+            super::window_visual::marks(
+                ui,
+                row,
+                window.shelved,
+                window.activated,
+                window.verified_identity,
+            );
+        }
     }
 
     /// Paint the labels over the cards the compositor is presenting.
@@ -283,10 +382,29 @@ mod tests {
     use templar_window::taskfield::layout;
     use templar_window::{Layer, task};
 
+    #[test]
+    fn switcher_pages_preserve_compositor_order_and_always_include_selection() {
+        let mut status = crate::wayland_bridge::SwitcherStatus {
+            active: true,
+            selected: Some(WindowId(12)),
+            windows: (1..=12).map(WindowId).collect(),
+        };
+        let range = switcher_visible_range(&status, 3);
+        assert_eq!(
+            &status.windows[range],
+            &[WindowId(10), WindowId(11), WindowId(12)]
+        );
+        status.selected = Some(WindowId(1));
+        assert_eq!(switcher_visible_range(&status, 3), 0..3);
+        status.windows.clear();
+        assert_eq!(switcher_visible_range(&status, 0), 0..0);
+    }
+
     fn window(id: u64, app: &str, title: &str) -> ShellToplevel {
         ShellToplevel {
             window_id: WindowId(id),
             canonical_app_id: Some(app.parse().unwrap()),
+            claimed_app_id: None,
             instance_id: None,
             title: title.to_owned(),
             verified_identity: true,

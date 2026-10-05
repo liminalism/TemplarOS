@@ -125,6 +125,7 @@ pub struct HomeGardenApi {
     probe: Arc<DaemonProbe>,
     connection: zbus::Connection,
     writer: mpsc::Sender<Write>,
+    apps: Arc<templar_appd::Registry>,
 }
 
 impl std::fmt::Debug for HomeGardenApi {
@@ -143,6 +144,7 @@ impl HomeGardenApi {
         schema: Arc<RwLock<SettingsSchema>>,
         settings: Arc<RwLock<SettingsValues>>,
         connection: zbus::Connection,
+        apps: Arc<templar_appd::Registry>,
     ) -> Self {
         let ledger = homegarden::load(&store);
         Self {
@@ -160,6 +162,7 @@ impl HomeGardenApi {
             schema,
             settings,
             connection,
+            apps,
         }
     }
 
@@ -243,12 +246,17 @@ impl HomeGardenApi {
         instance_id: Option<InstanceId>,
     ) {
         let config = self.config();
-        if !config.enabled {
+        if !config.enabled && kind != ActivityKind::TerminalEntered {
             return;
         }
         let role = role.or_else(|| app_id.as_ref().and_then(|app| self.role_of(app)));
         let mut inner = self.inner.lock().expect("garden lock");
         let at = inner.now();
+        if kind == ActivityKind::TerminalEntered {
+            inner.ledger.working_directories.retain(|id, _| {
+                InstanceId::parse(id).is_some_and(|instance| self.apps.contains_instance(instance))
+            });
+        }
         let activity = HomeActivity {
             path,
             kind,
@@ -257,11 +265,13 @@ impl HomeGardenApi {
             at,
             instance_id,
         };
-        if let Some(root) = inner
+        let root = inner
             .ledger
-            .observe(&activity, self.probe.as_ref(), &config)
-        {
+            .observe(&activity, self.probe.as_ref(), &config);
+        if let Some(root) = &root {
             tracing::info!(kind = kind.as_str(), root = %root.display(), "garden observed");
+        }
+        if root.is_some() || (kind == ActivityKind::TerminalEntered && instance_id.is_some()) {
             self.persist_observed(&mut inner);
         }
     }
@@ -272,8 +282,8 @@ impl HomeGardenApi {
     /// The two associations the doc calls strong are both this one event. A directory argument is
     /// "launched here" and is evidence; a file argument is the brokered open, whose *weight* the
     /// shell has already reported as `file-opened` — so the instance is attached without counting
-    /// the act twice. This is the only place in the system that knows which instance a launch
-    /// produced, which is why the association is made here and not over the bus.
+    /// the act twice. This source knows exactly which instance the broker produced; the
+    /// external terminal source separately authenticates its instance from the bus peer.
     pub fn observe_launch(&self, app_id: &AppId, arguments: &[String], instance: InstanceId) {
         if let Some(directory) = launch_directory(arguments) {
             self.observe_activity(
@@ -769,7 +779,15 @@ fn parse_path(path: &str) -> fdo::Result<PathBuf> {
 
 #[zbus::interface(name = "org.templaros.HomeGarden1")]
 impl HomeGardenApi {
-    async fn observe(&self, kind: &str, path: &str, app_id: &str, role: &str) -> fdo::Result<()> {
+    async fn observe(
+        &self,
+        kind: &str,
+        path: &str,
+        app_id: &str,
+        role: &str,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
         let kind = ActivityKind::parse(kind)
             .ok_or_else(|| fdo::Error::InvalidArgs(format!("unknown activity kind {kind:?}")))?;
         let path = parse_path(path)?;
@@ -792,9 +810,45 @@ impl HomeGardenApi {
                     .ok_or_else(|| fdo::Error::InvalidArgs(format!("unknown role {role:?}")))?,
             )
         };
-        // No instance: an act observed over the bus is one nobody can vouch for the instance
-        // of, and a guess would be an association the user never made.
-        self.observe_activity(kind, path, app_id, role, None);
+        // A prompt hook's child shares the terminal's brokered cgroup. Never trust an instance
+        // or application string supplied by the caller as evidence of that association.
+        let resolution = if kind == ActivityKind::TerminalEntered {
+            if let Some(sender) = header.sender() {
+                let dbus = zbus::fdo::DBusProxy::new(&self.connection)
+                    .await
+                    .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+                match dbus
+                    .get_connection_unix_process_id(sender.clone().into())
+                    .await
+                {
+                    Ok(pid) => self
+                        .apps
+                        .resolve_window(pid, &templar_types::WindowClaims::default())
+                        .ok(),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let verified = resolution.filter(|identity| identity.confidence.is_verified());
+        let instance = verified.as_ref().and_then(|identity| identity.instance_id);
+        let app_id = verified
+            .as_ref()
+            .and_then(|identity| identity.app_id.clone())
+            .or(app_id);
+        self.observe_activity(kind, path.clone(), app_id, role, instance);
+        if let Some(instance) = instance {
+            Self::context_changed(
+                &emitter,
+                instance.to_string(),
+                path.to_string_lossy().into_owned(),
+            )
+            .await
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        }
         Ok(())
     }
 
@@ -828,6 +882,12 @@ impl HomeGardenApi {
             .map(|context| context_json(context, now, &config))
             .collect();
         serde_json::to_string(&list).map_err(|error| fdo::Error::Failed(error.to_string()))
+    }
+
+    async fn working_directories(&self) -> fdo::Result<String> {
+        let inner = self.inner.lock().expect("garden lock");
+        serde_json::to_string(&inner.ledger.working_directories)
+            .map_err(|error| fdo::Error::Failed(error.to_string()))
     }
 
     async fn describe(&self, path: &str) -> fdo::Result<String> {
@@ -930,6 +990,13 @@ impl HomeGardenApi {
         })
         .to_string())
     }
+
+    #[zbus(signal)]
+    async fn context_changed(
+        signal_emitter: &SignalEmitter<'_>,
+        instance_id: String,
+        path: String,
+    ) -> zbus::Result<()>;
 
     #[zbus(signal)]
     async fn tended(

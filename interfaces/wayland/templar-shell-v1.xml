@@ -6,11 +6,12 @@
 <protocol name="templar_shell_v1">
   <copyright>Copyright 2026 TemplarOS contributors. AGPL-3.0-only.</copyright>
 
-  <interface name="templar_shell_manager_v1" version="10">
+  <interface name="templar_shell_manager_v1" version="13">
     <description summary="shell control entry point">
       Bound only by the client the compositor itself launched as the shell.
     </description>
     <request name="get_toplevel_list">
+      <!-- Child objects inherit the negotiated manager version. -->
       <arg name="id" type="new_id" interface="templar_shell_toplevel_list_v1"/>
     </request>
     <request name="show_all_windows">
@@ -356,6 +357,15 @@
       </description>
       <arg name="enabled" type="uint" summary="1 for tap-to-click, 0 for full presses only"/>
     </request>
+    <request name="focus_surface" since="11">
+      <description summary="give a visible shell popup keyboard focus without activating a window">
+        Only a mapped, visible shell_overlay or system_modal surface owned by this connection
+        may take focus. This never changes client activation, MRU, stacking or Home reveal.
+        A null surface releases focus back to the current visible client or Home, but only
+        while this connection still owns keyboard focus. Refused while locked or in Taskfield.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface" allow-null="true"/>
+    </request>
     <event name="rail" since="9">
       <description summary="a rail opened or closed">
         Sent when the gate opens a rail and when that rail closes, whoever closed it: the shell's
@@ -430,18 +440,31 @@
         </description>
       </entry>
     </enum>
+    <request name="set_reduced_motion" since="13">
+      <description summary="remove all compositor presentation motion">Nonzero disables motion immediately, including transitions already in flight.</description>
+      <arg name="enabled" type="uint"/>
+    </request>
+    <event name="switcher_state" since="13">
+      <description summary="compositor-owned frozen keyboard walk">Windows is an array of native-endian uint32 semantic window ids in display order. Zero active closes the shell presentation. Selection and all input remain compositor-owned.</description>
+      <arg name="active" type="uint"/>
+      <arg name="selected" type="uint"/>
+      <arg name="windows" type="array"/>
+    </event>
   </interface>
 
   <!-- Keep this version at least as high as templar_shell_toplevel_v1: objects are created at
        the list resource's negotiated version. A lower list version silently makes newer
-       toplevel events unreachable. -->
-  <interface name="templar_shell_toplevel_list_v1" version="5">
+       toplevel events unreachable. `get_toplevel_list` carries no version, so the list (and every
+       toplevel it creates) inherits the *manager's* bound version: a toplevel request or event
+       added here takes the manager version that introduced it as its `since`, and all three
+       interfaces move together. -->
+  <interface name="templar_shell_toplevel_list_v1" version="13">
     <event name="toplevel">
       <arg name="id" type="new_id" interface="templar_shell_toplevel_v1"/>
     </event>
   </interface>
 
-  <interface name="templar_shell_toplevel_v1" version="5">
+  <interface name="templar_shell_toplevel_v1" version="13">
     <!-- The same opaque string `ext_foreign_toplevel_handle_v1.identifier` carries for this
          window, sent once, before the first `identity`. It is what lets the shell pair a window
          preview obtained through the standard capture protocols with the window's entry here. -->
@@ -537,5 +560,32 @@
     <request name="set_group_name" since="3">
       <arg name="name" type="string"/>
     </request>
+    <request name="set_minimize_target" since="12">
+      <description summary="where this window lives on Home: the card it parks into">
+        A rectangle in surface-local logical coordinates on a surface this trusted shell
+        connection owns (its Home surface): the card that stands for this window there. The
+        compositor resolves it to global coordinates against that surface's position each time
+        it is used, so the shell resends it only when the card itself moves or resizes.
+
+        It is a hint for the park/unpark motion only: when the window is shelved the compositor
+        draws it shrinking into this rectangle, and when it is unshelved, growing back out of it.
+        It never changes the window's geometry, layout, stacking, focus or input, and a window
+        without a target parks and unparks exactly as before (instantly).
+
+        A null `surface`, or a `width` or `height` of zero or less, clears the target. A surface
+        that is not one of this connection's own shell surfaces is refused silently, as is a
+        window the compositor no longer knows. The target is dropped when either window is
+        destroyed.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface" allow-null="true"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </request>
+    <event name="claimed_app_id" since="13">
+      <description summary="untrusted display-only application claim">May select a decorative icon with an unverified mark. It is not canonical identity and must never affect task merging or capabilities.</description>
+      <arg name="app_id" type="string"/>
+    </event>
   </interface>
 </protocol>

@@ -114,6 +114,11 @@ pub struct EntryWindow {
     pub id: WindowId,
     pub title: String,
     pub preview: String,
+    /// The window's own application, whose icon its fan card falls back to before a capture
+    /// arrives. In a group the members are different applications, so the entry's icon is not
+    /// enough.
+    pub app_id: Option<String>,
+    pub verified: bool,
 }
 
 /// One thing on the bar to switch to: a task unit, dressed for drawing.
@@ -125,7 +130,9 @@ pub struct Entry {
     /// The name a person reads: the group's title, the application's short name, or an
     /// unidentified window's own title, which is all such a window has.
     pub label: String,
-    /// The application whose icon this entry wears, when it is one.
+    /// The application whose icon this entry wears: the application itself, or — for a group,
+    /// which is more than one application — its most recently activated member's, so a group's
+    /// chip is a picture of what was last used in it rather than a letter.
     pub app_id: Option<String>,
     /// Every window in the unit, most recently activated first, parked ones included.
     pub windows: Vec<EntryWindow>,
@@ -226,7 +233,8 @@ pub fn entries_in(
                 label: label_of(&unit),
                 app_id: match &unit.key {
                     TaskKey::App(app) => Some(app.to_string()),
-                    _ => None,
+                    TaskKey::Group(_) => windows.iter().find_map(|window| window.app_id.clone()),
+                    TaskKey::Unknown(_) => windows.first().and_then(|window| window.app_id.clone()),
                 },
                 windows,
                 active,
@@ -264,6 +272,8 @@ fn entry_window(toplevel: &ShellToplevel) -> EntryWindow {
         id: toplevel.window_id,
         title: title_or_untitled(&toplevel.title),
         preview: preview_key(toplevel),
+        app_id: toplevel.icon_app_id().map(str::to_owned),
+        verified: toplevel.verified_identity,
     }
 }
 
@@ -290,6 +300,7 @@ mod tests {
         ShellToplevel {
             window_id: WindowId(id),
             canonical_app_id: Some(app.parse().unwrap()),
+            claimed_app_id: None,
             instance_id: None,
             title: title.to_owned(),
             verified_identity: true,
@@ -306,6 +317,20 @@ mod tests {
                 accent: 0x0011_2233,
             }),
         }
+    }
+
+    #[test]
+    fn claimed_icon_does_not_merge_unknown_windows_with_a_trusted_application() {
+        let trusted = window(1, "org.example.Editor", "trusted", None);
+        let mut unknown = window(2, "org.example.Editor", "unverified", None);
+        unknown.canonical_app_id = None;
+        unknown.verified_identity = false;
+        unknown.claimed_app_id = Some("org.example.Editor".into());
+        let result = entries(&[trusted, unknown.clone()]);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[1].unit.key, TaskKey::Unknown(unknown.window_id));
+        assert_eq!(result[1].app_id.as_deref(), Some("org.example.Editor"));
+        assert_eq!(result[0].unit.windows, vec![WindowId(1)]);
     }
 
     #[test]
@@ -354,6 +379,29 @@ mod tests {
         assert_eq!(entries[2].label, "Editor");
         assert_eq!(entries[2].most_recent(), Some(WindowId(3)));
         assert!(entries[2].active);
+    }
+
+    /// A group is more than one application, so it has no icon of its own — but a chip that is
+    /// a letter beside chips that are pictures is the all-initials bar again. It wears the most
+    /// recently used member's, and each fan card wears its own window's.
+    #[test]
+    fn a_group_wears_its_most_recent_members_icon_and_each_card_its_own() {
+        let toplevels = vec![
+            window(5, "org.example.Browser", "docs", Some(9)),
+            window(4, "org.example.Term", "sh", Some(9)),
+        ];
+        let group = &entries(&toplevels)[0];
+        assert_eq!(group.key(), "group:9");
+        assert_eq!(group.app_id.as_deref(), Some("org.example.Term"));
+        let cards: Vec<Option<&str>> = group
+            .windows
+            .iter()
+            .map(|window| window.app_id.as_deref())
+            .collect();
+        assert_eq!(
+            cards,
+            [Some("org.example.Term"), Some("org.example.Browser")]
+        );
     }
 
     #[test]

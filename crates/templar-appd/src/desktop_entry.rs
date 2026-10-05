@@ -40,21 +40,26 @@ pub struct DesktopEntry {
     pub only_show_in: Vec<String>,
     pub not_show_in: Vec<String>,
     pub x_flatpak: Option<String>,
-    /// Every other `X-`-prefixed key, verbatim. `templar-sessiond`'s autostart importer reads
+    /// Every other `X-`-prefixed key, verbatim. `templar-sessiond` reads
     /// `X-TemplarOS-Background` (comma-separated [`templar_session_core::autostart::BackgroundPermission`]
-    /// kebab-names) and `X-TemplarOS-Provides` (a single [`templar_types::ProviderRole`] kebab-name)
-    /// from here; nothing in this crate interprets them.
+    /// kebab-names) and `X-TemplarOS-Provides` (comma-separated [`templar_types::ProviderRole`]
+    /// kebab-names) from here; nothing in this crate interprets them.
     pub extra: BTreeMap<String, String>,
 }
 
 /// Parse the `[Desktop Entry]` group of a `.desktop` file. `None` if the group is absent.
+///
+/// Leading whitespace is tolerated (`desktop-file-validate` flags it but keeps reading, and keys
+/// and values were already trimmed here): refusing an indented file made a hand-written entry
+/// silently vanish from the registry, which is a worse failure than reading a file the validator
+/// tuts at.
 pub fn parse(text: &str) -> Option<DesktopEntry> {
     let mut entry = DesktopEntry::default();
     let mut in_main_group = false;
     let mut saw_main_group = false;
 
     for raw_line in text.lines() {
-        let line = raw_line.trim_end();
+        let line = raw_line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -675,8 +680,9 @@ pub fn derive_manifest(
 ///
 /// `X-Flatpak` overrides the directory's own classification: a Flatpak export found anywhere is a
 /// Flatpak. `declared_privileges` and `provider_claims` are copied verbatim from the entry's
-/// `X-TemplarOS-*` keys and are inert here — a claim recorded is a claim to *show*, and the code that
-/// grants anything reads the grant tables, never this.
+/// `X-TemplarOS-*` keys and are inert here — a claim recorded is a claim to *show*. The one reader
+/// that acts on them is sessiond's startup claimed-role pass, which checks trust first and writes
+/// registry declarations; everything that enforces reads the registry, never this.
 fn provenance_of(
     entry: &DesktopEntry,
     desktop_id: &str,
@@ -1231,6 +1237,23 @@ Icon=templar-viewer
         assert_eq!(
             manifest.declared_logical_app().map(ToString::to_string),
             Some("logical.sync".to_owned()),
+        );
+    }
+
+    #[test]
+    fn an_indented_desktop_file_still_parses() {
+        // `/usr/share/applications/nm-tray2.desktop` was hand-written with every line indented.
+        // The group header never matched, `parse` returned `None`, and the application was
+        // silently absent from the registry — Settings showed "no application declares this
+        // role" for a provider that was installed and correctly keyed.
+        let text = "    [Desktop Entry]\n    Type=Application\n    Name=nm-tray-alt\n    Exec=/usr/local/bin/nm-tray\n    X-TemplarOS-Provides=network-status-ui\n";
+        let entry = parse(text).expect("leading whitespace is tolerated");
+        assert_eq!(entry.entry_type, "Application");
+        assert_eq!(entry.name, "nm-tray-alt");
+        assert_eq!(entry.exec.as_deref(), Some("/usr/local/bin/nm-tray"));
+        assert_eq!(
+            entry.extra.get("X-TemplarOS-Provides").map(String::as_str),
+            Some("network-status-ui")
         );
     }
 }

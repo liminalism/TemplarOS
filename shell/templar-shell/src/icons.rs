@@ -33,6 +33,23 @@ use std::path::{Path, PathBuf};
 
 use pixelkit_raster::Bitmap;
 
+/// Catalogue arrival may retry a hintless lookup, but a journal miss is emitted only once.
+pub fn log_icon_miss_once(app: &str, icon: Option<&str>, desktop_file: Option<&str>) {
+    static MISSES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(Default::default);
+    let mut misses = MISSES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if misses.insert(app.to_owned()) {
+        tracing::info!(
+            app_id = app,
+            icon = icon.unwrap_or("<none>"),
+            desktop_file = desktop_file.unwrap_or("<none>"),
+            "no icon resolved for an application"
+        );
+    }
+}
+
 /// The prefix `templar_appd::desktop_entry::derive_app_id` puts on an imported application's id.
 const IMPORT_PREFIX: &str = "desktop-import.";
 
@@ -508,14 +525,55 @@ pub fn load_app_icon(app_id: &str, roots: &impl IconRoots) -> Option<Bitmap> {
 }
 
 /// [`load_app_icon`] for a caller that already holds the application's manifest data.
+///
+/// Every name in [`app_icon_names`] is tried in turn, and the first that resolves *and* decodes
+/// wins: an `Icon=` value the installed themes do not carry, or a file the decoder cannot read,
+/// is a reason to try the application's own name next, not a reason to draw a letter.
 pub fn load_app_icon_hinted(
     app_id: &str,
     hints: IconHints<'_>,
     roots: &impl IconRoots,
 ) -> Option<Bitmap> {
-    let icon_name = desktop_icon_name_hinted(app_id, hints, roots)?;
-    let path = resolve_icon_path(&icon_name, roots)?;
-    decode_icon_file(&path)
+    app_icon_names(app_id, hints, roots)
+        .iter()
+        .filter_map(|name| resolve_icon_path(name, roots))
+        .find_map(|path| decode_icon_file(&path))
+}
+
+/// The icon names worth asking the theme for on behalf of one application, best first: the
+/// desktop entry's `Icon=`, then the desktop file's own base name (what most applications name
+/// their icon after: `kitty.desktop` installs `kitty`, `org.gnome.Nautilus.desktop` installs
+/// `org.gnome.Nautilus`) in its own case and lower-cased, then a native application's id.
+///
+/// The fallbacks are for an `Icon=` that points at a theme this machine does not have, and for
+/// an application whose desktop file was not found at all; either one used to leave the chip
+/// wearing an initial even when the theme had a picture under the application's own name.
+#[must_use]
+pub fn app_icon_names(app_id: &str, hints: IconHints<'_>, roots: &impl IconRoots) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut push = |name: String| {
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    };
+    if let Some(icon) = desktop_icon_name_hinted(app_id, hints, roots) {
+        push(icon);
+    }
+    let desktop_ids = hints
+        .desktop_file_ids
+        .iter()
+        .map(String::as_str)
+        .map(with_desktop_suffix)
+        .chain(desktop_file_candidates(app_id));
+    for desktop_id in desktop_ids {
+        let stem = desktop_id.strip_suffix(".desktop").unwrap_or(&desktop_id);
+        if stem.starts_with(IMPORT_PREFIX) {
+            continue;
+        }
+        push(stem.to_owned());
+        push(stem.to_lowercase());
+    }
+    names
 }
 
 /// A named icon straight from the theme, with no `.desktop` file in between: what a folder, a
@@ -755,6 +813,54 @@ mod tests {
     fn an_app_with_no_desktop_file_at_all_loads_no_icon() {
         let (_dir, roots) = fixture();
         assert_eq!(load_app_icon("org.templaros.Nowhere", &roots), None);
+    }
+
+    fn write_red_svg(path: &Path) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#ff0000"/></svg>"##,
+        )
+        .unwrap();
+    }
+
+    /// The all-initials bar: a desktop entry whose `Icon=` names something no installed theme
+    /// carries, for an application that does install a picture under its own name.
+    #[test]
+    fn an_icon_value_no_theme_carries_falls_back_to_the_desktop_files_own_name() {
+        let (_dir, roots) = fixture();
+        fs::write(
+            roots.desktop.join("kitty.desktop"),
+            "[Desktop Entry]\nName=kitty\nIcon=kitty-from-another-theme\n",
+        )
+        .unwrap();
+        write_red_svg(&roots.theme.join("scalable/apps/kitty.svg"));
+        assert!(load_app_icon("desktop-import.kitty.desktop", &roots).is_some());
+    }
+
+    #[test]
+    fn an_application_with_no_desktop_file_still_finds_an_icon_named_after_it() {
+        let (_dir, roots) = fixture();
+        write_red_svg(&roots.theme.join("scalable/apps/org.example.viewer.svg"));
+        assert!(load_app_icon("desktop-import.org.example.Viewer.desktop", &roots).is_some());
+    }
+
+    #[test]
+    fn the_declared_icon_is_asked_for_before_any_name_guessed_from_the_application() {
+        let (_dir, roots) = fixture();
+        fs::write(
+            roots.desktop.join("org.templaros.Files.desktop"),
+            "[Desktop Entry]\nName=Files\nIcon=system-file-manager\n",
+        )
+        .unwrap();
+        assert_eq!(
+            app_icon_names("org.templaros.Files", IconHints::default(), &roots),
+            [
+                "system-file-manager",
+                "org.templaros.Files",
+                "org.templaros.files"
+            ],
+        );
     }
 
     #[test]

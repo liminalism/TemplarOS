@@ -148,6 +148,11 @@ impl RailReveal {
         }
     }
 
+    /// Reduced motion removes the reveal curtain, including an opening already in progress.
+    pub fn show_all(&mut self) {
+        self.visible = self.length;
+    }
+
     #[must_use]
     pub fn visible(&self) -> i32 {
         self.visible
@@ -163,9 +168,8 @@ impl RailReveal {
     }
 }
 
-/// Whether performing `action` from a rail leaves the rail open: the level controls (sliders,
-/// volume and brightness steps, mute), which a person adjusts in several goes while watching.
-/// Everything else goes somewhere, and the rail steps out of the way of it.
+/// Whether performing `action` from a rail leaves the rail open: the level controls and the
+/// native clock popup, which remain on this surface. Actions that open another surface dismiss it.
 #[must_use]
 pub fn action_keeps_rail_open(action: &BarAction) -> bool {
     match action {
@@ -173,7 +177,9 @@ pub fn action_keeps_rail_open(action: &BarAction) -> bool {
             FieldAction::SetVolume(_) | FieldAction::SetMuted(_) | FieldAction::SetBrightness(_),
         ) => true,
         BarAction::Field(FieldAction::RunAction(id)) => {
-            id.starts_with("volume.") || id.starts_with("brightness.")
+            id.starts_with("volume.")
+                || id.starts_with("brightness.")
+                || *id == "clock.open-calendar"
         }
         _ => false,
     }
@@ -216,6 +222,14 @@ mod tests {
     }
 
     #[test]
+    fn reduced_motion_finishes_an_existing_reveal_without_pointer_travel() {
+        let mut reveal = RailReveal::new(960, RailSide::Right, 200, 20);
+        reveal.show_all();
+        assert_eq!(reveal.visible(), 200);
+        assert!(!reveal.advance(960.0));
+    }
+
+    #[test]
     fn rail_left_mirrors_right() {
         let mut left = RailReveal::new(960, RailSide::Left, 600, 0);
         let mut right = RailReveal::new(960, RailSide::Right, 600, 0);
@@ -246,6 +260,7 @@ mod tests {
             BarAction::Field(FieldAction::RunAction("volume.mute")),
             BarAction::Field(FieldAction::RunAction("volume.up")),
             BarAction::Field(FieldAction::RunAction("brightness.down")),
+            BarAction::Field(FieldAction::RunAction("clock.open-calendar")),
         ];
         for action in &keeps {
             assert!(action_keeps_rail_open(action), "{action:?}");
@@ -255,7 +270,6 @@ mod tests {
             BarAction::Overview,
             BarAction::Field(FieldAction::RunAction("settings.open")),
             BarAction::Field(FieldAction::RunAction("session.lock")),
-            BarAction::Field(FieldAction::RunAction("clock.open-calendar")),
             BarAction::Field(FieldAction::RunAction("network.open-control")),
         ];
         for action in &closes {

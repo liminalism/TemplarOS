@@ -284,8 +284,7 @@ impl FilesBrowseView {
         // A feed location's rows are already rendered text, not entries: nothing to select and
         // nothing to sort, so it takes the simple path and returns early.
         if let Some(drawer) = here.feed() {
-            Self::draw_feed(ui, area, state, drawer, data);
-            return None;
+            return Self::draw_feed(ui, area, state, drawer, data);
         }
         let ordered: Vec<BrowseEntry>;
         let visible_entries: &[BrowseEntry] = if searching {
@@ -464,7 +463,8 @@ impl FilesBrowseView {
         state: &mut FilesSurfaceState,
         drawer: crate::home_surface::Drawer,
         data: &FileBrowserData<'_>,
-    ) {
+    ) -> Option<FileBrowserAction> {
+        let mut action = None;
         ui.panel(area);
         let (roots_area, body) = area.split_left(ui.px(ROOTS_WIDTH).min(area.w / 3));
         Self::draw_pinned(ui, roots_area, state, data.sources, data.icons, data.home);
@@ -485,7 +485,7 @@ impl FilesBrowseView {
                 ui.theme.text_dim,
                 Align::Left,
             );
-            return;
+            return None;
         }
         let heights = vec![ui.px(ENTRY_HEIGHT); lines.len()];
         ui.scroll_list(&mut state.entry_scroll, rows, &heights, |ui, index, row| {
@@ -500,7 +500,17 @@ impl FilesBrowseView {
                 ui.theme.text,
                 Align::Left,
             );
+            if let Some(entry) = feed.and_then(|feed| feed.recents.get(index))
+                && ui.input.take_click(row)
+            {
+                action = Some(if entry.mime.as_deref() == Some("inode/directory") {
+                    FileBrowserAction::OpenInFiles(entry.path.clone())
+                } else {
+                    FileBrowserAction::Open(entry.path.clone())
+                });
+            }
         });
+        action
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1528,6 +1538,74 @@ mod tests {
     use crate::files_surface::{PinnedKind, PinnedLocation};
     use pixelkit_raster::{Painter, RasterKernel, WindowBuffer};
     use pixelkit_shell::{Input, Modifiers, MouseButton, Scale};
+
+    #[test]
+    fn recent_drawer_clicks_route_exact_structured_paths() {
+        use crate::drawers::recent::{RecentAction, RecentEntry};
+        for directory in [false, true] {
+            let mut harness = Harness::new();
+            harness.state.go_to(FilesLocation::Recent);
+            let path = PathBuf::from("/project/a file\nwith spaces");
+            let mut feed = crate::drawers::DrawerFeed::new("Recent", vec!["not the target".into()]);
+            feed.recents.push(RecentEntry {
+                path: path.clone(),
+                app_id: None,
+                at_ms: 99,
+                mime: Some(
+                    if directory {
+                        "inode/directory"
+                    } else {
+                        "text/plain"
+                    }
+                    .into(),
+                ),
+                action: RecentAction::Opened,
+            });
+            let feeds = [(crate::home_surface::Drawer::Recent, feed)].into();
+            let thumbnails = HashMap::new();
+            let icons = HashMap::new();
+            let data = FileBrowserData {
+                sources: &harness.sources,
+                listing: None,
+                pending: None,
+                error: None,
+                status: None,
+                search_query: None,
+                search_entries: None,
+                search_error: None,
+                feeds: &feeds,
+                thumbnails: &thumbnails,
+                icons: &icons,
+                home: None,
+            };
+            harness.input.cursor_moved(250.0, 50.0);
+            harness.input.mouse(MouseButton::Left, true);
+            harness.input.mouse(MouseButton::Left, false);
+            let mut ui = Ui::new(
+                Painter::new(&mut harness.buffer),
+                &mut harness.text,
+                &mut harness.input,
+                crate::surface::design::theme(),
+                Scale::ONE,
+                &mut harness.kernel,
+            );
+            let action = FilesBrowseView::draw_feed(
+                &mut ui,
+                Rect::new(0, 0, 1000, 600),
+                &mut harness.state,
+                crate::home_surface::Drawer::Recent,
+                &data,
+            );
+            assert_eq!(
+                action,
+                Some(if directory {
+                    FileBrowserAction::OpenInFiles(path)
+                } else {
+                    FileBrowserAction::Open(path)
+                })
+            );
+        }
+    }
 
     struct Harness {
         screen: FilesBrowseView,

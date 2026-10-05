@@ -22,7 +22,7 @@
 //! Every chip in that cluster does one named thing. The readings used to have a chip of their own
 //! that could not be clicked and a battery percentage is not a place to go, so the readings became
 //! the first line of the account popover and their width went to a Settings chip, which is
-//! somewhere to go. The clock opens the installed calendar; the network chip opens the network
+//! somewhere to go. The clock opens the shell's native calendar popup; the network chip opens the network
 //! control; the account chip is labelled with the account, because an unlabelled mark in the
 //! corner of the screen is a button nobody dares press.
 //!
@@ -449,11 +449,13 @@ pub fn island_width(entries: usize) -> i32 {
 /// The application's own name first, and the window title only as a fallback: a one-window entry
 /// is labelled with its title, and a terminal's title is a path — so taking the first character
 /// of it put a chip reading "/" on the bar. Only a letter or a digit is ever an initial;
-/// punctuation is skipped wherever it comes from.
+/// punctuation is skipped wherever it comes from. A group is the exception: its `app_id` is only
+/// the member whose icon it borrows, and the group's own name is what its letter stands for.
 fn chip_initial(entry: &Entry) -> String {
     let name = entry
         .app_id
         .as_deref()
+        .filter(|_| !matches!(entry.unit.key, templar_window::task::TaskKey::Group(_)))
         .and_then(|id| id.parse::<templar_types::AppId>().ok())
         .map(|id| crate::field_model::short_name(&id));
     name.as_deref()
@@ -941,21 +943,38 @@ impl BarScreen {
         ui.painter
             .stroke_rect(well, ui.scale.hairline(), design::edge());
         if let Some(preview) = data.previews.get(&window.preview) {
-            // ponytail: stretched into the well, exactly as Home's own tiles blit theirs. If a
-            // squashed thumbnail ever reads wrong, the upgrade is letterboxing to the capture's
-            // aspect inside this one rectangle.
-            ui.painter
-                .blit(preview, well.inset(ui.px(1)), ScaleFilter::Bilinear);
-            return;
+            ui.painter.blit(
+                preview,
+                super::window_visual::letterbox(
+                    well.inset(ui.px(1)),
+                    preview.width,
+                    preview.height,
+                ),
+                ScaleFilter::Bilinear,
+            );
         }
         let side = ui.px(ICON).min(well.w).min(well.h).max(4);
         let icon = Rect::new(
-            well.x + (well.w - side) / 2,
-            well.y + (well.h - side) / 2,
+            if data.previews.contains_key(&window.preview) {
+                well.x + ui.px(2)
+            } else {
+                well.x + (well.w - side) / 2
+            },
+            if data.previews.contains_key(&window.preview) {
+                well.y + ui.px(2)
+            } else {
+                well.y + (well.h - side) / 2
+            },
             side,
             side,
         );
-        if let Some(bitmap) = entry.app_id.as_ref().and_then(|id| data.icons.get(id)) {
+        // The window's own application first: in a group the cards are different applications.
+        let bitmap = window
+            .app_id
+            .as_ref()
+            .or(entry.app_id.as_ref())
+            .and_then(|id| data.icons.get(id));
+        if let Some(bitmap) = bitmap {
             ui.painter.blit(bitmap, icon, ScaleFilter::Bilinear);
         } else {
             ui.label(
@@ -1061,6 +1080,13 @@ impl BarScreen {
                         Align::Left,
                     );
                 }
+                super::window_visual::marks(
+                    ui,
+                    *rect,
+                    entry.is_parked(window.id),
+                    data.activated == Some(window.id),
+                    window.verified,
+                );
             }
             // Claimed from the top down, for the same reason: a click on the overlap belongs to
             // the card that is visible there.
@@ -1081,18 +1107,10 @@ impl BarScreen {
         for (index, (cell, entry)) in layout.cells.iter().zip(data.entries).enumerate() {
             let live = layout.live(*cell);
             let hovered = (live && ui.input.hovering(*cell)) || self.open_fan == Some(index);
-            let (fill, ink) = match (entry.active, hovered) {
-                (true, _) => (design::accent_soft(), design::text()),
-                (false, true) => (design::accent(), design::TAG_INK),
-                (false, false) => (design::TAG_FILL, design::TAG_INK),
-            };
-            // A parked window is still running and still reachable — it is just not on screen.
-            // The bar is the only place it now exists, Home having stopped holding tiles for
-            // running windows, so it is dimmed rather than dropped.
-            let ink = if entry.all_parked() {
-                design::text_faint()
-            } else {
-                ink
+            let fill = match (entry.active, hovered) {
+                (true, _) => design::accent_soft(),
+                (false, true) => design::accent(),
+                (false, false) => design::TAG_FILL,
             };
             chip(ui, *cell, fill);
             // Active is an underline rather than a box around the whole chip: the box read as a
@@ -1109,23 +1127,42 @@ impl BarScreen {
                     design::accent(),
                 );
             }
-            let icon_side = ui.px(ICON).min(cell.h - ui.px(6));
+            // Centred in the cell: the chip is the picture, with the count badge on its corner.
+            let icon_side = ui.px(ICON).min(cell.h - ui.px(6)).min(cell.w);
             let icon = Rect::new(
-                cell.x + ui.px(4),
+                cell.x + (cell.w - icon_side) / 2,
                 cell.y + (cell.h - icon_side) / 2,
-                icon_side.min(cell.w),
+                icon_side,
                 icon_side,
             );
-            if let Some(bitmap) = entry.app_id.as_ref().and_then(|id| data.icons.get(id)) {
-                ui.painter.blit(bitmap, icon, ScaleFilter::Bilinear);
+            if matches!(entry.unit.key, templar_window::task::TaskKey::Group(_)) {
+                let count = entry.windows.len().min(3);
+                let side = (icon_side * 3 / 4).max(1);
+                let step = (icon_side - side) / count.saturating_sub(1).max(1) as i32;
+                for (index, member) in entry.windows.iter().take(count).enumerate().rev() {
+                    let member_icon = Rect::new(
+                        icon.x + index as i32 * step,
+                        icon.y + index as i32 * step,
+                        side,
+                        side,
+                    );
+                    super::window_visual::icon(
+                        ui,
+                        member_icon,
+                        member.app_id.as_deref(),
+                        data.icons,
+                    );
+                }
             } else {
-                // A group has no application icon — it is more than one application by
-                // definition — so it wears its accent and its own initial.
-                let plate = entry.accent().unwrap_or(fill);
-                ui.painter
-                    .fill_rounded_rect(icon, ui.px(design::CHIP_RADIUS), plate);
-                ui.label(icon, &chip_initial(entry), ink, Align::Centre);
+                super::window_visual::icon(ui, icon, entry.app_id.as_deref(), data.icons);
             }
+            super::window_visual::marks(
+                ui,
+                *cell,
+                entry.all_parked(),
+                entry.active,
+                entry.windows.iter().all(|window| window.verified),
+            );
             // How many windows are behind this chip, groups included. One chip per unit is
             // deliberate (@templaros.decision.one-persistent-bottom-bar-tags-not-bands) and the
             // fan above the bar is how the rest are reached — but a chip that says nothing about
@@ -1321,6 +1358,7 @@ mod tests {
         ShellToplevel {
             window_id: WindowId(id),
             canonical_app_id: Some(app.parse().unwrap()),
+            claimed_app_id: None,
             instance_id: None,
             title: title.to_owned(),
             verified_identity: true,
@@ -2565,6 +2603,8 @@ mod initial_tests {
                 id: WindowId(1),
                 title: label.to_owned(),
                 preview: "window:1".to_owned(),
+                app_id: app_id.map(ToOwned::to_owned),
+                verified: true,
             }],
             active: false,
             lane: crate::taskbar::Lane::Latent,
@@ -2594,5 +2634,14 @@ mod initial_tests {
         // Nothing usable anywhere still produces a mark rather than an empty plate.
         assert_eq!(chip_initial(&entry(None, "///")), "?");
         assert_eq!(first_letter("/// 7up"), Some('7'));
+    }
+
+    /// A group borrows a member's icon, never its member's letter: without a picture, the
+    /// chip's initial is the group's own name.
+    #[test]
+    fn a_group_chip_without_a_picture_takes_its_letter_from_the_group() {
+        let mut group = entry(Some("desktop-import.kitty.desktop"), "Writing");
+        group.unit.key = templar_window::task::TaskKey::Group(templar_window::GroupId(7));
+        assert_eq!(chip_initial(&group), "W");
     }
 }

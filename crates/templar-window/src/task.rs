@@ -23,10 +23,6 @@ use templar_types::AppId;
 /// Taskfield. A linear strip is intrinsically bad at thirty windows; this is where it admits it.
 pub const FAN_MAX: usize = 4;
 
-/// How many windows `Alt+Tab` offers. Its job is *go back to something I was just using*, not to
-/// list everything — that is Taskfield's question.
-pub const RECENT_MAX: usize = 7;
-
 /// What one island chip, one Taskfield section and one `` Alt+` `` scope name.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TaskKey {
@@ -179,11 +175,14 @@ pub fn unit_of(units: &[TaskUnit], current: WindowId) -> Option<&TaskUnit> {
     units.iter().find(|unit| unit.windows.contains(&current))
 }
 
-/// The on-screen windows of `current`'s unit, most recently activated first: the group's members
-/// when it is grouped, the application's windows otherwise. `` Alt+` `` and the fan.
+/// Every window of `current`'s unit, parked ones included, most recently activated first: the
+/// group's members when it is grouped, the application's windows otherwise. `` Alt+` `` walks
+/// this, and like `Alt+Tab` it lists what is open rather than only what is on screen — the chord
+/// activates on release, which unshelves a parked window. The fan reads
+/// [`TaskUnit::visible_windows`] instead.
 #[must_use]
 pub fn within_unit(units: &[TaskUnit], current: WindowId) -> Vec<WindowId> {
-    unit_of(units, current).map_or_else(Vec::new, |unit| unit.visible_windows().collect())
+    unit_of(units, current).map_or_else(Vec::new, |unit| unit.windows.clone())
 }
 
 /// Whether a window answers a Taskfield query: an empty query matches everything, and a non-empty
@@ -235,6 +234,7 @@ mod tests {
         ShellToplevel {
             window_id: WindowId(id),
             canonical_app_id: app.map(|app| app.parse().expect("a valid application id")),
+            claimed_app_id: None,
             instance_id: None,
             title: format!("window {id}"),
             verified_identity: app.is_some(),
@@ -394,11 +394,14 @@ mod tests {
     }
 
     #[test]
-    fn within_unit_skips_parked_windows() {
+    fn within_unit_keeps_parked_windows_in_their_recency_position() {
         let mut parked = top(2, Some("org.templaros.Files"), 0);
         parked.shelved = true;
         let units = units(&[top(1, Some("org.templaros.Files"), 1), parked]);
-        assert_eq!(within_unit(&units, WindowId(1)), vec![WindowId(1)]);
+        assert_eq!(
+            within_unit(&units, WindowId(1)),
+            vec![WindowId(2), WindowId(1)]
+        );
     }
 
     #[test]

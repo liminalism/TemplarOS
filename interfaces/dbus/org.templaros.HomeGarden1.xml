@@ -14,9 +14,10 @@
 <node>
   <interface name="org.templaros.HomeGarden1">
     <!-- Record one human-significant act on `path`. `kind` is one of placed-on-home,
-         project-entered, launched-here, directory-opened, file-opened, created-or-renamed,
-         file-saved; `app_id` and `role` may be empty. Paths under build output, caches, hidden
-         directories and the machine's own directories are dropped, silently. -->
+         project-entered, launched-here, terminal-entered, directory-opened, file-opened,
+         created-or-renamed, file-saved; `app_id` and `role` may be empty. Build/cache/hidden
+         paths grow no Place. A terminal-entered from a verified brokered peer still updates
+         that instance's exact working directory, even for those ignored paths. -->
     <method name="Observe">
       <arg name="kind" type="s" direction="in"/>
       <arg name="path" type="s" direction="in"/>
@@ -36,6 +37,11 @@
          flags, as a JSON array. -->
     <method name="Contexts">
       <arg name="contexts_json" type="s" direction="out"/>
+    </method>
+    <!-- Exact per-instance terminal cwd, including directories ignored for activity.
+         JSON object from verified instance UUID strings to absolute paths. -->
+    <method name="WorkingDirectories">
+      <arg name="directories_json" type="s" direction="out"/>
     </method>
     <!-- One context by root, with the reason for its last stage change: what `garden.why`
          shows. An empty string when the path is no context. -->
@@ -87,6 +93,12 @@
     <signal name="Tended">
       <arg name="output" type="s"/>
       <arg name="changed" type="u"/>
+    </signal>
+    <!-- Verified prompt peer identity. Re-read WorkingDirectories and Contexts; the exact cwd
+         map is separate from Place attribution and survives sessiond/shell restart. -->
+    <signal name="ContextChanged">
+      <arg name="instance_id" type="s"/>
+      <arg name="path" type="s"/>
     </signal>
   </interface>
 </node>

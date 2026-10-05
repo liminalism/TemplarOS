@@ -11,3 +11,9 @@ growth on a shipped version is how this project already works — `AppIdentity1`
 without a bump), while a member whose arguments changed, or that disappeared, fails and names the
 interface to add instead. After adding a member, re-freeze it with `cargo xtask interface-baseline` and
 commit the result in the same change.
+
+`cargo xtask check-wayland-versions` also checks private Wayland interface versions and negotiated
+constants. The shell manager, toplevel list and toplevel interfaces must have **equal** versions,
+because child resources inherit the manager's negotiated version. Versioned per-toplevel requests
+must use a reachable manager revision (`1..=manager.version`), never a private child-only revision.
+Historical requests retain their introduction version even after the manager advances.

@@ -40,6 +40,8 @@ pub struct DrawerFeed {
     /// them: a rendered row is for a person to read and a file name may contain anything, so
     /// recovering a path from one would be a guess. Same rule as the headline.
     pub row_targets: Vec<Option<String>>,
+    /// Production recent rows, retained intact for every consumer (including folder lookup).
+    pub recents: Vec<recent::RecentEntry>,
     /// Whether the backing service answered. A drawer that cannot reach its service says so
     /// rather than showing a plausible zero.
     pub available: bool,
@@ -49,6 +51,12 @@ pub struct DrawerFeed {
     /// A running operation's label and percent, when anything is still in flight. Structured so
     /// the Files object does not have to recover progress from rendered text.
     pub progress: Option<(String, u8)>,
+    /// The Recent drawer only: each recent entry's application and the folder it happened in —
+    /// the entry's own path for a directory, its parent otherwise — newest first. Empty for every
+    /// other drawer. Structured for the same reason as `row_targets`: Home places a window near
+    /// the folder its application last worked in, and that must never be parsed back out of a
+    /// rendered line.
+    pub folders: Vec<(Option<String>, std::path::PathBuf)>,
 }
 
 impl DrawerFeed {
@@ -57,9 +65,11 @@ impl DrawerFeed {
             headline: headline.into(),
             lines,
             row_targets: Vec::new(),
+            recents: Vec::new(),
             available: true,
             empty: false,
             progress: None,
+            folders: Vec::new(),
         }
     }
 
@@ -70,9 +80,11 @@ impl DrawerFeed {
             headline: headline.into(),
             lines: Vec::new(),
             row_targets: Vec::new(),
+            recents: Vec::new(),
             available: true,
             empty: true,
             progress: None,
+            folders: Vec::new(),
         }
     }
 
@@ -98,9 +110,11 @@ impl DrawerFeed {
             headline: reason.into(),
             lines: Vec::new(),
             row_targets: Vec::new(),
+            recents: Vec::new(),
             available: false,
             empty: false,
             progress: None,
+            folders: Vec::new(),
         }
     }
 
@@ -116,9 +130,11 @@ impl DrawerFeed {
             headline: format!("{} — unavailable", subject.into()),
             lines: vec![reason.into()],
             row_targets: Vec::new(),
+            recents: Vec::new(),
             available: false,
             empty: false,
             progress: None,
+            folders: Vec::new(),
         }
     }
 

@@ -20,8 +20,9 @@ if ! declare -F __templaros_garden_prompt >/dev/null 2>&1; then
         if [ "${__templaros_garden_pwd-}" = "$PWD" ]; then
             return
         fi
-        __templaros_garden_pwd=$PWD
-        command templar garden observe terminal-entered "$PWD" --role terminal >/dev/null 2>&1 || :
+        if command templar garden observe terminal-entered "$PWD" --role terminal >/dev/null 2>&1; then
+            __templaros_garden_pwd=$PWD
+        fi
     }
 
     if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then

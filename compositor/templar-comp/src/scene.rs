@@ -130,10 +130,11 @@ pub fn collect(
         .stacking_order()
         .into_iter()
         .map(|window_id| {
+            let moving = drawn_motion(inputs, window_id).is_some();
             (
                 window_id,
-                inputs.window_service.is_visible(window_id),
-                windows_get_chrome,
+                inputs.window_service.is_visible(window_id) || moving,
+                windows_get_chrome && !moving,
             )
         })
         .collect();
@@ -174,13 +175,14 @@ pub fn collect(
                     continue;
                 };
                 drawn.push(window.clone());
+                let (presentation, alpha) = surface_placement(inputs, window, window_id);
                 surface_elements(
                     window,
                     inputs.space,
                     output_geometry,
                     output_scale,
-                    inputs.window_service.presentation_rect(window_id),
-                    inputs.window_service.taskfield_card_alpha(window_id),
+                    presentation,
+                    alpha,
                     renderer,
                     &mut elements,
                 );
@@ -205,6 +207,62 @@ pub fn collect(
 
     retain_visible_chrome(chrome, inputs, live_chrome);
     elements
+}
+
+/// The park/unpark motion `window_id` is drawn by this frame, if any (`src/motion.rs`).
+///
+/// A window parking into its card is drawn for the motion's lifetime although it is already
+/// shelved — at its own place in the stacking order, which shelving does not change, with no band
+/// or grip. It takes no input: `Space` and the hit test know it only as shelved. An unparking
+/// window is already where it belongs and is only drawn somewhere else until the motion ends, its
+/// chrome held back until then. A park whose window is visible again, or an unpark whose window
+/// is hidden again, draws nothing; neither does anything in Taskfield, where every window is a
+/// card already.
+fn drawn_motion<'a>(
+    inputs: &ChromeInputs<'a>,
+    window_id: WindowId,
+) -> Option<&'a crate::motion::WindowMotion> {
+    if matches!(
+        inputs.window_service.presentation(),
+        templar_window::Presentation::Taskfield(_)
+    ) {
+        return None;
+    }
+    let visible = inputs.window_service.is_visible(window_id);
+    inputs
+        .motions
+        .active(window_id, inputs.now_ns)
+        .filter(|motion| match motion.kind {
+            crate::motion::MotionKind::Park => !visible,
+            crate::motion::MotionKind::Unpark => visible,
+        })
+}
+
+/// Where `window`'s surface tree is drawn this frame instead of its real place (`None`: its real
+/// place), and how opaque: its motion's interpolated rectangle — the content fitted into the
+/// middle of it, since a card rarely has the window's aspect — or else its Taskfield card.
+fn surface_placement(
+    inputs: &ChromeInputs<'_>,
+    window: &Window,
+    window_id: WindowId,
+) -> (Option<Rect>, f32) {
+    match drawn_motion(inputs, window_id) {
+        Some(motion) => {
+            let content = window.geometry().size;
+            (
+                Some(crate::motion::fit_centered(
+                    motion.rect_at(inputs.now_ns),
+                    content.w,
+                    content.h,
+                )),
+                motion.alpha_at(inputs.now_ns),
+            )
+        }
+        None => (
+            inputs.window_service.presentation_rect(window_id),
+            inputs.window_service.taskfield_card_alpha(window_id),
+        ),
+    }
 }
 
 /// Anything `Space` is showing that the stacking order did not account for, drawn beneath
@@ -320,9 +378,6 @@ fn surface_elements(
     renderer: &mut GlesRenderer,
     elements: &mut Vec<SceneElement>,
 ) {
-    let Some(location) = space.element_location(window) else {
-        return;
-    };
     let geometry = window.geometry();
     if let Some(card) = presentation {
         let (origin, k) = card_placement(
@@ -351,6 +406,11 @@ fn surface_elements(
         );
         return;
     }
+    // A window drawn somewhere else may not be in `Space` at all (a parking window is already
+    // shelved), so only its real placement needs a `Space` location.
+    let Some(location) = space.element_location(window) else {
+        return;
+    };
     let render_location = location - geometry.loc;
     let mut bbox = window.bbox();
     bbox.loc += render_location;

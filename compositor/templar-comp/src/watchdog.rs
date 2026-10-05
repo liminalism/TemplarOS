@@ -21,6 +21,8 @@
 //! [`Config::flip_overdue`]. Blanking an output (`DrmCompositor::clear`) and pausing the session for
 //! a VT switch [`FlipHandle::cancel`] the outstanding flip, because neither is going to complete
 //! one and neither is a fault.
+//! The udev main-loop repaint watchdog safely re-arms overdue flips by synchronously clearing
+//! scanout before releasing pending state; this thread never touches DRM or fabricates completion.
 //!
 //! Optionally (`TEMPLAR_COMP_WATCHDOG_ABORT_AFTER_SECS`) a stall that long aborts the process, so a
 //! core dump records every thread's stack — the evidence `/proc` cannot give.

@@ -256,6 +256,7 @@ mod tests {
             templar_window::ShellToplevel {
                 window_id: templar_window::WindowId(id),
                 canonical_app_id: Some("org.example.App".parse().unwrap()),
+                claimed_app_id: None,
                 instance_id: instance,
                 title: String::new(),
                 verified_identity: true,

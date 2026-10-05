@@ -28,21 +28,24 @@ pub enum RecoveryAction {
     ShowAllWindows,
     /// `WindowService::handle_command(EscapeFullscreenOrModal { window_id: None }, ..)`.
     EscapeFullscreenOrModal,
-    /// `Alt+Tab`: the next window in `WindowService::switch_order` — every unshelved client
-    /// window, most-recently-activated first — walked as a list frozen for the length of the
-    /// hold (`TemplarCompState::step_switcher`). There is no within-group cycling any more: scoping
-    /// this to the focused window's group made a group a place Alt+Tab could not leave, which is
-    /// the opposite of what a person pressing it wants.
+    /// `Alt+Tab`: the next window in `WindowService::alt_tab_order` — every open application
+    /// window, parked ones included, most-recently-activated first — walked as a list frozen at
+    /// the first press, with the selection activated when the modifier comes up
+    /// (`TemplarCompState::step_switcher`, `commit_switch_walk`). There is no within-group cycling
+    /// any more: scoping this to the focused window's group made a group a place Alt+Tab could
+    /// not leave, which is the opposite of what a person pressing it wants.
     CycleFocusForward,
-    /// `Alt+Shift+Tab`: the previous window in the same frozen list.
+    /// `Alt+Shift+Tab`: the previous window in the same frozen list — a tap lands on the least
+    /// recently used window.
     CycleFocusBackward,
     /// `Super+Tab`: open the window overview (`WindowService::enter_taskfield`), or close it
     /// again. It used to cycle between window *groups*; the overview answers that question by
     /// showing every group as a section, which is the same question asked properly.
     OpenTaskfield,
     /// `` Alt+` ``: the next window of the focused window's *unit* — its group when it is grouped,
-    /// its application otherwise (`templar_window::task::within_unit`) — walked as a frozen ring
-    /// exactly like `Alt+Tab`. The chord reads as "this one"; `Alt+Tab` is never scoped.
+    /// its application otherwise, parked windows included (`templar_window::task::within_unit`) —
+    /// walked as a frozen ring and committed on release exactly like `Alt+Tab`. The chord reads
+    /// as "this one"; `Alt+Tab` is never scoped.
     WithinUnitForward,
     /// `` Alt+Shift+` ``: the previous window of that unit.
     WithinUnitBackward,
@@ -160,7 +163,9 @@ const STEP_HOPS: u8 = 2;
 ///
 /// Plain Escape is reserved *only* while a reveal is in effect — the Home Surface is then the
 /// only thing on screen, and every other key still reaches it — never otherwise, since
-/// applications use it constantly.
+/// applications use it constantly. (Escape pressed during an `Alt+Tab` walk is also swallowed —
+/// it cancels the walk — but that is the input handler's walk state, not this table:
+/// `src/input.rs::on_keyboard`.)
 pub fn recovery_action(
     modifiers: ModifiersState,
     keysym: Keysym,
@@ -255,6 +260,30 @@ fn is_tab(raw: u32) -> bool {
 /// only looked for `grave` would have no backward within-unit walk at all.
 fn is_grave(raw: u32) -> bool {
     raw == keysyms::KEY_grave || raw == keysyms::KEY_asciitilde
+}
+
+/// What a switcher row says: the window's title, else its application's short name, else
+/// "(untitled)" — never nothing, because a blank row is a row nobody can tell apart.
+fn switcher_label(title: &str, app_id: Option<&templar_types::AppId>) -> String {
+    let title = title.trim();
+    if !title.is_empty() {
+        return title.to_owned();
+    }
+    app_id
+        .map(|app_id| app_short_name(app_id.as_str()))
+        .filter(|name| !name.is_empty())
+        .unwrap_or("(untitled)")
+        .to_owned()
+}
+
+/// `org.templaros.Files` → `Files`, `desktop-import.org.foo.Editor.desktop` → `Editor`,
+/// `desktop-import.nm-tray.desktop` → `nm-tray`. The same rule as the shell's
+/// `field_model::short_name`; the compositor cannot link the shell, and must keep naming windows
+/// with the shell dead.
+fn app_short_name(app_id: &str) -> &str {
+    let unprefixed = app_id.strip_prefix("desktop-import.").unwrap_or(app_id);
+    let meaningful = unprefixed.strip_suffix(".desktop").unwrap_or(unprefixed);
+    meaningful.rsplit('.').next().unwrap_or(meaningful)
 }
 
 /// Whether this is either physical Super/logo key. The input handler uses this to implement the
@@ -409,7 +438,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// specifies: `handle_command` with `trusted_shell: true` because the *compositor itself* is
     /// the caller (there is no wire request here to gate — the trust boundary this crosses is
     /// "the fixed key combination reached the compositor's own input handler", not a protocol
-    /// connection), and `cycle_focus` called directly rather than through any command.
+    /// connection), and the switcher walked directly rather than through any command.
     pub(crate) fn run_recovery_action(&mut self, action: RecoveryAction) {
         let ctx = CommandContext {
             trusted_shell: true,
@@ -573,21 +602,21 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
     }
 
-    /// One `Alt+Tab` (`within_unit: false`) or `` Alt+` `` (`within_unit: true`) step.
+    /// One `Alt+Tab` (`within_unit: false`) or `` Alt+` `` (`within_unit: true`) step. A step only
+    /// moves the selection and redraws the HUD: nothing is activated until the chord ends
+    /// ([`Self::commit_switch_walk`], from `src/input.rs::on_keyboard`), as on Windows and GNOME,
+    /// so walking past three windows raises none of them and a quick tap still lands on the
+    /// previous window (`Alt+Shift+Tab`: the least recent one). Escape, a click or any other key
+    /// ends the walk choosing nothing ([`Self::cancel_switch_walk`]).
     ///
-    /// The list is built at the first press and *frozen* until the modifier is released
-    /// (`src/input.rs::on_keyboard` drops the ring), because every step records activation and
-    /// changes the order a newly built semantic MRU list would expose. `Alt+Tab` walks
-    /// `WindowService::recent()` — the seven most-recently-activated application windows, which is
-    /// what "go back to what I was just doing" means; everything beyond that is the overview's
-    /// question, not a chord's. `` Alt+` `` walks `task::within_unit`: the windows of the focused
-    /// window's unit, its group when it is grouped and its application otherwise, so the group
-    /// feature costs nothing until a group exists. `Alt+Tab` itself is never scoped to either —
-    /// that made a group a place `Alt+Tab` could not leave.
-    ///
-    /// ponytail: each step activates as it goes, so walking past three windows raises three. The
-    /// upgrade — commit only on release, as Windows does — costs a second commit path for the
-    /// cases where the release is never seen; this way the keyboard is always somewhere real.
+    /// The list is built at the first press and *frozen* until the walk ends, so the rows never
+    /// move under the user's hands and the HUD always draws the list actually being walked; a
+    /// window that goes away mid-walk is pruned from it ([`Self::prune_switch_walk`]). `Alt+Tab`
+    /// walks `WindowService::alt_tab_order` — every open application window, parked ones
+    /// included, most-recently-activated first. `` Alt+` `` walks `task::within_unit`: every
+    /// window of the focused window's unit, its group when it is grouped and its application
+    /// otherwise, so the group feature costs nothing until a group exists. `Alt+Tab` itself is
+    /// never scoped to either — that made a group a place `Alt+Tab` could not leave.
     fn step_switcher(&mut self, within_unit: bool, forward: bool) {
         let ring = match self.switch_ring.take() {
             Some((ring, walking_unit)) if walking_unit == within_unit => Some(ring),
@@ -598,7 +627,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                         .map(|current| templar_window::task::within_unit(&units, current))
                         .unwrap_or_default()
                 } else {
-                    let targets = self.window_service.recent();
+                    let targets = self.window_service.alt_tab_order();
                     for window in self.window_service.windows() {
                         if let Some(reason) = self.window_service.switch_exclusion_reason(window.id)
                         {
@@ -621,18 +650,70 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             }
         };
         let Some(mut ring) = ring else {
+            self.switcher = None;
+            crate::protocols_shell::send_switcher_state(self);
             return;
         };
-        let next = ring.step(forward);
-        // The compositor-owned switcher HUD (`src/chrome/mod.rs`), so cycling is visible with the
-        // shell dead. It draws the frozen list, which is the list actually being walked.
-        self.switcher = Some(if within_unit {
-            self.unit_switcher(&ring, next)
-        } else {
-            self.window_switcher(&ring, next)
-        });
+        ring.step(forward);
         self.switch_ring = Some((ring, within_unit));
-        crate::input::activate_window(self, next);
+        self.refresh_switcher();
+    }
+
+    /// The chord came up: end the walk and activate the window it is on — unless that window is
+    /// gone or already the active one, or the session is locked. Activation is what brings a
+    /// parked window back: `WindowService::activate` unshelves it and `input::activate_window`
+    /// re-applies its geometry.
+    pub(crate) fn commit_switch_walk(&mut self) {
+        self.switcher = None;
+        crate::protocols_shell::send_switcher_state(self);
+        let Some(target) = self
+            .switch_ring
+            .take()
+            .and_then(|(ring, _)| ring.selected())
+        else {
+            return;
+        };
+        if self.session_lock.locked {
+            return;
+        }
+        let wanted = self.window_service.window(target).is_some_and(|window| {
+            window.role == templar_window::WindowRole::Application
+                && window.mapped
+                && (window.shelved || !window.activated)
+        });
+        if wanted {
+            tracing::debug!(window_id = target.0, "Alt-Tab committed on release");
+            crate::input::activate_window(self, target);
+        }
+    }
+
+    /// End the walk choosing nothing: Escape while the chord is held, a click, another key, the
+    /// overview opening, a reveal. The keyboard stays exactly where it was.
+    pub(crate) fn cancel_switch_walk(&mut self) {
+        self.switch_ring = None;
+        self.switcher = None;
+        crate::protocols_shell::send_switcher_state(self);
+    }
+
+    /// `window_id` went away (closed or unmapped): take it out of a walk in progress, so the HUD
+    /// never draws a dead row and a release never aims at nothing. Removing the selected window
+    /// moves the selection to the next one; removing the last ends the walk.
+    pub(crate) fn prune_switch_walk(&mut self, window_id: templar_window::WindowId) {
+        let Some((ring, within_unit)) = self.switch_ring.take() else {
+            return;
+        };
+        self.switch_ring = ring.remove(window_id).map(|ring| (ring, within_unit));
+        self.refresh_switcher();
+    }
+
+    /// Rebuild the HUD from the ring: the frozen list, the selection highlighted.
+    fn refresh_switcher(&mut self) {
+        let state = self.switch_ring.as_ref().and_then(|(ring, within_unit)| {
+            ring.selected()
+                .map(|selected| self.switcher_state(ring, *within_unit, selected))
+        });
+        self.switcher = state;
+        crate::protocols_shell::send_switcher_state(self);
     }
 
     /// The window that currently holds the keyboard, if any.
@@ -658,58 +739,40 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         crate::window_groups::group_windows(self, previous, focused);
     }
 
-    /// The `Alt+Tab` HUD: the frozen list, titles top-first, the current step highlighted.
-    fn window_switcher(
+    /// The switcher HUD for `ring`: one row per window, top-first, `selected` highlighted. The
+    /// `` Alt+` `` walk is headed with its unit's own name and accent; `Alt+Tab` has no heading.
+    fn switcher_state(
         &self,
         ring: &templar_window::SwitchRing,
+        within_unit: bool,
         selected: templar_window::WindowId,
     ) -> crate::chrome::SwitcherState {
-        crate::chrome::SwitcherState {
-            heading: None,
-            accent: None,
-            entries: ring
-                .targets()
-                .iter()
-                .map(|id| {
-                    let title = self
-                        .window_service
-                        .window(*id)
-                        .map(|window| window.title.clone())
-                        .unwrap_or_default();
-                    (*id, title)
-                })
-                .collect(),
-            selected,
-        }
-    }
-
-    /// The `` Alt+` `` HUD: the windows of one unit, titled with the unit's own name — the same
-    /// frozen list the chord is stepping through, in the same order. Titles, not counts: every row
-    /// is a window here, so the count each row of the old group HUD carried has nothing to say.
-    fn unit_switcher(
-        &self,
-        ring: &templar_window::SwitchRing,
-        selected: templar_window::WindowId,
-    ) -> crate::chrome::SwitcherState {
-        let units = self.window_service.task_units();
-        let heading =
-            templar_window::task::unit_of(&units, selected).map(|unit| unit.label.clone());
-        let accent = templar_window::task::unit_of(&units, selected).and_then(|unit| unit.accent);
+        let (heading, accent) = if within_unit {
+            let units = self.window_service.task_units();
+            templar_window::task::unit_of(&units, selected)
+                .map_or((None, None), |unit| (Some(unit.label.clone()), unit.accent))
+        } else {
+            (None, None)
+        };
+        let entries = ring
+            .targets()
+            .iter()
+            .map(|&window_id| {
+                let window = self.window_service.window(window_id);
+                crate::chrome::SwitcherEntry {
+                    window_id,
+                    label: switcher_label(
+                        window.map_or("", |window| window.title.as_str()),
+                        window.and_then(|window| window.identity.app_id.as_ref()),
+                    ),
+                    parked: window.is_some_and(|window| window.shelved),
+                }
+            })
+            .collect();
         crate::chrome::SwitcherState {
             heading,
             accent,
-            entries: ring
-                .targets()
-                .iter()
-                .map(|id| {
-                    let title = self
-                        .window_service
-                        .window(*id)
-                        .map(|window| window.title.clone())
-                        .unwrap_or_default();
-                    (*id, title)
-                })
-                .collect(),
+            entries,
             selected,
         }
     }
@@ -856,8 +919,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             _ => 0,
         };
         tracing::info!(cards, "entering Taskfield");
-        self.switcher = None;
-        self.switch_ring = None;
+        self.cancel_switch_walk();
         self.taskfield_press = None;
         // The overview replaces what a rail was offering, and takes the pointer with it.
         self.close_rail("taskfield");
@@ -905,7 +967,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             // Home and the overview are two answers to the same question, so one ends the other;
             // `leave_taskfield` is a no-op when no overview is up.
             self.leave_taskfield();
-            self.switcher = None;
+            self.cancel_switch_walk();
         }
         crate::space_sync::sync_after_change(self);
         crate::input::refocus_after_reveal(self, revealed);
@@ -1562,5 +1624,146 @@ mod tests {
             recovery_action(mods(true, true, false), Keysym::new(keysyms::KEY_a), false),
             None
         );
+    }
+
+    #[test]
+    fn a_switcher_row_names_the_title_then_the_application_then_says_untitled() {
+        let files: templar_types::AppId = "org.templaros.Files".parse().unwrap();
+        let imported: templar_types::AppId =
+            "desktop-import.org.example.Editor.desktop".parse().unwrap();
+        let simple: templar_types::AppId = "desktop-import.nm-tray.desktop".parse().unwrap();
+        assert_eq!(switcher_label("Report.odt", Some(&files)), "Report.odt");
+        assert_eq!(switcher_label("  ", Some(&files)), "Files");
+        assert_eq!(switcher_label("", Some(&imported)), "Editor");
+        assert_eq!(switcher_label("", Some(&simple)), "nm-tray");
+        assert_eq!(switcher_label("", None), "(untitled)");
+    }
+
+    type CheckState = TemplarCompState<crate::backend::check::CheckBackendData>;
+
+    /// A whole headless compositor (`backend::check`) holding `count` application windows,
+    /// activated in order so the last one has the keyboard: semantic MRU is the reverse of the
+    /// returned ids. The event loop and runtime are returned only to outlive the state.
+    fn switcher_fixture(
+        count: usize,
+    ) -> (
+        smithay::reexports::calloop::EventLoop<'static, CheckState>,
+        tokio::runtime::Runtime,
+        CheckState,
+        Vec<templar_window::WindowId>,
+    ) {
+        let event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut state, _socket) =
+            crate::backend::check::build_state(&event_loop, runtime.handle()).unwrap();
+        let ids: Vec<_> = (0..count)
+            .map(|index| {
+                let id = state.window_service.on_toplevel_mapped(
+                    100 + index as u32,
+                    templar_window::ClientKind::Application,
+                    templar_window::WindowClaims::default(),
+                    format!("window {index}"),
+                    templar_window::Rect::new(10, 10, 300, 200),
+                );
+                state.window_service.activate(id);
+                id
+            })
+            .collect();
+        (event_loop, runtime, state, ids)
+    }
+
+    fn active(state: &CheckState) -> Option<templar_window::WindowId> {
+        state.activated_window()
+    }
+
+    fn hud_rows(state: &CheckState) -> Vec<templar_window::WindowId> {
+        let hud = state.switcher.as_ref().expect("the HUD is up");
+        hud.entries.iter().map(|entry| entry.window_id).collect()
+    }
+
+    /// Commit on release: walking past windows raises none of them, and the one the walk is on
+    /// when the chord comes up is the one that gets the keyboard.
+    #[test]
+    fn alt_tab_steps_only_move_the_selection_and_the_release_activates_it() {
+        let (_loop, _runtime, mut state, ids) = switcher_fixture(3);
+        state.chord_held = true;
+
+        state.run_recovery_action(RecoveryAction::CycleFocusForward);
+        assert_eq!(active(&state), Some(ids[2]), "a step activates nothing");
+        assert_eq!(hud_rows(&state), vec![ids[2], ids[1], ids[0]]);
+        assert_eq!(state.switcher.as_ref().unwrap().selected, ids[1]);
+
+        state.run_recovery_action(RecoveryAction::CycleFocusForward);
+        assert_eq!(active(&state), Some(ids[2]));
+        assert_eq!(state.switcher.as_ref().unwrap().selected, ids[0]);
+
+        state.chord_held = false;
+        state.commit_switch_walk();
+        assert_eq!(active(&state), Some(ids[0]));
+        assert!(state.switch_ring.is_none());
+        assert!(state.switcher.is_none());
+    }
+
+    #[test]
+    fn a_tap_goes_back_to_the_previous_window_and_a_shifted_tap_to_the_least_recent() {
+        let (_loop, _runtime, mut state, ids) = switcher_fixture(3);
+        state.run_recovery_action(RecoveryAction::CycleFocusForward);
+        state.commit_switch_walk();
+        assert_eq!(active(&state), Some(ids[1]));
+
+        // MRU is now 1, 2, 0: the backward tap lands on the bottom of it.
+        state.run_recovery_action(RecoveryAction::CycleFocusBackward);
+        state.commit_switch_walk();
+        assert_eq!(active(&state), Some(ids[0]));
+    }
+
+    #[test]
+    fn a_cancelled_walk_activates_nothing_even_when_the_chord_comes_up_afterwards() {
+        let (_loop, _runtime, mut state, ids) = switcher_fixture(3);
+        state.run_recovery_action(RecoveryAction::CycleFocusForward);
+        state.cancel_switch_walk();
+        assert!(state.switch_ring.is_none());
+        assert!(state.switcher.is_none());
+        state.commit_switch_walk();
+        assert_eq!(active(&state), Some(ids[2]));
+    }
+
+    #[test]
+    fn a_parked_window_is_listed_dimmed_and_choosing_it_brings_it_back() {
+        let (_loop, _runtime, mut state, ids) = switcher_fixture(3);
+        assert!(state.window_service.shelve(ids[0]));
+
+        state.run_recovery_action(RecoveryAction::CycleFocusBackward);
+        let hud = state.switcher.as_ref().unwrap();
+        assert_eq!(hud.selected, ids[0]);
+        let parked: Vec<_> = hud.entries.iter().map(|entry| entry.parked).collect();
+        assert_eq!(parked, vec![false, false, true]);
+
+        state.commit_switch_walk();
+        assert_eq!(active(&state), Some(ids[0]));
+        assert!(!state.window_service.window(ids[0]).unwrap().shelved);
+    }
+
+    #[test]
+    fn a_window_closing_mid_walk_leaves_the_ring_and_the_hud() {
+        let (_loop, _runtime, mut state, ids) = switcher_fixture(3);
+        state.run_recovery_action(RecoveryAction::CycleFocusForward);
+        assert_eq!(state.switcher.as_ref().unwrap().selected, ids[1]);
+
+        crate::space_sync::on_window_destroyed(&mut state, ids[1]);
+        assert_eq!(hud_rows(&state), vec![ids[2], ids[0]]);
+        assert_eq!(
+            state.switcher.as_ref().unwrap().selected,
+            ids[0],
+            "the selection moves on to the next window"
+        );
+
+        crate::space_sync::on_window_destroyed(&mut state, ids[0]);
+        crate::space_sync::on_window_destroyed(&mut state, ids[2]);
+        assert!(state.switch_ring.is_none(), "nothing left to walk");
+        assert!(state.switcher.is_none());
     }
 }

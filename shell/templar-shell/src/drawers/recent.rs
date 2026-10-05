@@ -6,7 +6,7 @@ use crate::format;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use templar_client::proxies::FilesRecentsProxy;
 
 /// Mirrors `services/templar-filed/src/recents.rs::RecentEntry`'s wire JSON. `templar-filed` is not a
@@ -71,8 +71,9 @@ pub async fn feed(client: &impl RecentsClient, limit: u32) -> Result<DrawerFeed>
 }
 
 fn feed_json(json: &str) -> Result<DrawerFeed> {
-    let entries: Vec<RecentEntry> =
+    let mut entries: Vec<RecentEntry> =
         serde_json::from_str(json).context("parsing Files.Recents1.List entries_json")?;
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.at_ms));
     if entries.is_empty() {
         return Ok(DrawerFeed::vacant("nothing yet"));
     }
@@ -89,7 +90,36 @@ fn feed_json(json: &str) -> Result<DrawerFeed> {
             )
         })
         .collect();
-    Ok(DrawerFeed::new(headline, lines))
+    let mut feed = DrawerFeed::new(headline, lines);
+    feed.folders = folders(&entries);
+    feed.row_targets = entries
+        .iter()
+        .map(|entry| Some(entry.path.to_string_lossy().into_owned()))
+        .collect();
+    feed.recents = entries;
+    Ok(feed)
+}
+
+/// Each entry's application and the folder it happened in, newest first: a directory is its own
+/// folder, anything else lives in its parent. Ordered by time here rather than trusted to arrive
+/// ordered, because Home takes the *first* match per application as that application's folder.
+fn folders(entries: &[RecentEntry]) -> Vec<(Option<String>, PathBuf)> {
+    let mut order: Vec<&RecentEntry> = entries.iter().collect();
+    order.sort_by_key(|entry| std::cmp::Reverse(entry.at_ms));
+    order
+        .into_iter()
+        .map(|entry| {
+            let folder = if entry.mime.as_deref() == Some("inode/directory") {
+                entry.path.clone()
+            } else {
+                entry
+                    .path
+                    .parent()
+                    .map_or_else(|| entry.path.clone(), Path::to_path_buf)
+            };
+            (entry.app_id.clone(), folder)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -128,6 +158,9 @@ mod tests {
         assert!(feed.lines[0].contains("opened"));
         assert!(feed.lines[0].contains("org.templaros.Viewer"));
         assert!(feed.lines[0].contains("/home/u/report.pdf"));
+        assert_eq!(feed.row_target(0), Some("/home/u/report.pdf"));
+        assert_eq!(feed.recents[0].mime.as_deref(), Some("application/pdf"));
+        assert_eq!(feed.row_targets.len(), feed.lines.len());
         assert!(feed.lines[1].contains("(unknown app)"));
         // The text form is the headline followed by those lines.
         let text = render(&FakeRecents(FIXTURE), 10).await.unwrap();
@@ -138,6 +171,28 @@ mod tests {
     async fn an_empty_list_is_said_plainly() {
         let text = render(&FakeRecents("[]"), 10).await.unwrap();
         assert_eq!(text, "nothing yet");
+    }
+
+    #[tokio::test]
+    async fn folders_are_the_directory_itself_or_a_files_parent_newest_first() {
+        const MIXED: &str = r#"[
+            {"path":"/home/u/older.txt","app_id":"org.a.Editor","at_ms":10,"mime":"text/plain","action":"saved"},
+            {"path":"/home/u/project","app_id":"org.a.Files","at_ms":30,"mime":"inode/directory","action":"opened"},
+            {"path":"/home/u/pics/cat.png","app_id":null,"at_ms":20,"mime":null,"action":"opened"}
+        ]"#;
+        let feed = feed(&FakeRecents(MIXED), 10).await.unwrap();
+        assert_eq!(
+            feed.folders,
+            vec![
+                (
+                    Some("org.a.Files".to_owned()),
+                    PathBuf::from("/home/u/project")
+                ),
+                (None, PathBuf::from("/home/u/pics")),
+                (Some("org.a.Editor".to_owned()), PathBuf::from("/home/u")),
+            ]
+        );
+        assert_eq!(feed.lines.len(), 3);
     }
 
     #[tokio::test]

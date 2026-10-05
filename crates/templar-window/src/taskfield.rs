@@ -404,6 +404,7 @@ mod tests {
         ShellToplevel {
             window_id: WindowId(id),
             canonical_app_id: Some(app.parse().expect("a valid application id")),
+            claimed_app_id: None,
             instance_id: None,
             title: format!("window {id}"),
             verified_identity: true,

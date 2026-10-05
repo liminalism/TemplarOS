@@ -222,6 +222,23 @@ pub fn focus_home_if_needed<B: Backend + 'static>(
     if (state.window_service.home_revealed() || !has_visible_client)
         && let Some(keyboard) = state.seat.get_keyboard()
     {
+        if keyboard.current_focus().is_some_and(|focused| {
+            state
+                .windows
+                .window_id_for(&focused.id())
+                .is_some_and(|id| {
+                    state.window_service.is_visible(id)
+                        && matches!(
+                            state.window_service.layer_of(id),
+                            Some(
+                                templar_window::Layer::ShellOverlay
+                                    | templar_window::Layer::SystemModal
+                            )
+                        )
+                })
+        }) {
+            return;
+        }
         keyboard.set_focus(state, Some(surface.clone()), SERIAL_COUNTER.next_serial());
     }
 }
@@ -903,7 +920,10 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             event.state(),
             serial,
             time,
-            |_, modifiers, handle| {
+            |state, modifiers, handle| {
+                // The overlay owns the keyboard, but a switcher walk must still see the chord
+                // come up, or its HUD outlives the hold (`on_keyboard` ends the walk).
+                state.chord_held = modifiers.alt || modifiers.logo;
                 // Always `Intercept`, even for a key that maps to nothing: `Forward` would
                 // hand it to the client behind the overlay, which is exactly what a modal
                 // overlay must not do.
@@ -922,6 +942,17 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         true
     }
 
+    fn shell_popup_focused(&self, surface: Option<&WlSurface>) -> bool {
+        surface.is_some_and(|surface| {
+            self.windows.window_id_for(&surface.id()).is_some_and(|id| {
+                matches!(
+                    self.window_service.layer_of(id),
+                    Some(templar_window::Layer::ShellOverlay | templar_window::Layer::SystemModal)
+                )
+            })
+        })
+    }
+
     fn on_keyboard<I: InputBackend>(&mut self, event: &I::KeyboardKeyEvent) {
         let serial = SERIAL_COUNTER.next_serial();
         let time = Event::time_msec(event);
@@ -930,10 +961,16 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         };
 
         if self.overlay_took_key::<I>(&keyboard, event, serial, time) {
+            // The overlay took this key, so a walk in progress is over: it chooses nothing, since
+            // activating a window behind a modal overlay would be a change nobody saw happen.
+            self.cancel_switch_walk();
             return;
         }
 
         let home_revealed = self.window_service.home_revealed();
+        // A focused shell popup owns plain Escape before the underlying Home reveal.
+        // Read focus outside keyboard.input: querying it inside the filter would re-lock it.
+        let popup_focused = self.shell_popup_focused(keyboard.current_focus().as_ref());
         // The window overview is modal: every key is the compositor's while it is up, and none
         // reaches the client behind a card. The reserved combinations still run first, so
         // `Super+Tab` closes the mode, `Ctrl+Alt+Escape` still escapes, and a bare Super still
@@ -945,6 +982,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         // Escape closes an open rail and still goes wherever it was going: the rail takes no
         // keyboard, so whatever has focus may well be waiting for this key too.
         let mut escape_pressed = false;
+        // Escape during a switcher walk cancels it, and is the compositor's, not the client's.
+        let walking = self.switch_ring.is_some();
+        // A modifier going down mid-walk — Shift, to walk backwards — is part of the chord, not
+        // "some other key", and must not cancel it.
+        let mut modifier_pressed = false;
         let action = keyboard.input::<Option<crate::keybindings::RecoveryAction>, _>(
             self,
             event.key_code(),
@@ -955,9 +997,12 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 let keysym = handle.modified_sym();
                 escape_pressed = event.state() == smithay::backend::input::KeyState::Pressed
                     && keysym.raw() == smithay::input::keyboard::keysyms::KEY_Escape;
+                modifier_pressed = event.state() == smithay::backend::input::KeyState::Pressed
+                    && keysym.is_modifier_key();
                 // The switcher walks a list frozen for the length of the hold; this is where the
-                // release that ends it is seen. Read from the modifier state rather than matched
-                // by keysym, so either Alt (or either Super) ending the walk cannot be missed.
+                // release that commits it is seen. Read from the modifier state rather than
+                // matched by keysym, so either Alt (or either Super) ending the walk cannot be
+                // missed.
                 state.chord_held = modifiers.alt || modifiers.logo;
                 match state
                     .super_tap
@@ -995,12 +1040,19 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                     }
                     return FilterResult::Forward;
                 }
-                match crate::keybindings::recovery_action(*modifiers, keysym, home_revealed) {
+                match crate::keybindings::recovery_action(
+                    *modifiers,
+                    keysym,
+                    home_revealed && !popup_focused,
+                ) {
                     Some(action) => FilterResult::Intercept(Some(action)),
                     None if in_taskfield => FilterResult::Intercept(
                         crate::keybindings::taskfield_key(*modifiers, keysym)
                             .map(crate::keybindings::RecoveryAction::Taskfield),
                     ),
+                    // Swallowed, and then ends the walk below like any other key press — but
+                    // the client never sees an Escape meant for the switcher.
+                    None if walking && escape_pressed => FilterResult::Intercept(None),
                     None => FilterResult::Forward,
                 }
             },
@@ -1020,9 +1072,20 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             self.close_rail("escape");
         }
 
-        if let Some(Some(action)) = action {
-            // Any reserved action other than another switcher step ends the walk;
-            // `run_recovery_action` itself repopulates the ring and the HUD for a step.
+        // A key press that is not a modifier — Escape included — ends a walk unless it is a step.
+        // A *release* must not: clearing on every forwarded key is what used to kill the HUD one
+        // keystroke after it appeared, on the release of the very Tab that opened it.
+        let ends_walk =
+            event.state() == smithay::backend::input::KeyState::Pressed && !modifier_pressed;
+        self.finish_key(action.flatten(), ends_walk);
+    }
+
+    /// After the keyboard filter: run the reserved action the key performed, end a switcher walk
+    /// the key interrupted (choosing nothing), and commit the walk if the chord has come up.
+    fn finish_key(&mut self, action: Option<crate::keybindings::RecoveryAction>, ends_walk: bool) {
+        if let Some(action) = action {
+            // Any reserved action other than another switcher step ends the walk choosing
+            // nothing; `run_recovery_action` itself moves the ring and redraws the HUD for a step.
             if !matches!(
                 action,
                 crate::keybindings::RecoveryAction::CycleFocusForward
@@ -1030,23 +1093,17 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                     | crate::keybindings::RecoveryAction::WithinUnitForward
                     | crate::keybindings::RecoveryAction::WithinUnitBackward
             ) {
-                self.switch_ring = None;
+                self.cancel_switch_walk();
             }
             if !self.session_lock.locked {
                 self.run_recovery_action(action);
             }
-        } else if event.state() == smithay::backend::input::KeyState::Pressed {
-            // Some other key: the walk is over. A *release* must not end it — clearing on every
-            // forwarded key is what used to kill the HUD one keystroke after it appeared, on the
-            // release of the very Tab that opened it.
-            self.switch_ring = None;
+        } else if ends_walk {
+            self.cancel_switch_walk();
         }
         if !self.chord_held {
-            self.switch_ring = None;
-        }
-        // The HUD lives exactly as long as the list it draws.
-        if self.switch_ring.is_none() {
-            self.switcher = None;
+            // The chord came up: the walk commits to whatever it is on (a no-op with no walk).
+            self.commit_switch_walk();
         }
     }
 
@@ -1185,9 +1242,9 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
 
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
-            // A click means the user is doing something else — the fallback switcher HUD
-            // (`chrome::SwitcherState`) is done once anything but another Alt+Tab step happens.
-            self.switcher = None;
+            // A click means the user is doing something else — a switcher walk is over, and
+            // chooses nothing: the click itself says where the user is going.
+            self.cancel_switch_walk();
             let compositor_owned =
                 self.handle_press_for_focus_or_drag(pointer.current_location(), serial, button);
             // A grab installed by that press owns the matching release (`WindowGestureGrab::button`

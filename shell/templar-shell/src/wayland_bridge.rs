@@ -96,7 +96,7 @@ use templar_window::{
 /// group requests below check `self.manager.version()` and not `toplevel.version()` — against a
 /// version-4 compositor the latter also reads 4, which is `>= 3` and would happily send a request
 /// that compositor has never heard of.
-const SHELL_PROTOCOL_VERSION: u32 = 10;
+const SHELL_PROTOCOL_VERSION: u32 = 13;
 
 /// The manager version that carries `set_edge_alignment`. A version-5 compositor has never heard
 /// of it, so the shell asks only when the manager it actually bound is new enough — the same rule
@@ -113,6 +113,11 @@ const TASKFIELD_SINCE: u32 = 8;
 /// The manager version that carries gesture rails: `set_gesture_gate`, `close_rail`, `rail` and
 /// `rail_pointer`.
 const GESTURE_SINCE: u32 = 9;
+
+/// The manager version that carries `templar_shell_toplevel_v1.set_minimize_target`. The toplevel
+/// list and its toplevels are created at the manager's version (a `new_id` carries none on the
+/// wire), so this gate is the manager's, the same rule `GROUP_SINCE` follows.
+const MINIMIZE_TARGET_SINCE: u32 = 12;
 
 /// How many masked buffers one surface may hold. Two is the smallest pool in which the frame
 /// after one the compositor is still reading has a buffer to go to; more would only pay for a
@@ -157,6 +162,7 @@ struct TrackedToplevel {
 #[derive(Clone, Debug)]
 struct ToplevelState {
     canonical_app_id: Option<AppId>,
+    claimed_app_id: Option<String>,
     instance_id: Option<InstanceId>,
     title: String,
     verified_identity: bool,
@@ -190,6 +196,7 @@ impl Default for ToplevelState {
     fn default() -> Self {
         ToplevelState {
             canonical_app_id: None,
+            claimed_app_id: None,
             instance_id: None,
             title: String::new(),
             verified_identity: false,
@@ -215,6 +222,14 @@ impl ToplevelState {
     /// whole entry, which the dispatcher handles before looking one up.
     fn apply(&mut self, event: templar_shell_toplevel_v1::Event) {
         match event {
+            templar_shell_toplevel_v1::Event::ClaimedAppId { app_id } => {
+                self.claimed_app_id = (!app_id.is_empty()
+                    && app_id.len() <= 255
+                    && app_id
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-')))
+                .then_some(app_id);
+            }
             templar_shell_toplevel_v1::Event::Identity {
                 canonical_app_id,
                 instance_id,
@@ -293,6 +308,7 @@ impl ToplevelState {
         ShellToplevel {
             window_id: self.semantic_id.unwrap_or(fallback),
             canonical_app_id: self.canonical_app_id.clone(),
+            claimed_app_id: self.claimed_app_id.clone(),
             instance_id: self.instance_id,
             title: self.title.clone(),
             verified_identity: self.verified_identity,
@@ -329,6 +345,14 @@ fn synthetic_window_id(id: &ObjectId) -> WindowId {
     WindowId(u64::from(id.protocol_id()))
 }
 
+/// The compositor's frozen switcher order and selection; shell presentation owns no input.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SwitcherStatus {
+    pub active: bool,
+    pub selected: Option<WindowId>,
+    pub windows: Vec<WindowId>,
+}
+
 /// Dispatch target for the trusted-shell connection's own event queue. Holds nothing but what
 /// arrives over the wire — no D-Bus, no rendering state — on purpose: everything this crate does
 /// with the result lives in [`ShellBridge`] instead, which is what stays free of `unsafe`.
@@ -353,6 +377,7 @@ pub struct BridgeState {
     /// overview is up and what it is showing. The compositor owns the mode and its keys, so this
     /// is the shell's whole view of it.
     taskfield: TaskfieldStatus,
+    switcher: SwitcherStatus,
     /// The window ids of the last `windows`-filtered `open_taskfield` this shell sent.
     ///
     /// `taskfield_state` names the filter but not the list — the shell is the only side that knows
@@ -711,6 +736,25 @@ impl Dispatch<TemplarShellManagerV1, ()> for BridgeState {
         _qh: &QueueHandle<Self>,
     ) {
         match event {
+            templar_shell_manager_v1::Event::SwitcherState {
+                active,
+                selected,
+                windows,
+            } => {
+                state.switcher = SwitcherStatus {
+                    active: active != 0,
+                    selected: (selected != 0).then_some(WindowId(u64::from(selected))),
+                    windows: windows
+                        .chunks_exact(4)
+                        .map(|chunk| {
+                            WindowId(u64::from(u32::from_ne_bytes(
+                                chunk.try_into().expect("four bytes"),
+                            )))
+                        })
+                        .collect(),
+                };
+                state.generation = state.generation.wrapping_add(1);
+            }
             templar_shell_manager_v1::Event::HomeRevealed { revealed } => {
                 state.home_revealed = revealed != 0;
                 state.generation = state.generation.wrapping_add(1);
@@ -1068,6 +1112,17 @@ impl ShellBridge {
             .context("flushing set_layer_surface")
     }
 
+    /// Borrow keyboard focus for a popup; `None` returns it without ending Home reveal.
+    pub fn focus_surface(&self, window: Option<&winit::window::Window>) -> Result<()> {
+        anyhow::ensure!(
+            self.manager.version() >= 11,
+            "popup keyboard focus requires compositor protocol v11"
+        );
+        let surface = window.map(|window| self.wrap_surface(window)).transpose()?;
+        self.manager.focus_surface(surface.as_ref());
+        self.connection.flush().context("flushing focus_surface")
+    }
+
     /// Reserve `size` logical pixels along `edge` of the output `window` is on, so ordinary
     /// windows are placed beside it. `size` of `0` releases a previous reservation
     /// (`interfaces/wayland/templar-shell-v1.xml`'s `set_exclusive_zone` doc).
@@ -1349,14 +1404,6 @@ impl ShellBridge {
         self.connection.flush().context("flushing close")
     }
 
-    pub fn unshelve(&self, window_id: WindowId) -> Result<()> {
-        let Some(toplevel) = self.toplevel_object(window_id) else {
-            bail!("no such window on this connection: {window_id:?}");
-        };
-        toplevel.unshelve();
-        self.connection.flush().context("flushing unshelve")
-    }
-
     /// Park one window: explicit minimisation onto the shelf, the Home Field's "collapse".
     pub fn shelve(&self, window_id: WindowId) -> Result<()> {
         let Some(toplevel) = self.toplevel_object(window_id) else {
@@ -1364,6 +1411,37 @@ impl ShellBridge {
         };
         toplevel.shelve();
         self.connection.flush().context("flushing shelve")
+    }
+
+    /// Tell the compositor where `window_id` lives on Home: `rect` (x, y, width, height) in
+    /// `surface`'s own logical coordinates — the card it parks into and grows back out of. `None`
+    /// clears it. A hint for the park/unpark motion only; it moves and resizes nothing.
+    ///
+    /// Returns whether the compositor was told. `false` means it is too old to have the request
+    /// (manager below version 12); that is not an error, and asking again will not change it.
+    pub fn set_minimize_target(
+        &self,
+        window_id: WindowId,
+        surface: &winit::window::Window,
+        rect: Option<(i32, i32, i32, i32)>,
+    ) -> Result<bool> {
+        if self.manager.version() < MINIMIZE_TARGET_SINCE {
+            return Ok(false);
+        }
+        let Some(toplevel) = self.toplevel_object(window_id) else {
+            bail!("no such window on this connection: {window_id:?}");
+        };
+        match rect {
+            Some((x, y, width, height)) => {
+                let surface = self.wrap_surface(surface)?;
+                toplevel.set_minimize_target(Some(&surface), x, y, width, height);
+            }
+            None => toplevel.set_minimize_target(None, 0, 0, 0, 0),
+        }
+        self.connection
+            .flush()
+            .context("flushing set_minimize_target")?;
+        Ok(true)
     }
 
     /// `xdg_toplevel.set_maximized`'s effect, requested on the window's behalf (version 2).
@@ -1651,6 +1729,18 @@ impl ShellBridge {
     #[must_use]
     pub fn taskfield(&self) -> &TaskfieldStatus {
         &self.state.taskfield
+    }
+
+    pub fn switcher(&self) -> &SwitcherStatus {
+        &self.state.switcher
+    }
+
+    pub fn set_reduced_motion(&self, enabled: bool) -> Result<()> {
+        if self.manager.version() >= 13 {
+            self.manager.set_reduced_motion(u32::from(enabled));
+            self.connection.flush().context("flushing reduced motion")?;
+        }
+        Ok(())
     }
 
     /// How many times `Super+Space` asked for the Apps bar since this was last called. Drained

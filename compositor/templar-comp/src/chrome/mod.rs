@@ -49,24 +49,34 @@ const SCATTER_LABEL_HEIGHT: i32 = 26;
 const GROUP_OUTLINE_THICKNESS: i32 = 2;
 
 /// The compositor-drawn fallback switcher's transient state (`TemplarCompState::step_switcher`,
-/// `src/keybindings.rs`): what to list, in display order, and which entry was just selected. It
-/// lives exactly as long as the frozen list it draws — until the modifier comes up, or until any
-/// other action ends the walk (`src/input.rs`). This module owns no clock, so there is no timed
-/// fade.
+/// `src/keybindings.rs`): what to list, in display order, and which entry is selected. It lives
+/// exactly as long as the frozen list it draws — until the modifier comes up (which activates
+/// the selection), or until Escape, a click or any other action ends the walk choosing nothing
+/// (`src/input.rs`). A window closing mid-walk is pruned from the list and the HUD rebuilt. This
+/// module owns no clock, so there is no timed fade.
 ///
-/// Two switchers share it. `Alt+Tab` lists every unshelved window, most-recently-activated first;
-/// `Super+Tab` lists the groups themselves with their member counts under "Groups".
-/// One HUD, because they are the same gesture at two scales, and because a second panel widget
-/// would be a second thing to keep alive with the shell dead.
+/// Two chords share it. `Alt+Tab` lists every open application window, parked ones included,
+/// most-recently-activated first; `` Alt+` `` lists the focused window's unit under the unit's
+/// name. One HUD, because they are the same gesture at two scales, and because a second panel
+/// widget would be a second thing to keep alive with the shell dead.
 #[derive(Clone, Debug)]
 pub struct SwitcherState {
-    /// A title row above the entries: the group's name, or "Groups". `None` for the plain,
-    /// groupless list — a person with no groups sees exactly the switcher they always had.
+    /// A title row above the entries: the unit's name. `None` for the plain `Alt+Tab` list.
     pub heading: Option<String>,
     /// The group's accent, painted behind the heading so the HUD and the band agree at a glance.
     pub accent: Option<u32>,
-    pub entries: Vec<(WindowId, String)>,
+    pub entries: Vec<SwitcherEntry>,
     pub selected: WindowId,
+}
+
+/// One switcher row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwitcherEntry {
+    pub window_id: WindowId,
+    /// Never empty: the title, else the application's short name, else "(untitled)".
+    pub label: String,
+    /// Parked on Home's shelf: drawn in muted ink, so the HUD says choosing it brings it back.
+    pub parked: bool,
 }
 
 /// Long-lived chrome state: the discovered font (if any) and every widget's cached painted
@@ -185,6 +195,11 @@ pub struct ChromeInputs<'a> {
     /// The bottom-centre gesture gate: whether Peek's mark is drawn at all, and the learning
     /// outline (`src/gesture_gate.rs`).
     pub gesture_gate: &'a crate::gesture_gate::GestureGate,
+    /// The park/unpark motions (`src/motion.rs`), drawn by `src/scene.rs` at `now_ns`.
+    pub motions: &'a crate::motion::MotionState,
+    /// This frame's monotonic time (`window_bridge::now_monotonic_ns`), the one clock reading
+    /// every motion in the frame is drawn at.
+    pub now_ns: u64,
 }
 
 /// The window-independent chrome to draw over `output` this frame, front-to-back (index 0
@@ -247,7 +262,14 @@ pub fn collect_output_chrome(
         return (elements, false);
     }
 
-    if let Some(switcher) = inputs.switcher {
+    // A mapped Presentation surface is the shell's actual renderer, not merely a connection.
+    // Destroying that surface restores the unchanged text HUD, including mid-walk.
+    let shell_presentation = inputs.window_service.windows().any(|window| {
+        window.mapped
+            && inputs.window_service.layer_of(window.id)
+                == Some(templar_window::Layer::Presentation)
+    });
+    if let Some(switcher) = inputs.switcher.filter(|_| !shell_presentation) {
         collect_switcher(
             chrome,
             switcher,
@@ -612,11 +634,20 @@ fn collect_switcher(
     elements: &mut Vec<MemoryRenderBufferRenderElement<GlesRenderer>>,
 ) {
     let heading_rows = usize::from(switcher.heading.is_some());
-    let panel = layout::switcher_panel(
-        local_rect,
-        switcher.entries.len() + heading_rows,
-        SWITCHER_ROW_HEIGHT,
+    // More windows than the output has rows for: show the stretch around the selection rather
+    // than letting the panel's clamp cut rows off the bottom, where the walk would vanish.
+    let fits = usize::try_from(local_rect.height / SWITCHER_ROW_HEIGHT.max(1)).unwrap_or(0);
+    let selected = switcher
+        .entries
+        .iter()
+        .position(|entry| entry.window_id == switcher.selected)
+        .unwrap_or(0);
+    let shown = layout::switcher_visible_rows(
+        switcher.entries.len(),
+        selected,
+        fits.saturating_sub(heading_rows).max(1),
     );
+    let panel = layout::switcher_panel(local_rect, shown.len() + heading_rows, SWITCHER_ROW_HEIGHT);
     let mut live = std::collections::HashSet::new();
 
     if let Some(heading) = &switcher.heading {
@@ -631,20 +662,22 @@ fn collect_switcher(
         );
     }
 
-    for (index, (window_id, title)) in switcher.entries.iter().enumerate() {
-        live.insert(*window_id);
-        let row = layout::switcher_row(panel, index + heading_rows, SWITCHER_ROW_HEIGHT);
-        let selected = *window_id == switcher.selected;
+    for (slot, entry) in switcher.entries[shown].iter().enumerate() {
+        live.insert(entry.window_id);
+        let row = layout::switcher_row(panel, slot + heading_rows, SWITCHER_ROW_HEIGHT);
+        let selected = entry.window_id == switcher.selected;
         let background = if selected {
             paint::SWITCHER_SELECTED_COLOR
         } else {
             paint::SWITCHER_PANEL_COLOR
         };
-        let key = WidgetKey::new(title.clone(), background).with_variant(u32::from(selected));
-        let title = title.clone();
+        let key = WidgetKey::new(entry.label.clone(), background)
+            .with_variant(u32::from(selected) | (u32::from(entry.parked) << 1));
+        let label = entry.label.clone();
+        let parked = entry.parked;
         let fonts = chrome.fonts.as_mut().map(|f| (&mut f.cache, f.face));
         let location = local_physical(row, output_scale);
-        let widget = chrome.switcher_rows.entry(*window_id).or_default();
+        let widget = chrome.switcher_rows.entry(entry.window_id).or_default();
         if let Some(element) = widget.ensure(
             key,
             (row.width, row.height),
@@ -657,8 +690,9 @@ fn collect_switcher(
                     painter,
                     pixel_w,
                     pixel_h,
-                    &title,
+                    &label,
                     selected,
+                    parked,
                     fonts,
                     scale_factor(pixel_w, row.width),
                 );

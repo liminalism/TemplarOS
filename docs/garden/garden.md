@@ -166,30 +166,26 @@ The default state of notification UI should be absence.
 
 That's consistent with the overall TemplarOS philosophy: don't run/display something merely to announce that nothing happened.
 
-5. Running windows should completely leave Home
+5. Current work belongs on Home as well as in the task switcher
 
-The vertical stack in the bottom-left currently appears to represent parked/running windows.
+The 2026-10-03 user direction supersedes this section's earlier recommendation to remove
+running windows from Home. Homegarden is an active-work presentation layer, not only a place
+to revisit files after work has ended.
 
-With the new taskbar, remove it from Home.
+Every open or minimized window is represented by a card on the field itself, not in a
+dedicated row: cards take free cells around the centre, the most recently used work first,
+and gather by folder — a window's Place association, or else the folder its application most
+recently worked in according to the Recent feed (never its title). Terminals, file-manager
+folders and image viewers with no folder gather together. A card keeps its cells while its
+window lives, so a parked window minimizes into its own area and activation moves nothing;
+windows that do not fit are counted on one "+N windows" card that opens the window overview.
+Existing same-window previews, activate/restore, minimize and close paths are reused rather
+than introducing a second window authority. Closing removes the live card; the existing
+remembered files, folders and Places remain under their existing service policy.
 
-That's one of the largest visual cleanups available.
-
-Home shouldn't show:
-
-Firefox
-Files
-terminal
-Smithay
-...
-
-unless they're represented indirectly as project state:
-
-TEMPLAR
-3 running
-
-The taskbar owns the actual windows.
-
-That immediately frees a large portion of the left edge.
+The task-switcher popup stays the fast way to reach those windows, and Alt-Tab is unchanged.
+Saved user objects do not move when the first window opens or the last one closes.
+The implemented contract is described in `docs/architecture/homegarden.md`.
 
 6. Make the application launcher less permanently prominent
 

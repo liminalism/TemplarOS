@@ -23,6 +23,7 @@ use templar_comp_integration::{
 const SEAT_NAME: &str = "check";
 
 /// Backend data for the self-check: there is no backend, which is the point.
+#[derive(Debug)]
 pub struct CheckBackendData;
 
 impl Backend for CheckBackendData {
@@ -99,7 +100,7 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
 /// The whole compositor state with no backend, listening on a fresh public socket (returned).
 /// The session-bus services degrade to disconnected caches/notifiers when there is no bus,
 /// exactly as they do when sessiond has not started yet.
-fn build_state(
+pub(crate) fn build_state(
     event_loop: &EventLoop<'static, State>,
     runtime: &tokio::runtime::Handle,
 ) -> anyhow::Result<(State, String)> {
@@ -464,5 +465,343 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the compositor thread deadlocked inside the pointer grab");
         assert!(!still_grabbed, "the grab ended with the release");
+    }
+
+    #[derive(Default)]
+    struct FocusClient {
+        compositor: Option<wayland_client::protocol::wl_compositor::WlCompositor>,
+    }
+
+    impl Dispatch<wl_registry::WlRegistry, ()> for FocusClient {
+        fn event(
+            state: &mut Self,
+            registry: &wl_registry::WlRegistry,
+            event: wl_registry::Event,
+            (): &(),
+            _: &Connection,
+            qh: &QueueHandle<Self>,
+        ) {
+            if let wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } = event
+                && interface == "wl_compositor"
+            {
+                state.compositor = Some(registry.bind(name, version.min(4), qh, ()));
+            }
+        }
+    }
+    wayland_client::delegate_noop!(FocusClient: ignore wayland_client::protocol::wl_compositor::WlCompositor);
+    wayland_client::delegate_noop!(FocusClient: ignore wayland_client::protocol::wl_surface::WlSurface);
+
+    struct FocusSurfaces {
+        owner: smithay::reexports::wayland_server::Client,
+        surfaces: [smithay::reexports::wayland_server::protocol::wl_surface::WlSurface; 3],
+        release: mpsc::Sender<()>,
+        client: std::thread::JoinHandle<()>,
+    }
+
+    fn focus_surfaces(event_loop: &mut EventLoop<State>, state: &mut State) -> FocusSurfaces {
+        use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+        let (server, peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut dh = state.display_handle.clone();
+        let owner = dh
+            .insert_client(
+                server,
+                std::sync::Arc::new(crate::state::ClientState {
+                    trusted_shell: true,
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let client = std::thread::spawn(move || {
+            use wayland_client::Proxy;
+            let connection = Connection::from_socket(peer).unwrap();
+            let mut queue = connection.new_event_queue();
+            let qh = queue.handle();
+            let mut globals = FocusClient::default();
+            connection.display().get_registry(&qh, ());
+            queue.roundtrip(&mut globals).unwrap();
+            let compositor = globals.compositor.as_ref().unwrap();
+            let surfaces: [_; 3] = std::array::from_fn(|_| compositor.create_surface(&qh, ()));
+            queue.roundtrip(&mut globals).unwrap();
+            ready_tx
+                .send(
+                    surfaces
+                        .each_ref()
+                        .map(|surface| surface.id().protocol_id()),
+                )
+                .unwrap();
+            release_rx.recv().unwrap();
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let ids = loop {
+            if let Ok(ids) = ready_rx.try_recv() {
+                break ids;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "client failed to create real surfaces"
+            );
+            event_loop
+                .dispatch(Some(std::time::Duration::from_millis(20)), state)
+                .unwrap();
+            dh.flush_clients().unwrap();
+        };
+        let surfaces = ids.map(|id| owner.object_from_protocol_id::<WlSurface>(&dh, id).unwrap());
+        FocusSurfaces {
+            owner,
+            surfaces,
+            release,
+            client,
+        }
+    }
+
+    #[test]
+    fn popup_focus_preserves_home_and_mru_and_cannot_steal_focus_on_release() {
+        use templar_window::{ClientKind, Layer, Rect, WindowClaims};
+
+        let mut event_loop: EventLoop<State> = EventLoop::try_new().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut state, _) = build_state(&event_loop, runtime.handle()).unwrap();
+        let FocusSurfaces {
+            owner: shell,
+            surfaces,
+            release,
+            client,
+        } = focus_surfaces(&mut event_loop, &mut state);
+        let mut surfaces = surfaces.into_iter();
+        let mut make_surface = |layer| {
+            let surface = surfaces.next().unwrap();
+            let id = state.window_service.on_toplevel_mapped(
+                1,
+                ClientKind::TrustedShell,
+                WindowClaims::default(),
+                "focus fixture".into(),
+                Rect::new(10, 10, 300, 200),
+            );
+            state
+                .window_service
+                .set_layer(id, layer, ClientKind::TrustedShell)
+                .unwrap();
+            state.window_service.set_role(
+                id,
+                match layer {
+                    Layer::HomeSurface => templar_window::WindowRole::Shell,
+                    Layer::ShellOverlay => templar_window::WindowRole::Overlay,
+                    _ => templar_window::WindowRole::Application,
+                },
+            );
+            state.windows.mark_mapped(surface.clone(), id);
+            (surface, id)
+        };
+        let (home, _) = make_surface(Layer::HomeSurface);
+        let (popup, popup_id) = make_surface(Layer::ShellOverlay);
+        let (client_surface, client_id) = make_surface(Layer::Normal);
+        let keyboard = state.seat.get_keyboard().unwrap();
+        let request = |state: &mut State, surface| {
+            crate::protocols_shell::focus_shell_surface(state, &shell, surface);
+        };
+        state.window_service.activate(client_id);
+        state.window_service.set_home_revealed(true);
+        keyboard.set_focus(
+            &mut state,
+            Some(home.clone()),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
+        let before = state.window_service.shell_toplevels();
+        request(&mut state, Some(client_surface.clone()));
+        assert_eq!(
+            keyboard.current_focus(),
+            Some(home.clone()),
+            "ordinary layers cannot borrow popup focus"
+        );
+        request(&mut state, Some(popup.clone()));
+        assert_eq!(keyboard.current_focus(), Some(popup.clone()));
+        crate::input::focus_home_if_needed(&mut state, &home);
+        assert_eq!(
+            keyboard.current_focus(),
+            Some(popup.clone()),
+            "a Home resize must not steal popup keys"
+        );
+        assert!(state.window_service.home_revealed());
+        assert_eq!(state.window_service.shell_toplevels(), before);
+        request(&mut state, None);
+        assert_eq!(keyboard.current_focus(), Some(home));
+        assert_eq!(state.window_service.shell_toplevels(), before);
+
+        // An outside click won focus already: a delayed popup-close request must not take it back.
+        state.window_service.set_home_revealed(false);
+        keyboard.set_focus(
+            &mut state,
+            Some(client_surface.clone()),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
+        request(&mut state, None);
+        assert_eq!(keyboard.current_focus(), Some(client_surface.clone()));
+        // Hidden surfaces and the lock screen cannot be bypassed by a shell popup request.
+        state.window_service.set_mapped(popup_id, false);
+        request(&mut state, Some(popup.clone()));
+        assert_eq!(keyboard.current_focus(), Some(client_surface.clone()));
+        state.window_service.set_mapped(popup_id, true);
+        state.session_lock.locked = true;
+        request(&mut state, Some(popup));
+        assert_eq!(keyboard.current_focus(), Some(client_surface));
+        release.send(()).unwrap();
+        client.join().unwrap();
+    }
+
+    /// `set_minimize_target` and the park/unpark funnel on a whole headless compositor: a card
+    /// is accepted only on the shell connection's own Home surface, shelving a window that has
+    /// one starts a park into the card's global rectangle, a window without one just vanishes,
+    /// unshelving grows back out, and destroying either window drops the card and the motion.
+    #[test]
+    // One scenario, told in order: each step's state is the next step's precondition.
+    #[allow(clippy::too_many_lines)]
+    fn a_card_on_home_turns_parking_and_unparking_into_motions() {
+        use crate::motion::MotionKind;
+        use crate::protocols_shell::set_minimize_target;
+        use crate::space_sync::{client_area, on_window_destroyed, sync_after_change};
+        use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+        use templar_window::{ClientKind, Layer, Rect, WindowClaims, WindowRole};
+
+        let mut event_loop: EventLoop<State> = EventLoop::try_new().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut state, _) = build_state(&event_loop, runtime.handle()).unwrap();
+        let FocusSurfaces {
+            owner: shell,
+            surfaces: [home_surface, popup_surface, _],
+            release,
+            client,
+        } = focus_surfaces(&mut event_loop, &mut state);
+        let shell_window = |state: &mut State, surface: &WlSurface, layer, role| {
+            let id = state.window_service.on_toplevel_mapped(
+                1,
+                ClientKind::TrustedShell,
+                WindowClaims::default(),
+                "shell".into(),
+                Rect::new(0, 0, 1280, 720),
+            );
+            state
+                .window_service
+                .set_layer(id, layer, ClientKind::TrustedShell)
+                .unwrap();
+            state.window_service.set_role(id, role);
+            state.windows.mark_mapped(surface.clone(), id);
+            id
+        };
+        let home = shell_window(
+            &mut state,
+            &home_surface,
+            Layer::HomeSurface,
+            WindowRole::Shell,
+        );
+        shell_window(
+            &mut state,
+            &popup_surface,
+            Layer::ShellOverlay,
+            WindowRole::Overlay,
+        );
+        let app = |state: &mut State, title: &str| {
+            let id = state.window_service.on_toplevel_mapped(
+                200,
+                ClientKind::Application,
+                WindowClaims::default(),
+                title.into(),
+                Rect::new(100, 100, 400, 300),
+            );
+            state.window_service.activate(id);
+            id
+        };
+        let carded = app(&mut state, "carded");
+        let plain = app(&mut state, "plain");
+        sync_after_change(&mut state);
+
+        let card = Rect::new(40, 600, 160, 90);
+        let (other_server, _other_peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let other = state
+            .display_handle
+            .clone()
+            .insert_client(
+                other_server,
+                std::sync::Arc::new(crate::state::ClientState {
+                    trusted_shell: true,
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        set_minimize_target(&mut state, &other, carded, Some(home_surface.clone()), card);
+        assert!(
+            state.motion.target(carded).is_none(),
+            "a card on another connection's surface is refused"
+        );
+        set_minimize_target(&mut state, &shell, carded, Some(popup_surface), card);
+        assert!(
+            state.motion.target(carded).is_none(),
+            "a popup is not where a window lives"
+        );
+        set_minimize_target(&mut state, &shell, carded, Some(home_surface.clone()), card);
+        assert_eq!(
+            state
+                .motion
+                .target(carded)
+                .map(|target| target.surface_window),
+            Some(home)
+        );
+
+        let own = client_area(&state, carded);
+        let home_area = client_area(&state, home);
+        let global_card = Rect::new(home_area.x + 40, home_area.y + 600, 160, 90);
+        assert!(state.window_service.shelve(carded));
+        assert!(state.window_service.shelve(plain));
+        sync_after_change(&mut state);
+        let now = crate::window_bridge::now_monotonic_ns(&state.clock);
+        let park = *state
+            .motion
+            .active(carded, now)
+            .expect("a carded window parks");
+        assert_eq!(park.kind, MotionKind::Park);
+        assert_eq!((park.from, park.to), (own, global_card));
+        assert!(
+            state.motion.active(plain, now).is_none(),
+            "no card, no motion: the window simply goes"
+        );
+
+        assert!(state.window_service.unshelve(carded).is_some());
+        sync_after_change(&mut state);
+        let now = crate::window_bridge::now_monotonic_ns(&state.clock);
+        let unpark = *state.motion.active(carded, now).expect("it grows back out");
+        assert_eq!(unpark.kind, MotionKind::Unpark);
+        assert_eq!(unpark.to, client_area(&state, carded));
+
+        set_minimize_target(&mut state, &shell, carded, None, card);
+        assert!(
+            state.motion.target(carded).is_none(),
+            "a null surface clears"
+        );
+        set_minimize_target(&mut state, &shell, carded, Some(home_surface.clone()), card);
+        on_window_destroyed(&mut state, carded);
+        assert!(state.motion.target(carded).is_none());
+        assert!(state.motion.active(carded, now).is_none());
+
+        set_minimize_target(&mut state, &shell, plain, Some(home_surface), card);
+        assert!(state.motion.target(plain).is_some());
+        on_window_destroyed(&mut state, home);
+        assert!(
+            state.motion.target(plain).is_none(),
+            "a card dies with the Home surface it was on"
+        );
+
+        release.send(()).unwrap();
+        client.join().unwrap();
     }
 }

@@ -20,6 +20,9 @@ pub struct GroupInfo {
 pub struct ShellToplevel {
     pub window_id: WindowId,
     pub canonical_app_id: Option<AppId>,
+    /// Untrusted client claim, display only. Never used for identity, actions or task merging.
+    #[serde(default)]
+    pub claimed_app_id: Option<String>,
     pub instance_id: Option<InstanceId>,
     pub title: String,
     pub verified_identity: bool,
@@ -41,6 +44,12 @@ pub struct ShellToplevel {
 }
 
 impl ShellToplevel {
+    pub fn icon_app_id(&self) -> Option<&str> {
+        self.canonical_app_id
+            .as_ref()
+            .map(AppId::as_str)
+            .or(self.claimed_app_id.as_deref())
+    }
     /// Whether this window is filling its output — the shell's half of
     /// [`crate::WindowRecord::covers_screen`], and the one predicate behind every "there is a
     /// window over the bottom edge" rule the shell has: the machine cluster is not drawn at all
@@ -85,6 +94,7 @@ mod tests {
         ShellToplevel {
             window_id: WindowId(7),
             canonical_app_id: Some("org.templaros.Files".parse().unwrap()),
+            claimed_app_id: None,
             instance_id: None,
             title: String::new(),
             verified_identity: true,

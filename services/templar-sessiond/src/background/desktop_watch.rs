@@ -13,8 +13,10 @@
 //! deletions do not (the import path only ever adds — a removed file's manifest needs a prune
 //! the registry does not have yet, so removals still wait for a restart).
 
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use parking_lot::RwLock;
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
 use templar_appd::{Registry, desktop_entry::ExecResolver};
+use templar_session_core::providers::ProviderRegistry;
 use templar_state::Store;
 
 /// How often the application directories are re-stat'ed. Slow on purpose: installs are rare,
@@ -24,12 +26,17 @@ pub const POLL_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Watch `dirs` for new or changed `.desktop` files for the rest of the session. Never returns;
 /// logs and continues on every failure, so a broken directory can never end the task.
+///
+/// A rescan re-runs the startup pair — import, then the claimed-role pass — so an installed or
+/// edited entry's `X-TemplarOS-Provides=` claim takes effect without a restart, the same way it
+/// does at login.
 pub async fn run(
-    registry: std::sync::Arc<Registry>,
+    registry: Arc<Registry>,
     store: Store,
-    resolver: std::sync::Arc<dyn ExecResolver>,
+    resolver: Arc<dyn ExecResolver>,
     connection: zbus::Connection,
     dirs: Vec<PathBuf>,
+    providers: Arc<RwLock<ProviderRegistry>>,
 ) {
     let mut before = snapshot_dirs(&dirs);
     loop {
@@ -43,6 +50,7 @@ pub async fn run(
         let task_store = store.clone();
         let task_resolver = resolver.clone();
         let task_dirs = dirs.clone();
+        let task_providers = providers.clone();
         let changed = tokio::task::spawn_blocking(move || {
             let imported = super::desktop_import::import(
                 &task_registry,
@@ -51,6 +59,12 @@ pub async fn run(
                 task_resolver.as_ref(),
             )?;
             let grouped = super::desktop_import::regroup_and_persist(&task_registry, &task_store)?;
+            if imported > 0 {
+                crate::ensure_claimed_provider_declarations(
+                    task_registry.as_ref(),
+                    &task_providers,
+                );
+            }
             Ok::<_, anyhow::Error>((imported, grouped))
         })
         .await;

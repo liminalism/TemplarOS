@@ -40,17 +40,18 @@ use pixelkit_text::Align;
 use pixelkit_ui::Ui;
 
 use crate::surface::bar_screen::{BAR_HEIGHT, BarAction, CHIP_GAP, CHIP_H, CHIP_PAD, chip};
+use crate::surface::calendar::{self, Calendar};
 use crate::surface::design::{self, Elevation};
 use crate::surface::field_screen::FieldAction;
 use crate::surface::rail::{self, RAIL_GAP, RailSide, RailView};
 
 /// The Settings chip — the whole of Settings, not one corner of it. It took the readings chip's
 /// place in the cluster.
-const SETTINGS_WIDTH: i32 = 112;
-const NETWORK_WIDTH: i32 = 96;
+const SETTINGS_WIDTH: i32 = 56;
+const NETWORK_WIDTH: i32 = 56;
 const CLOCK_WIDTH: i32 = 160;
 /// The account chip: the account's name, its mark, and the popover behind it.
-const ACCOUNT_WIDTH: i32 = 140;
+const ACCOUNT_WIDTH: i32 = 56;
 /// The account popover's width and one row's height, and the padding inside its frame.
 ///
 /// Wider than a menu needs to be, because two of its rows are tracks and a track's width is its
@@ -232,9 +233,8 @@ pub struct ClusterData<'a> {
     pub clock_label: &'a str,
     /// Whether the network control's role has a provider that can be launched.
     pub network_control_available: bool,
-    /// Whether an installed application declares `Categories=Calendar`, so the clock has
-    /// somewhere to open into.
-    pub calendar_available: bool,
+    /// OS-local date and time. Unavailable only when the host's localtime conversion failed.
+    pub local_now: Option<chrono::NaiveDateTime>,
     /// Who is signed in: what the account chip says next to its mark.
     pub account_label: &'a str,
     /// Charge, volume and backlight, as the services last reported them.
@@ -254,6 +254,7 @@ struct Layout {
     account: Rect,
     /// The account popover, when it is open and the host has made room.
     popover: Option<Popover>,
+    calendar: Option<calendar::Layout>,
     /// In rail mode, the revealed columns `[x0, x1)` in physical pixels. `None` at the corner.
     revealed: Option<(i32, i32)>,
 }
@@ -282,6 +283,9 @@ struct Popover {
 pub struct ClusterScreen {
     /// Whether the account popover is open.
     pub account_open: bool,
+    /// The clock popup is mutually exclusive with the account popover.
+    calendar: Option<Calendar>,
+    calendar_frame: Option<Rect>,
     /// The popover row armed by a first click and waiting for its second.
     ///
     /// `ActionDecl::confirm` is set on the three actions that end the session, and a chip in the
@@ -307,9 +311,19 @@ pub fn cluster_width() -> i32 {
 /// The surface size the host should ask for. The popover grows it upward, exactly as the island's
 /// hover row does, and reserves nothing either way.
 #[must_use]
-pub fn wanted_size(account_open: bool, full_width: i32) -> (i32, i32) {
-    let band = if account_open { popover_band() } else { 0 };
+pub fn wanted_size(account_open: bool, calendar_open: bool, full_width: i32) -> (i32, i32) {
+    let band = popup_band(account_open, calendar_open);
     (cluster_width().min(full_width.max(1)), BAR_HEIGHT + band)
+}
+
+fn popup_band(account_open: bool, calendar_open: bool) -> i32 {
+    if calendar_open {
+        POPOVER_GAP + calendar::HEIGHT
+    } else if account_open {
+        popover_band()
+    } else {
+        28
+    }
 }
 
 /// How long the system rail is, in logical pixels: the gap at the origin, the four chips and the
@@ -329,9 +343,11 @@ pub fn rail_initial() -> i32 {
 /// The surface size the host asks for while the system rail is open: the output's whole width,
 /// and the popover's band above the bar when it is open.
 #[must_use]
-pub fn rail_wanted_size(account_open: bool, full_width: i32) -> (i32, i32) {
-    let band = if account_open { popover_band() } else { 0 };
-    (full_width.max(1), BAR_HEIGHT + band)
+pub fn rail_wanted_size(account_open: bool, calendar_open: bool, full_width: i32) -> (i32, i32) {
+    (
+        full_width.max(1),
+        BAR_HEIGHT + popup_band(account_open, calendar_open),
+    )
 }
 
 impl ClusterScreen {
@@ -348,16 +364,57 @@ impl ClusterScreen {
         self.account_open
     }
 
+    #[must_use]
+    pub fn calendar_open(&self) -> bool {
+        self.calendar.is_some()
+    }
+
+    /// The declared action and the clock chip both arrive here, with the same local date.
+    pub fn show_calendar(&mut self, today: chrono::NaiveDate) {
+        self.reset();
+        self.calendar = Some(Calendar::new(today));
+    }
+
+    pub(crate) fn calendar_dates(&self) -> Option<(chrono::NaiveDate, chrono::NaiveDate)> {
+        self.calendar
+            .as_ref()
+            .map(|calendar| (calendar.month(), calendar.selected()))
+    }
+
+    pub(crate) fn calendar_layout(
+        &self,
+        ui: &Ui<'_>,
+        area: Rect,
+        rail: Option<RailView>,
+    ) -> Option<calendar::Layout> {
+        Self::layout(ui, area, self.account_open, self.calendar_open(), rail).calendar
+    }
+
+    pub(crate) fn clock_rect(ui: &Ui<'_>, area: Rect, rail: Option<RailView>) -> Rect {
+        Self::layout(ui, area, false, false, rail).clock
+    }
+    pub(crate) fn calendar_frame(&self) -> Option<Rect> {
+        self.calendar_frame
+    }
+
     /// Close the popover and drop whatever it was doing — an armed session row, a drag, the leave
     /// timer. The host calls it when a rail closes, so the next opening starts closed.
     pub fn reset(&mut self) {
         self.account_open = false;
+        self.calendar = None;
+        self.calendar_frame = None;
         self.confirming = None;
         self.left_at = None;
         self.drag = None;
     }
 
-    fn layout(ui: &Ui<'_>, area: Rect, account_open: bool, rail: Option<RailView>) -> Layout {
+    fn layout(
+        ui: &Ui<'_>,
+        area: Rect,
+        account_open: bool,
+        calendar_open: bool,
+        rail: Option<RailView>,
+    ) -> Layout {
         let bar_height = ui.px(BAR_HEIGHT).min(area.h);
         let bar = Rect::new(area.x, area.bottom() - bar_height, area.w, bar_height);
         let chip_h = ui.px(CHIP_H).min(bar.h);
@@ -449,6 +506,8 @@ impl ClusterScreen {
                 rows,
             }
         });
+        let calendar = (calendar_open && area.h > bar_height + ui.px(POPOVER_GAP))
+            .then(|| Self::layout_calendar_frame(ui, area, bar, clock, rail));
 
         Layout {
             settings,
@@ -456,8 +515,34 @@ impl ClusterScreen {
             clock,
             account,
             popover,
+            calendar,
             revealed,
         }
+    }
+
+    fn layout_calendar_frame(
+        ui: &Ui<'_>,
+        area: Rect,
+        bar: Rect,
+        clock: Rect,
+        rail: Option<RailView>,
+    ) -> calendar::Layout {
+        let width = ui.px(calendar::WIDTH).min(area.w);
+        let gap = ui.px(POPOVER_GAP);
+        let height = ui.px(calendar::HEIGHT).min(area.h - bar.h - gap);
+        let x = match rail.map(|view| view.side) {
+            Some(RailSide::Left) => clock.x,
+            _ => clock.right() - width,
+        };
+        calendar::Layout::new(
+            ui,
+            Rect::new(
+                x.min(area.right() - width).max(area.x),
+                bar.y - gap - height,
+                width,
+                height,
+            ),
+        )
     }
 
     /// Whether a drag is on this slider right now.
@@ -713,7 +798,26 @@ impl ClusterScreen {
     #[allow(clippy::too_many_lines)]
     pub fn draw(&mut self, ui: &mut Ui<'_>, area: Rect, data: &ClusterData<'_>) -> Vec<BarAction> {
         let mut actions = Vec::new();
-        let layout = Self::layout(ui, area, self.account_open, data.rail);
+        if self.calendar_open() || self.account_open {
+            let shift = ui.input.modifiers().shift;
+            let dismissed = ui.input.consume_keys(|keys| {
+                for key in keys {
+                    if let Some(calendar) = &mut self.calendar {
+                        if calendar.key(key, shift, data.local_now.map(|now| now.date())) {
+                            return true;
+                        }
+                    } else if *key == pixelkit_shell::KeyInput::Escape {
+                        return true;
+                    }
+                }
+                false
+            });
+            if dismissed {
+                self.reset();
+            }
+        }
+        let layout = Self::layout(ui, area, self.account_open, self.calendar_open(), data.rail);
+        self.calendar_frame = layout.calendar.as_ref().map(|geometry| geometry.frame);
 
         // The ground first, for the opaque fallback; the chips are the coverage, so everything
         // between and around them is desktop. The same bargain the island makes.
@@ -732,6 +836,18 @@ impl ClusterScreen {
             // part of the curtain and stays whole.
             Some(interval) => self.opaque.extend(rail::clipped_shapes(chips, interval)),
             None => self.opaque.extend(chips),
+        }
+        if let (Some(calendar), Some(geometry)) = (&mut self.calendar, &layout.calendar) {
+            self.opaque
+                .push((geometry.frame, ui.px(design::TILE_RADIUS)));
+            design::shell(
+                ui,
+                geometry.frame,
+                design::shell_fill(),
+                design::edge_strong(),
+                Elevation::Lifted,
+            );
+            calendar.draw(ui, geometry, data.local_now);
         }
 
         // The account popover first, for the same reason the row is early: it floats over what is
@@ -843,13 +959,7 @@ impl ClusterScreen {
                 design::TAG_FILL
             },
         );
-        ui.label_styled(
-            layout.settings.inset(ui.px(6)),
-            &format!("\u{2699} {settings_label}"),
-            design::state_style(ui),
-            design::TAG_INK,
-            Align::Centre,
-        );
+        symbolic(ui, layout.settings, Symbol::Settings, design::TAG_INK);
         if settings_live && ui.input.take_click(layout.settings) {
             actions.push(BarAction::Field(FieldAction::RunAction("settings.open")));
         }
@@ -869,16 +979,15 @@ impl ClusterScreen {
                 design::TAG_FILL
             },
         );
-        ui.label_styled(
-            layout.network.inset(ui.px(6)),
-            network_label,
-            design::state_style(ui),
+        symbolic(
+            ui,
+            layout.network,
+            Symbol::Network,
             if data.network_control_available {
                 design::TAG_INK
             } else {
                 design::text_faint()
             },
-            Align::Centre,
         );
         if network_live && ui.input.take_click(layout.network) {
             actions.push(BarAction::Field(FieldAction::RunAction(
@@ -886,14 +995,13 @@ impl ClusterScreen {
             )));
         }
 
-        // The clock opens the installed calendar. Dimmed when none is installed, the way the
-        // network chip is: a chip that looks live and does nothing is worse than one that says so.
-        let clock_live = data.calendar_available && layout.live(layout.clock);
+        // The clock is always useful: its calendar is part of the shell, not an installed app.
+        let clock_live = layout.live(layout.clock);
         let clock_hovered = clock_live && ui.input.hovering(layout.clock);
         chip(
             ui,
             layout.clock,
-            if clock_hovered {
+            if self.calendar_open() || clock_hovered {
                 design::accent()
             } else {
                 design::TAG_FILL
@@ -903,17 +1011,17 @@ impl ClusterScreen {
             layout.clock.inset(ui.px(6)),
             data.clock_label,
             design::state_style(ui),
-            if data.calendar_available {
-                design::TAG_INK
-            } else {
-                design::text_faint()
-            },
+            design::TAG_INK,
             Align::Centre,
         );
         if clock_live && ui.input.take_click(layout.clock) {
-            actions.push(BarAction::Field(FieldAction::RunAction(
-                "clock.open-calendar",
-            )));
+            if self.calendar_open() {
+                self.reset();
+            } else {
+                actions.push(BarAction::Field(FieldAction::RunAction(
+                    "clock.open-calendar",
+                )));
+            }
         }
 
         // The account chip: the machine's two levels and the session actions, in one place,
@@ -929,16 +1037,48 @@ impl ClusterScreen {
                 design::TAG_FILL
             },
         );
-        ui.label_styled(
-            layout.account.inset(ui.px(6)),
-            &format!("\u{25c9} {}", data.account_label),
-            design::state_style(ui),
-            design::TAG_INK,
-            Align::Centre,
-        );
+        symbolic(ui, layout.account, Symbol::Account, design::TAG_INK);
         if account_live && ui.input.take_click(layout.account) {
+            self.calendar = None;
             self.account_open = !self.account_open;
             self.confirming = None;
+        }
+        if !self.account_open && !self.calendar_open() {
+            let hovered = [
+                (layout.settings, settings_label, settings_hovered),
+                (layout.network, network_label, network_hovered),
+                (layout.account, data.account_label, account_hovered),
+            ];
+            for (cell, label, active) in hovered {
+                if !active {
+                    continue;
+                }
+                let style = design::state_style(ui);
+                let width = (ui.text.measure(label, style) + ui.px(12)).min(area.w);
+                let tip = Rect::new(
+                    (cell.x + (cell.w - width) / 2)
+                        .clamp(area.x, (area.right() - width).max(area.x)),
+                    cell.y - ui.px(26),
+                    width,
+                    ui.px(22),
+                );
+                if tip.y >= area.y {
+                    self.opaque.push((tip, ui.px(design::CHIP_RADIUS)));
+                    chip(ui, tip, design::shell_fill());
+                    ui.label_styled(tip, label, style, design::text(), Align::Centre);
+                }
+            }
+        }
+        if self.calendar_open()
+            && (actions.iter().any(|action| {
+                !matches!(
+                    action,
+                    BarAction::Field(FieldAction::RunAction("clock.open-calendar"))
+                )
+            }) || ui.input.take_click(area)
+                || ui.input.take_context_click(area))
+        {
+            self.reset();
         }
 
         // Leaving closes it. A press on the surface's own ground cannot: the input region is the
@@ -1081,7 +1221,7 @@ mod tests {
     const RAIL_W: i32 = 1920;
 
     fn rail_tallest() -> i32 {
-        BAR_HEIGHT + popover_band()
+        BAR_HEIGHT + popover_band().max(POPOVER_GAP + calendar::HEIGHT)
     }
 
     /// The cluster drawn as a rail, in a surface the host would size, at the bottom of one buffer
@@ -1129,7 +1269,13 @@ mod tests {
                 pixelkit_shell::Scale::ONE,
                 &mut self.kernel,
             );
-            ClusterScreen::layout(&ui, area, self.screen.account_open, Some(self.view))
+            ClusterScreen::layout(
+                &ui,
+                area,
+                self.screen.account_open,
+                self.screen.calendar_open(),
+                Some(self.view),
+            )
         }
 
         fn frame(&mut self) -> Vec<BarAction> {
@@ -1137,7 +1283,8 @@ mod tests {
             let data = ClusterData {
                 clock_label: "10:00",
                 network_control_available: true,
-                calendar_available: true,
+                local_now: chrono::NaiveDate::from_ymd_opt(2024, 2, 29)
+                    .and_then(|day| day.and_hms_opt(10, 0, 0)),
                 account_label: "templar",
                 machine: &self.machine,
                 now_ms: 0,
@@ -1154,7 +1301,12 @@ mod tests {
             let actions = self.screen.draw(&mut ui, area, &data);
             drop(ui);
             self.input.end_frame();
-            self.height = rail_wanted_size(self.screen.account_open, RAIL_W).1;
+            self.height = rail_wanted_size(
+                self.screen.account_open,
+                self.screen.calendar_open(),
+                RAIL_W,
+            )
+            .1;
             actions
         }
 
@@ -1235,5 +1387,111 @@ mod tests {
                 .iter()
                 .any(|(rect, _)| *rect == popover)
         );
+    }
+    #[test]
+    fn calendar_survives_pointer_leave_but_escape_removes_frame_and_input() {
+        let mut rail = Rail::new(RailSide::Right, rail_length());
+        rail.screen
+            .show_calendar(chrono::NaiveDate::from_ymd_opt(2024, 2, 29).unwrap());
+        rail.frame();
+        rail.frame();
+        let frame = rail
+            .screen
+            .calendar_frame()
+            .expect("calendar was presented");
+        assert!(
+            rail.screen
+                .opaque_shapes()
+                .iter()
+                .any(|(rect, _)| *rect == frame)
+        );
+        rail.input.cursor_left();
+        rail.frame();
+        assert!(rail.screen.calendar_open());
+        assert!(rail.screen.next_deadline_ms().is_none());
+        rail.input.key(pixelkit_shell::KeyInput::Escape);
+        rail.frame();
+        assert!(!rail.screen.calendar_open());
+        assert!(rail.screen.calendar_frame().is_none());
+        assert!(
+            !rail
+                .screen
+                .opaque_shapes()
+                .iter()
+                .any(|(rect, _)| *rect == frame)
+        );
+    }
+
+    #[test]
+    fn account_and_calendar_popups_are_mutually_exclusive() {
+        let mut rail = Rail::new(RailSide::Left, rail_length());
+        rail.screen.account_open = true;
+        rail.screen
+            .show_calendar(chrono::NaiveDate::from_ymd_opt(2024, 2, 29).unwrap());
+        assert!(!rail.screen.account_open());
+        rail.frame();
+        rail.frame();
+        let account = rail.layout().account;
+        rail.click(account);
+        assert!(rail.screen.account_open());
+        assert!(!rail.screen.calendar_open());
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Symbol {
+    Settings,
+    Network,
+    Account,
+}
+
+/// Small symbolic controls drawn geometrically; no theme or missing Unicode glyph dependency.
+fn symbolic(ui: &mut Ui<'_>, cell: Rect, symbol: Symbol, ink: u32) {
+    let side = ui.px(24).min(cell.w).min(cell.h);
+    let rect = Rect::new(
+        cell.x + (cell.w - side) / 2,
+        cell.y + (cell.h - side) / 2,
+        side,
+        side,
+    );
+    let unit = (side / 6).max(1);
+    match symbol {
+        Symbol::Settings => {
+            ui.painter.stroke_rect(rect.inset(unit), unit, ink);
+            for (x, y) in [(2, 0), (2, 5), (0, 2), (5, 2)] {
+                ui.painter.fill_rect(
+                    Rect::new(rect.x + x * unit, rect.y + y * unit, 2 * unit, unit),
+                    ink,
+                );
+            }
+            ui.painter
+                .fill_rounded_rect(rect.inset(2 * unit), unit, ink);
+        }
+        Symbol::Network => {
+            for row in 0..3 {
+                ui.painter.fill_rounded_rect(
+                    Rect::new(
+                        rect.x + row * unit,
+                        rect.y + row * 2 * unit,
+                        side - row * 2 * unit,
+                        unit,
+                    ),
+                    unit / 2,
+                    ink,
+                );
+            }
+        }
+        Symbol::Account => {
+            ui.painter.fill_rounded_rect(
+                Rect::new(rect.x + 2 * unit, rect.y, 2 * unit, 2 * unit),
+                unit,
+                ink,
+            );
+            ui.painter.fill_rounded_rect(
+                Rect::new(rect.x + unit, rect.y + 3 * unit, 4 * unit, 3 * unit),
+                unit,
+                ink,
+            );
+        }
     }
 }

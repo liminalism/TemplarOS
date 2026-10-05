@@ -1,15 +1,92 @@
 # Homegarden (`HomeGarden1`)
 
-Home deals with your stuff; the bar deals with the machine. Homegarden is how Home learns what
-your stuff is: directories appear on it as **Places** because you opened them, launched a
-terminal or editor into them, opened files under them, or came back to them; they grow when
-activity concentrates there, hold their place while used, shrink and finally leave when you
-spend later sessions elsewhere, and regrow where they were. The decision is
-`@templaros.decision.homegarden-activity-grown-places`; the design conversation is `docs/garden/`.
+Homegarden presents current work as well as remembered Places. Every open or minimized window
+has a same-instance card on Home's field, placed in free cells around the centre and gathered
+by folder; the task switcher's popup remains the fast route and Alt-Tab keeps its existing
+ordering. Directories remain **Places** because
+you opened them, launched a terminal or editor into them, opened files under them, or came back
+to them; they grow with activity and recede only through the existing garden policy. That policy
+is `@templaros.decision.homegarden-activity-grown-places`; its design history is `docs/garden/`.
 
 Every visual variable has one job: **shape = mode, material = identity, colour = state,
 size = relevance, position = memory.** Only size and presence are automatic. Position is the
 user's.
+
+## Current work
+
+The shell merges the compositor's event-driven window snapshot into transient session entries
+and draws each as a card on the same grid as the persistent tiles, in cells none of them
+occupies, reusing the existing preview painter and window actions. There is no dedicated row:
+the arrangement (`shell/templar-shell/src/work_layout.rs`, pure and unit-tested) is
+
+- **Folder-clustered.** A window's folder is its exact brokered terminal working directory,
+  otherwise its explicit Place association (an instance the garden recorded under a Place),
+  otherwise the folder its application most recently worked in according to `Files.Recents1` —
+  a directory entry itself, otherwise the file's parent. Windows sharing a folder share one faint
+  plate labelled once; unfiled windows have no plate. Window titles are never read for this.
+  CWD and recency affect presentation only: Place context actions stay garden-only.
+- **Centred.** Clusters are ordered by their most recently used window. A card goes to the free
+  position nearest its cluster's existing cards, its remembered normalized folder centroid, or
+  the field's centre for a new cluster, keeping a one-cell gap from other clusters where possible.
+  Cards prefer a shared row baseline, without losing otherwise usable free cells.
+- **Stable.** A card keeps its cells for as long as its window exists, its folder is unchanged
+  and no persistent tile is put on top of it. Activation, recency, parking and restoring move
+  nothing: a parked window's card stays exactly where it was, so a window minimizes to its
+  own area. The arrangement is recomputed only when the windows, their folders, the persistent
+  tiles' cells, the grid or the zoomed project change. Grid/project changes use persisted soft
+  folder hints rather than imposing old absolute coordinates on a different grid.
+- **Bounded.** Cards prefer 3×2 cells and fall back to 2×1 only when nothing larger fits.
+  Windows that fit nowhere are counted on one "+N windows · Show all" card, which takes the
+  cells of the least recent card placed in that pass and opens the compositor's window overview
+  (`window.show-all`). With no free cells at all there is no overflow card.
+
+Kinds are classified by the application catalogue's categories (`TerminalEmulator`,
+`FileManager`, and `Graphics` with `Viewer`, `Photography` or `RasterGraphics` for images) and
+the selected provider roles—not by guessing from window titles or app ids.
+
+Every live window uses an application icon, activity stripe while running and dimming while parked,
+including its preview. Names appear on hover or keyboard focus, without repeated kind/state words.
+Preview wells letterbox rather than stretching client pixels. The bottom bar, both rails and the
+shell-drawn Alt-Tab switcher use the same marks; bar groups stack up to three member icons.
+
+An open card activates its exact window; a parked card restores and activates that same instance.
+The window menu retains minimize, close and other existing window actions. Closing removes
+only the transient session entry: Places, recent files/folders and pinned objects remain under
+their existing owners. A terminal without a file association does not manufacture a recent file.
+Presentation grouping never creates compositor window groups or changes MRU.
+
+The compositor learns where each card is, so a window visibly minimizes into it. After every
+Home frame the shell sends each window's card rectangle — or the "+N windows" card for a window
+without one — as `templar_shell_toplevel_v1.set_minimize_target` (protocol version 12) in Home's
+surface-local logical pixels, rounded outward. It sends only what changed since the last frame,
+clears the target of a window whose card disappeared, forgets closed windows without a request,
+and stops asking for the life of the connection when the compositor is older than the request.
+Home is redrawn on every window-snapshot change whether or not it is revealed, so a window has a
+target before its first park. The compositor uses the target only to animate parking into and
+restoring out of the card; it never changes geometry, layout, stacking or input.
+The existing `shell.home-field.reduced-motion` preference suppresses these transitions and rail
+reveal as well as Home zoom/throw effects. Park/restore follows a smooth geometric size curve;
+the client image keeps its own aspect inside the moving rectangle.
+
+The persistent grid always has the whole field, so first-open/last-close transitions do not
+move or resize the user's saved objects, and work cards never edit the field document. Work
+cards do not participate in persistent-field drag, resize or shelf restoration.
+The separate `$XDG_STATE_HOME/templar-shell/work-positions.json` (fallback
+`~/.local/state/templar-shell/`) stores only normalized per-folder centroids. It contains no window
+ids or field tiles, survives session/output/project changes and cannot reserve occupied cells.
+
+`templar-shell --render-home-work /tmp/home-work` exercises the placement, activation,
+restoration, parking and activation stability, the overflow card and closure with a
+deterministic window snapshot and writes normal, narrow and HiDPI frames without a display or
+session services.
+`templar-shell --render-switcher /tmp/switcher` draws frozen compositor-order fixtures, selected
+overflow rows, icons and refreshed preview frames at normal, fractional and HiDPI scales.
+The compositor retains Alt-Tab ordering, keyboard handling and release/escape commit; the shell's
+Presentation layer supplies pixels only, and the text HUD remains available without the shell.
+Headless captures do not establish native park/restore feel or reproduce the intermittent black
+bottom band. Connected empty shell frames now use a transparent coverage mask rather than the
+opaque fallback; an actual mask/present failure still reports its error and uses that fallback.
+
 
 ## The pieces
 
@@ -55,6 +132,20 @@ the month left of it, not at its lifetime total.
 | `file-opened` | 1.5 | the shell's brokered `open_file` |
 | `created-or-renamed` | 1.5 | reserved for `Files.Operations1` |
 | `file-saved` | 0.8 | reserved for first-party saves |
+
+The Bash prompt hook sends `HomeGarden1.Observe(terminal-entered, cwd, ..., terminal)` on each
+directory transition. Sessiond resolves the D-Bus sender's PID through the broker registry's
+verified cgroup identity; the hook's CLI child shares the terminal's managed instance. It never
+accepts an instance string supplied by an application. A verified transition moves only that
+instance out of its previous context and stores its **exact cwd** in the ledger's optional
+`working_directories` map (UUID string → absolute path), independent of context attribution.
+`HomeGarden1.WorkingDirectories` exposes that map, including HOME/cache/target directories that
+grow no Place. Activity weight still accrues only to the attributed project/place root.
+`ContextChanged(instance_id, path)` tells the shell to refetch the cwd map and `Contexts`; Home
+uses the exact directory for work clustering without altering the Place's root or persistent tiles.
+Unverified callers can contribute activity but cannot attach or move a window instance. The
+prompt hook caches a directory only after the observation succeeds, so a service-start race is
+retried on the next prompt. No polling process or OSC parser is necessary.
 
 Activity under hidden directories, `target/`, `build/`, `node_modules/`, caches and the
 machine's own trees is dropped before attribution (`shell.home-garden.ignore`).

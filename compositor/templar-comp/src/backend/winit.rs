@@ -53,7 +53,11 @@ type State = TemplarCompState<WinitBackendData>;
 /// Runs the compositor nested inside the current session until the winit window closes.
 // See `src/backend/udev.rs::run`'s identical `#[allow]` for why this stays one function.
 #[allow(clippy::too_many_lines)]
-pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyhow::Result<i32> {
+pub fn run(
+    exec: Option<&[String]>,
+    requested_socket_name: Option<&str>,
+    test_input_socket: Option<&std::path::Path>,
+) -> anyhow::Result<i32> {
     let mut event_loop: EventLoop<State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
     // Stall detection only: there are no page flips to track nested (`src/watchdog.rs`).
@@ -131,6 +135,9 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
     state.space.map_output(&output, (0, 0));
     crate::backend::recompute_outputs(&mut state);
 
+    let _test_input = test_input_socket
+        .map(|path| crate::test_input::install(&event_loop.handle(), path))
+        .transpose()?;
     state.start_xwayland(&event_loop.handle());
 
     let output_for_loop = output.clone();
@@ -167,6 +174,11 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
                             // backend's whole claim (module doc): what is exercised here is the
                             // real thing. Nothing at all while the session is idle-blanked, so
                             // the clear colour below is the whole frame.
+                            // Finished park/unpark motions are dropped first; a running one
+                            // needs nothing more, because this callback asks for the next redraw
+                            // every time it runs (`src/motion.rs`).
+                            let now_ns = crate::window_bridge::now_monotonic_ns(&state.clock);
+                            state.motion.prune(now_ns);
                             let elements = if state.idle.blanked() {
                                 Vec::new()
                             } else {
@@ -181,6 +193,8 @@ pub fn run(exec: Option<&[String]>, requested_socket_name: Option<&str>) -> anyh
                                         switcher: state.switcher.as_ref(),
                                         drop_target: state.drop_target,
                                         gesture_gate: &state.gesture_gate,
+                                        motions: &state.motion,
+                                        now_ns,
                                     },
                                     &output_for_loop,
                                     renderer,

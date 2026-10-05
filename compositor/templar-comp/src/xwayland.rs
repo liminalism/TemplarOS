@@ -145,6 +145,7 @@ impl<B: Backend + 'static> XwmHandler for TemplarCompState<B> {
                 self.space.unmap_elem(&element);
             }
             self.window_service.set_mapped(window_id, false);
+            self.prune_switch_walk(window_id);
             tracing::info!(?window_id, backend = "xwayland", "toplevel unmapped");
             if was_activated {
                 crate::input::refocus_after_window_hidden(self);

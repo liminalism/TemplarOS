@@ -58,6 +58,19 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     render_rails: Option<PathBuf>,
 
+    /// Exercise and render the native clock/calendar popup without a display or session bus.
+    /// Writes PREFIX-{corner,narrow,fractional,hidpi,rail-right,rail-left}-{open,next,today,closed}.png.
+    #[arg(long, value_name = "PREFIX")]
+    render_calendar: Option<PathBuf>,
+    /// Exercise and render active Home work, including parked windows, at 1x, 2x and narrow size.
+    /// Writes PREFIX-{wide,hidpi,narrow}-{open,parked,closed}.png.
+    #[arg(long, value_name = "PREFIX")]
+    render_home_work: Option<PathBuf>,
+
+    /// Render compositor-ordered switcher fixtures, including refreshed captures and overflow.
+    #[arg(long, value_name = "PREFIX")]
+    render_switcher: Option<PathBuf>,
+
     /// Draw every Place theme over a fixed set of synthetic places (a code project, a photo
     /// folder, a manuscript, a sparse new place) at the Wide and Dominant sizes, as
     /// `DIR/<theme>-<place>-<size>.png` plus a contact sheet `DIR/gallery.png`, and exit.
@@ -91,7 +104,10 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().init();
+    use std::io::IsTerminal as _;
+    tracing_subscriber::fmt()
+        .with_ansi(std::io::stdout().is_terminal())
+        .init();
     let cli = Cli::parse();
 
     if cli.list_drawers {
@@ -131,6 +147,29 @@ async fn main() -> Result<()> {
         for written in templar_shell::surface::offscreen::render_rails(path)? {
             println!("{}", written.display());
         }
+        return Ok(());
+    }
+    if let Some(path) = &cli.render_calendar {
+        for written in templar_shell::surface::offscreen::render_calendar(path)? {
+            println!("{}", written.display());
+        }
+        println!("calendar smoke passed: click open, month navigation, Today, Escape, geometry");
+        return Ok(());
+    }
+    if let Some(path) = &cli.render_home_work {
+        for written in templar_shell::surface::offscreen::render_home_work(path)? {
+            println!("{}", written.display());
+        }
+        println!(
+            "Home work smoke passed: centred folder clusters on free cells, restore/activate, \
+             stable through parking and activation, overflow card, close, recents"
+        );
+        return Ok(());
+    }
+
+    if let Some(path) = &cli.render_switcher {
+        templar_shell::surface::offscreen::render_switcher(path)?;
+        println!("{}", path.display());
         return Ok(());
     }
 
