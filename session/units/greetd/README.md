@@ -97,6 +97,9 @@ login as the recovery path. Fingerprint login does not supply a password to unlo
 GNOME/KWallet keyring. Test `fprintd-verify`, password fallback and cancellation before relying on
 the new login path; do not stop a working display manager from the current desktop.
 
+Package directories are root-owned mode `0755` and payload files `0644`, independent of the
+builder's umask; the temporary staging parent stays private.
+
 ## What actually happens on a bare VT
 
 greetd runs one command:

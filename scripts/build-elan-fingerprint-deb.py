@@ -47,7 +47,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     package = output / f"templaros-elan-fingerprint_{VERSION}_amd64.deb"
     with tempfile.TemporaryDirectory(prefix="templaros-elan-") as temporary:
-        stage = Path(temporary)
+        stage = Path(temporary) / "package"
         for relative, content in {
             "DEBIAN/control": CONTROL,
             "usr/lib/udev/rules.d/92-templaros-elan-fingerprint-nosuspend.rules": RULE,
@@ -60,6 +60,10 @@ def main():
         driver.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(args.driver, driver)
         driver.chmod(0o644)
+        stage.chmod(0o755)
+        for path in stage.rglob("*"):
+            if path.is_dir():
+                path.chmod(0o755)
         subprocess.run(["dpkg-deb", "--build", "--root-owner-group", str(stage), str(package)], check=True)
     print(package)
     print(f"Driver SHA-256: {DRIVER_SHA256}; package only, nothing installed or restarted.")
