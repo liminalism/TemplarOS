@@ -27,7 +27,7 @@ record legeos.constraint.first-release-scope/1 : constraint {
 
 record legeos.constraint.identity-and-launch-safety/1 : constraint {
     title "Identity comes from the launch cgroup, never from a client's self-declared app_id; Exec= is never run through a shell; the governor is observe-only until traces are reviewed and never selects a victim by memory size alone"
-    state active
+    state superseded
     scope [
         path "crates/lege-appd/**",
         path "crates/lege-window/**",
@@ -43,6 +43,36 @@ record legeos.constraint.identity-and-launch-safety/1 : constraint {
     rationale """
         Prevents an application from claiming another's identity; avoids the usual partial-process wreckage and browser-killed-because-biggest failure.
         """
+    source {
+        kind external
+        role origin
+        document "planning-subsequent-shape"
+        use """
+            Section 3 'Identity rule', section 4 (never execute Exec= through a shell), section 5 (observe-only first; victim score).
+            """
+    }
+}
+
+record legeos.constraint.identity-and-launch-safety/2 : constraint {
+    title "Identity comes from the launch cgroup, never from a client's self-declared app_id; Exec= is never run through a shell; the governor is observe-only until traces are reviewed and never selects a victim by memory size alone"
+    state active
+    scope [
+        path "crates/templar-appd/**",
+        path "crates/templar-window/**",
+        path "services/templar-resourced/**"
+    ]
+    topic identity-launch-governor-safety
+    statement """
+        (1) A window's application identity is resolved PID -> cgroup -> instance -> canonical AppId; client claims (Wayland app_id, WM_CLASS, sandbox id) can only lower confidence (claim mismatch) or, when unique, yield claim-only confidence — never override a verified launch, and privileged actions require verified-launch. (2) Applications are launched as the registered executable plus an argument vector in a dedicated systemd unit; Exec= lines are parsed, never passed to a shell. (3) lege-resourced ships observe-only; enforcement (memory.high, reclaim, checkpoint, cgroup.kill) is enabled in stages after recorded traces are reviewed; the victim score weighs growth, PSI contribution, foreground/visible state, unsaved work and disposability, never resident size alone; session-critical units are never candidates.
+        """
+    measure """
+        Unit tests in lege-appd (registered_cgroup_beats_claims), lege-resourced (protected_and_foreground_apps_are_not_victims, critical_pressure_kills_only_after_the_delay); the daemon's default mode is ObserveOnly.
+        """
+    rationale """
+        Prevents an application from claiming another's identity; avoids the usual partial-process wreckage and browser-killed-because-biggest failure.
+        """
+    supersedes [ @legeos.constraint.identity-and-launch-safety/1 ]
+    author "dk"
     source {
         kind external
         role origin
@@ -69,7 +99,7 @@ record legeos.constraint.native-lubuntu-is-the-development-environment/1 : const
 
 record legeos.constraint.one-provider-per-role/1 : constraint {
     title "Exactly one selected provider per exclusive system role may autostart"
-    state active
+    state superseded
     scope [
         path "crates/lege-session-core/src/autostart.rs",
         path "crates/lege-session-core/src/providers.rs",
@@ -95,9 +125,39 @@ record legeos.constraint.one-provider-per-role/1 : constraint {
     }
 }
 
+record legeos.constraint.one-provider-per-role/2 : constraint {
+    title "Exactly one selected provider per exclusive system role may autostart"
+    state active
+    scope [
+        path "crates/templar-session-core/src/autostart.rs",
+        path "crates/templar-session-core/src/providers.rs",
+        path "crates/templar-types/src/provider.rs"
+    ]
+    topic one-provider-per-role
+    statement """
+        For every ProviderRole (network-status-ui, notification-server, file-chooser, file-manager, lock-screen, association-broker, clipboard-manager, power-manager, screenshot-service, input-method, portal-backend, greeter) installing a second provider never silently starts both; the user or distribution policy selects one and only that one autostarts.
+        """
+    measure """
+        ProviderRegistry::may_autostart unit tests; `lege doctor` reports every role's resolution.
+        """
+    rationale """
+        The nm-applet + nm-tray2 duplicate is the archetype; provider selection replaces per-applet XDG overrides.
+        """
+    supersedes [ @legeos.constraint.one-provider-per-role/1 ]
+    author "dk"
+    source {
+        kind external
+        role origin
+        document "planning-initial-shape"
+        use """
+            'Declarative system-provider selection' and the network-status-ui example.
+            """
+    }
+}
+
 record legeos.constraint.packaging-and-render-thread/1 : constraint {
     title "Every component is a Debian package (nothing under /usr/local or untracked in $HOME); lege-window carries no async runtime or D-Bus dependency"
-    state active
+    state superseded
     scope [ path "crates/lege-window/**", path "debian/**", path "tools/xtask/**" ]
     topic packaging-and-render-thread
     statement """
@@ -127,9 +187,43 @@ record legeos.constraint.packaging-and-render-thread/1 : constraint {
     }
 }
 
+record legeos.constraint.packaging-and-render-thread/2 : constraint {
+    title "Every component is a Debian package (nothing under /usr/local or untracked in $HOME); lege-window carries no async runtime or D-Bus dependency"
+    state active
+    scope [ path "crates/templar-window/**", path "debian/**", path "tools/xtask/**" ]
+    topic packaging-and-render-thread
+    statement """
+        All binaries, units, manifests and policy files are installed by Debian packages (cargo-deb now, the vendored source package later); development installs go through a local apt repository. The compositor-side lege-window crate must never depend on tokio, zbus, async-std or smol because it runs on the compositor render thread.
+        """
+    measure """
+        `cargo xtask deps-check` (lege-window dependency graph) and `cargo xtask tree-check`; debian/*.install covers every shipped file.
+        """
+    rationale """
+        Untracked home-directory state and /usr/local installs are what made the user's customisations unmaintainable; a blocked render thread disconnects every Wayland client.
+        """
+    supersedes [ @legeos.constraint.packaging-and-render-thread/1 ]
+    author "dk"
+    source {
+        kind external
+        role origin
+        document "planning-initial-shape"
+        use """
+            'Stage 1: package every component as a Debian package'; section 3 'Separate the stable display core from the shell'.
+            """
+    }
+    source {
+        kind external
+        role origin
+        document "planning-subsequent-shape"
+        use """
+            Section 6: 'Must not perform blocking D-Bus I/O on the compositor render thread'.
+            """
+    }
+}
+
 record legeos.constraint.services-not-indicators/1 : constraint {
     title "System behaviour belongs in services; tray icons, panels and applets are views"
-    state active
+    state superseded
     scope [ path "crates/lege-session-core/**", path "services/**", path "shell/**" ]
     topic services-not-indicators
     statement """
@@ -141,6 +235,32 @@ record legeos.constraint.services-not-indicators/1 : constraint {
     rationale """
         The automatic-timezone logic living in a custom NetworkManager tray is the exact fragmentation the OS removes.
         """
+    source {
+        kind external
+        role origin
+        document "planning-initial-shape"
+        use """
+            Section 7 'Services should be separate from indicators'.
+            """
+    }
+}
+
+record legeos.constraint.services-not-indicators/2 : constraint {
+    title "System behaviour belongs in services; tray icons, panels and applets are views"
+    state active
+    scope [ path "crates/templar-session-core/**", path "services/**", path "shell/**" ]
+    topic services-not-indicators
+    statement """
+        No policy (timezone discovery, power decisions, autostart choices, association defaults, notification storage) is implemented in a shell surface or applet; each lives in a service crate/daemon with a D-Bus interface, and the shell only renders and forwards user choices.
+        """
+    measure """
+        Code review; a shell crate must not contain policy engines (only rendering and proxies from lege-client).
+        """
+    rationale """
+        The automatic-timezone logic living in a custom NetworkManager tray is the exact fragmentation the OS removes.
+        """
+    supersedes [ @legeos.constraint.services-not-indicators/1 ]
+    author "dk"
     source {
         kind external
         role origin

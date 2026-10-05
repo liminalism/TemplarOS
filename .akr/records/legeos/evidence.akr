@@ -47,6 +47,32 @@ record legeos.evidence.action-manifest-three-surfaces-20260831/1 : evidence {
         """
 }
 
+record legeos.evidence.alt-tab-task-rail-icons-clippy-20261004/1 : evidence {
+    title "Clean on the four touched packages (separate target dir: the shared target/ carries a TemplarOS-built clang-sys that cannot link on Lubuntu). Workspace-wide clippy fails only in the user's untracked crates/templar-archive WIP."
+    state verified
+    result pass
+    method command
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    command "CARGO_TARGET_DIR=/tmp/legeos-clippy-target cargo clippy -q -p templar-window -p templar-comp -p templar-shell -p templar-types --all-targets -- -D warnings"
+    summary """
+        Clean on the four touched packages (separate target dir: the shared target/ carries a TemplarOS-built clang-sys that cannot link on Lubuntu). Workspace-wide clippy fails only in the user's untracked crates/templar-archive WIP.
+        """
+    author "dk"
+}
+
+record legeos.evidence.alt-tab-task-rail-icons-tests-20261004/1 : evidence {
+    title "On the uncommitted tree over 2bc8f74: templar-window 195, templar-comp 166, templar-shell 440+11, templar-types 31 passed, 0 failed; includes alt_tab_order_lists_every_open_window_parked_included_in_recency_order, SwitchRing::remove tests, step/commit/cancel/prune tests on a check-backend state, switcher_visible_rows, icon-name fallback tests and a_group_wears_its_most_recent_members_icon_and_each_card_its_own."
+    state verified
+    result pass
+    method command
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    command "cargo test -q -p templar-window -p templar-comp -p templar-shell -p templar-types"
+    summary """
+        On the uncommitted tree over 2bc8f74: templar-window 195, templar-comp 166, templar-shell 440+11, templar-types 31 passed, 0 failed; includes alt_tab_order_lists_every_open_window_parked_included_in_recency_order, SwitchRing::remove tests, step/commit/cancel/prune tests on a check-backend state, switcher_visible_rows, icon-name fallback tests and a_group_wears_its_most_recent_members_icon_and_each_card_its_own.
+        """
+    author "dk"
+}
+
 record legeos.evidence.application-lane-20260903/1 : evidence {
     title "Terminal and file-search roles derived, set_terminal relayed, Files context menu on declared verbs, search panel, kitty.conf shipped"
     state verified
@@ -158,7 +184,7 @@ record legeos.evidence.bar-ground-and-pcmanfm-role-20260907/1 : evidence {
 
 record legeos.evidence.bar-hover-row-previews-20260908/1 : evidence {
     title "The bar's hover row renders a window's capture with its title, falls back to the icon without one, and fits the island at 132 px an item"
-    state verified
+    state superseded
     scope [
         path "shell/lege-shell/src/surface/bar_screen.rs",
         path "shell/lege-shell/src/surface/offscreen.rs",
@@ -173,6 +199,27 @@ record legeos.evidence.bar-hover-row-previews-20260908/1 : evidence {
         390 tests pass (379 lib, 11 integration, 0 skipped). New: a_row_item_shows_its_window_preview_and_falls_back_without_one (the window with a capture shows its pixels; the one without shows its own painted fallback, not an empty box and not the other window's picture), the_open_row_fits_inside_the_island (every row rect inside island_width for 2- and 5-window entries, and the row never widens the surface), previews_are_asked_for_only_while_a_row_is_open (BarScreen::preview_wants is empty with no row, is exactly the open entry's windows while one is up, and is empty again after HOVER_CLOSE_MS). The row's item pitch went 220 -> 132 logical px and its band 40 -> 104: a three-window row is 396 px wide where it was 660, inside an island_width(3) of 716. The three existing bar-presence baseline hashes are unchanged, which is the check that nothing outside the row moved; a fourth case, bar-row, was hashed only after the dumped PNGs were read by eye.
         """
     derived_from [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+}
+
+record legeos.evidence.bar-hover-row-previews-20260908/2 : evidence {
+    title "The bar's hover row renders a window's capture with its title, falls back to the icon without one, and fits the island at 132 px an item"
+    state verified
+    scope [
+        path "shell/templar-shell/src/surface/bar_screen.rs",
+        path "shell/templar-shell/src/surface/offscreen.rs",
+        path "shell/templar-shell/src/taskbar.rs"
+    ]
+    result pass
+    method command
+    observed_at git:1d0340c20684f0854f32379c63762310c58bdc2e
+    command "cargo test -p lege-shell"
+    artifact "docs/measurements/bar-20260908f/bar-row.png"
+    summary """
+        390 tests pass (379 lib, 11 integration, 0 skipped). New: a_row_item_shows_its_window_preview_and_falls_back_without_one (the window with a capture shows its pixels; the one without shows its own painted fallback, not an empty box and not the other window's picture), the_open_row_fits_inside_the_island (every row rect inside island_width for 2- and 5-window entries, and the row never widens the surface), previews_are_asked_for_only_while_a_row_is_open (BarScreen::preview_wants is empty with no row, is exactly the open entry's windows while one is up, and is empty again after HOVER_CLOSE_MS). The row's item pitch went 220 -> 132 logical px and its band 40 -> 104: a three-window row is 396 px wide where it was 660, inside an island_width(3) of 716. The three existing bar-presence baseline hashes are unchanged, which is the check that nothing outside the row moved; a fourth case, bar-row, was hashed only after the dumped PNGs were read by eye.
+        """
+    derived_from [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
+    supersedes [ @legeos.evidence.bar-hover-row-previews-20260908/1 ]
+    author "dk"
 }
 
 record legeos.evidence.bar-lane-2-check-actions/1 : evidence {
@@ -420,6 +467,45 @@ record legeos.evidence.capture-globals-stay-shell-only/1 : evidence {
     summary """
         113 passed, 0 failed — the over-the-socket registry test now asserts all three capture globals are invisible to an ordinary client and visible on the trusted-shell socket.
         """
+}
+
+record legeos.evidence.card-targets-park-motion-nested-20261004/1 : evidence {
+    title "With sessiond running, the probe window's park produced an intermediate frame drawn faded, chrome removed and displaced toward its Home card before it vanished; no warnings, errors or panics in compositor or shell logs. The restore direction was not observed: gtk present() after iconify carries no activation token the compositor accepts, and no pointer was driven on the host desktop."
+    state verified
+    result pass
+    method observation
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    command "nested winit compositor on the Lubuntu X11 host (DISPLAY=:0, socket templaros-x11test) + sessiond + shell from /tmp/legeos-clippy-target; .agent/scratch/nested-x11/minimize_probe.py (GTK window calling iconify) as the parking client; frames captured with ImageMagick import"
+    artifact ".agent/scratch/nested-x11/p2pair.png"
+    summary """
+        With sessiond running, the probe window's park produced an intermediate frame drawn faded, chrome removed and displaced toward its Home card before it vanished; no warnings, errors or panics in compositor or shell logs. The restore direction was not observed: gtk present() after iconify carries no activation token the compositor accepts, and no pointer was driven on the host desktop.
+        """
+    author "dk"
+}
+
+record legeos.evidence.card-targets-park-motion-tests-20261004/1 : evidence {
+    title "On the uncommitted tree over 2bc8f74: templar-comp 175, templar-window 195, templar-shell 456+11 passed, 0 failed; clippy clean. Covers motion.rs (8 tests: exact endpoints, monotonic ease-out, alpha range, done), a_card_on_home_turns_parking_and_unparking_into_motions on a check-backend state (foreign/popup surface refused, park with card -> Park motion toward the resolved global rect, without card none, unpark -> Unpark, null clears, destroying window or Home surface drops card and motion), the shell's MinimizeTargets diffing and work_targets (overflow windows target the overflow card)."
+    state verified
+    result pass
+    method command
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    command "CARGO_TARGET_DIR=/tmp/legeos-clippy-target cargo test -q -p templar-comp -p templar-window -p templar-shell && CARGO_TARGET_DIR=/tmp/legeos-clippy-target cargo clippy -q -p templar-comp -p templar-shell --all-targets -- -D warnings"
+    summary """
+        On the uncommitted tree over 2bc8f74: templar-comp 175, templar-window 195, templar-shell 456+11 passed, 0 failed; clippy clean. Covers motion.rs (8 tests: exact endpoints, monotonic ease-out, alpha range, done), a_card_on_home_turns_parking_and_unparking_into_motions on a check-backend state (foreign/popup surface refused, park with card -> Park motion toward the resolved global rect, without card none, unpark -> Unpark, null clears, destroying window or Home surface drops card and motion), the shell's MinimizeTargets diffing and work_targets (overflow windows target the overflow card).
+        """
+    author "dk"
+}
+
+record legeos.evidence.clock-calendar-library-research-20261003/1 : evidence {
+    title "Dedicated read-only research compared Chrono, time, Jiff, egui_extras DatePickerButton, iced_aw, GTK Calendar and gsimplecal using upstream manifests/APIs. Selected Chrono 0.4 std-only with existing OS localtime_r: checked month/day arithmetic without new GUI toolkit or timezone database. Sources: https://docs.rs/chrono/0.4.45/chrono/struct.NaiveDate.html ; https://raw.githubusercontent.com/chronotope/chrono/main/Cargo.toml ; https://docs.rs/egui_extras/0.36.2/egui_extras/struct.DatePickerButton.html ; https://github.com/dmedvinsky/gsimplecal . No runtime checks in research."
+    state verified
+    result pass
+    method observation
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    summary """
+        Dedicated read-only research compared Chrono, time, Jiff, egui_extras DatePickerButton, iced_aw, GTK Calendar and gsimplecal using upstream manifests/APIs. Selected Chrono 0.4 std-only with existing OS localtime_r: checked month/day arithmetic without new GUI toolkit or timezone database. Sources: https://docs.rs/chrono/0.4.45/chrono/struct.NaiveDate.html ; https://raw.githubusercontent.com/chronotope/chrono/main/Cargo.toml ; https://docs.rs/egui_extras/0.36.2/egui_extras/struct.DatePickerButton.html ; https://github.com/dmedvinsky/gsimplecal . No runtime checks in research.
+        """
+    author "dk"
 }
 
 record legeos.evidence.comp-and-window-suites-20261002/1 : evidence {
@@ -1712,7 +1798,7 @@ record legeos.evidence.home-field-discoverability-visual-20260831/1 : evidence {
 
 record legeos.evidence.home-field-discoverability-visual-20260831/2 : evidence {
     title "Reviewed the deterministic 1600x1000 Home render: the F1 Help control sits cleanly at the right edge of the information row without obscuring search, network, activity, or clock; the visual regression hash was updated only after review."
-    state verified
+    state superseded
     scope [ path "shell/lege-shell/src/surface/offscreen.rs" ]
     result pass
     method manual
@@ -1722,6 +1808,21 @@ record legeos.evidence.home-field-discoverability-visual-20260831/2 : evidence {
         Reviewed the deterministic 1600x1000 Home render: the F1 Help control sits cleanly at the right edge of the information row without obscuring search, network, activity, or clock; the visual regression hash was updated only after review.
         """
     supersedes [ @legeos.evidence.home-field-discoverability-visual-20260831/1 ]
+}
+
+record legeos.evidence.home-field-discoverability-visual-20260831/3 : evidence {
+    title "Reviewed the deterministic 1600x1000 Home render: the F1 Help control sits cleanly at the right edge of the information row without obscuring search, network, activity, or clock; the visual regression hash was updated only after review."
+    state verified
+    scope [ path "shell/templar-shell/src/surface/offscreen.rs" ]
+    result pass
+    method manual
+    observed_at git:b8f052d91523b3d39628dc8ccad4e8c754deb3a3
+    artifact "shell/lege-shell/src/surface/offscreen.rs"
+    summary """
+        Reviewed the deterministic 1600x1000 Home render: the F1 Help control sits cleanly at the right edge of the information row without obscuring search, network, activity, or clock; the visual regression hash was updated only after review.
+        """
+    supersedes [ @legeos.evidence.home-field-discoverability-visual-20260831/2 ]
+    author "dk"
 }
 
 record legeos.evidence.home-field-in-text/1 : evidence {
@@ -2282,6 +2383,32 @@ record legeos.evidence.home-widget-launcher-20260825/1 : evidence {
         """
 }
 
+record legeos.evidence.home-work-centred-clusters-render-20261004/1 : evidence {
+    title "Smoke exited 0 asserting non-overlap with each other and persistent tiles, most recent card nearest the grid centre, folder clusters adjacent, a parked card's rect unchanged and restoring on click, no card moving on activation, overflow card opening window.show-all, close leaving located/feeds/sources unchanged. Inspected wide-open (1280x832): terminal, Documents file-manager window and recency-derived 'near Documents' editor gathered at the centre, unfiled image and parked terminal one column apart; narrow-open (400x640): one '+5 windows / Show all' card in the only free slot."
+    state verified
+    result pass
+    method observation
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    command "/tmp/legeos-clippy-target/debug/templar-shell --render-home-work /tmp/home-work"
+    summary """
+        Smoke exited 0 asserting non-overlap with each other and persistent tiles, most recent card nearest the grid centre, folder clusters adjacent, a parked card's rect unchanged and restoring on click, no card moving on activation, overflow card opening window.show-all, close leaving located/feeds/sources unchanged. Inspected wide-open (1280x832): terminal, Documents file-manager window and recency-derived 'near Documents' editor gathered at the centre, unfiled image and parked terminal one column apart; narrow-open (400x640): one '+5 windows / Show all' card in the only free slot.
+        """
+    author "dk"
+}
+
+record legeos.evidence.home-work-centred-clusters-tests-20261004/1 : evidence {
+    title "On the uncommitted tree over 2bc8f74: templar-shell 453 lib + 11 passed, 0 failed, clippy clean. Includes work_layout's 10 unit tests (single window centred, clusters contiguous and separated, most recent cluster nearest centre, persistent tiles never covered, recency and parking keep every slot, new window joins its folder, overflow card, small-card fallback, grid change re-arranges, tile over a card moves only that card) and recent::feed_json folders."
+    state verified
+    result pass
+    method command
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    command "CARGO_TARGET_DIR=/tmp/legeos-clippy-target cargo test -q -p templar-shell && CARGO_TARGET_DIR=/tmp/legeos-clippy-target cargo clippy -q -p templar-shell --all-targets -- -D warnings"
+    summary """
+        On the uncommitted tree over 2bc8f74: templar-shell 453 lib + 11 passed, 0 failed, clippy clean. Includes work_layout's 10 unit tests (single window centred, clusters contiguous and separated, most recent cluster nearest centre, persistent tiles never covered, recency and parking keep every slot, new window joins its folder, overflow card, small-card fallback, grid change re-arranges, tile over a card moves only that card) and recent::feed_json folders.
+        """
+    author "dk"
+}
+
 record legeos.evidence.homegarden-5-gate-20260909/1 : evidence {
     title "Homegarden 5 merged: just check green at fb99230 with 2023 tests"
     state verified
@@ -2293,6 +2420,33 @@ record legeos.evidence.homegarden-5-gate-20260909/1 : evidence {
     summary """
         fmt, clippy -D warnings, 2023 workspace tests, MSRV and every xtask check pass on the merge of lanes A, B and C plus the bloom mark and the Desktop tray migration. Per-lane command checks (clock-accumulates, hook-loads-in-kitty, home-does-not-feed-itself, desktop-is-an-ordinary-place, form-is-earned, no-roles-row, three-forms-render, a-line-and-a-block, content-never-grows-a-place, bloom-resolves-on-open, one-read-per-tending, files-app-observes, no-calendar-left, root-survives-rename) are subsets of this run; the manual checks await the user's deploy and logout.
         """
+}
+
+record legeos.evidence.homegarden-active-work-calendar-checks-20261003/1 : evidence {
+    title "Native working-tree tests exited 0: compositor 158, shell library 435 and main 11, window model 191, field library 64 plus integration 24 passed; one existing field test ignored. Real-surface popup-focus regression passed for Home/MRU preservation, resize, release, hidden surfaces and lock. Clippy all targets passed with warnings denied using native LLVM21. Interface-signature gate reported 207 members across 35 interfaces unchanged; compositor headless self-check printed ok. Both final shell render commands reported smoke passed. Fixtures use private dbus-run-session/runtime state; no live desktop operations or deployment."
+    state verified
+    result pass
+    method command
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    command "cargo test -p templar-shell -p templar-comp -p templar-window -p templar-field; cargo clippy -p templar-shell -p templar-comp --all-targets -- -D warnings; cargo run -p xtask -- check-interface-signatures; templar-comp --check; templar-shell --render-calendar PREFIX; templar-shell --render-home-work PREFIX"
+    summary """
+        Native working-tree tests exited 0: compositor 158, shell library 435 and main 11, window model 191, field library 64 plus integration 24 passed; one existing field test ignored. Real-surface popup-focus regression passed for Home/MRU preservation, resize, release, hidden surfaces and lock. Clippy all targets passed with warnings denied using native LLVM21. Interface-signature gate reported 207 members across 35 interfaces unchanged; compositor headless self-check printed ok. Both final shell render commands reported smoke passed. Fixtures use private dbus-run-session/runtime state; no live desktop operations or deployment.
+        """
+    author "dk"
+}
+
+record legeos.evidence.homegarden-active-work-calendar-ui-20261003/1 : evidence {
+    title "Working-tree native headless commands both exited 0. Calendar output reported click-open, month navigation, Today, Escape and geometry; Home work output reported same-window pointer restore/activate, overflow pagination, close and recents preservation. Inspected wide Home, narrow page 2, corner calendar and narrow calendar images: contiguous terminal/folder cards, visible paging controls, readable local time/date and leap-February grid. Generated normal, narrow, fractional/HiDPI and rail fixtures; did not exercise or deploy a live composed hardware session."
+    state verified
+    result pass
+    method observation
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    command "dbus-run-session -- templar-shell --render-calendar PREFIX; dbus-run-session -- templar-shell --render-home-work PREFIX"
+    artifact "/tmp/templar-work-calendar-r7j8p9ds/images"
+    summary """
+        Working-tree native headless commands both exited 0. Calendar output reported click-open, month navigation, Today, Escape and geometry; Home work output reported same-window pointer restore/activate, overflow pagination, close and recents preservation. Inspected wide Home, narrow page 2, corner calendar and narrow calendar images: contiguous terminal/folder cards, visible paging controls, readable local time/date and leap-February grid. Generated normal, narrow, fractional/HiDPI and rail fixtures; did not exercise or deploy a live composed hardware session.
+        """
+    author "dk"
 }
 
 record legeos.evidence.homegarden-ledger-and-clock-tests-20260929/1 : evidence {
@@ -2370,7 +2524,7 @@ record legeos.evidence.idle-daemon-wakeups-not-executed-20260907/1 : evidence {
 
 record legeos.evidence.idle-index-wakeups-eliminated-20260904/1 : evidence {
     title "The idle index watcher went from 121 wakeups per minute to none, measured against a binary built from the pre-fix commit"
-    state verified
+    state superseded
     scope [ path "services/lege-filed/src/watcher.rs", path "tools/xtask/src/index_bench.rs" ]
     result pass
     method command
@@ -2381,6 +2535,26 @@ record legeos.evidence.idle-index-wakeups-eliminated-20260904/1 : evidence {
         Over a 60 second settled idle window with one armed fixture root, the pre-fix binary (built from a git worktree at the parent of commit 6522e10, so this is a true before/after rather than a recollection) recorded 121 timeslices and 120 voluntary context switches; after the fix both are 0. read_bytes, syscw and wchar were already 0 on this workload in both builds, so the gain is wakeups and the roots-table write per tick, not read I/O. Measured from /proc/<tid>/schedstat and /proc/<pid>/status for the lege-index-watcher thread. The harness had to be an xtask subcommand rather than a benches/ target, because watch::guard panics on any real watch root when the executable path contains a deps component, which is true of every cargo bench and integration-test binary; this was verified directly rather than assumed. Four defects in the harness itself were found and fixed during the run: a wrong schedstat field index, per-task versus per-process voluntary_ctxt_switches, a pid-matching bug against a leaked process, and the sandbox-specific discovery that File::set_modified raises no inotify event here while touch(1) does.
         """
     derived_from [ @legeos.work.adaptive-index-maintenance ]
+}
+
+record legeos.evidence.idle-index-wakeups-eliminated-20260904/2 : evidence {
+    title "The idle index watcher went from 121 wakeups per minute to none, measured against a binary built from the pre-fix commit"
+    state verified
+    scope [
+        path "services/templar-filed/src/watcher.rs",
+        path "tools/xtask/src/index_bench.rs"
+    ]
+    result pass
+    method command
+    observed_at git:be57fadad93f5918c55ebe3c216807fa9e7ff73c
+    command "cargo run -q -p xtask -- index-bench idle-compare"
+    artifact "docs/measurements/index-baseline-2026-09-04.md"
+    summary """
+        Over a 60 second settled idle window with one armed fixture root, the pre-fix binary (built from a git worktree at the parent of commit 6522e10, so this is a true before/after rather than a recollection) recorded 121 timeslices and 120 voluntary context switches; after the fix both are 0. read_bytes, syscw and wchar were already 0 on this workload in both builds, so the gain is wakeups and the roots-table write per tick, not read I/O. Measured from /proc/<tid>/schedstat and /proc/<pid>/status for the lege-index-watcher thread. The harness had to be an xtask subcommand rather than a benches/ target, because watch::guard panics on any real watch root when the executable path contains a deps component, which is true of every cargo bench and integration-test binary; this was verified directly rather than assumed. Four defects in the harness itself were found and fixed during the run: a wrong schedstat field index, per-task versus per-process voluntary_ctxt_switches, a pid-matching bug against a leaked process, and the sandbox-specific discovery that File::set_modified raises no inotify event here while touch(1) does.
+        """
+    derived_from [ @legeos.work.adaptive-index-maintenance ]
+    supersedes [ @legeos.evidence.idle-index-wakeups-eliminated-20260904/1 ]
+    author "dk"
 }
 
 record legeos.evidence.image-drop-in-exists-unexercised-20260907/1 : evidence {
@@ -2918,6 +3092,19 @@ record legeos.evidence.metapackages-build-with-dpkg-deb-20260905/1 : evidence {
         """
 }
 
+record legeos.evidence.native-elan-discovery-and-package-20261005/1 : evidence {
+    title "Pinned a5060ccd Lenovo OpenSSL3 plugin loaded as FpiDeviceEfdTod using extracted native libfprint1.95.1+tod1; FPContext discovered one efd_tod ELAN Fingerprint Sensor. Built templaros-elan-fingerprint_0.0.8+templaros1_amd64.deb. No enrollment, authentication, installation, or desktop service change occurred."
+    state verified
+    result pass
+    method command
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    command "native Resolute libfprint/TOD ctypes discovery and scripts/build-elan-fingerprint-deb.py"
+    summary """
+        Pinned a5060ccd Lenovo OpenSSL3 plugin loaded as FpiDeviceEfdTod using extracted native libfprint1.95.1+tod1; FPContext discovered one efd_tod ELAN Fingerprint Sensor. Built templaros-elan-fingerprint_0.0.8+templaros1_amd64.deb. No enrollment, authentication, installation, or desktop service change occurred.
+        """
+    author "dk"
+}
+
 record legeos.evidence.native-lubuntu-validation-20260907/1 : evidence {
     title "All pre-ISO campaign evidence is native Lubuntu; WSL is never cited"
     state verified
@@ -3047,6 +3234,68 @@ record legeos.evidence.package-selection-generated-and-checked/1 : evidence {
     summary """
         cargo xtask seeds regenerates 25 artifacts from distro/seeds/selection.toml (14 layers, 8 metapackages); seeds --check and check-packaging both go green at HEAD and both go red when a generated file is hand-edited; cargo test -p xtask seeds (3) and check_packaging (10) pass.
         """
+}
+
+record legeos.evidence.pam-maintenance-and-drive-policy-smoke-20261005/1 : evidence {
+    title "Installed Second UUID 2EEE1B6CEE1B2C19 configuration into a throwaway root. Generated rule returned YES only for dk active/local mounting selected volume, and deferred other UUID/account/inactive/remote/format/other-seat requests. Real libpam denied dk with PAM_AUTH_ERR at pam_nologin, showing maintenance text without fingerprint/password prompt. No live policy installed or drive mounted."
+    state verified
+    result pass
+    method command
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    command "isolated-root configure-desktop-access.py, JavaScript policy decisions, real libpam pam_start_confdir maintenance-gate smoke"
+    summary """
+        Installed Second UUID 2EEE1B6CEE1B2C19 configuration into a throwaway root. Generated rule returned YES only for dk active/local mounting selected volume, and deferred other UUID/account/inactive/remote/format/other-seat requests. Real libpam denied dk with PAM_AUTH_ERR at pam_nologin, showing maintenance text without fingerprint/password prompt. No live policy installed or drive mounted.
+        """
+    author "dk"
+}
+
+record legeos.evidence.pcmanfm-archives-behavior-20261003/1 : evidence {
+    title "Native templar CLI round-tripped exact payloads from 21 real archive/compression fixtures: ZIP, TAR, gzip/bzip2/xz TAR and raw streams, 7z, CPIO, ar, XAR, ISO, zstd/LZ4/LZMA/Z TAR, RAR, RAR5, CAB and LHA. Mixed-selection extraction, smart compound-name flattening, collision preservation, unsafe-path refusal and corruption errors were observed. GUI password entry extracted encrypted ZIP with bytes matching Python zipfile. Actual GUI Cancel removed a partially written ZIP for a 512 MiB source and retained the source. Selected Archive.zip source collision failed before the guard correction and succeeded after with both payloads intact; 15 engine safety regressions and 3 CLI helper tests passed."
+    state verified
+    result pass
+    method observation
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    summary """
+        Native templar CLI round-tripped exact payloads from 21 real archive/compression fixtures: ZIP, TAR, gzip/bzip2/xz TAR and raw streams, 7z, CPIO, ar, XAR, ISO, zstd/LZ4/LZMA/Z TAR, RAR, RAR5, CAB and LHA. Mixed-selection extraction, smart compound-name flattening, collision preservation, unsafe-path refusal and corruption errors were observed. GUI password entry extracted encrypted ZIP with bytes matching Python zipfile. Actual GUI Cancel removed a partially written ZIP for a 512 MiB source and retained the source. Selected Archive.zip source collision failed before the guard correction and succeeded after with both payloads intact; 15 engine safety regressions and 3 CLI helper tests passed.
+        """
+    author "dk"
+}
+
+record legeos.evidence.pcmanfm-archives-delivery-20261003/1 : evidence {
+    title "Native cargo build -p templar completed; cargo test -p templar-archive passed 15 regressions and CLI archive helper tests passed 3. check-packaging reported all 13 Debian packages and component rows, 8 units/service contracts, 15 seeds and 8 metapackages consistent. Both cargo-deb metadata and Debian install manifest include the custom-action wildcard carrying all five archive entries plus existing actions; Zenity is declared. dpkg-shlibdeps for the actual built CLI returned libarchive13t64 >=3.4.0, libc6 >=2.39 and libgcc-s1 >=4.2. Source package and Resolute build script include libarchive-dev. Archive source/CLI docs were updated. No live-session service or installed package was changed."
+    state verified
+    result pass
+    method command
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    command "cargo xtask check-packaging"
+    summary """
+        Native cargo build -p templar completed; cargo test -p templar-archive passed 15 regressions and CLI archive helper tests passed 3. check-packaging reported all 13 Debian packages and component rows, 8 units/service contracts, 15 seeds and 8 metapackages consistent. Both cargo-deb metadata and Debian install manifest include the custom-action wildcard carrying all five archive entries plus existing actions; Zenity is declared. dpkg-shlibdeps for the actual built CLI returned libarchive13t64 >=3.4.0, libc6 >=2.39 and libgcc-s1 >=4.2. Source package and Resolute build script include libarchive-dev. Archive source/CLI docs were updated. No live-session service or installed package was changed.
+        """
+    author "dk"
+}
+
+record legeos.evidence.pcmanfm-archives-empty-input-20261003/1 : evidence {
+    title "A zero-byte plain text input initially returned CLI success and created an empty smart folder. After refusing zero-length regular input before native format detection, the rebuilt templar archive extract command returned status 1 with Empty input is not an archive or compressed stream and no published/staging output. Native archive build and all 15 safety regressions passed, including nonempty/empty non-archive refusal and valid empty gzip extraction. Prior UI/menu and 21-format payload observations remain unchanged."
+    state verified
+    result pass
+    method observation
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    summary """
+        A zero-byte plain text input initially returned CLI success and created an empty smart folder. After refusing zero-length regular input before native format detection, the rebuilt templar archive extract command returned status 1 with Empty input is not an archive or compressed stream and no published/staging output. Native archive build and all 15 safety regressions passed, including nonempty/empty non-archive refusal and valid empty gzip extraction. Prior UI/menu and 21-format payload observations remain unchanged.
+        """
+    author "dk"
+}
+
+record legeos.evidence.pcmanfm-archives-menu-20261003/1 : evidence {
+    title "Actual native pcmanfm-qt 2.3.0 ran in isolated Xvfb and private D-Bus. Its context menu showed top-level Compress to ZIP and Extract with Extract here, Extract to smart new folder here and Extract to other directory. Clicking Compress with two shell-like/markup-containing filenames made one ZIP with both exact payloads and no shell expansion. Each Extract action was clicked with mixed ZIP/TAR selections: here published both files beside sources; smart made selected one/selected two archive-name folders; the popup selected another directory containing both exact payloads. Popup Cancel produced no outputs. Actual progress, password and partial-failure error dialogs were captured and inspected."
+    state verified
+    result pass
+    method observation
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    summary """
+        Actual native pcmanfm-qt 2.3.0 ran in isolated Xvfb and private D-Bus. Its context menu showed top-level Compress to ZIP and Extract with Extract here, Extract to smart new folder here and Extract to other directory. Clicking Compress with two shell-like/markup-containing filenames made one ZIP with both exact payloads and no shell expansion. Each Extract action was clicked with mixed ZIP/TAR selections: here published both files beside sources; smart made selected one/selected two archive-name folders; the popup selected another directory containing both exact payloads. Popup Cancel produced no outputs. Actual progress, password and partial-failure error dialogs were captured and inspected.
+        """
+    author "dk"
 }
 
 record legeos.evidence.pcmanfm-qt-under-lege-comp-20260907/1 : evidence {
@@ -3676,6 +3925,20 @@ record legeos.evidence.super-press-hold-20260831/1 : evidence {
     summary """
         Super press/hold gesture: press reveals Home immediately, hold is momentary with release restoring the pre-press state, a short tap latches the toggle, chords fire only their action, both logo keys form one logical hold; the lege-window reveal no-mutation test now covers maximized and shelved windows over Show/Hide/Toggle; all four acceptance filters and the full just check gate passed.
         """
+}
+
+record legeos.evidence.task-rail-icons-headless-render-20261004/1 : evidence {
+    title "Apps rail rendered against the TemplarOS root's own data dirs: kitty (desktop-import.kitty.desktop) and Settings (org.templaros.Settings) chips draw their real icons centred in the cell; the fixture group (org.templaros.Notes, not installed) falls back to its group-name initial on its accent plate with the count badge. Bar baselines re-hashed after eye review of the dumped open/fan frames."
+    state verified
+    result pass
+    method observation
+    observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
+    command "XDG_DATA_DIRS=/media/dk/templaros-root/@/usr/share XDG_DATA_HOME=/nonexistent ./target/debug/templar-shell --render-rails .agent/scratch/rails/tos"
+    artifact ".agent/scratch/rails/cmp.png"
+    summary """
+        Apps rail rendered against the TemplarOS root's own data dirs: kitty (desktop-import.kitty.desktop) and Settings (org.templaros.Settings) chips draw their real icons centred in the cell; the fixture group (org.templaros.Notes, not installed) falls back to its group-name initial on its accent plate with the count badge. Bar baselines re-hashed after eye review of the dumped open/fan frames.
+        """
+    author "dk"
 }
 
 record legeos.evidence.task-system-acceptance-harness-20260910/1 : evidence {

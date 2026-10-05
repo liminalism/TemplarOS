@@ -3,7 +3,7 @@ project legeos
 
 record legeos.assessment.astra-memory-polling-indexing-review-20260909/1 : assessment {
     title "Astra advisor review of the memory governor, the watcher host and the file-index core — nine ranked findings, four must-fix"
-    state verified
+    state superseded
     scope [
         path "crates/lege-file-index/**",
         path "services/lege-filed/src/delta_catchup.rs",
@@ -70,6 +70,95 @@ record legeos.assessment.astra-memory-polling-indexing-review-20260909/1 : asses
         @legeos.evidence.idle-index-wakeups-eliminated-20260904,
         @legeos.evidence.service-inventory-and-pressure-wakeups-20260907
     ]
+    source {
+        kind internal
+        role rationale
+        path ".agent/handoffs/ad-9afae8b350d5.json"
+        use """
+            The packet that scoped the review and withheld the parent's hypotheses until after the independent pass.
+            """
+    }
+    source {
+        kind internal
+        role origin
+        path ".agent/handoffs/rs-9198dc49c727.json"
+        use """
+            The advisor's ranked findings, coverage and commands, verbatim.
+            """
+    }
+}
+
+record legeos.assessment.astra-memory-polling-indexing-review-20260909/2 : assessment {
+    title "Astra advisor review of the memory governor, the watcher host and the file-index core — nine ranked findings, four must-fix"
+    state verified
+    scope [
+        path "crates/templar-file-index/**",
+        path "services/templar-filed/src/delta_catchup.rs",
+        path "services/templar-filed/src/index_host.rs",
+        path "services/templar-filed/src/observer.rs",
+        path "services/templar-filed/src/watcher.rs",
+        path "services/templar-resourced/**"
+    ]
+    statement """
+        An independent advisor pass (packet ad-9afae8b350d5, result rs-9198dc49c727, filed 2026-09-09 before the parent's notes were revealed) read every in-scope production file in lege-resourced, lege-filed's watcher/observer/index_host/delta_catchup and lege-file-index, ran the scoped tests (359 pass, 9 ignored) and scoped clippy (clean), and ranked nine findings. The parent's four hypotheses held: unbounded handoff channels, un-deduplicated repair queueing, a snapshot that is not one read transaction, and a failed PSI descriptor that degrades to a spin or a 60 s sleep. Astra added three independent priority defects: the governor's fallback wait keeps the 60 s idle heartbeat with no usable trigger and arms session.slice while governed instances live in the sibling app.slice; a complete subtree repair pass upgrades a root to Current/complete and erases an older whole-root overflow, watch-exhaustion or incomplete-namespace reason; and the watcher drops a failed coalesced apply batch with only a warning and can repair before a queued overflow Invalidate has settled, so the later invalidation re-stales a freshly repaired root with no work queued. Two further P2 items (unbounded D-Bus signal backlog and a count-bounded, not byte-bounded, trace ring; a critical-pressure grace delay bound to the episode rather than the victim, so a new victim can be killed on its first selected tick) and two deferred redesigns (btrfs delta baseline/checkpoint atomicity and watch rearming; Index::children decoding the whole descendant range with parent_id not maintained on move) complete the set. All findings are code-path analysis backed by passing tests; no production workload timing, privileged PSI trigger, D-Bus saturation or btrfs fault injection was measured.
+        """
+    confidence medium
+    as_of git:fb992300dcb5fa49f92b44af8761e91d1c281175
+    claim btrfs-baseline {
+        text """
+            delta_catchup.rs returns without a baseline and ensure_baseline has no production caller; plant writes the baseline pointer before decode/apply succeeds; btrfs_delta.rs reads the stream with unbounded read_to_end.
+            """
+    }
+    claim children-scan {
+        text """
+            lib.rs Index::children decodes the whole descendant range and filters in Rust; take-on-trust reconciliation leaves parent None and place_at does not update parent_id on move.
+            """
+    }
+    claim critical-grace {
+        text """
+            policy.rs critical_steps keeps one critical_since per pressure episode, not per selected victim.
+            """
+    }
+    claim governor-wake {
+        text """
+            daemon.rs run_loop arms a PSI trigger on session.slice while scan.rs governs app.slice, and while Normal always waits the 60 s IDLE_HEARTBEAT even when PressureWait has no trigger; Trigger::wait maps POLLERR/HUP/NVAL and non-EINTR errors to Timeout.
+            """
+    }
+    claim resourced-bounds {
+        text """
+            daemon.rs hands signals to the D-Bus task over an unbounded channel; trace.rs bounds the ring by record count (5000), not bytes.
+            """
+    }
+    claim snapshot-frame {
+        text """
+            snapshot.rs write_snapshot reads generation, change sequence, roots and each root's entries through separate pooled reads despite documenting one read transaction, and buffers the full payload in RAM.
+            """
+    }
+    claim subtree-upgrade {
+        text """
+            generation.rs committed_state derives Current/complete from the scoped pass alone; the metadata axis guards subtree upgrades but the namespace axis does not.
+            """
+    }
+    claim unbounded-handoff {
+        text """
+            watch.rs opens an unbounded mpsc channel from the inotify reader thread and drains it whole per poll; watcher.rs repairs is a LIFO Vec with duplicates.
+            """
+    }
+    claim watcher-ordering {
+        text """
+            watcher.rs drops a failed coalesced apply batch with a warning and queues no repair; an overflow repair can run before its Invalidate mutation leaves the coalescer.
+            """
+    }
+    depends_on [
+        @legeos.decision.event-driven-service-authorities,
+        @legeos.decision.resourced-separate-process
+    ]
+    supersedes [ @legeos.assessment.astra-memory-polling-indexing-review-20260909/1 ]
+    supported_by [
+        @legeos.evidence.idle-index-wakeups-eliminated-20260904,
+        @legeos.evidence.service-inventory-and-pressure-wakeups-20260907
+    ]
+    author "dk"
     source {
         kind internal
         role rationale
@@ -256,7 +345,7 @@ record legeos.assessment.documentation-authority-and-root-draft-retirement-20260
 
 record legeos.assessment.home-field-usability-gaps-20260831/1 : assessment {
     title "Home Field usability audit — a deliberate divergence is a gap only where its substitute is missing, weaker or undiscoverable"
-    state verified
+    state superseded
     scope [
         path "apps/**",
         path "compositor/**",
@@ -279,6 +368,35 @@ record legeos.assessment.home-field-usability-gaps-20260831/1 : assessment {
         """
     confidence high
     as_of git:464e069b7b2769bc5e0ab34e8191b65f9101e7db
+}
+
+record legeos.assessment.home-field-usability-gaps-20260831/2 : assessment {
+    title "Home Field usability audit — a deliberate divergence is a gap only where its substitute is missing, weaker or undiscoverable"
+    state verified
+    scope [
+        path "apps/**",
+        path "compositor/**",
+        path "portals/**",
+        path "services/templar-filed/**",
+        path "shell/**"
+    ]
+    statement """
+        Audited the Home Field and the modules around it against mainstream desktop expectations. The Home Field's rejections — no taskbar, no tray, no virtual desktops, no title bars — are the product, so this audit judges each one by its substitute rather than by the convention it dropped, and reports a gap only where the substitute is missing, weaker or undiscoverable. On that test the shell's own rejections mostly hold; what fails is a different class of thing entirely — capabilities the project intends to have, believes it has, or documents as shipped, which are absent in code.
+
+        JUDGED BY SUBSTITUTE, AND SOUND. Virtual desktops: rejected by the one-workspace invariant (compositor/COMPOSITOR.md:12); substitute is park-to-tile plus show-all plus Alt-Tab; the substitute is real, but window.park has no chord at all and window.show-all has no pointer route outside one context menu, so the gap is discoverability, not the missing workspaces. Taskbar: rejected; substitute is the field's own app and parked-session tiles, which is a genuine replacement. Tray: rejected under the services-not-indicators constraint; substitute is the widget system plus ProviderRole slots, which works for network via the user's nm-tray2 but leaves a third-party app no place to dock. Title bars: no server-side chrome renderer, so decoration is forced client-side (compositor/lege-comp/src/xdg_shell.rs:467); the substitute for close is a context-menu row and for resize a compositor-painted grip, but there is no user-facing maximize control at all — a window only maximizes if the app asks.
+
+        GENUINE GAPS, RANKED BY DAILY COST. (1) No multi-select anywhere: the field carries a single focus: Option<TileId> (shell/lege-shell/src/surface/field_screen.rs:157) and the drawer browser a single entry_focus: usize (surface/file_browser.rs:54); no shift-click, ctrl-click or marquee exists, so no bulk action on files or tiles is possible. (2) Nothing is discoverable: no cheat sheet, tooltip, help overlay or first-run anywhere in the shell; park, close, restore and reset have no chord and live only in a right-click menu the user must guess is there; the action manifest can already generate a cheat sheet and nothing renders one. (3) No file operations from Home: navigate and open only — no rename, copy, move, new folder, properties or clipboard, and no drag of a file into an application; Operation::OpenWith and AddReference return None (field_screen.rs:1435). (4) The trash could not list its contents. (5) Accessibility is claimed but not built.
+
+        DOCUMENTED-BUT-ABSENT, which is a distinct and worse category than merely missing, because the docs assert it: docs/architecture/accessibility.md claims AT-SPI support and a high-contrast variant for every shell surface; no atspi dependency exists in any Cargo.toml and no contrast token or theme exists in shell/lege-shell/src. a11y.seed installs Orca with nothing to read, because the shell paints itself with a custom rasterizer and exposes no accessible name, role or state for any tile, row or widget. Reduced motion and the focus ring are real and respected; the rest of the claim is not implemented.
+
+        ABSENT WITH NO SUBSTITUTE: Lifecycle1.Lock hard-fails NotSupported although the compositor fully implements ext-session-lock-v1 — nothing drives it; volume, brightness and battery exist nowhere in the tree as code, not as stubs; the Files app has no new folder, search, sort control, view mode or breadcrumbs, though lege-filed supports CreateDirectory; the OpenURI, Screenshot, ScreenCast and Print portals do not exist; no removable-media mount or eject; no display configuration; no keyboard-layout switcher, touchpad settings or IME.
+
+        STALE LEDGER CLAIMS corrected by this audit: the graphical settings app and the shell's notification rendering both shipped on 2026-08-30, after the 08-27 readiness audit that called them stubs, and the portal NoUiAvailable path is now a headless-only fallback rather than the default.
+        """
+    confidence high
+    as_of git:464e069b7b2769bc5e0ab34e8191b65f9101e7db
+    supersedes [ @legeos.assessment.home-field-usability-gaps-20260831/1 ]
+    author "dk"
 }
 
 record legeos.assessment.home-vision-review-20260905/1 : assessment {
@@ -378,7 +496,7 @@ record legeos.assessment.hotfixability-current-state-20260831/1 : assessment {
 
 record legeos.assessment.hotfixability-current-state-20260831/2 : assessment {
     title "Hot-fixability and daily-development readiness, 2026-08-31"
-    state verified
+    state superseded
     scope [
         path "crates/lege-state/**",
         path "debian/**",
@@ -401,6 +519,42 @@ record legeos.assessment.hotfixability-current-state-20260831/2 : assessment {
     ]
     derived_from [ @legeos.assessment.desktop-test-readiness-20260827/1 ]
     supersedes [ @legeos.assessment.hotfixability-current-state-20260831/1 ]
+    source {
+        kind internal
+        role evidence
+        path "docs/planning/hotfixability-current-state.md"
+        use """
+            Detailed code and paper review, current-state matrix, operating model, priorities and go/no-go thresholds.
+            """
+    }
+}
+
+record legeos.assessment.hotfixability-current-state-20260831/3 : assessment {
+    title "Hot-fixability and daily-development readiness, 2026-08-31"
+    state verified
+    scope [
+        path "crates/templar-state/**",
+        path "debian/**",
+        path "distro/**",
+        path "docs/planning/**",
+        path "installer/**",
+        path "packaging/**",
+        path "scripts/reinstall-templaros-desktop.sh",
+        path "services/templar-hostd/**",
+        path "session/units/**"
+    ]
+    statement """
+        LegeOS is currently suitable for active development as an additional desktop session on a stable Ubuntu host with the host session, display manager, TTY and backups retained as recovery paths. Stage-1 packages can be installed while the old session runs; applications, shell and separated services provide progressively restartable activation boundaries, while the compositor honestly requires logout and kernel/driver/boot changes require a staged reboot. It is not yet suitable as the sole recoverable bare-metal daily driver because installer/ISO and clean-install gates are unfinished, boot-deployment rollback is not hardware-proven and ADR-0004 remains open, coordinated service restart and cross-version state/IPC skew are unproven, and the archive path is inconsistent with the Rust 1.97 workspace and still has sibling path dependencies.
+        """
+    confidence high
+    as_of git:fe147d81961eb355a6fa1e77f4ffc789903a9b37
+    depends_on [
+        @legeos.decision.compositor-on-smithay/1,
+        @legeos.work.desktop-validation-foundations/2
+    ]
+    derived_from [ @legeos.assessment.desktop-test-readiness-20260827/1 ]
+    supersedes [ @legeos.assessment.hotfixability-current-state-20260831/2 ]
+    author "dk"
     source {
         kind internal
         role evidence

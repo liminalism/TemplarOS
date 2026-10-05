@@ -3,13 +3,26 @@ project legeos
 
 record legeos.question.derived-logical-ids-do-not-follow-rule-changes/1 : question {
     title "Persisted derived logical ids do not follow grouping-rule improvements once real deployments exist"
-    state open
+    state superseded
     scope [ path "crates/lege-appd/**" ]
     question """
         Minted logical ids are persisted for stability, so a host that scanned under older grouping rules keeps handing out the old ids after the rules improve (seen with the suite-split fix: a database that fused Cosmic Settings' 32 panels keeps the fused id until wiped or re-scanned). No real deployment ever ran the buggy grouping — only dev-scratch databases — so no reconciliation shipped with the fix. The open policy: when grouping rules change after real deployments exist, what reconciles derived (never user-sourced) rows whose component no longer matches? A one-shot drop of derived rows was drafted and deliberately not landed.
         """
     derived_from [ @legeos.work.logical-app-and-variant-identity ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
+}
+
+record legeos.question.derived-logical-ids-do-not-follow-rule-changes/2 : question {
+    title "Persisted derived logical ids do not follow grouping-rule improvements once real deployments exist"
+    state open
+    scope [ path "crates/templar-appd/**" ]
+    question """
+        Minted logical ids are persisted for stability, so a host that scanned under older grouping rules keeps handing out the old ids after the rules improve (seen with the suite-split fix: a database that fused Cosmic Settings' 32 panels keeps the fused id until wiped or re-scanned). No real deployment ever ran the buggy grouping — only dev-scratch databases — so no reconciliation shipped with the fix. The open policy: when grouping rules change after real deployments exist, what reconciles derived (never user-sourced) rows whose component no longer matches? A one-shot drop of derived rows was drafted and deliberately not landed.
+        """
+    derived_from [ @legeos.work.logical-app-and-variant-identity ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+    supersedes [ @legeos.question.derived-logical-ids-do-not-follow-rule-changes/1 ]
+    author "dk"
 }
 
 record legeos.question.grub-entries-must-carry-the-deployment-id/1 : question {
@@ -167,7 +180,7 @@ record legeos.question.no-route-for-a-privileged-fd-to-reach-the-per-user-daemon
 
 record legeos.question.no-way-to-report-a-document-becoming-dirty/1 : question {
     title "An application has no way to report a document becoming dirty outside a pressure event"
-    state open
+    state superseded
     scope [
         path "interfaces/dbus/**",
         path "services/lege-resourced/**",
@@ -177,6 +190,22 @@ record legeos.question.no-way-to-report-a-document-becoming-dirty/1 : question {
         E2 gave unsaved-work claims an expiry and a producer that reports both directions from the checkpoint relay, but the relay only speaks when a checkpoint is requested. The plan's 'sessiond document-dirty producer' needs an application-facing surface that does not exist: Checkpoint1 is application-served and has only Request, and nothing else carries a dirty-document signal. A genuine unsolicited producer needs a new method on Checkpoint1 or a sessiond interface — an interface decision beyond E2's scope. Until then the 10-minute TTL is the safety net.
         """
     part_of [ @legeos.work.deployment-activation-and-resourced ]
+}
+
+record legeos.question.no-way-to-report-a-document-becoming-dirty/2 : question {
+    title "An application has no way to report a document becoming dirty outside a pressure event"
+    state open
+    scope [
+        path "interfaces/dbus/**",
+        path "services/templar-resourced/**",
+        path "services/templar-sessiond/**"
+    ]
+    question """
+        E2 gave unsaved-work claims an expiry and a producer that reports both directions from the checkpoint relay, but the relay only speaks when a checkpoint is requested. The plan's 'sessiond document-dirty producer' needs an application-facing surface that does not exist: Checkpoint1 is application-served and has only Request, and nothing else carries a dirty-document signal. A genuine unsolicited producer needs a new method on Checkpoint1 or a sessiond interface — an interface decision beyond E2's scope. Until then the 10-minute TTL is the safety net.
+        """
+    part_of [ @legeos.work.deployment-activation-and-resourced ]
+    supersedes [ @legeos.question.no-way-to-report-a-document-becoming-dirty/1 ]
+    author "dk"
 }
 
 record legeos.question.package-version-authority-across-lanes/1 : question {

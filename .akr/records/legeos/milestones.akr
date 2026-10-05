@@ -3,7 +3,7 @@ project legeos
 
 record legeos.milestone.developer-edition-0-1/1 : milestone {
     title "Developer Edition 0.1 — reproducible personal LegeOS for the Intel/RTX 4060 reference laptop"
-    state active
+    state superseded
     scope [
         path "cli/lege/**",
         path "crates/**",
@@ -71,6 +71,104 @@ record legeos.milestone.developer-edition-0-1/1 : milestone {
         }
     }
     derived_from [ @legeos.work.full-distribution-roadmap ]
+    source {
+        kind internal
+        role origin
+        path "docs/distroagentmidplan.md"
+        use """
+            Mid-level delegation plan, lane boundaries, dependencies, acceptance ownership and AKR gap register.
+            """
+    }
+    source {
+        kind internal
+        role rationale
+        path "docs/distroagentplan.md"
+        use """
+            High-level personal Developer Edition scope and scope reductions.
+            """
+    }
+}
+
+record legeos.milestone.developer-edition-0-1/2 : milestone {
+    title "Developer Edition 0.1 — reproducible personal LegeOS for the Intel/RTX 4060 reference laptop"
+    state active
+    scope [
+        path "cli/templar/**",
+        path "crates/**",
+        path "distro/**",
+        path "docs/**",
+        path "installer/**",
+        path "portals/**",
+        path "services/templar-boot-health/**",
+        path "services/templar-filed/**",
+        path "services/templar-hostd/**",
+        path "tests/**",
+        path "tools/xtask/**"
+    ]
+    intent """
+        Turn the existing Ubuntu 26.04-derived LegeOS desktop and distribution control plane into a reproducible personal Developer Edition for the known Intel + RTX 4060 laptop: a declared package/image definition, narrow target-machine provisioning, Ubuntu-supported kernel/NVIDIA stable path, Rust/CUDA self-hosting, daily-driver integration, one shared file index, coherent userspace deployment rollback, and a retained known-good boot path.
+        """
+    note """
+        This is the narrow campaign described by docs/distroagentplan.md and delegated through docs/distroagentmidplan.md. It is not the supportable public distribution in @legeos.work.full-distribution-roadmap; public ISO/archive/security operations, a LegeOS stable kernel lane, general installer, broad hardware support and a project rename are out of scope. Accepted by the user on 2026-09-03 as the campaign head; the first work session runs eight lanes (D1–D5, F1, F2, X1) in one shared tree from 8b284c9 on branch developer-edition-0-1. The agent-pack generator is external (sibling project ../agent-pack), so no pack-closure lane exists.
+        """
+    acceptance {
+        check coherent-build-sets {
+            statement """
+                Every shipped LegeOS package in a build set has one version authority, the local signed archive verifies the complete current and previous sets, and the previous set remains selectable without rebuilding.
+                """
+            method command
+            command "just deb"
+        }
+        check daily-driver-day {
+            statement """
+                On the reference laptop, a normal Rust/CUDA development day completes in LegeOS with browser upload/download, terminal, Files, portals, clipboard, media, networking, audio, suspend/resume and removable storage usable without returning to another desktop.
+                """
+            method manual
+        }
+        check declared-package-image {
+            statement """
+                One declared package-selection model generates the image package list and metapackage dependencies, reports a resolvable Ubuntu 26.04 closure, and `just image summary` validates the resulting developer image configuration.
+                """
+            method command
+            command "just image summary"
+        }
+        check disposable-provisioning {
+            statement """
+                A disposable VM or image-file target is provisioned from declared inputs with the agreed GPT/Btrfs layout, LegeOS packages, deployment identity, session and a retained known-good boot route, without fixed release credentials.
+                """
+            method observation
+        }
+        check one-shared-index {
+            statement """
+                Files, the LegeOS FSearch client and Silvaview service mode consume one warm, lossless, generation-identified index; consumer startup does not trigger a synchronous recursive scan and stale roots reconcile honestly.
+                """
+            method command
+            command "cargo test -p lege-file-index -p lege-filed"
+        }
+        check reference-hardware {
+            statement """
+                The reference Intel/RTX 4060 laptop boots the LegeOS session through the accepted Secure Boot path and records kernel, NVIDIA module signer/version, PRIME, Vulkan, CUDA, external-output and suspend/resume results.
+                """
+            method manual
+        }
+        check userspace-and-boot-recovery {
+            statement """
+                A deliberately bad LegeOS userspace build set rolls back to the retained previous set without rebuilding, while boot-critical candidates remain a separate staged transaction with the known-good boot route identifiable.
+                """
+            method manual
+        }
+    }
+    disposition @legeos.work.provisioning-storage-plan-and-reuse {
+        outcome carried_forward
+        into @legeos.milestone.developer-edition-0-1
+    }
+    disposition @legeos.work.taskbar-windowing-ownership-fixes-20260910 {
+        outcome carried_forward
+        into @legeos.milestone.developer-edition-0-1
+    }
+    derived_from [ @legeos.work.full-distribution-roadmap ]
+    supersedes [ @legeos.milestone.developer-edition-0-1/1 ]
+    author "dk"
     source {
         kind internal
         role origin
@@ -268,9 +366,9 @@ record legeos.milestone.m2-session-runs/1 : milestone {
     title "M2 — the session runs: lege-comp on Smithay, graphical greeter and taskbar-free Home Surface"
     state proposed
     scope [
-        path "apps/lege-greeter/**",
+        path "apps/templar-greeter/**",
         path "compositor/**",
-        path "crates/lege-window/**",
+        path "crates/templar-window/**",
         path "debian/**",
         path "session/**",
         path "shell/**"
