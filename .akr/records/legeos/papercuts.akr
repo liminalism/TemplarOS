@@ -234,6 +234,17 @@ record legeos.papercut.akr-build-could-not-refresh-the-ledger-after/1 : papercut
     created_at 2026-09-09
 }
 
+record legeos.papercut.akr-context-requires-goal-key-not-a-positional/1 : papercut {
+    title "AKR context requires --goal KEY, not a positional key. The native…"
+    state verified
+    statement """
+        AKR context requires --goal KEY, not a positional key. The native workstation also has no unzip binary; unpack the five known ZIP members through archive reads and file writes rather than assuming extraction tooling.
+        """
+    observed_at git:ff18e23b51255cbe5d64bc03e5d96b34d2171012
+    author "omp"
+    created_at 2026-10-05
+}
+
 record legeos.papercut.akr-context-takes-paths-repeatable-not-path-the/1 : papercut {
     title "akr context takes --paths (repeatable), not --path; the unknown-flag…"
     state verified
@@ -1223,6 +1234,17 @@ record legeos.papercut.lege-doctor-exited-1-on-every-developer-install/1 : paper
     created_at 2026-08-25
 }
 
+record legeos.papercut.live-file-index-diagnostic-failed-because-a/1 : papercut {
+    title "Live file-index diagnostic failed because a disappearing rustc temp…"
+    state verified
+    statement """
+        Live file-index diagnostic failed because a disappearing rustc temp directory returned ENOENT during add_watch and was latched as permanent watcher-exhausted, not because 59138 armed watches exhausted the budget. Existing doctor also opened/migrated owner databases; isolated read-only inspection is required.
+        """
+    observed_at git:ff18e23b51255cbe5d64bc03e5d96b34d2171012
+    author "omp"
+    created_at 2026-10-05
+}
+
 record legeos.papercut.live-text-console-boot-looks-hung-after-casper/1 : papercut {
     title "Live text-console boot looks hung after casper-md5check FAILED. Boot…"
     state verified
@@ -1254,6 +1276,17 @@ record legeos.papercut.lsp-reports-rust-analyzer-configured-but/1 : papercut {
     observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
     author "codex"
     created_at 2026-10-03
+}
+
+record legeos.papercut.lsp-status-resolves-a-rustup-rust-analyzer-shim/1 : papercut {
+    title "LSP status resolves a rustup rust-analyzer shim and reports configured,…"
+    state verified
+    statement """
+        LSP status resolves a rustup rust-analyzer shim and reports configured, but the first references request exits: rust-analyzer is not installed in toolchain 1.97.1. Use explicit file reads/target searches until that component is genuinely installed.
+        """
+    observed_at git:ff18e23b51255cbe5d64bc03e5d96b34d2171012
+    author "omp"
+    created_at 2026-10-05
 }
 
 record legeos.papercut.making-the-integration-smoke-hermetic-by/1 : papercut {
@@ -1689,6 +1722,17 @@ record legeos.papercut.set-metapackages-pin-nvidia-kernel-with-to-base/1 : paper
     created_at 2026-09-30
 }
 
+record legeos.papercut.settings-async-observation-edit-hit-an-unseen/1 : papercut {
+    title "Settings async observation edit hit an unseen enum opener: displayed…"
+    state verified
+    statement """
+        Settings async observation edit hit an unseen enum opener: displayed footer ranges did not include Command. Re-read exact anchor before retry.
+        """
+    observed_at git:ff18e23b51255cbe5d64bc03e5d96b34d2171012
+    author "omp"
+    created_at 2026-10-05
+}
+
 record legeos.papercut.sharing-cargo-target-dir-between-clean-prefix/1 : papercut {
     title "Sharing CARGO_TARGET_DIR between clean-prefix worktree and main…"
     state verified
@@ -2068,6 +2112,17 @@ record legeos.papercut.the-installed-legeos-set-on-the-development/1 : papercut 
     created_at 2026-08-26
 }
 
+record legeos.papercut.the-integration-pack-uses-symbolic-source/1 : papercut {
+    title "The integration pack uses symbolic source labels (PixelKit) but the…"
+    state verified
+    statement """
+        The integration pack uses symbolic source labels (PixelKit) but the build sibling is lowercase ../pixelkit; direct eval reads do not accept read-tool archive selectors. Also context's mandatory graph can exceed a requested budget; retry with the reported minimum rather than assuming it truncates.
+        """
+    observed_at git:ff18e23b51255cbe5d64bc03e5d96b34d2171012
+    author "omp"
+    created_at 2026-10-05
+}
+
 record legeos.papercut.the-isolated-greeter-smoke-used-ctrl-a-assuming/1 : papercut {
     title "The isolated greeter smoke used Ctrl+A assuming selection support, but…"
     state verified
@@ -2342,6 +2397,17 @@ record legeos.papercut.while-checking-two-focused-lege-filed-filters-i/1 : paper
     observed_at git:a185a0043a662c2923503984557948f598ee5220
     author "codex"
     created_at 2026-08-24
+}
+
+record legeos.papercut.while-loading-terminal-workload-context-budget/1 : papercut {
+    title "While loading terminal-workload context, --budget 7000 still emitted…"
+    state verified
+    statement """
+        While loading terminal-workload context, --budget 7000 still emitted ~21,586 tokens/129 records (an unconstrained path bundle emitted ~55,653). Required acceptance/relations dominate; narrow exact paths and read spill artifacts in full instead of treating the budget as a cap.
+        """
+    observed_at git:ff18e23b51255cbe5d64bc03e5d96b34d2171012
+    author "omp"
+    created_at 2026-10-05
 }
 
 record legeos.papercut.while-locating-a-public-planning-doc-reference/1 : papercut {

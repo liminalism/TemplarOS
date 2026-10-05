@@ -537,6 +537,27 @@ record legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocke
     author "dk"
 }
 
+record legeos.observation.desktop-import-skips-vim-ignores-terminal/1 : observation {
+    title "Desktop import drops vim on TryExec and ignores Terminal, leaving text handlerless"
+    state verified
+    scope [ path "crates/templar-appd/src/desktop_entry.rs" ]
+    statement """
+        Two desktop-import gaps leave common types handlerless. (1) vim.desktop
+        ships TryExec=vim but no /usr/bin/vim exists (only /usr/bin/vi), so the
+        spec gate drops the entry and text/plain has zero handlers system-wide,
+        verified live via Handlers("text/plain") = 0. (2) The importer never
+        parses Terminal=, so even a resolvable terminal app would launch without
+        a terminal attached and cannot work as a GUI file handler. Net effect:
+        out of the box there is no usable handler for text/plain or
+        text/markdown, which combines with the no-chooser dead end (see the
+        undeclared-types observation) to make text files unopenable from Files.
+        """
+    observed_at git:ff18e23b51255cbe5d64bc03e5d96b34d2171012
+    method command
+    watches [ "crates/templar-appd/src/desktop_entry.rs" ]
+    author "dk"
+}
+
 record legeos.observation.desktop-polish-selected-forks-20261005/1 : observation {
     title "Selected conservative native desktop forks and owner-controlled activation"
     state superseded
@@ -1944,6 +1965,29 @@ record legeos.observation.shelved-tiles-have-no-route-back/2 : observation {
     supersedes [ @legeos.observation.shelved-tiles-have-no-route-back/1 ]
 }
 
+record legeos.observation.surfaceless-launches-are-invisible-and-unflagged/1 : observation {
+    title "Windowless launches linger invisibly: no failed-startup detection, dead instances persist, and the default variant cannot be pinned"
+    state verified
+    scope [
+        path "crates/templar-appd/src/variants.rs",
+        path "services/templar-sessiond/src/background/desktop_import.rs",
+        path "services/templar-sessiond/src/reconcile.rs",
+        path "shell/templar-shell/src/app_search.rs",
+        path "shell/templar-shell/src/data.rs",
+        path "shell/templar-shell/src/surface/field_screen.rs"
+    ]
+    statement """
+        Five launches of Haruna (built from source, installed to ~/.local/bin) all failed within one second with `QQmlApplicationEngine failed to load component` / `module "org.kde.desktop" is not installed`, because only Qt/KF6 -dev packages were installed and the QML runtime modules (qml6-module-org-kde-desktop, -kitemmodels, -kquickcontrols) were missing. Haruna's main.cpp calls engine.loadFromModule() and then unconditionally enters QApplication::exec() with no rootObjects check, so each failed launch kept running as a windowless process in its own app-templaros-desktop-import.org.kde.haruna.desktop@*.service unit. The five zombies were invisible everywhere in the GUI (the compositor and shell only know surfaces, and none were ever committed) yet fully present in the process model: `templar app instances` listed all five, `templar res status` scored them, one even marked visible. Three gaps follow. (1) No failed-startup detection exists: a launch that never maps a surface is indistinguishable from a healthy tray app or daemon, and nothing correlates "launched long ago + zero windows + errors in its unit log" into a warning or an exit. (2) Dead instances linger: the failed flatpak Firefox unit from the same morning was still listed by `templar app instances` hours later, because forget_instance runs only in the startup reconciler (services/templar-sessiond/src/reconcile.rs). (3) The res `visible` flag reads true for windowless processes (the Haruna zombies and nm-tray alike), so it does not mean "has a mapped window". The per-copy origin menu (right-click tile, field_screen.rs context choices fed by fetch_variants) already exists for telling copies apart, but the main search row shows no origin or copy-count hint until that menu is opened, `templar app list` prints bare variant IDs, and default-variant election (variants.rs default_rank: displayable, System-over-User trust, origin order, oldest, id) has no user pinning, so the broken Flatpak Firefox outranks the working tarball with no recourse.
+        """
+    observed_at git:ff18e23b51255cbe5d64bc03e5d96b34d2171012
+    method command
+    watches [
+        "services/templar-sessiond/src/reconcile.rs",
+        "crates/templar-appd/src/variants.rs"
+    ]
+    author "dk"
+}
+
 record legeos.observation.terminal-workloads-inherit-the-terminal-identity/1 : observation {
     title "Everything a terminal starts is the terminal: identity is the launch unit's cgroup, there is no workload, and the governor sees only Templar launch units"
     state verified
@@ -2250,6 +2294,44 @@ record legeos.observation.two-daemons-opening-one-fresh-state-db-raced-its-migra
         @legeos.observation.two-daemons-opening-one-fresh-state-db-raced-its-migrations/1
     ]
     verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
+}
+
+record legeos.observation.types-without-handlers-cannot-gain-defaults/1 : observation {
+    title "A MIME type no handler declares cannot gain a default through any GUI"
+    state verified
+    scope [
+        path "apps/templar-files/src/backend.rs",
+        path "apps/templar-settings/src/associations.rs",
+        path "crates/templar-associationd/src/engine.rs"
+    ]
+    statement """
+        On a system where no installed handler declares a MIME type, that type
+        cannot gain a default through any GUI, and files of that type cannot be
+        opened. Verified live for text/markdown: Handlers() returned 0,
+        ListMimeDefaults() was empty, and SetMimeDefault to a non-declaring app
+        fails validation ("not registered as a handler", engine.rs). The chain
+        has three links. (1) Settings > Associations lists only MIME types that
+        already have a default (mime_choices_with); with an empty database the
+        page is empty and offers no way to add a type — by design, new defaults
+        are meant to be set from an "open with" choice at the file. (2)
+        templar-files has no open-with chooser: brokered_open passes the empty
+        ask-user answer straight into Launcher1.Launch(""), which fails argument
+        parsing, surfacing only "Could not open …". (3) Detection is specific
+        (text/markdown via globs2), so the generic extension fallback (which
+        covers only octet-stream/text/plain) never applies. Workaround
+        demonstrated: a desktop entry declaring the type appears as a handler
+        within one 15s rescan and accepts a default normally. Scope of impact:
+        any type without a declaring handler; text/plain was equally affected
+        (see the desktop-import observation).
+        """
+    observed_at git:ff18e23b51255cbe5d64bc03e5d96b34d2171012
+    method command
+    watches [
+        "crates/templar-associationd/src/engine.rs",
+        "apps/templar-settings/src/associations.rs",
+        "apps/templar-files/src/backend.rs"
+    ]
+    author "dk"
 }
 
 record legeos.observation.ubuntu-2604-splits-firmware-and-modules-into-per-vendor-packages/1 : observation {

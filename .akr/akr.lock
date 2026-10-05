@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.1"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:53e49e9048e9f3a16227ed6fc5ce139f9d86cdea51256cdb3307a696ed28df3a"
+    source_graph "sha256:8e775b987e7fa0de26b2e09419c9870137b6d988fdfa00fcfa79c385d0a75b74"
 }
 
 source ".akr/project.akr" {
@@ -39,13 +39,13 @@ source ".akr/records/legeos/milestones.akr" {
 }
 
 source ".akr/records/legeos/observations.akr" {
-    hash "sha256:dea3d15dc06257d2e01bc37752623224f93653eb4d98ef2e3908a0d552e9f936"
-    records 123
+    hash "sha256:e69082402562d5baff8ab7f1220704f9d0aaa1297a186cb8a7e8b5e3c0d7c495"
+    records 126
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:da1770e5657eba0dadefbaf165a2339c9d718308ed65a771dcab77ac31311880"
-    records 223
+    hash "sha256:04f9336e6f82596d13ebe02562be1cc916310f7a037cd9353ca38b3726917ee2"
+    records 229
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -54,8 +54,8 @@ source ".akr/records/legeos/questions.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:260def80b000dd36bc2f335d6310979621fd8b9beac16255af5e44c927d5bf53"
-    records 316
+    hash "sha256:642e2dc9446dac92ac50c31c93262e5896f0bd21ac66c6ff30fb1cbe9e64c502"
+    records 317
 }
 
 resolution @legeos.assessment.astra-memory-polling-indexing-review-20260909/1 {
@@ -5716,6 +5716,12 @@ resolution @legeos.work.installer-resume-and-autoinstall-20260930/1 {
     hash "sha256:75041041c40c1a597b667aba3b5c82639ed2459106fdfbdf5093acbfb036b1ec"
 }
 
+resolution @legeos.work.integration-stabilization-20261005/1 {
+    slot part_of
+    to @legeos.milestone.developer-edition-0-1/2
+    hash "sha256:75041041c40c1a597b667aba3b5c82639ed2459106fdfbdf5093acbfb036b1ec"
+}
+
 resolution @legeos.work.iso-hardware-safety/1 {
     slot implements
     to @legeos.decision.base-ubuntu-2604-kernel-70/1
@@ -9950,6 +9956,11 @@ seal @legeos.observation.desktop-freezes-20261001-compositor-main-thread-blocked
     hash "sha256:2ecc1d7395d3fd57b340bde12316730247fc0ec50cebfb11e3d6968e84213b3f"
 }
 
+seal @legeos.observation.desktop-import-skips-vim-ignores-terminal/1 {
+    state verified
+    hash "sha256:b8a129a16c9e65b71288625ddf68e8e6672f0b1e3a8657193ba4ebf5ca16b186"
+}
+
 seal @legeos.observation.desktop-polish-selected-forks-20261005/1 {
     state superseded
     hash "sha256:df9f5a37bdd4271900b18fc76860f5e51963c3c88b25491cd6388ac26e58bf9c"
@@ -10285,6 +10296,11 @@ seal @legeos.observation.shelved-tiles-have-no-route-back/2 {
     hash "sha256:ce06de92eee2e3cfb39c3e12d0f1ccfd115c350e8994e5308632c4c4e87bc8d4"
 }
 
+seal @legeos.observation.surfaceless-launches-are-invisible-and-unflagged/1 {
+    state verified
+    hash "sha256:515ccd9187cb4e07c9adad331dcfd9b4e7f7f45e910e71ef00ad71ea94b43bdb"
+}
+
 seal @legeos.observation.terminal-workloads-inherit-the-terminal-identity/1 {
     state verified
     hash "sha256:4e1e6b37f5fcada6908716e6a726cd0d5c95c6d3b430ebdab0bfe9d61dc0d762"
@@ -10373,6 +10389,11 @@ seal @legeos.observation.two-daemons-opening-one-fresh-state-db-raced-its-migrat
 seal @legeos.observation.two-daemons-opening-one-fresh-state-db-raced-its-migrations/2 {
     state superseded
     hash "sha256:d86966d88a4c90f503b7a13cb6c0a355b0428fc740a49002e02740ecaa243585"
+}
+
+seal @legeos.observation.types-without-handlers-cannot-gain-defaults/1 {
+    state verified
+    hash "sha256:da819b9e10cca4477a4727538c5a144d1b42a60df0f4fbbc5de25c7b1819932d"
 }
 
 seal @legeos.observation.ubuntu-2604-splits-firmware-and-modules-into-per-vendor-packages/1 {
@@ -10508,6 +10529,11 @@ seal @legeos.papercut.agents-md-and-the-global-instructions-describe/1 {
 seal @legeos.papercut.akr-build-could-not-refresh-the-ledger-after/1 {
     state verified
     hash "sha256:45fcbf01e8530f2e8fb962f8bd6834a88cc8558f9cb1edc9b88ced029df37a36"
+}
+
+seal @legeos.papercut.akr-context-requires-goal-key-not-a-positional/1 {
+    state verified
+    hash "sha256:d7c31ff4d1874ba73bdadca26fb22da20a9a78278c70d652585770cf54e3fcc4"
 }
 
 seal @legeos.papercut.akr-context-takes-paths-repeatable-not-path-the/1 {
@@ -10950,6 +10976,11 @@ seal @legeos.papercut.lege-doctor-exited-1-on-every-developer-install/1 {
     hash "sha256:04a931ae9bb712328b8d6cd66259d98a8a7e46ba57dea5b21275f11d696c9ad9"
 }
 
+seal @legeos.papercut.live-file-index-diagnostic-failed-because-a/1 {
+    state verified
+    hash "sha256:ae17f14dcb376560ad46ed44eecd940ac27c4e1798ff1d2b2e135b29725f292d"
+}
+
 seal @legeos.papercut.live-text-console-boot-looks-hung-after-casper/1 {
     state verified
     hash "sha256:9d62e925cbbb8f0f158f5ea6c69d4de9839b8db028da684e007475fd681bef04"
@@ -10963,6 +10994,11 @@ seal @legeos.papercut.live-usb-session-templar-sessiond-failed-226/1 {
 seal @legeos.papercut.lsp-reports-rust-analyzer-configured-but/1 {
     state verified
     hash "sha256:518af92a7f4fa2711952eaedd41eb68bf8317b063b902adb1fabd4d6168417fc"
+}
+
+seal @legeos.papercut.lsp-status-resolves-a-rustup-rust-analyzer-shim/1 {
+    state verified
+    hash "sha256:704cc7127c2fafd72621dce278ded3a654c7bec3b9834f200987bb66f621122c"
 }
 
 seal @legeos.papercut.making-the-integration-smoke-hermetic-by/1 {
@@ -11160,6 +11196,11 @@ seal @legeos.papercut.set-metapackages-pin-nvidia-kernel-with-to-base/1 {
     hash "sha256:1e8cc6cb4ac9f59fe4775d7b0659b2c2157f25939633ff683274cf52d60452cc"
 }
 
+seal @legeos.papercut.settings-async-observation-edit-hit-an-unseen/1 {
+    state verified
+    hash "sha256:f57ee20c4e655827f21d69ef30eed0cb21b198598ba368c7c69c5025faa43046"
+}
+
 seal @legeos.papercut.sharing-cargo-target-dir-between-clean-prefix/1 {
     state verified
     hash "sha256:bd11397f3a19a2b89d6d52c5710223ebbd8428e9c64732a871cf372080e38860"
@@ -11330,6 +11371,11 @@ seal @legeos.papercut.the-installed-legeos-set-on-the-development/1 {
     hash "sha256:2d8767c3cf8a4886e1c07c16b2d8f5ac04ce4ff4eb1218486f6585ec27e5de4d"
 }
 
+seal @legeos.papercut.the-integration-pack-uses-symbolic-source/1 {
+    state verified
+    hash "sha256:f96c7cc28757c2c62dfb8776acf6a985ff6cff5801bb43943b824243d50408dc"
+}
+
 seal @legeos.papercut.the-isolated-greeter-smoke-used-ctrl-a-assuming/1 {
     state verified
     hash "sha256:84dfe7fd29e220c08d7fc4408e7b713254d74f9fe8bf49cff383e09410ed01cd"
@@ -11453,6 +11499,11 @@ seal @legeos.papercut.while-building-the-files-object-s-last-touched/1 {
 seal @legeos.papercut.while-checking-two-focused-lege-filed-filters-i/1 {
     state verified
     hash "sha256:d4c75e6326abbaa378850d52e8d86fe2a4f7be50133d264fd81136549a2c4209"
+}
+
+seal @legeos.papercut.while-loading-terminal-workload-context-budget/1 {
+    state verified
+    hash "sha256:3facc786e94513ecb13bcb8d36d0ca8fb0ee20e049a467542ab40dde474b048a"
 }
 
 seal @legeos.papercut.while-locating-a-public-planning-doc-reference/1 {
@@ -12598,6 +12649,11 @@ seal @legeos.work.host-update-transaction/2 {
 seal @legeos.work.in-os-hotfix-from-templaros-20260911/1 {
     state completed
     hash "sha256:f3d815c2cbedb8701800c6d5d7c0a605951345925aefe787e3eb86645ce26f10"
+}
+
+seal @legeos.work.integration-stabilization-20261005/1 {
+    state active
+    hash "sha256:e303a7b31e1ecc627c21f5c6ee968f35e06f16bd51720bf9797e4d2876efbfc4"
 }
 
 seal @legeos.work.iso-hardware-safety/1 {
