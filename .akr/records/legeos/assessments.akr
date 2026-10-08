@@ -243,6 +243,23 @@ record legeos.assessment.desktop-polish-software-delivery-and-live-review-202610
     author "dk"
 }
 
+record legeos.assessment.desktop-preview-notification-tab-scope-20261007/1 : assessment {
+    title "Desktop scope: existing captures and broken notification arrival signals; tab counts need app binding; corner-following revises old proposal"
+    state verified
+    statement """
+        2026-10-07 scope-only investigation of the working tree over 7c68786687bea7b20dbc382bdacc2804e7284b70. Detailed plan and source map: docs/planning/homegarden-previews-notifications-window-tabs.md. No implementation or live-session changes.
+        Homegarden already captures window surface trees through trusted-shell ext image capture, capped at 512px and 4fps; shell defaults to Static at configured live rate 1fps. surface/app.rs refresh_previews walks all toplevels when no unrevealed covering fullscreen/maximized window exists, while field_screen occludes ordinary-window-covered content after drawing. Bar rows and Alt-Tab also capture/draw previews. The user's Home-only, invisible-means-no-render request therefore requires demand/occlusion scheduling, compositor admission and queued-render cancellation, plus removal of non-Home preview consumers while preserving switching behavior.
+        ShellToplevel carries no application tab count. Kitty documents OS-window/tab/pane enumeration; WebExtensions tabs.query enumerates by browser windowId. These are candidate metadata sources, not proof of a Wayland binding. Per-window count attribution across identical-title same-process windows remains an implementation prerequisite; unsupported must be unknown rather than a window/process count. VLC and Photoshop/Wine capture compatibility was not exercised.
+        NotificationsApi stores arrivals and expires them without Notifications1.Changed. rust-analyzer found Changed references only in dismiss/clear/invoke. The private-bus experiment recorded separately observed no arrival/expiry Changed and one on Dismiss as a positive control. Shell already has a top-right six-second toast, highest-ID-only watermark, a lossy metadata projection, and a Changed watcher. Repair this existing producer/consumer path, then use a reusable host-independent PixelKit toast card for bottom-right 3-5-second presentation. The current Bash garden hook only reports directory changes, not command completion.
+        Window geometry still uses a 32px bottom strip, horizontal name-left/controls-right layout and strip-based recovery. The user's new always-visible corner-following title and same-corner right-angle control design conflicts with the October2 proposed stationary/hidden-tabs decision. Revise that proposal and its four children rather than claim it already implements the request. Interpret the final wording as title always visible, controls on hover, with all four edge activation regions; flag exact visibility/fullscreen/opposite-corner policy for prototype review. Safety requires one layout, reserved resize corners and latching while aiming/pressing/grabbing.
+        No new application feature was runtime-verified. Only the notification service path ran, using an existing native binary; source inspection and external protocol documentation do not prove visual behavior.
+        """
+    confidence high
+    as_of git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    supported_by [ @legeos.evidence.notification-delivery-scope-20261007 ]
+    author "dk"
+}
+
 record legeos.assessment.desktop-test-readiness-20260827/1 : assessment {
     title "Desktop test-readiness audit — strong logic tests, missing system validation and core interaction surfaces"
     state verified

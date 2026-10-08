@@ -62,14 +62,28 @@ pub enum TileKind {
     Tray { tray_id: TrayId },
     /// One real directory, opened or expanded into its live contents. The placeable Home
     /// folder object: it binds exactly this path and nothing else.
-    Folder { path: PathBuf },
+    Folder {
+        #[serde(with = "templar_types::native_path")]
+        path: PathBuf,
+    },
+    /// The independent XDG Desktop staging shelf. Activity never grows or gardens it.
+    /// `order` contains canonical base64 native paths, not lossy display names.
+    DesktopDock {
+        #[serde(with = "templar_types::native_path")]
+        path: PathBuf,
+        #[serde(default)]
+        order: Vec<String>,
+    },
     /// A live, data-first instrument (calendar, drives, inbox), optionally scoped to a project.
     Widget {
         widget: String,
         scope: Option<String>,
     },
     /// One file, by path. A reference: the file stays where it is.
-    File { path: PathBuf },
+    File {
+        #[serde(with = "templar_types::native_path")]
+        path: PathBuf,
+    },
     /// A restrained, monochrome system control or measurement.
     System { probe: String },
 }
@@ -97,6 +111,7 @@ impl TileKind {
             Self::ParkedSession { .. } => "session",
             Self::Tray { .. } => "tray",
             Self::Folder { .. } => "folder",
+            Self::DesktopDock { .. } => "desktop dock",
             Self::Widget { .. } => "widget",
             Self::File { .. } => "file",
             Self::System { .. } => "system",
@@ -198,6 +213,9 @@ impl SpanRange {
             // line — and the Folder rung floors already keep that at Small, where a line is all
             // that is drawn.
             TileKind::Folder { .. } => Self::new(Span::new(2, 1), Span::new(3, 3), Span::new(8, 6)),
+            TileKind::DesktopDock { .. } => {
+                Self::new(Span::new(2, 1), Span::new(6, 2), Span::new(cols.max(6), rows.max(2)))
+            }
             // A widget is an instrument, and some of them (a launcher, a notification list) are
             // only useful large — so the ceiling is well above the preferred size rather than
             // equal to it, which is what used to make widgets the one kind that could shrink but
@@ -352,6 +370,7 @@ impl RungLadder {
             // that has to be truncated away again.
             TileKind::Tray { .. }
             | TileKind::Folder { .. }
+            | TileKind::DesktopDock { .. }
             | TileKind::Widget { .. }
             | TileKind::AppGroup { .. } => Self {
                 base: Representation::Small,
@@ -429,6 +448,7 @@ mod tests {
             },
             TileKind::Tray { tray_id: TrayId(1) },
             TileKind::Folder { path: "x".into() },
+            TileKind::DesktopDock { path: "x".into(), order: Vec::new() },
             TileKind::Widget {
                 widget: "calendar".into(),
                 scope: None,
@@ -653,7 +673,7 @@ mod tests {
                 16..=35 => Representation::Wide,
                 _ => Representation::Large,
             },
-            TileKind::Tray { .. } | TileKind::Folder { .. } | TileKind::Widget { .. } => {
+            TileKind::Tray { .. } | TileKind::Folder { .. } | TileKind::DesktopDock { .. } | TileKind::Widget { .. } => {
                 match cells {
                     0..=4 => Representation::Small,
                     5..=8 => Representation::Wide,

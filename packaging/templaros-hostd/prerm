@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+case "$1" in
+    remove|deconfigure)
+        if [ -e /var/lib/templaros/account-maintenance/active.json ] || [ -e /var/lib/templaros/hostd/accounts/intent.json ]; then
+            echo 'templaros-hostd: recover pending root-paired account maintenance before removing the login gate' >&2
+            exit 1
+        fi
+        pam-auth-update --package --remove templaros-account-recovery
+        ;;
+esac
+#DEBHELPER#
+exit 0

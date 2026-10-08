@@ -30,4 +30,14 @@ branch = "templaros"
 pin = "68cfad0990f304a4433ba76bcffe09dc35bb5122"
 purpose = "the network control the Home information row launches; TemplarOS has no system tray to host an applet"
 package = "templaros-nm-tray"
-note = "ADR-0005 shape restored 2026-10-03: templaros branch carries --popup, the session-bus forwarding slot, X-TemplarOS-* desktop keys, and DHCP-dead-AP auto-steering. Preflight passes at this pin."
+note = "ADR-0005 shape restored 2026-10-03: templaros branch carries --popup, the session-bus forwarding slot, X-TemplarOS-* desktop keys, and DHCP-dead-AP auto-steering. Debian's native-network-window.patch adds Wayland-safe menu presentation and bus-local checked forwarding over this pin; package from a clean pinned source."
+
+# Local external source, not a Git fork: the supplied directory has no Git origin.
+# The builder closes sibling path dependencies and vendors Cargo.lock inputs into
+# a content-addressed archive. A public checkout-only release needs a real origin/pin.
+[liminalview]
+source_kind = "local"
+source = "../liminalview"
+purpose = "native image viewer selected by the owner-supplied image defaults"
+package = "liminalview"
+note = "Local builds use a SHA256-addressed complete source archive; no release upstream/fork/branch/pin has been supplied."

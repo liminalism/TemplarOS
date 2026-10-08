@@ -16,7 +16,8 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
-    os::unix::ffi::OsStrExt,
+    ffi::{OsStr, OsString},
+    os::unix::ffi::{OsStrExt, OsStringExt},
     path::{Component, Path, PathBuf},
 };
 use uuid::Uuid;
@@ -48,30 +49,50 @@ impl std::fmt::Display for OperationId {
     }
 }
 
+pub use templar_client::files::TransferMapping;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum OperationKind {
     Copy {
+        #[serde(with = "templar_types::native_path::many")]
         sources: Vec<PathBuf>,
+        #[serde(with = "templar_types::native_path")]
         destination_dir: PathBuf,
     },
     Move {
+        #[serde(with = "templar_types::native_path::many")]
         sources: Vec<PathBuf>,
+        #[serde(with = "templar_types::native_path")]
         destination_dir: PathBuf,
     },
+    /// Exact move inverse, including original directories and KeepBoth filenames.
+    RestoreMoveV1 {
+        entries: Vec<TransferMapping>,
+    },
+    /// Guarded inverse references the original persisted destination snapshots.
+    UndoCopyV1 {
+        original_operation: OperationId,
+        #[serde(default, with = "templar_types::native_path::many")]
+        roots: Vec<PathBuf>,
+    },
     Rename {
+        #[serde(with = "templar_types::native_path")]
         path: PathBuf,
         new_name: String,
     },
     Trash {
+        #[serde(with = "templar_types::native_path::many")]
         paths: Vec<PathBuf>,
     },
     /// Put trashed items back where they came from (the undo of [`OperationKind::Trash`]).
     RestoreFromTrash {
+        #[serde(with = "templar_types::native_path::many")]
         paths: Vec<PathBuf>,
     },
     /// Irreversible; the UI must say so before running it.
     Delete {
+        #[serde(with = "templar_types::native_path::many")]
         paths: Vec<PathBuf>,
     },
 }
@@ -100,6 +121,8 @@ impl OperationKind {
                 sources,
                 destination_dir,
             } => format!("Move {} to {}", names(sources), destination_dir.display()),
+            Self::RestoreMoveV1 { entries } => format!("Restore {} moved items to their original locations", entries.len()),
+            Self::UndoCopyV1 { .. } => "Undo copy (move created files to Trash)".to_owned(),
             Self::Rename { path, new_name } => {
                 format!("Rename {} to {new_name}", display_name(path))
             }
@@ -141,7 +164,7 @@ pub fn validate(kind: &OperationKind) -> Result<()> {
                 if !unique.insert(source) {
                     bail!("duplicate source: {}", source.display());
                 }
-                if source.is_dir() {
+                if source.symlink_metadata()?.is_dir() {
                     let source = std::fs::canonicalize(source).unwrap_or_else(|_| source.clone());
                     if destination.starts_with(&source) {
                         bail!(
@@ -152,6 +175,31 @@ pub fn validate(kind: &OperationKind) -> Result<()> {
                     }
                 }
             }
+        }
+        OperationKind::RestoreMoveV1 { entries } => {
+            if entries.is_empty() { bail!("at least one restore mapping is required"); }
+            let mut sources = BTreeSet::new();
+            let mut destinations = BTreeSet::new();
+            for entry in entries {
+                require_existing_removable(&entry.source, "restore source")?;
+                require_removable_path(&entry.destination, "restore destination")?;
+                if !sources.insert(&entry.source) || !destinations.insert(&entry.destination) {
+                    bail!("duplicate restore mapping");
+                }
+                let parent = entry.destination.parent().ok_or_else(|| anyhow::anyhow!("restore destination has no parent"))?;
+                if !parent.is_dir() { bail!("restore destination parent is unavailable"); }
+                if entry.destination.symlink_metadata().is_ok() {
+                    bail!("restore destination already exists; undo would overwrite it: {}", entry.destination.display());
+                }
+                let source = std::fs::canonicalize(&entry.source).unwrap_or_else(|_| entry.source.clone());
+                let parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+                if entry.source.symlink_metadata()?.is_dir() && parent.starts_with(&source) {
+                    bail!("restore destination is inside its source");
+                }
+            }
+        }
+        OperationKind::UndoCopyV1 { .. } => {
+            // FileService resolves and validates the original journal record, not caller roots.
         }
         OperationKind::Rename { path, new_name } => {
             require_existing_removable(path, "rename source")?;
@@ -310,42 +358,69 @@ pub struct Options {
 #[serde(rename_all = "kebab-case", tag = "step")]
 pub enum Step {
     CreateDirectory {
+        #[serde(with = "templar_types::native_path")]
         destination: PathBuf,
     },
+    /// A transfer root must not merge into an existing user directory on Fail/KeepBoth.
+    CreateDirectoryExclusive {
+        #[serde(with = "templar_types::native_path")]
+        destination: PathBuf,
+        #[serde(default)]
+        created_identity: Option<(u64, u64)>,
+    },
+    VerifyCopyUndoV1 {
+        original_operation: OperationId,
+    },
     CopyToTemporary {
+        #[serde(with = "templar_types::native_path")]
         source: PathBuf,
+        #[serde(with = "templar_types::native_path")]
         temporary: PathBuf,
         bytes: u64,
     },
     CopySymlink {
+        #[serde(with = "templar_types::native_path")]
         source: PathBuf,
+        #[serde(with = "templar_types::native_path")]
         destination: PathBuf,
+        #[serde(default)]
+        created_identity: Option<(u64, u64)>,
     },
     FlushTemporary {
+        #[serde(with = "templar_types::native_path")]
         temporary: PathBuf,
     },
     VerifyCopy {
+        #[serde(with = "templar_types::native_path")]
         source: PathBuf,
+        #[serde(with = "templar_types::native_path")]
         temporary: PathBuf,
         verify: Verification,
     },
     ExposeAtomically {
+        #[serde(with = "templar_types::native_path")]
         temporary: PathBuf,
+        #[serde(with = "templar_types::native_path")]
         destination: PathBuf,
     },
     /// Same-device move: one atomic `rename(2)`, no copy at all.
     RenameInPlace {
+        #[serde(with = "templar_types::native_path")]
         from: PathBuf,
+        #[serde(with = "templar_types::native_path")]
         to: PathBuf,
     },
     DeleteSource {
+        #[serde(with = "templar_types::native_path")]
         source: PathBuf,
     },
     /// Only ever emitted for directories the operation itself emptied.
     RemoveDirectory {
+        #[serde(with = "templar_types::native_path")]
         path: PathBuf,
     },
     MoveToTrash {
+        #[serde(with = "templar_types::native_path")]
         path: PathBuf,
         /// Where the trash actually put it, filled in by the executor.
         ///
@@ -353,17 +428,19 @@ pub enum Step {
         /// against the live directory, so the same path trashed twice lands under two different
         /// names. Undo reads this back rather than guessing, exactly as `Move`'s undo reads
         /// `RenameInPlace { to }`.
-        #[serde(default)]
+        #[serde(default, with = "templar_types::native_path::optional")]
         trashed: Option<PathBuf>,
     },
     RestoreFromTrash {
+        #[serde(with = "templar_types::native_path")]
         trashed: PathBuf,
         /// Where it went back to, filled in by the executor, so undoing a restore re-trashes
         /// the file at its restored location rather than at the trash path it has left.
-        #[serde(default)]
+        #[serde(default, with = "templar_types::native_path::optional")]
         restored_to: Option<PathBuf>,
     },
     Unlink {
+        #[serde(with = "templar_types::native_path")]
         path: PathBuf,
     },
 }
@@ -400,6 +477,7 @@ impl Step {
 pub fn notify_index(sink: &dyn crate::execute::IndexSink, step: &Step) {
     match step {
         Step::CreateDirectory { destination }
+        | Step::CreateDirectoryExclusive { destination, .. }
         | Step::ExposeAtomically { destination, .. }
         | Step::CopySymlink { destination, .. } => sink.created(destination),
         Step::RenameInPlace { from, to } => sink.moved(from, to),
@@ -412,7 +490,8 @@ pub fn notify_index(sink: &dyn crate::execute::IndexSink, step: &Step) {
                 sink.created(restored_to);
             }
         }
-        Step::CopyToTemporary { .. } | Step::FlushTemporary { .. } | Step::VerifyCopy { .. } => {}
+        Step::CopyToTemporary { .. } | Step::FlushTemporary { .. } | Step::VerifyCopy { .. }
+            | Step::VerifyCopyUndoV1 { .. } => {}
     }
 }
 
@@ -432,8 +511,14 @@ pub struct Operation {
     pub done_bytes: u64,
     pub done_items: u64,
     /// Sources dropped by [`ConflictPolicy::Skip`], so the UI can say what it did not do.
-    #[serde(default)]
+    #[serde(default, with = "templar_types::native_path::many")]
     pub skipped: Vec<PathBuf>,
+    /// Planned root mapping, journalled before execution rather than guessed from display names.
+    #[serde(default)]
+    pub transfers: Vec<TransferMapping>,
+    /// Metadata keyed by existing destination step indexes; no duplicate tree path manifest.
+    #[serde(default)]
+    pub created: std::collections::BTreeMap<usize, crate::transfer_undo::CreatedMetadata>,
     #[serde(default)]
     pub error: Option<String>,
 }
@@ -454,8 +539,10 @@ impl Operation {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SurveyEntry {
     /// Absolute path of the item.
+    #[serde(with = "templar_types::native_path")]
     pub path: PathBuf,
     /// Path relative to the source root, so a destination can be derived without more I/O.
+    #[serde(with = "templar_types::native_path")]
     pub relative: PathBuf,
     pub is_dir: bool,
     pub is_symlink: bool,
@@ -465,6 +552,7 @@ pub struct SurveyEntry {
 /// What one source expanded to.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SurveyedSource {
+    #[serde(with = "templar_types::native_path")]
     pub root: PathBuf,
     /// Depth-first, parents before children, so directories exist before their contents.
     pub entries: Vec<SurveyEntry>,
@@ -491,8 +579,8 @@ pub struct Survey {
     pub sources: Vec<SurveyedSource>,
     /// Names already present in the destination directory, so `KeepBoth` can pick a free one
     /// without racing every candidate against the filesystem.
-    #[serde(default)]
-    pub destination_names: BTreeSet<String>,
+    #[serde(default, with = "templar_types::native_path::names")]
+    pub destination_names: BTreeSet<OsString>,
     #[serde(default)]
     pub errors: Vec<String>,
 }
@@ -518,7 +606,7 @@ pub fn survey(sources: &[PathBuf], destination_dir: Option<&Path>) -> Survey {
         .map(|entries| {
             entries
                 .filter_map(Result::ok)
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .map(|entry| entry.file_name())
                 .collect()
         })
         .unwrap_or_default();
@@ -534,14 +622,16 @@ pub fn survey(sources: &[PathBuf], destination_dir: Option<&Path>) -> Survey {
             survey.errors.push(format!("{}: {error}", root.display()));
             continue;
         }
-        let same_device = match (device_of(root), destination_device) {
+        let same_device = match (root.symlink_metadata().ok().map(|metadata| {
+            use std::os::unix::fs::MetadataExt;
+            metadata.dev()
+        }), destination_device) {
             (Some(source), Some(destination)) => source == destination,
             _ => false,
         };
-        let destination_exists = destination_dir.is_some_and(|dir| {
-            survey.destination_names.contains(&display_name(root))
-                || dir.join(display_name(root)).symlink_metadata().is_ok()
-        });
+        let destination_exists = destination_dir.is_some_and(|dir| root.file_name().is_some_and(|name| {
+            survey.destination_names.contains(name) || dir.join(name).symlink_metadata().is_ok()
+        }));
         survey.sources.push(SurveyedSource {
             root: root.clone(),
             entries,
@@ -571,9 +661,8 @@ fn walk(path: &Path, relative: &Path, out: &mut Vec<SurveyEntry>) -> std::io::Re
         return Ok(());
     }
     let mut children: Vec<PathBuf> = std::fs::read_dir(path)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .collect();
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<_>>()?;
     children.sort();
     for child in children {
         let name = child.file_name().unwrap_or_default().to_owned();
@@ -591,6 +680,7 @@ fn device_of(path: &Path) -> Option<u64> {
 pub fn plan(id: OperationId, kind: OperationKind, survey: &Survey, options: Options) -> Operation {
     let mut steps = Vec::new();
     let mut skipped = Vec::new();
+    let mut transfers = Vec::new();
     let mut taken = survey.destination_names.clone();
 
     match &kind {
@@ -608,7 +698,20 @@ pub fn plan(id: OperationId, kind: OperationKind, survey: &Survey, options: Opti
             &mut taken,
             &mut steps,
             &mut skipped,
+            &mut transfers,
         ),
+        OperationKind::RestoreMoveV1 { entries } => {
+            for entry in entries {
+                if let Some(source) = survey.sources.iter().find(|source| source.root == entry.source) {
+                    transfers.push(entry.clone());
+                    plan_source_transfer(id, true, &entry.destination, source, options, &mut steps);
+                }
+            }
+        }
+        OperationKind::UndoCopyV1 { original_operation, roots } => {
+            steps.push(Step::VerifyCopyUndoV1 { original_operation: *original_operation });
+            steps.extend(roots.iter().map(|path| Step::MoveToTrash { path: path.clone(), trashed: None }));
+        }
         OperationKind::Rename { path, new_name } => steps.push(Step::RenameInPlace {
             from: path.clone(),
             to: path.with_file_name(new_name),
@@ -660,6 +763,8 @@ pub fn plan(id: OperationId, kind: OperationKind, survey: &Survey, options: Opti
         steps,
         cursor: 0,
         skipped,
+        transfers,
+        created: Default::default(),
         error: None,
     }
 }
@@ -672,9 +777,10 @@ fn plan_transfer(
     destination_dir: &Path,
     survey: &Survey,
     options: Options,
-    taken: &mut BTreeSet<String>,
+    taken: &mut BTreeSet<OsString>,
     steps: &mut Vec<Step>,
     skipped: &mut Vec<PathBuf>,
+    transfers: &mut Vec<TransferMapping>,
 ) {
     for source in &survey.sources {
         let Some(name) = resolve_name(source, taken, options.conflict) else {
@@ -682,6 +788,13 @@ fn plan_transfer(
             continue;
         };
         let destination_root = destination_dir.join(&name);
+        transfers.push(TransferMapping { source: source.root.clone(), destination: destination_root.clone() });
+        plan_source_transfer(id, is_move, &destination_root, source, options, steps);
+    }
+}
+
+fn plan_source_transfer(id: OperationId, is_move: bool, destination_root: &Path,
+    source: &SurveyedSource, options: Options, steps: &mut Vec<Step>) {
 
         // Same-device move of a whole tree: one rename, no traversal, no copy. That is the
         // difference between "instant" and "twenty minutes" on a large directory, and it is
@@ -689,23 +802,28 @@ fn plan_transfer(
         if is_move && source.same_device && !source.destination_exists {
             steps.push(Step::RenameInPlace {
                 from: source.root.clone(),
-                to: destination_root,
+                to: destination_root.to_path_buf(),
             });
-            continue;
+            return;
         }
 
         for entry in &source.entries {
             let destination = if entry.relative.as_os_str().is_empty() {
-                destination_root.clone()
+                destination_root.to_path_buf()
             } else {
                 destination_root.join(&entry.relative)
             };
             if entry.is_dir {
-                steps.push(Step::CreateDirectory { destination });
+                if options.conflict != ConflictPolicy::Replace {
+                    steps.push(Step::CreateDirectoryExclusive { destination, created_identity: None });
+                } else {
+                    steps.push(Step::CreateDirectory { destination });
+                }
             } else if entry.is_symlink {
                 steps.push(Step::CopySymlink {
                     source: entry.path.clone(),
                     destination,
+                    created_identity: None,
                 });
             } else {
                 let temporary = temporary_for(&destination, id);
@@ -744,16 +862,15 @@ fn plan_transfer(
                 }
             }
         }
-    }
 }
 
 /// The destination name to use, honouring the conflict policy. `None` means skip this source.
 fn resolve_name(
     source: &SurveyedSource,
-    taken: &mut BTreeSet<String>,
+    taken: &mut BTreeSet<OsString>,
     policy: ConflictPolicy,
-) -> Option<String> {
-    let name = display_name(&source.root);
+) -> Option<OsString> {
+    let name = source.root.file_name()?.to_owned();
     if !source.destination_exists && !taken.contains(&name) {
         taken.insert(name.clone());
         return Some(name);
@@ -773,17 +890,19 @@ fn resolve_name(
 
 /// `report.pdf` → `report (2).pdf`, `report (3).pdf`, … The suffix goes before the extension so
 /// the file still opens with the right application.
-fn free_name(name: &str, taken: &BTreeSet<String>) -> String {
-    let (stem, extension) = match name.rsplit_once('.') {
-        Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
-        _ => (name, String::new()),
+fn free_name(name: &OsStr, taken: &BTreeSet<OsString>) -> OsString {
+    let bytes = name.as_bytes();
+    let split = bytes.iter().rposition(|byte| *byte == b'.').filter(|index| *index > 0);
+    let (stem, extension) = split.map_or((bytes, &[][..]), |index| (&bytes[..index], &bytes[index..]));
+    let candidate = |suffix: &str| {
+        let mut name = stem.to_vec();
+        name.extend_from_slice(suffix.as_bytes());
+        name.extend_from_slice(extension);
+        OsString::from_vec(name)
     };
-    // Bounded rather than open-ended: after a thousand copies of one name, an unguessable
-    // suffix is both faster and no less correct than counting further.
-    (2..1_000)
-        .map(|index| format!("{stem} ({index}){extension}"))
+    (2..1_000).map(|index| candidate(&format!(" ({index})")))
         .find(|candidate| !taken.contains(candidate))
-        .unwrap_or_else(|| format!("{stem} ({}){extension}", Uuid::new_v4().simple()))
+        .unwrap_or_else(|| candidate(&format!(" ({})", Uuid::new_v4().simple())))
 }
 
 /// Hidden, operation-scoped, and in the destination directory so the final rename never crosses
@@ -791,11 +910,14 @@ fn free_name(name: &str, taken: &BTreeSet<String>) -> String {
 /// atomic).
 fn temporary_for(destination: &Path, id: OperationId) -> PathBuf {
     let parent = destination.parent().unwrap_or(Path::new("."));
-    parent.join(format!(
-        ".templaros-{}-{}.part",
-        &id.0.simple().to_string()[..8],
-        display_name(destination)
-    ))
+    // Native names can be both non-UTF-8 and NAME_MAX bytes long. The temporary must neither
+    // replace bytes nor prepend enough text to make an otherwise valid filename impossible.
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in destination.file_name().unwrap_or_default().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    parent.join(format!(".templaros-{}-{hash:016x}.part", id.0.simple()))
 }
 
 fn display_name(path: &Path) -> String {
@@ -814,40 +936,25 @@ pub fn undo_of(operation: &Operation) -> Option<OperationKind> {
         return None;
     }
     match &operation.kind {
-        OperationKind::Move {
-            destination_dir, ..
-        } => {
-            let moved: Vec<PathBuf> = operation
-                .steps
-                .iter()
-                .filter_map(|step| match step {
-                    Step::RenameInPlace { to, .. } => Some(to.clone()),
-                    Step::ExposeAtomically { destination, .. } => Some(destination.clone()),
-                    _ => None,
-                })
-                .filter(|path| path.parent() == Some(destination_dir.as_path()))
-                .collect();
-            let original_dir = operation.steps.iter().find_map(|step| match step {
-                Step::RenameInPlace { from, .. } => from.parent().map(Path::to_path_buf),
-                Step::DeleteSource { source } => source.parent().map(Path::to_path_buf),
+        OperationKind::Move { .. } | OperationKind::RestoreMoveV1 { .. } => {
+            if operation.options.conflict == ConflictPolicy::Replace || operation.transfers.is_empty() { return None; }
+            Some(OperationKind::RestoreMoveV1 { entries: operation.transfers.iter().map(|entry| TransferMapping {
+                source: entry.destination.clone(), destination: entry.source.clone(),
+            }).collect() })
+        }
+        OperationKind::Rename { path, .. } => {
+            if operation.options.conflict == ConflictPolicy::Replace { return None; }
+            operation.steps.iter().find_map(|step| match step {
+                Step::RenameInPlace { to, .. } => Some(OperationKind::RestoreMoveV1 {
+                    entries: vec![TransferMapping { source: to.clone(), destination: path.clone() }],
+                }),
                 _ => None,
-            })?;
-            (!moved.is_empty()).then_some(OperationKind::Move {
-                sources: moved,
-                destination_dir: original_dir,
             })
         }
-        OperationKind::Rename { path, .. } => operation.steps.iter().find_map(|step| match step {
-            Step::RenameInPlace { to, .. } => Some(OperationKind::Rename {
-                path: to.clone(),
-                new_name: display_name(path),
-            }),
-            _ => None,
-        }),
         // Read back where the trash actually put each item, never the paths the operation was
         // asked for: those name the place the file has just left, and a restore aimed at them
         // finds nothing there, decides it has already run, and commits without moving anything.
-        OperationKind::Trash { .. } => {
+        OperationKind::Trash { .. } | OperationKind::UndoCopyV1 { .. } => {
             let trashed: Vec<PathBuf> = operation
                 .steps
                 .iter()
@@ -869,9 +976,12 @@ pub fn undo_of(operation: &Operation) -> Option<OperationKind> {
                 .collect();
             (!restored.is_empty()).then_some(OperationKind::Trash { paths: restored })
         }
-        // A copy is undone by deleting what it created — but deleting is irreversible, so the
-        // UI asks rather than the service silently doing it.
-        OperationKind::Copy { .. } | OperationKind::Delete { .. } => None,
+        OperationKind::Copy { .. } => {
+            if operation.options.conflict == ConflictPolicy::Replace || operation.transfers.is_empty()
+                || operation.created.is_empty() { return None; }
+            Some(OperationKind::UndoCopyV1 { original_operation: operation.id, roots: Vec::new() })
+        }
+        OperationKind::Delete { .. } => None,
     }
 }
 
@@ -899,7 +1009,7 @@ mod tests {
             .steps
             .iter()
             .map(|step| match step {
-                Step::CreateDirectory { .. } => "mkdir",
+                Step::CreateDirectory { .. } | Step::CreateDirectoryExclusive { .. } => "mkdir",
                 Step::CopyToTemporary { .. } => "copy",
                 Step::CopySymlink { .. } => "symlink",
                 Step::FlushTemporary { .. } => "flush",
@@ -911,6 +1021,7 @@ mod tests {
                 Step::MoveToTrash { .. } => "trash",
                 Step::RestoreFromTrash { .. } => "restore",
                 Step::Unlink { .. } => "unlink",
+                Step::VerifyCopyUndoV1 { .. } => "verify-copy-undo",
             })
             .collect()
     }
@@ -1077,7 +1188,7 @@ mod tests {
         );
         assert!(matches!(
             &operation.steps[0],
-            Step::CreateDirectory { destination } if destination == Path::new("/b/dir")
+            Step::CreateDirectoryExclusive { destination, .. } if destination == Path::new("/b/dir")
         ));
     }
 
@@ -1086,7 +1197,7 @@ mod tests {
         let sources = vec!["/a/report.pdf".into()];
         let survey = Survey {
             sources: vec![file_survey("/a/report.pdf", 1, false, true)],
-            destination_names: ["report.pdf".to_owned()].into(),
+            destination_names: [OsString::from("report.pdf")].into(),
             ..Survey::default()
         };
         let copy = |conflict| {
@@ -1124,12 +1235,12 @@ mod tests {
 
     #[test]
     fn keep_both_skips_names_already_taken() {
-        let mut taken: BTreeSet<String> =
-            ["report (2).pdf".to_owned(), "report (3).pdf".to_owned()].into();
-        assert_eq!(free_name("report.pdf", &taken), "report (4).pdf");
+        let mut taken: BTreeSet<OsString> =
+            [OsString::from("report (2).pdf"), OsString::from("report (3).pdf")].into();
+        assert_eq!(free_name(OsStr::new("report.pdf"), &taken), OsString::from("report (4).pdf"));
         taken.clear();
-        assert_eq!(free_name("archive", &taken), "archive (2)");
-        assert_eq!(free_name(".hidden", &taken), ".hidden (2)");
+        assert_eq!(free_name(OsStr::new("archive"), &taken), OsString::from("archive (2)"));
+        assert_eq!(free_name(OsStr::new(".hidden"), &taken), OsString::from(".hidden (2)"));
     }
 
     #[test]
@@ -1170,13 +1281,11 @@ mod tests {
         );
         assert_eq!(undo_of(&operation), None, "an uncommitted move has no undo");
         operation.state = OperationState::Committed;
-        assert_eq!(
-            undo_of(&operation),
-            Some(OperationKind::Move {
-                sources: vec!["/b/report.pdf".into()],
-                destination_dir: "/a".into(),
-            })
-        );
+        let inverse = undo_of(&operation).unwrap();
+        let OperationKind::RestoreMoveV1 { entries } = inverse else { panic!("missing exact move inverse"); };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].source, Path::new("/b/report.pdf"));
+        assert_eq!(entries[0].destination, Path::new("/a/report.pdf"));
 
         let mut deletion = plan(
             OperationId::new(),

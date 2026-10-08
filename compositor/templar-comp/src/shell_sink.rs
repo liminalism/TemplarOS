@@ -1,5 +1,5 @@
 //! The [`ShellStateSink`] the compositor gives `ShellStateBroadcaster::spawn`, and the plumbing
-//! that gets a snapshot back onto the render thread to actually become `templar_shell_v1` events.
+//! that gets a snapshot back onto the render thread to actually become `templar_shell_v2` events.
 //!
 //! `ShellStateSink::send` runs on `templar-comp-integration`'s background tokio task, off the render
 //! thread — but `wayland_server::Resource`s (our `TemplarShellToplevelV1` objects) are bound to the

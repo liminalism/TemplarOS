@@ -12,7 +12,7 @@ use crate::{
     observer,
 };
 use serde_json::{Value, json as jsonval};
-use std::io::{Seek, SeekFrom};
+use std::os::fd::AsRawFd as _;
 use templar_file_index::{
     self as index_core,
     query::base64,
@@ -84,6 +84,20 @@ impl From<index_core::IndexError> for Index1Error {
             other => Self::Fdo(failed(other)),
         }
     }
+}
+
+fn root_mutation_error(error: anyhow::Error) -> Index1Error {
+    match error.downcast::<index_core::IndexError>() {
+        Ok(error) => error.into(),
+        Err(error) => Index1Error::Fdo(failed(error)),
+    }
+}
+
+fn native_root(path_b64: &str) -> Result<index_core::NativePath> {
+    let bytes = index_core::query::unbase64(path_b64)
+        .filter(|bytes| base64(bytes) == path_b64 && bytes.first() == Some(&b'/') && !bytes.contains(&0))
+        .ok_or_else(|| Index1Error::Fdo(fdo::Error::InvalidArgs("invalid absolute native root base64".to_owned())))?;
+    Ok(index_core::NativePath::from_bytes(bytes))
 }
 
 type Result<T> = std::result::Result<T, Index1Error>;
@@ -224,13 +238,61 @@ impl IndexApi {
     async fn roots(&self, #[zbus(header)] header: zbus::message::Header<'_>) -> Result<String> {
         note_consumer(&header);
         let core = self.0.index.core();
-        let roots = core.roots()?;
         let diagnostics = core.diagnostics()?;
         json(&jsonval!({
-            "roots": roots.iter().map(wire_root_status).collect::<Vec<_>>(),
+            "roots": diagnostics.roots.iter().map(wire_root_status).collect::<Vec<_>>(),
             "diagnostics": wire_diagnostics(&diagnostics)?,
+            "cache_identity": core.cache_identity(),
         }))
         .map_err(Index1Error::Fdo)
+    }
+
+    /// Observation tokens are scoped to the caller's unique bus name, not cursor activity.
+    async fn observe(&self, observing: bool, observation: u64, #[zbus(header)] header: zbus::message::Header<'_>, #[zbus(connection)] connection: &zbus::Connection) -> Result<()> {
+        let client = header.sender().ok_or_else(|| Index1Error::Fdo(fdo::Error::InvalidArgs(
+            "Observe requires a session-bus unique name".to_owned(),
+        )))?;
+        let control = observer::control().ok_or_else(|| Index1Error::Fdo(failed("index watcher is not ready")))?;
+        let command = if observing {
+            // Register before checking the bus owner: loss during the await revokes this flag.
+            let alive = control.observation_liveness(client.as_str());
+            let bus = zbus::fdo::DBusProxy::new(connection).await.map_err(|error| Index1Error::Fdo(failed(error)))?;
+            if !bus.name_has_owner(client.clone().into()).await.map_err(Index1Error::Fdo)? {
+                control.send(observer::Command::Release(client.as_str().to_owned()));
+                return Err(Index1Error::Fdo(fdo::Error::Disconnected("observation caller disconnected".to_owned())));
+            }
+            observer::Command::Observe(client.as_str().to_owned(), observation, alive)
+        } else {
+            observer::Command::Unobserve(client.as_str().to_owned(), observation)
+        };
+        control.send_required(command).map_err(|error| Index1Error::Fdo(failed(error)))
+    }
+
+    async fn root_policy(&self, path_b64: &str, expected_hash: &str) -> Result<String> {
+        let path = native_root(path_b64)?;
+        json(&self.0.index.root_policy_fenced(&path, expected_hash).map_err(root_mutation_error)?).map_err(Index1Error::Fdo)
+    }
+
+    /// Persist policy first, then let the only watcher perform the asynchronous repair.
+    async fn configure_root(&self, path_b64: &str, policy_json: &str, expected_hash: &str, #[zbus(header)] header: zbus::message::Header<'_>) -> Result<i64> {
+        let control = observer::control().ok_or_else(|| Index1Error::Fdo(failed("index watcher is not ready")))?;
+        let path = native_root(path_b64)?;
+        let policy: index_core::RootPolicy = serde_json::from_str(policy_json)
+            .map_err(|error| Index1Error::Fdo(fdo::Error::InvalidArgs(error.to_string())))?;
+        let status = self.0.index.configure_root(&path, policy, expected_hash).map_err(root_mutation_error)?;
+        note_consumer(&header);
+        control.send_required(observer::Command::Reconcile(status.root, index_core::reconcile::Trigger::PolicyChanged))
+            .map_err(|error| Index1Error::Fdo(failed(error)))?;
+        Ok(status.root.0)
+    }
+
+    async fn remove_root(&self, path_b64: &str, expected_hash: &str) -> Result<()> {
+        let control = observer::control().ok_or_else(|| Index1Error::Fdo(failed("index watcher is not ready")))?;
+        let path = native_root(path_b64)?;
+        if let Some(root) = self.0.index.forget_root_native(&path, expected_hash).map_err(root_mutation_error)? {
+            control.send_required(observer::Command::ForgetRoot(root)).map_err(|error| Index1Error::Fdo(failed(error)))?;
+        }
+        Ok(())
     }
 
     /// One JSON argument (`Query`, `query.rs`) so filters/sort/field-mask can grow without a
@@ -268,21 +330,24 @@ impl IndexApi {
         self.0.index.core().close_cursor(cursor);
     }
 
-    /// A sealed `TEMPLARIDX1` bulk snapshot: a consistent, streamed picture of selected roots,
-    /// consumable without SQLite (`snapshot.rs`). The fd is an unlinked temporary file in
-    /// `$XDG_RUNTIME_DIR` — this build does not attempt `memfd_create` sealing, and the manifest
-    /// says so honestly (`sealed: false`) rather than claiming a guarantee it did not take.
-    async fn open_snapshot(&self, request_json: &str) -> Result<(Fd<'static>, String)> {
+    /// A kernel-sealed `TEMPLARIDX1` bulk snapshot: a consistent, streamed picture of selected
+    /// roots, consumable without SQLite. Publication fails if kernel sealing is unavailable.
+    async fn open_snapshot(&self, request_json: &str, #[zbus(header)] header: zbus::message::Header<'_>) -> Result<(Fd<'static>, String)> {
+        note_consumer(&header);
         let request: SnapshotRequest =
             serde_json::from_str(request_json).map_err(|error| Index1Error::Fdo(failed(error)))?;
-        let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
-            .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
-        let mut file =
-            tempfile::tempfile_in(&runtime_dir).map_err(|error| Index1Error::Fdo(failed(error)))?;
-        let manifest: SnapshotManifest = self.0.index.core().write_snapshot(&mut file, &request)?;
-        file.seek(SeekFrom::Start(0))
+        let descriptor = rustix::fs::memfd_create("templar-index-snapshot",
+            rustix::fs::MemfdFlags::CLOEXEC | rustix::fs::MemfdFlags::ALLOW_SEALING)
             .map_err(|error| Index1Error::Fdo(failed(error)))?;
-        let owned: std::os::fd::OwnedFd = file.into();
+        let mut file = std::fs::File::from(descriptor);
+        let mut manifest: SnapshotManifest = self.0.index.core().write_snapshot(&mut file, &request)?;
+        rustix::fs::fcntl_add_seals(&file, rustix::fs::SealFlags::WRITE
+            | rustix::fs::SealFlags::GROW | rustix::fs::SealFlags::SHRINK | rustix::fs::SealFlags::SEAL)
+            .map_err(|error| Index1Error::Fdo(failed(error)))?;
+        manifest.sealed = true;
+        let readonly = std::fs::File::open(format!("/proc/self/fd/{}", file.as_raw_fd()))
+            .map_err(|error| Index1Error::Fdo(failed(error)))?;
+        let owned: std::os::fd::OwnedFd = readonly.into();
         let manifest_json = json(&manifest).map_err(Index1Error::Fdo)?;
         Ok((Fd::from(owned), manifest_json))
     }
@@ -306,37 +371,37 @@ impl IndexApi {
     /// however long a full reconcile takes — the difference from the old, synchronous
     /// `Search1.IndexRoot`.
     async fn reconcile(&self, roots_json: &str) -> Result<String> {
-        let requested: Vec<index_core::RootId> =
-            serde_json::from_str(roots_json).map_err(|error| Index1Error::Fdo(failed(error)))?;
-        let core = self.0.index.core().clone();
-        let targets = if requested.is_empty() {
-            core.roots()?
-                .into_iter()
-                .map(|status| status.root)
-                .collect()
+        #[derive(serde::Deserialize)]
+        struct Request { cache_identity: String, roots: Vec<index_core::RootId> }
+        let request: Request = serde_json::from_str(roots_json).map_err(|_| {
+            Index1Error::SnapshotRequired("rebuild request needs observed cache identity and roots; refresh roots".to_owned())
+        })?;
+        let core = self.0.index.core();
+        if request.cache_identity != core.cache_identity() {
+            return Err(Index1Error::SnapshotRequired("cache was replaced; refresh roots before requesting rebuild".to_owned()));
+        }
+        let targets = if request.roots.is_empty() {
+            core.roots()?.into_iter().map(|status| status.root).collect()
         } else {
-            requested
+            request.roots
         };
-        let request_id = uuid::Uuid::new_v4().to_string();
-        tokio::task::spawn_blocking(move || {
-            for root in targets {
-                let policy = match core.root_policy(root) {
-                    Ok(policy) => policy,
-                    Err(error) => {
-                        tracing::warn!(root = root.0, %error, "reconcile: could not read policy");
-                        continue;
-                    }
-                };
-                let options = index_core::ScanOptions {
-                    policy,
-                    ..index_core::ScanOptions::reconcile(index_core::RootPolicy::default_home())
-                };
-                if let Err(error) = core.reconcile_root(root, options) {
-                    tracing::warn!(root = root.0, %error, "background reconcile failed");
-                }
+        // Validate every root before queueing any of them: an unknown id is not an acknowledged
+        // background job that silently skips a requested target.
+        for root in &targets {
+            match core.root_status(*root) {
+                Ok(_) => {}
+                Err(index_core::IndexError::UnknownRoot(_)) => return Err(Index1Error::SnapshotRequired(
+                    "requested root was removed; refresh roots before rebuilding".to_owned(),
+                )),
+                Err(error) => return Err(error.into()),
             }
-        });
-        Ok(request_id)
+        }
+        let control = observer::control().ok_or_else(|| Index1Error::Fdo(failed("index watcher is not ready")))?;
+        for root in targets {
+            control.send_required(observer::Command::Reconcile(root, index_core::reconcile::Trigger::Requested))
+                .map_err(|error| Index1Error::Fdo(failed(error)))?;
+        }
+        Ok(uuid::Uuid::new_v4().to_string())
     }
 
     /// A generation committed: `changes_since`/a fresh `Search` now sees it.
@@ -417,6 +482,18 @@ impl index_core::ChangeSink for Index1Signals {
                 tracing::warn!(%error, "could not emit RootStateChanged");
             }
         });
+    }
+
+    fn metadata_repair_requested(&self, root: index_core::RootId) {
+        let Some(control) = observer::control() else {
+            tracing::warn!(root = root.0, "cannot repair metadata: index watcher is not ready");
+            return;
+        };
+        if let Err(error) = control.send_required(observer::Command::Reconcile(
+            root, index_core::reconcile::Trigger::Requested,
+        )) {
+            tracing::warn!(%error, root = root.0, "could not queue index metadata repair");
+        }
     }
 }
 

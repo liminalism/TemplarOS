@@ -480,6 +480,74 @@ const FORM_DWELL_SESSIONS: u64 = 2;
 const FORM_FLOOR: f32 = 2.0;
 const FORM_MARGIN: f32 = 1.5;
 
+
+/// Work a project presents. Independent of provider privileges and the legacy tree form.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Template {
+    Coding,
+    Video,
+    Images,
+    Documents,
+    #[default]
+    Plain,
+}
+
+impl Template {
+    pub const ALL: [Self; 5] = [Self::Coding, Self::Video, Self::Images, Self::Documents, Self::Plain];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Coding => "coding",
+            Self::Video => "video",
+            Self::Images => "images",
+            Self::Documents => "documents",
+            Self::Plain => "plain",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|template| template.as_str() == value)
+    }
+
+    /// Browser/file-manager activity is neutral even if its desktop entry has other categories.
+    pub fn from_categories(categories: &BTreeSet<String>, role: Option<ProviderRole>) -> Self {
+        let has = |names: &[&str]| names.iter().any(|name| categories.contains(*name));
+        if role == Some(ProviderRole::FileManager) || has(&["WebBrowser", "FileManager"]) {
+            Self::Plain
+        } else if matches!(role, Some(ProviderRole::Terminal | ProviderRole::CodeEditor))
+            || has(&["TerminalEmulator", "IDE", "Development", "TextEditor"])
+        {
+            Self::Coding
+        } else if has(&["AudioVideo", "Video", "AudioVideoEditing"]) {
+            Self::Video
+        } else if has(&["RasterGraphics", "Photography", "Graphics"]) {
+            Self::Images
+        } else if has(&["Office", "WordProcessor", "Viewer"]) {
+            Self::Documents
+        } else {
+            Self::Plain
+        }
+    }
+
+    pub fn from_path(path: &Path) -> Self {
+        match path.extension().and_then(|extension| extension.to_str()).map(str::to_ascii_lowercase).as_deref() {
+            Some("rs" | "c" | "h" | "cpp" | "py" | "js" | "ts" | "tsx" | "go" | "toml") => Self::Coding,
+            Some("kdenlive" | "mlt" | "mp4" | "mkv" | "mov" | "webm") => Self::Video,
+            Some("xcf" | "kra" | "raw" | "cr2" | "nef" | "jpg" | "jpeg" | "png" | "webp" | "tiff") => Self::Images,
+            Some("odt" | "docx" | "pdf" | "md" | "epub" | "rtf") => Self::Documents,
+            _ => Self::Plain,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TemplateBucket {
+    pub template: Template,
+    pub session: u64,
+    pub at: GardenMoment,
+    pub weight: f32,
+}
 // ---------------------------------------------------------------- blooms --------------------
 
 /// What kind of thing a bloom is reporting.
@@ -580,8 +648,11 @@ pub struct HomeContext {
     /// Set when the user resized the tile; the tender then stops resizing it.
     #[serde(default)]
     pub user_span: Option<Span>,
-    /// The span the tender last gave the tile, so a different span at the next tending moment
-    /// is recognised as the user's hand.
+    /// Provenance distinguishes a real resize from old Keep/hand-placement size freezes.
+    #[serde(default)]
+    pub manual_size: bool,
+    /// The span the tender last gave the tile. Hand placement is not resize provenance;
+    /// only a committed FieldOp::Resize marks a new explicit size override.
     #[serde(default)]
     pub tended_span: Option<Span>,
     pub material_seed: u64,
@@ -610,6 +681,19 @@ pub struct HomeContext {
     /// This recognizes live windows, not event history; an unseen instance is never matched.
     #[serde(default)]
     pub instances: Vec<InstanceId>,
+    #[serde(default)]
+    pub template: Template,
+    #[serde(default)]
+    pub template_candidate: Template,
+    #[serde(default)]
+    pub template_candidate_since: u64,
+    #[serde(default)]
+    pub template_override: Option<Template>,
+    #[serde(default)]
+    pub template_buckets: Vec<TemplateBucket>,
+    /// Bounded activity-derived app history, separate from live instance identity.
+    #[serde(default)]
+    pub used_apps: Vec<AppId>,
 }
 
 /// How many launched-here instances a place remembers.
@@ -642,6 +726,7 @@ impl HomeContext {
             pinned: false,
             hidden: false,
             user_span: None,
+            manual_size: false,
             tended_span: None,
             material_seed,
             form: Form::Plain,
@@ -650,6 +735,12 @@ impl HomeContext {
             last_reason: String::new(),
             bloom: None,
             instances: Vec::new(),
+            template: Template::Plain,
+            template_candidate: Template::Plain,
+            template_candidate_since: at.session,
+            template_override: None,
+            template_buckets: Vec::new(),
+            used_apps: Vec::new(),
         }
     }
 
@@ -702,6 +793,23 @@ impl HomeContext {
     pub fn effective(&self, now: GardenMoment, config: &GardenConfig) -> f32 {
         let breadth = (self.breadth(now) as f32 / BREADTH_FULL).min(1.0);
         self.score * decay(now, self.last, config) * (1.0 + BREADTH_BONUS * breadth)
+    }
+
+    /// Live managed instances contribute to the next reveal's size, never persisted relevance.
+    /// The field tender separately honours `user_span`; pinning/Keep only prevent recession.
+    /// This read-only projection cannot invent a context, activity bucket or session.
+    #[must_use]
+    pub fn presentation_span(&self, now: GardenMoment, config: &GardenConfig, live_instances: usize) -> Option<Span> {
+        if self.hidden { return None; }
+        if live_instances == 0 { return self.stage.span(); }
+        let weight = self.effective(now, config) + 2.0 * live_instances.min(4) as f32;
+        let mut stage = self.stage.max(Stage::Trace);
+        for candidate in [Stage::Tile, Stage::Expanded, Stage::Dominant] {
+            if weight >= threshold(candidate).promote_effective {
+                stage = stage.max(candidate);
+            }
+        }
+        stage.span()
     }
 
     /// A one-line account of the evidence: `14 opens, 3 terminals, 4 sessions`.
@@ -780,6 +888,52 @@ impl HomeContext {
 }
 
 impl HomeContext {
+    /// Bounded category/file evidence; display collectors never call this.
+    pub fn record_template(&mut self, template: Template, strong: bool, at: GardenMoment) {
+        if template == Template::Plain {
+            return;
+        }
+        let weight: f32 = if strong { 4.0 } else { 1.0 };
+        if let Some(bucket) = self.template_buckets.iter_mut().find(|bucket| {
+            bucket.template == template && bucket.session == at.session
+        }) {
+            bucket.weight = bucket.weight.max(weight);
+            bucket.at = bucket.at.max(at);
+        } else {
+            self.template_buckets.push(TemplateBucket { template, session: at.session, at, weight });
+        }
+        if self.template_buckets.len() > 48 {
+            self.template_buckets.drain(..self.template_buckets.len() - 48);
+        }
+    }
+
+    pub fn template_evidence(&self, now: GardenMoment, config: &GardenConfig) -> Vec<(Template, f32)> {
+        let mut evidence: Vec<_> = Template::ALL[..4].iter().map(|template| (*template, 0.0)).collect();
+        for bucket in &self.template_buckets {
+            if let Some((_, weight)) = evidence.iter_mut().find(|(template, _)| *template == bucket.template) {
+                *weight += bucket.weight * decay(now, bucket.at, config);
+            }
+        }
+        evidence.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        evidence
+    }
+
+    /// Explicit size provenance does not imply Keep/pinning. Legacy unspecified spans remain
+    /// untouched until a real resize replaces them.
+    pub fn record_manual_span(&mut self, span: Span) {
+        self.user_span = Some(span);
+        self.manual_size = true;
+    }
+    pub fn presented_template(&self) -> Template {
+        self.template_override.unwrap_or(self.template)
+    }
+
+    pub fn secondary_templates(&self, now: GardenMoment, config: &GardenConfig) -> Vec<Template> {
+        self.template_evidence(now, config).into_iter()
+            .filter(|(template, weight)| *template != self.presented_template() && *weight >= FORM_FLOOR)
+            .map(|(template, _)| template).collect()
+    }
+
     /// The weight behind each form — branch, shelf, folio — from the activity tree the place
     /// has already earned. A directory that was worked *through* leaves directories behind, and
     /// the deeper they go the more it was structure rather than a place things were dropped in;
@@ -844,6 +998,18 @@ impl HomeContext {
 /// Settle `context`'s form at a tending moment: a candidate has to have led for
 /// [`FORM_DWELL_SESSIONS`] before the drawing changes under the user.
 fn settle_form(context: &mut HomeContext, now: GardenMoment, config: &GardenConfig) {
+    let evidence = context.template_evidence(now, config);
+    let earned_template = if evidence[0].1 >= FORM_FLOOR && evidence[0].1 >= evidence[1].1 * FORM_MARGIN {
+        evidence[0].0
+    } else {
+        Template::Plain
+    };
+    if earned_template != context.template_candidate {
+        context.template_candidate = earned_template;
+        context.template_candidate_since = now.session;
+    } else if now.session.saturating_sub(context.template_candidate_since) >= FORM_DWELL_SESSIONS {
+        context.template = earned_template;
+    }
     let earned = context.earned_form(now, config);
     if earned != context.form_candidate {
         context.form_candidate = earned;
@@ -1128,17 +1294,19 @@ pub fn attribute_root(
         return None;
     }
     let home = probe.home();
-    if path == home {
+    if home.starts_with(path) || path.components().any(|part| matches!(part, Component::ParentDir)) {
         return None;
     }
-    if let Some(root) = probe.project_root(path) {
+    if let Some(root) = probe.project_root(path)
+        && !home.starts_with(&root)
+    {
         return Some(root);
     }
     // The nearest ancestor (the path itself first) that is already a context, so a formed
     // context keeps attracting its descendants.
     let mut best_existing: Option<&PathBuf> = None;
     for root in existing {
-        if path.starts_with(root)
+        if !home.starts_with(root) && path.starts_with(root)
             && best_existing
                 .is_none_or(|best| root.components().count() > best.components().count())
         {
@@ -1158,11 +1326,11 @@ pub fn attribute_root(
     let mut candidate = start;
     let mut marked: Option<&Path> = None;
     for _ in 0..ATTRIBUTION_DEPTH {
-        if candidate == home || candidate.parent().is_none() {
+        if home.starts_with(candidate) {
             break;
         }
         if best_existing.is_some_and(|root| candidate == root.as_path()) {
-            return Some(candidate.to_path_buf());
+            return Some(marked.unwrap_or(candidate).to_path_buf());
         }
         if probe.has_vcs_marker(candidate) {
             return Some(candidate.to_path_buf());
@@ -1190,7 +1358,7 @@ pub fn attribute_root(
         return Some(root.to_path_buf());
     }
     // Directly under $HOME (or with no landmark): the directory itself, unless it is $HOME.
-    (start != home).then(|| start.to_path_buf())
+    (!home.starts_with(start)).then(|| start.to_path_buf())
 }
 
 // ---------------------------------------------------------------- the ledger ----------------
@@ -1215,8 +1383,16 @@ pub struct Ledger {
     #[serde(default)]
     pub change_cursor: u64,
     /// Exact cwd is presentation metadata, independent of whether activity can grow a Place.
-    #[serde(default)]
+    #[serde(default, with = "templar_types::native_path::map")]
     pub working_directories: std::collections::BTreeMap<String, PathBuf>,
+    /// Verified prompt reports outrank terminal parent/child process cwd snapshots.
+    #[serde(default)]
+    pub prompt_directories: BTreeSet<String>,
+    #[serde(default)]
+    pub cwd_sources_version: u32,
+    /// User links survive automatic cwd changes and confer no app privileges.
+    #[serde(default)]
+    pub adopted_instances: std::collections::BTreeMap<String, Vec<PathBuf>>,
 }
 
 impl Ledger {
@@ -1273,6 +1449,11 @@ impl Ledger {
         match self.context_mut(root) {
             Some(context) => {
                 context.remember_instance(instance);
+                let roots = self.adopted_instances.entry(instance.to_string()).or_default();
+                if !roots.iter().any(|path| path == root) {
+                    roots.push(root.to_path_buf());
+                    roots.truncate(INSTANCE_MEMORY);
+                }
                 true
             }
             None => false,
@@ -1290,9 +1471,12 @@ impl Ledger {
         {
             self.working_directories
                 .insert(instance.to_string(), activity.path.clone());
+            self.prompt_directories.insert(instance.to_string());
             // A cd to HOME/cache/target still moves presentation, but grows no Place.
             for place in &mut self.contexts {
-                place.instances.retain(|known| *known != instance);
+                if !self.adopted_instances.get(&instance.to_string()).is_some_and(|roots| roots.contains(&place.root)) {
+                    place.instances.retain(|known| *known != instance);
+                }
             }
         }
         if !config.enabled {
@@ -1314,6 +1498,7 @@ impl Ledger {
                 ActivityKind::LaunchedHere
                     | ActivityKind::FileOpened
                     | ActivityKind::TerminalEntered
+                    | ActivityKind::ProjectEntered
             )
         {
             context.remember_instance(instance);
@@ -1355,6 +1540,11 @@ impl Ledger {
         if let Some(role) = activity.role {
             context.roles.insert(role);
         }
+        if let Some(app) = &activity.app_id {
+            context.used_apps.retain(|known| known != app);
+            context.used_apps.push(app.clone());
+            if context.used_apps.len() > 16 { context.used_apps.remove(0); }
+        }
         if activity.kind == ActivityKind::PlacedOnHome {
             context.pinned = true;
         }
@@ -1364,6 +1554,7 @@ impl Ledger {
         if context.buckets.len() > 64 {
             context.buckets.drain(..context.buckets.len() - 64);
         }
+        self.prune_place_trees();
         Some(root)
     }
 
@@ -1478,6 +1669,7 @@ impl Ledger {
         if !config.enabled {
             return changes;
         }
+        self.prune_place_trees();
         for context in &mut self.contexts {
             settle_form(context, now, config);
             // A bloom nobody answered for several later sessions has stopped being news.
@@ -1527,27 +1719,32 @@ impl Ledger {
         changes
     }
 
-    /// Pin: never removed by recession, never recedes; may still grow. Unpinning also lets go
-    /// of a kept size, so "Unpin" is the one way back to a place the garden tends freely.
+    fn prune_place_trees(&mut self) {
+        fn prune(nodes: &mut Vec<TreeNode>, prefix: &Path, roots: &[PathBuf]) {
+            nodes.retain(|node| !roots.iter().any(|root| root == &prefix.join(&node.name)));
+            for node in nodes {
+                prune(&mut node.children, &prefix.join(&node.name), roots);
+            }
+        }
+        let roots: Vec<_> = self.contexts.iter().map(|context| context.root.clone()).collect();
+        for context in &mut self.contexts {
+            prune(&mut context.tree, &context.root, &roots);
+        }
+    }
+
+    /// Pinning prevents recession; only an explicit manual resize freezes size.
     pub fn set_pinned(&mut self, root: &Path, pinned: bool) -> bool {
         self.context_mut(root)
             .map(|c| {
                 c.pinned = pinned;
-                if !pinned {
-                    c.user_span = None;
-                }
+                // Unpinning does not erase an independently chosen manual size.
             })
             .is_some()
     }
 
-    /// Keep: pinned, and frozen at `span` — the tender never resizes it again.
-    pub fn keep(&mut self, root: &Path, span: Span) -> bool {
-        self.context_mut(root)
-            .map(|c| {
-                c.pinned = true;
-                c.user_span = Some(span);
-            })
-            .is_some()
+    /// Keep prevents recession, not activity-driven growth. The shipped span argument is ignored.
+    pub fn keep(&mut self, root: &Path, _span: Span) -> bool {
+        self.set_pinned(root, true)
     }
 
     /// Hide: the tile leaves Home at the next tending moment and the place never grows while
@@ -1560,6 +1757,7 @@ impl Ledger {
                 if hidden {
                     c.pinned = false;
                     c.user_span = None;
+                    c.manual_size = false;
                 }
             })
             .is_some()
@@ -1994,7 +2192,7 @@ mod tests {
             ),
             Some(PathBuf::from("/home/dk/Downloads"))
         );
-        // An existing context attracts its descendants over a deeper marker.
+        // A real workspace boundary wins over an older broad parent context.
         assert_eq!(
             attribute_root(
                 Path::new("/home/dk/src/templaros/crates/x/Cargo.toml"),
@@ -2002,7 +2200,7 @@ mod tests {
                 &probe,
                 &config
             ),
-            Some(PathBuf::from("/home/dk/src"))
+            Some(PathBuf::from("/home/dk/src/templaros"))
         );
     }
 
@@ -2191,7 +2389,7 @@ mod tests {
     }
 
     #[test]
-    fn keep_freezes_the_size_hide_outranks_a_pin_and_unpin_lets_go_of_both() {
+    fn keep_does_not_freeze_size_and_unpin_preserves_manual_resize() {
         let probe = Probe::new();
         let config = GardenConfig::default();
         let mut ledger = Ledger::default();
@@ -2209,16 +2407,67 @@ mod tests {
         assert!(ledger.keep(root, Span::new(3, 3)));
         let context = ledger.context(root).unwrap();
         assert!(context.pinned);
-        assert_eq!(context.user_span, Some(Span::new(3, 3)));
+        assert_eq!(context.user_span, None);
         assert!(ledger.set_hidden(root, true));
         let context = ledger.context(root).unwrap();
         assert!(context.hidden && !context.pinned && context.user_span.is_none());
         assert!(ledger.set_hidden(root, false));
         assert!(ledger.keep(root, Span::new(2, 2)));
+        ledger.context_mut(root).unwrap().user_span = Some(Span::new(3, 3));
         assert!(ledger.set_pinned(root, false));
         let context = ledger.context(root).unwrap();
-        assert!(!context.pinned && context.user_span.is_none());
+        assert!(!context.pinned && context.user_span == Some(Span::new(3, 3)));
         assert!(!ledger.keep(Path::new("/nowhere"), Span::new(2, 2)));
+    }
+
+    #[test]
+    fn explicit_resize_and_keep_are_independent_choices() {
+        let mut context = HomeContext::new(PathBuf::from("/home/dk/project"), at(1, 0.0));
+        context.record_manual_span(Span::new(4, 3));
+        assert!(context.manual_size);
+        assert_eq!(context.user_span, Some(Span::new(4, 3)));
+        assert!(!context.pinned);
+        let mut ledger = Ledger::default();
+        ledger.contexts.push(context);
+        assert!(ledger.keep(Path::new("/home/dk/project"), Span::new(6, 4)));
+        assert!(ledger.contexts[0].pinned);
+        assert_eq!(ledger.contexts[0].user_span, Some(Span::new(4, 3)));
+        assert!(ledger.set_pinned(Path::new("/home/dk/project"), false));
+        assert!(ledger.contexts[0].manual_size);
+        assert_eq!(ledger.contexts[0].user_span, Some(Span::new(4, 3)));
+    }
+
+    #[test]
+    fn live_work_affects_only_the_next_size_projection_even_when_kept() {
+        let now = at(2, 1.0);
+        let mut context = HomeContext::new(PathBuf::from("/home/dk/project"), now);
+        context.stage = Stage::Tile;
+        context.score = 16.0;
+        context.pinned = true;
+        let before = context.clone();
+        let config = GardenConfig::default();
+        assert_eq!(context.presentation_span(now, &config, 0), Stage::Tile.span());
+        assert_eq!(context.presentation_span(now, &config, 2), Stage::Expanded.span());
+        assert_eq!(context, before);
+        context.hidden = true;
+        assert_eq!(context.presentation_span(now, &config, 4), None);
+    }
+
+    #[test]
+    fn legacy_ambiguous_size_is_preserved_without_claiming_manual_provenance() {
+        let context: HomeContext = serde_json::from_str(
+            r#"{"root":"/home/dk/project","score":4.0,"last":{"session":1,"active_ms":0},
+                "stage":"tile","material_seed":7,"pinned":true,"user_span":{"cols":3,"rows":3}}"#
+        ).unwrap();
+        assert!(!context.manual_size);
+        assert_eq!(context.user_span, Some(Span::new(3, 3)));
+        let mut ledger = Ledger::default();
+        ledger.contexts.push(context);
+        assert!(ledger.keep(Path::new("/home/dk/project"), Span::new(6, 4)));
+        assert_eq!(ledger.contexts[0].user_span, Some(Span::new(3, 3)));
+        let restored: Ledger = serde_json::from_str(&serde_json::to_string(&ledger).unwrap()).unwrap();
+        assert_eq!(restored.contexts[0].user_span, Some(Span::new(3, 3)));
+        assert!(!restored.contexts[0].manual_size);
     }
 
     #[test]
@@ -2765,6 +3014,28 @@ mod tests {
         assert_eq!(reloaded.clock.session, 1);
     }
 
+    #[test]
+    fn native_working_directories_do_not_discard_the_persisted_ledger() {
+        use std::os::unix::ffi::OsStringExt;
+        let store = templar_state::Store::in_memory().unwrap();
+        let mut ledger = Ledger::default();
+        ledger.contexts.push(HomeContext::new(PathBuf::from("/home/dk/work"), at(1, 0.0)));
+        for (id, byte) in [("first", 0xfe), ("second", 0xff)] {
+            let mut path = b"/home/dk/work/native-".to_vec();
+            path.push(byte);
+            ledger.working_directories.insert(id.into(), PathBuf::from(std::ffi::OsString::from_vec(path)));
+        }
+        ledger.working_directories.insert("text".into(), PathBuf::from("/home/dk/work"));
+        let wire = serde_json::to_value(&ledger).unwrap();
+        assert!(wire["working_directories"]["first"]["path_b64"].is_string());
+        assert_ne!(wire["working_directories"]["first"], wire["working_directories"]["second"]);
+        assert_eq!(wire["working_directories"]["text"], "/home/dk/work");
+        save(&store, &ledger).unwrap();
+        let restored = load(&store);
+        assert_eq!(restored.contexts, ledger.contexts);
+        assert_eq!(restored.working_directories, ledger.working_directories);
+    }
+
     // ---------------------------------------------------------------- blooms ----------------
 
     /// A ledger holding one earned place at `stage`, with no field and no history.
@@ -3006,5 +3277,73 @@ mod tests {
         .unwrap();
         assert_eq!(old.change_cursor, 0);
         assert!(old.contexts[0].bloom.is_none());
+    }
+
+    #[test]
+    fn automatic_roots_never_include_home_or_any_ancestor_even_if_declared() {
+        let mut probe = Probe::new();
+        probe.projects = vec![PathBuf::from("/")];
+        for path in ["/", "/home", "/home/dk", "/home/dk/../dk"] {
+            assert_eq!(attribute_root(Path::new(path), &[PathBuf::from("/")], &probe, &GardenConfig::default()), None);
+        }
+        assert_eq!(attribute_root(Path::new("/home/dk/notes"), &[PathBuf::from("/")], &probe, &GardenConfig::default()), Some(PathBuf::from("/home/dk/notes")));
+    }
+
+    #[test]
+    fn a_child_place_is_removed_from_its_parents_consumer_tree() {
+        let mut probe = Probe::new();
+        probe.markers.clear();
+        let config = GardenConfig::default();
+        let mut ledger = Ledger::default();
+        ledger.observe(&event("/home/dk/work/child/src", ActivityKind::LaunchedHere, None, at(1, 0.0)), &probe, &config);
+        ledger.contexts.clear();
+        ledger.observe(&event("/home/dk/work", ActivityKind::LaunchedHere, None, at(1, 0.0)), &probe, &config);
+        ledger.observe(&event("/home/dk/work/child/src", ActivityKind::LaunchedHere, None, at(1, 0.0)), &probe, &config);
+        assert!(!ledger.contexts[0].tree.is_empty());
+        probe.markers.push(PathBuf::from("/home/dk/work/child"));
+        ledger.observe(&event("/home/dk/work/child", ActivityKind::ProjectEntered, None, at(2, 0.0)), &probe, &config);
+        assert!(ledger.context(Path::new("/home/dk/work/child")).is_some());
+        assert!(ledger.context(Path::new("/home/dk/work")).unwrap().tree_at(at(2, 0.0), &config).is_empty());
+    }
+
+    #[test]
+    fn templates_use_categories_with_two_session_margin_and_persistent_override() {
+        let mut context = HomeContext::new(PathBuf::from("/home/dk/project"), at(1, 0.0));
+        let config = GardenConfig::default();
+        let browser = ["WebBrowser".to_string(), "Graphics".to_string()].into();
+        assert_eq!(Template::from_categories(&browser, None), Template::Plain);
+        context.record_template(Template::Coding, true, at(1, 0.0));
+        settle_form(&mut context, at(1, 0.0), &config);
+        settle_form(&mut context, at(2, 0.0), &config);
+        assert_eq!(context.template, Template::Plain);
+        settle_form(&mut context, at(3, 0.0), &config);
+        assert_eq!(context.template, Template::Coding);
+        context.record_template(Template::Images, false, at(3, 0.0));
+        settle_form(&mut context, at(5, 0.0), &config);
+        assert_eq!(context.template, Template::Coding);
+        context.template_override = Some(Template::Documents);
+        let back: HomeContext = serde_json::from_str(&serde_json::to_string(&context).unwrap()).unwrap();
+        assert_eq!(back.presented_template(), Template::Documents);
+    }
+
+    #[test]
+    fn category_templates_keep_neutral_apps_neutral_and_expose_secondary_work() {
+        let categories = |category: &str| [category.to_owned()].into_iter().collect();
+        assert_eq!(Template::from_categories(&categories("AudioVideoEditing"), None), Template::Video);
+        assert_eq!(Template::from_categories(&categories("Photography"), None), Template::Images);
+        assert_eq!(Template::from_categories(&categories("WordProcessor"), None), Template::Documents);
+        assert_eq!(Template::from_categories(&categories("IDE"), None), Template::Coding);
+        assert_eq!(Template::from_categories(&categories("Graphics"), Some(ProviderRole::FileManager)), Template::Plain);
+        let now = at(1, 0.0);
+        let mut context = HomeContext::new(PathBuf::from("/home/dk/project"), now);
+        context.template = Template::Coding;
+        context.record_template(Template::Coding, true, now);
+        context.record_template(Template::Documents, true, now);
+        assert_eq!(context.secondary_templates(now, &GardenConfig::default()), [Template::Documents]);
+        context.template_override = Some(Template::Plain);
+        assert_eq!(context.presented_template(), Template::Plain);
+        context.template_override = None;
+        assert_eq!(context.presented_template(), Template::Coding);
+        assert!(!context.pinned && context.user_span.is_none());
     }
 }

@@ -100,10 +100,33 @@ pub fn to_request(entry: &DesktopEntry, app_id: AppId) -> AutostartEntry {
     }
 }
 
+fn resolve_or_import(
+    registry: &Registry,
+    desktop_id: &str,
+    entry: &DesktopEntry,
+    source: SourceContext,
+    resolver: &dyn ExecResolver,
+) -> Option<(AppId, bool)> {
+    if let Some(manifest) = registry.manifests().into_iter().find(|manifest| {
+        manifest.primary_desktop_file_id == desktop_id
+            || manifest
+                .aliases
+                .desktop_file_ids
+                .iter()
+                .any(|id| id == desktop_id)
+    }) {
+        return Some((manifest.id.clone(), false));
+    }
+    let derived = desktop_entry::derive_manifest(entry, desktop_id, &source, resolver)?;
+    let id = derived.manifest.id.clone();
+    registry.insert_desktop_manifest(derived.manifest, derived.exec_template, source.path);
+    Some((id, true))
+}
+
 /// Run the autostart sequence once, at session start: resolve each entry to a canonical AppId
-/// (importing a manifest for it if none is installed and it is not already known), plan against
-/// approvals and the provider registry, launch what is approved, and record one history event
-/// per entry.
+/// (importing a manifest with its original Exec template and native desktop path if none is
+/// installed and it is not already known), plan against approvals and the provider registry,
+/// launch what is approved, and record one history event per entry.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     registry: Arc<Registry>,
@@ -127,30 +150,16 @@ pub async fn run(
     let mut imported_any = false;
     let mut entries: Vec<(AutostartEntry, autostart::Approval)> = Vec::new();
     for (desktop_id, entry, source) in scan_entries(&dirs) {
-        let existing = registry
-            .manifests()
-            .into_iter()
-            .find(|manifest| {
-                manifest.primary_desktop_file_id == desktop_id
-                    || manifest.aliases.desktop_file_ids.contains(&desktop_id)
-            })
-            .map(|manifest| manifest.id.clone());
-        let app_id = if let Some(id) = existing {
-            id
-        } else if let Some(derived) =
-            desktop_entry::derive_manifest(&entry, &desktop_id, &source, resolver.as_ref())
-        {
-            let id = derived.manifest.id.clone();
-            registry.insert_manifest(derived.manifest);
-            imported_any = true;
-            id
-        } else {
+        let Some((app_id, imported)) =
+            resolve_or_import(&registry, &desktop_id, &entry, source, resolver.as_ref())
+        else {
             tracing::debug!(
                 desktop_id,
                 "autostart entry has no resolvable executable; skipped"
             );
             continue;
         };
+        imported_any |= imported;
         let request = to_request(&entry, app_id);
         if let Err(error) = store.transaction(|tx| autostart::save_declaration_within(tx, &request))
         {
@@ -169,7 +178,37 @@ pub async fn run(
         {
             tracing::warn!(%error, "regrouping after autostart import failed");
         }
-        announce_applications_changed(&connection).await;
+        super::desktop_watch::announce_applications_changed(&connection).await;
+    }
+
+    // Entries imported here were absent from load_services' installed-capability pass.
+    // Register from the same trusted catalogue before planning; these remain catalogue-owned
+    // claims, not durable declarations that could outlive their source.
+    let changed_roles = {
+        let mut current = providers.write();
+        let before: Vec<_> = ProviderRole::ALL
+            .iter()
+            .map(|role| (*role, current.provider(*role)))
+            .collect();
+        current.declare_installed(registry.as_ref());
+        before
+            .into_iter()
+            .filter_map(|(role, previous)| (previous != current.provider(role)).then_some(role))
+            .collect::<Vec<_>>()
+    };
+    for role in changed_roles {
+        if let Err(error) = connection
+            .emit_signal(
+                None::<&str>,
+                templar_types::dbus::session::PROVIDERS_PATH,
+                "org.templaros.Providers1",
+                "Changed",
+                &(role.as_str(),),
+            )
+            .await
+        {
+            tracing::warn!(%error, "autostart import provider notification failed");
+        }
     }
 
     let plan = autostart::plan(&entries, &providers.read());
@@ -223,27 +262,148 @@ pub async fn run(
     }
 }
 
-/// Emit `AppIdentity1.ApplicationsChanged`. Best-effort: a listener that misses it re-reads on its
-/// next natural refresh, and failing to announce a change must never abort autostart.
-pub(crate) async fn announce_applications_changed(connection: &zbus::Connection) {
-    let emitter = match zbus::object_server::SignalEmitter::new(
-        connection,
-        templar_types::dbus::session::APP_IDENTITY_PATH,
-    ) {
-        Ok(emitter) => emitter,
-        Err(error) => {
-            tracing::debug!(%error, "could not address AppIdentity1 to announce a change");
-            return;
-        }
-    };
-    if let Err(error) = templar_appd::dbus::IdentityApi::applications_changed(&emitter).await {
-        tracing::debug!(%error, "announcing ApplicationsChanged failed");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_provider_is_registered_before_planning_and_survives_application_rescan() {
+        struct Resolver;
+        impl ExecResolver for Resolver {
+            fn resolve_program(&self, program: &str) -> Option<PathBuf> {
+                (program == "nm-tray").then(|| PathBuf::from("/usr/bin/nm-tray"))
+            }
+            fn resolve_flatpak(&self, _: &str) -> Option<PathBuf> {
+                None
+            }
+        }
+        let desktop_id = "nm-tray.desktop";
+        let entry = desktop_entry::parse(
+            "[Desktop Entry]\nType=Application\nName=Network\nExec=nm-tray\nX-TemplarOS-Provides=network-status-ui\n"
+        ).unwrap();
+        let registry = Registry::default();
+        let mut providers = ProviderRegistry::default();
+        providers.declare_installed(&registry);
+        let (app, imported) = resolve_or_import(
+            &registry,
+            desktop_id,
+            &entry,
+            SourceContext::for_file(
+                std::path::Path::new("/etc/xdg/autostart"),
+                PathBuf::from("/etc/xdg/autostart/nm-tray.desktop"),
+            ),
+            &Resolver,
+        )
+        .unwrap();
+        assert!(imported);
+        let request = to_request(&entry, app.clone());
+        let entries = [(request, autostart::Approval::Approved)];
+        assert!(matches!(
+            autostart::plan(&entries, &providers)[0].1,
+            Verdict::SkippedNotSelectedProvider { .. }
+        ));
+        providers.declare_installed(&registry);
+        assert_eq!(
+            providers.provider(ProviderRole::NetworkStatusUi),
+            Some(app.clone())
+        );
+        assert_eq!(
+            autostart::plan(&entries, &providers),
+            vec![(app.clone(), Verdict::Launch)]
+        );
+
+        let store = Store::in_memory().unwrap();
+        store
+            .transaction(|tx| {
+                templar_session_core::providers::apply_selection_within(
+                    tx,
+                    ProviderRole::NetworkStatusUi,
+                    Some(&app),
+                    "provider-selection-test",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let applications = tempfile::tempdir().unwrap();
+        super::super::desktop_import::import(
+            &registry,
+            &store,
+            &[applications.path().to_path_buf()],
+            &Resolver,
+        )
+        .unwrap();
+        let mut refreshed = templar_session_core::providers::load(&store).unwrap();
+        refreshed.declare_installed(&registry);
+        assert_eq!(
+            refreshed.provider(ProviderRole::NetworkStatusUi),
+            Some(app.clone())
+        );
+        assert!(registry.launch_template(&app).is_some());
+        assert!(
+            templar_session_core::providers::load(&store)
+                .unwrap()
+                .declarations
+                .is_empty(),
+            "installed claims are not durable provider grants"
+        );
+    }
+
+    #[test]
+    fn autostart_import_retains_launch_source_and_preserves_installed_manifest_precedence() {
+        struct Resolver;
+        impl ExecResolver for Resolver {
+            fn resolve_program(&self, program: &str) -> Option<PathBuf> {
+                (program == "sync-agent").then(|| PathBuf::from("/usr/bin/sync-agent"))
+            }
+            fn resolve_flatpak(&self, _: &str) -> Option<PathBuf> {
+                None
+            }
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let desktop_id = "org.example.Sync.desktop";
+        let path = directory.path().join(desktop_id);
+        let exec = "sync-agent --background \"Work profile\" %k";
+        std::fs::write(
+            &path,
+            format!("[Desktop Entry]\nType=Application\nName=Sync\nExec={exec}\n"),
+        )
+        .unwrap();
+        let (id, entry, source) = scan_entries(&[directory.path().to_path_buf()])
+            .pop()
+            .unwrap();
+        let registry = Registry::default();
+        let (app, imported) = resolve_or_import(&registry, &id, &entry, source, &Resolver).unwrap();
+        assert!(imported);
+        let launch = registry.launch_template(&app).unwrap();
+        assert_eq!(launch.exec, desktop_entry::ExecTemplate::parse(exec));
+        assert_eq!(launch.desktop_file_path, path);
+        let installed = registry.manifest(&app).unwrap();
+        assert_eq!(
+            installed.provenance.as_ref().unwrap().source_path.as_ref(),
+            Some(&path)
+        );
+
+        let mut native = (*installed).clone();
+        native.provenance = None;
+        native.executable = PathBuf::from("/usr/bin/native-sync");
+        registry.insert_manifest(native);
+        let (resolved, imported) = resolve_or_import(
+            &registry,
+            desktop_id,
+            &entry,
+            SourceContext::unknown(path),
+            &Resolver,
+        )
+        .unwrap();
+        assert_eq!(resolved, app);
+        assert!(!imported);
+        assert_eq!(
+            registry.manifest(&app).unwrap().executable,
+            PathBuf::from("/usr/bin/native-sync")
+        );
+        assert!(registry.launch_template(&app).is_none());
+    }
 
     #[test]
     fn scan_entries_merges_directories_and_drops_hidden_ones() {

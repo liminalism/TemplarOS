@@ -11,6 +11,8 @@
 resolver = "3"
 members = [
     "crates/templar-types",
+    "crates/templar-ui",
+    "crates/templar-display-ui",
     "crates/templar-appd",
     "crates/templar-build",
     "crates/templar-associationd",
@@ -25,6 +27,8 @@ members = [
     "crates/templar-fanotify",
     "crates/templar-clipboard",
     "crates/templar-archive",
+    "crates/templar-wallpaper",
+    "crates/templar-effects",
     "services/templar-sessiond",
     "services/templar-resourced",
     "services/templar-filed",
@@ -36,6 +40,7 @@ members = [
     "shell/templar-shell",
     "apps/templar-settings",
     "apps/templar-greeter",
+    "apps/templar-displays",
     "apps/templar-files",
     "portals/xdg-desktop-portal-templar",
     "cli/templar",
@@ -56,6 +61,8 @@ authors = ["TemplarOS contributors"]
 [workspace.dependencies]
 # internal
 templar-types = { path = "crates/templar-types" }
+templar-ui = { path = "crates/templar-ui" }
+templar-display-ui = { path = "crates/templar-display-ui" }
 templar-appd = { path = "crates/templar-appd" }
 templar-build = { path = "crates/templar-build" }
 templar-associationd = { path = "crates/templar-associationd" }
@@ -66,9 +73,11 @@ templar-session-core = { path = "crates/templar-session-core" }
 templar-state = { path = "crates/templar-state" }
 templar-client = { path = "crates/templar-client" }
 templar-hwdetect = { path = "crates/templar-hwdetect" }
-templar-file-index = { path = "crates/templar-file-index" }
+templar-file-index = { path = "crates/templar-file-index", default-features = false }
 templar-fanotify = { path = "crates/templar-fanotify" }
 templar-archive = { path = "crates/templar-archive" }
+templar-wallpaper = { path = "crates/templar-wallpaper", default-features = false }
+templar-effects = { path = "crates/templar-effects" }
 templar-comp-integration = { path = "compositor/templar-comp-integration" }
 templar-resourced = { path = "services/templar-resourced" }
 templar-filed = { path = "services/templar-filed" }
@@ -85,15 +94,13 @@ libc = "0.2"
 parking_lot = "0.12"
 # Dev-tool only (`cargo xtask check-interface-signatures`): no service links it.
 quick-xml = "0.41"
-# The shell's toolkit and the compositor's own chrome renderer, from the user's pixelkit
-# workspace. `pixelkit-raster` and `pixelkit-text` have no dependencies of their own, which is
-# what makes them safe to link into the compositor's render thread; only `pixelkit-shell` touches
-# winit, so the compositor never sees it.
+# First-party toolkit adapters. Raster/text/shell/ui are window-host independent; only
+# pixelkit-windowing links winit/softbuffer. The compositor may use pure UI primitives without
+# pulling a second event loop or host window backend into its render thread.
 #
-# Path dependencies because pixelkit has no git remote yet. Before this is packaged, they must
-# become git dependencies pinned by revision (ADR-0009's vendored source package cannot reach a
-# sibling directory outside the repository) — a one-line change per manifest, tracked as a
-# release blocker rather than a design question.
+# Owner-supplied paths retain their real source layout. Production/source-package
+# preparation closes exact content and both locked graphs with the existing local
+# source archive tool (see CONTRIBUTING.md); no public origin/pin is invented.
 pixelkit-raster = { path = "../pixelkit/crates/pixelkit-raster" }
 pixelkit-text = { path = "../pixelkit/crates/pixelkit-text" }
 pixelkit-ui = { path = "../pixelkit/crates/pixelkit-ui" }
@@ -103,8 +110,10 @@ proptest = "1"
 png = "0.17"
 rusqlite = { version = "0.40", features = ["bundled"] }
 sd-notify = "0.5"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+sha2 = "0.10"
+zeroize = "1.8"
 thiserror = "2"
 tempfile = "3"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
@@ -112,7 +121,7 @@ toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
-uuid = { version = "1", features = ["serde", "v4"] }
+uuid = { version = "1", features = ["serde", "v4", "v5"] }
 zbus = { version = "5", default-features = false, features = ["tokio", "p2p"] }
 zbus_systemd = { version = "0.26000", default-features = false, features = ["systemd1", "timedate1", "zbus-async-tokio"] }
 

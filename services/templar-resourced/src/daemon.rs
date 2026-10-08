@@ -26,7 +26,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use templar_types::{InstanceId, dbus::resources as names};
+use templar_types::{ResourceId, dbus::resources as names};
 use zbus::object_server::SignalEmitter;
 
 /// Filesystem roots for one tick — always overridable, never hard-coded past this point (rule:
@@ -35,6 +35,7 @@ use zbus::object_server::SignalEmitter;
 pub struct TickPaths {
     pub proc_root: PathBuf,
     pub app_slice: PathBuf,
+    pub background_slice: PathBuf,
     pub session_slice: PathBuf,
     pub drm_root: PathBuf,
     pub kmsg_path: PathBuf,
@@ -45,6 +46,7 @@ impl TickPaths {
         Self {
             proc_root: PathBuf::from("/proc"),
             app_slice: scan::user_app_slice(uid),
+            background_slice: scan::user_app_slice(uid).with_file_name("background.slice"),
             session_slice: scan::user_session_slice(uid),
             drm_root: PathBuf::from("/sys/class/drm"),
             kmsg_path: PathBuf::from("/dev/kmsg"),
@@ -56,11 +58,13 @@ impl TickPaths {
 #[derive(Debug)]
 pub struct TickContext {
     governor: Governor,
-    managed: HashMap<InstanceId, ManagedInstance>,
+    managed: HashMap<ResourceId, ManagedInstance>,
     gpu_watcher: GpuResetWatcher,
     kmsg_watcher: KmsgWatcher,
     started_at: Instant,
     paths: TickPaths,
+    published_targets: HashSet<ResourceId>,
+    has_published_targets: bool,
     /// Why the loop is awake for this tick. Set by [`run_loop`] before each [`tick`] rather than
     /// passed as an argument, so no policy code, test or replay caller changes shape.
     wakeup: crate::psi::Wakeup,
@@ -75,6 +79,8 @@ impl TickContext {
             kmsg_watcher: KmsgWatcher::open(&paths.kmsg_path),
             started_at: Instant::now(),
             paths,
+            published_targets: HashSet::new(),
+            has_published_targets: false,
             wakeup: crate::psi::Wakeup::default(),
         }
     }
@@ -94,7 +100,7 @@ impl TickContext {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActionOutcome {
     pub kind: &'static str,
-    pub instance_id: InstanceId,
+    pub instance_id: ResourceId,
     pub applied: bool,
     pub reason: String,
 }
@@ -104,6 +110,7 @@ pub struct ActionOutcome {
 pub struct TickOutcome {
     pub level: PressureLevel,
     pub level_changed: bool,
+    pub targets_changed: bool,
     pub report: Report,
     pub actions: Vec<ActionOutcome>,
     pub stalls: Vec<Stall>,
@@ -126,12 +133,12 @@ pub fn tick(ctx: &mut TickContext, shared: &SharedState, now: Instant) -> TickOu
         .tick_level(available, memory_psi.some.avg10, memory_psi.full.avg10);
     let level_changed = level != previous_level;
 
-    // Protect the interface explicitly (planning doc 01 §5): best-effort, every tick, so a unit
-    // that starts after `templar-resourced` still gets protected on the next pass.
-    protect::apply(&ctx.paths.session_slice);
+    // Observe-only establishes no new kernel controls. Later stages protect session units,
+    // including ones that appeared after the previous tick.
+    if stage != Stage::ObserveOnly { protect::apply(&ctx.paths.session_slice); }
 
     apply_pending_forgets(ctx, shared);
-    let discovered = register_and_reap(ctx, shared, now);
+    let discovered = register_and_reap(ctx, shared, now, stage);
     let (samples, instance_reports) = build_samples(ctx, shared, &discovered, now);
 
     // The plan, not just its actions: the reasons and the expected relief are what make a
@@ -172,6 +179,12 @@ pub fn tick(ctx: &mut TickContext, shared: &SharedState, now: Instant) -> TickOu
         global_io_psi: io_psi,
         instances: instance_reports,
     };
+    let targets_changed = !ctx.has_published_targets
+        || ctx.published_targets.len() != report.instances.len()
+        || report.instances.iter().any(|target| !ctx.published_targets.contains(&target.instance_id));
+    ctx.published_targets.clear();
+    ctx.published_targets.extend(report.instances.iter().map(|target| target.instance_id));
+    ctx.has_published_targets = true;
     *shared.report.write() = Some(report.clone());
 
     record_trace(shared, &report, level_changed, victim, &actions, ctx.wakeup);
@@ -179,6 +192,7 @@ pub fn tick(ctx: &mut TickContext, shared: &SharedState, now: Instant) -> TickOu
     TickOutcome {
         level,
         level_changed,
+        targets_changed,
         report,
         actions,
         stalls,
@@ -186,7 +200,7 @@ pub fn tick(ctx: &mut TickContext, shared: &SharedState, now: Instant) -> TickOu
 }
 
 fn apply_pending_forgets(ctx: &mut TickContext, shared: &SharedState) {
-    let forgotten: HashSet<InstanceId> = std::mem::take(&mut shared.pending_forgets.lock());
+    let forgotten: HashSet<ResourceId> = std::mem::take(&mut shared.pending_forgets.lock());
     for id in forgotten {
         if let Some(managed) = ctx.managed.remove(&id)
             && managed.active_override.is_some()
@@ -200,15 +214,19 @@ fn apply_pending_forgets(ctx: &mut TickContext, shared: &SharedState) {
     }
 }
 
-/// Scan `app.slice`, register newly-seen instances (applying `memory.oom.group=1` once each) and
-/// reap ones whose cgroup is gone. Returns the freshly discovered set the rest of the tick works
-/// from. A failed scan keeps the previous managed set untouched rather than reaping everyone.
+/// Scan `app.slice`, register newly-seen instances and reap vanished cgroups.
+/// Enforcing stages apply `memory.oom.group=1` once; ObserveOnly never writes it.
+/// A failed scan keeps the previous managed set untouched rather than reaping everyone.
 fn register_and_reap(
     ctx: &mut TickContext,
     shared: &SharedState,
     now: Instant,
+    stage: Stage,
 ) -> Vec<scan::DiscoveredInstance> {
-    let (discovered, scan_ok) = match scan::discover(&ctx.paths.app_slice) {
+    let (discovered, scan_ok) = match scan::discover(&ctx.paths.app_slice).and_then(|mut applications| {
+        applications.extend(scan::discover(&ctx.paths.background_slice)?);
+        Ok(applications)
+    }) {
         Ok(list) => (list, true),
         Err(error) => {
             tracing::warn!(%error, "app.slice scan failed; keeping the previous managed set");
@@ -218,9 +236,9 @@ fn register_and_reap(
 
     for instance in &discovered {
         let managed = ctx.managed.entry(instance.instance_id).or_insert_with(|| {
-            ManagedInstance::new(instance.app_id.clone(), instance.cgroup.clone(), now)
+            ManagedInstance::new(instance.identity.clone(), instance.cgroup.clone(), now)
         });
-        if !managed.oom_group_applied {
+        if stage != Stage::ObserveOnly && !managed.oom_group_applied {
             // Whole-workload termination if the kernel OOM killer ever fires in this cgroup,
             // rather than leaving helper-process wreckage behind (planning doc 02 §5).
             match managed.cgroup.set_group_oom(true) {
@@ -233,14 +251,14 @@ fn register_and_reap(
     }
 
     if scan_ok {
-        let discovered_ids: HashSet<InstanceId> = discovered
+        let discovered_ids: HashSet<ResourceId> = discovered
             .iter()
             .map(|instance| instance.instance_id)
             .collect();
         ctx.managed.retain(|id, managed| {
             let keep = discovered_ids.contains(id);
             if !keep {
-                tracing::debug!(instance_id = %id, app_id = %managed.app_id, "instance departed");
+                tracing::debug!(resource_id = %id, identity = %managed.metadata.identity, "resource departed");
                 shared.enrichment.write().remove(id);
             }
             keep
@@ -291,6 +309,11 @@ fn build_samples(
             .and_then(|text| psi::parse_psi(&text).ok())
             .map_or(0.0, |psi| psi.full.avg10);
         let enrichment = shared.enrichment_for(instance.instance_id);
+        let enrichment = if matches!(instance.identity,
+            templar_types::ResourceIdentity::Workload { class: templar_types::WorkloadClass::BackgroundCompute, .. })
+            && !enrichment.window_state_observed {
+                crate::state::Enrichment { visible: false, ..enrichment }
+            } else { enrichment };
 
         // The claim expires. Until something reports the transition back to saved, an
         // unbounded claim would excuse an application from containment for the rest of the
@@ -322,7 +345,7 @@ fn build_samples(
         let breakdown = crate::policy::victim_score_breakdown(&sample, &weights);
         instance_reports.push(InstanceReport {
             instance_id: instance.instance_id,
-            app_id: instance.app_id.clone(),
+            metadata: managed.metadata.clone(),
             memory_current_bytes: current,
             memory_growth_bytes_per_second: growth,
             full_psi_avg10,
@@ -365,7 +388,7 @@ fn apply_decided_actions(
         let app_id = ctx
             .managed
             .get(&action.instance_id())
-            .map(|m| m.app_id.clone());
+            .map(|m| m.metadata.clone());
         let applied = match executor::apply_action(&mut ctx.managed, action, stage) {
             Ok(applied) => applied,
             Err(error) => {
@@ -377,7 +400,7 @@ fn apply_decided_actions(
             kind: action.kind(),
             instance_id: action.instance_id(),
             applied,
-            reason: action_reason(action, applied, stage, app_id.as_ref()),
+            reason: action_reason(action, applied, stage, app_id.as_ref().map(|metadata| &metadata.identity)),
         });
     }
     actions
@@ -397,7 +420,7 @@ fn record_trace(
     shared: &SharedState,
     report: &Report,
     level_changed: bool,
-    victim: Option<InstanceId>,
+    victim: Option<ResourceId>,
     actions: &[ActionOutcome],
     wakeup: crate::psi::Wakeup,
 ) {
@@ -421,7 +444,8 @@ fn record_trace(
             .iter()
             .map(|instance| InstanceTrace {
                 instance_id: instance.instance_id,
-                app_id: instance.app_id.to_string(),
+                app_id: instance.metadata.identity.application().map(ToString::to_string).unwrap_or_default(),
+                metadata: Some(instance.metadata.clone()),
                 memory_current_bytes: instance.memory_current_bytes,
                 memory_growth_bytes_per_second: instance.memory_growth_bytes_per_second,
                 full_psi_avg10: instance.full_psi_avg10,
@@ -456,7 +480,7 @@ fn action_reason(
     action: &Action,
     applied: bool,
     stage: Stage,
-    app_id: Option<&templar_types::AppId>,
+    app_id: Option<&templar_types::ResourceIdentity>,
 ) -> String {
     let subject = app_id.map_or_else(|| action.instance_id().to_string(), ToString::to_string);
 
@@ -540,9 +564,18 @@ pub fn run_once() -> Result<()> {
         level = %outcome.level,
         instances = outcome.report.instances.len(),
         actions = outcome.actions.len(),
+        mem_available_mib = ?available_mib(outcome.report.mem_available_bytes),
+        mem_some_avg10 = outcome.report.global_memory_psi.some.avg10,
+        mem_full_avg10 = outcome.report.global_memory_psi.full.avg10,
         "tick complete"
     );
     Ok(())
+}
+
+/// MiB for the journal line, or `None` when `/proc` was unreadable: `tick` reads that case as
+/// `u64::MAX` ("plenty"), which must stay visibly unknown rather than print as petabytes.
+fn available_mib(bytes: u64) -> Option<u64> {
+    (bytes != u64::MAX).then_some(bytes / (1024 * 1024))
 }
 
 /// How long the loop sleeps when nothing is under pressure.
@@ -617,8 +650,11 @@ pub fn run_loop(
         ctx.note_wakeup(wakeup);
         let outcome = tick(&mut ctx, &shared, Instant::now());
 
+        if outcome.targets_changed {
+            outbox.send(SignalEvent::TargetsChanged);
+        }
         if outcome.level_changed {
-            let report_json = serde_json::to_string(&outcome.report).unwrap_or_default();
+            let report_json = outcome.report.applications_json().unwrap_or_default();
             outbox.send(SignalEvent::PressureChanged {
                 level: outcome.level.to_string(),
                 report_json,
@@ -641,11 +677,16 @@ pub fn run_loop(
             });
         }
 
+        // The numbers behind the level, not just the level: a journal that says only
+        // `level=severe` cannot show why, and traces.jsonl is not where triage starts.
         tracing::info!(
             level = %outcome.level,
             instances = ctx.managed_count(),
             actions = outcome.actions.len(),
             wakeup = wakeup.as_str(),
+            mem_available_mib = ?available_mib(outcome.report.mem_available_bytes),
+            mem_some_avg10 = outcome.report.global_memory_psi.some.avg10,
+            mem_full_avg10 = outcome.report.global_memory_psi.full.avg10,
             "tick"
         );
 
@@ -661,6 +702,7 @@ pub fn run_loop(
 /// A signal decided by the loop thread, crossing to the tokio task that actually emits it.
 #[derive(Debug)]
 pub enum SignalEvent {
+    TargetsChanged,
     PressureChanged {
         level: String,
         report_json: String,
@@ -765,6 +807,9 @@ impl SignalOutbox {
             self.pending
                 .retain(|queued| !matches!(queued, SignalEvent::PressureChanged { .. }));
         }
+        if matches!(event, SignalEvent::TargetsChanged) {
+            self.pending.retain(|queued| !matches!(queued, SignalEvent::TargetsChanged));
+        }
         self.pending.push_back(event);
 
         while self.pending.len() > SIGNAL_QUEUE_BOUND {
@@ -789,6 +834,7 @@ impl SignalOutbox {
 
 async fn dispatch_signal(emitter: &SignalEmitter<'static>, event: SignalEvent) -> zbus::Result<()> {
     match event {
+        SignalEvent::TargetsChanged => ResourcesApi::targets_changed(emitter).await,
         SignalEvent::PressureChanged { level, report_json } => {
             ResourcesApi::pressure_changed(emitter, level, report_json).await
         }
@@ -1057,6 +1103,7 @@ mod tests {
             TickPaths {
                 proc_root: self.dir.join("proc"),
                 app_slice: self.dir.join("app.slice"),
+                background_slice: self.dir.join("background.slice"),
                 session_slice: self.dir.join("session.slice"),
                 drm_root: self.dir.join("drm"),
                 kmsg_path: self.dir.join("kmsg-missing"),
@@ -1085,8 +1132,8 @@ mod tests {
             .unwrap();
         }
 
-        fn add_app_instance(&self, app: &AppId, id: InstanceId, memory_bytes: u64) {
-            let unit_dir = self.dir.join("app.slice").join(unit::unit_name(app, id));
+        fn add_app_instance(&self, app: &AppId, id: ResourceId, memory_bytes: u64) {
+            let unit_dir = self.dir.join("app.slice").join(unit::unit_name(app, templar_types::InstanceId::from_uuid(id.uuid())));
             fs::create_dir_all(&unit_dir).unwrap();
             fs::write(unit_dir.join("memory.current"), memory_bytes.to_string()).unwrap();
             fs::write(
@@ -1123,14 +1170,22 @@ mod tests {
         assert_eq!(outcome.level, PressureLevel::Normal);
         assert!(outcome.report.instances.is_empty());
         assert!(outcome.actions.is_empty());
+        // Parsed KiB must reach the report as bytes, not the unknown-memory sentinel.
+        assert_eq!(outcome.report.mem_available_bytes, 16 * 1024 * 1024 * 1024);
     }
 
     #[test]
-    fn a_discovered_instance_gets_oom_group_applied_and_is_reaped_once_gone() {
+    fn the_journal_line_reports_unknown_memory_rather_than_petabytes() {
+        assert_eq!(available_mib(16 * 1024 * 1024 * 1024), Some(16 * 1024));
+        assert_eq!(available_mib(u64::MAX), None);
+    }
+
+    #[test]
+    fn a_discovered_instance_is_reaped_once_its_cgroup_is_gone() {
         let fixture = Fixture::new("register-reap");
         fixture.write_proc(16 * 1024 * 1024, 0.0);
         let app: AppId = "org.templaros.Test".parse().unwrap();
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         fixture.add_app_instance(&app, id, 100 * 1024 * 1024);
 
         let mut ctx = TickContext::new(GovernorConfig::default(), fixture.paths());
@@ -1138,22 +1193,13 @@ mod tests {
         let outcome = tick(&mut ctx, &shared, Instant::now());
         assert_eq!(outcome.report.instances.len(), 1);
         assert_eq!(ctx.managed_count(), 1);
-        let oom_group = fs::read_to_string(
-            fixture
-                .dir
-                .join("app.slice")
-                .join(unit::unit_name(&app, id))
-                .join("memory.oom.group"),
-        )
-        .unwrap();
-        assert_eq!(oom_group.trim(), "1");
 
         // The instance's cgroup disappears (unit exited) — the next tick must reap it.
         fs::remove_dir_all(
             fixture
                 .dir
                 .join("app.slice")
-                .join(unit::unit_name(&app, id)),
+                .join(unit::unit_name(&app, templar_types::InstanceId::from_uuid(id.uuid()))),
         )
         .unwrap();
         let outcome = tick(&mut ctx, &shared, Instant::now());
@@ -1167,7 +1213,7 @@ mod tests {
         // Below the default 3 GiB reserve: Severe.
         fixture.write_proc(2 * 1024 * 1024, 0.0); // 2 GiB available: between the 1 GiB critical and 3 GiB reserve => Severe.
         let app: AppId = "org.templaros.Hog".parse().unwrap();
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         fixture.add_app_instance(&app, id, 2 * crate::policy::GIB);
 
         let mut ctx = TickContext::new(GovernorConfig::default(), fixture.paths());
@@ -1190,7 +1236,7 @@ mod tests {
         let fixture = Fixture::new("throttle-applies");
         fixture.write_proc(2 * 1024 * 1024, 0.0); // 2 GiB available: between the 1 GiB critical and 3 GiB reserve => Severe.
         let app: AppId = "org.templaros.Hog".parse().unwrap();
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         fixture.add_app_instance(&app, id, 2 * crate::policy::GIB);
 
         let mut ctx = TickContext::new(GovernorConfig::default(), fixture.paths());
@@ -1208,7 +1254,7 @@ mod tests {
             fixture
                 .dir
                 .join("app.slice")
-                .join(unit::unit_name(&app, id))
+                .join(unit::unit_name(&app, templar_types::InstanceId::from_uuid(id.uuid())))
                 .join("memory.high"),
         )
         .unwrap();
@@ -1220,7 +1266,7 @@ mod tests {
         let fixture = Fixture::new("forget");
         fixture.write_proc(16 * 1024 * 1024, 0.0);
         let app: AppId = "org.templaros.Test".parse().unwrap();
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         fixture.add_app_instance(&app, id, 10 * 1024 * 1024);
 
         let mut ctx = TickContext::new(GovernorConfig::default(), fixture.paths());
@@ -1244,7 +1290,7 @@ mod tests {
         let fixture = Fixture::new("explain");
         fixture.write_proc(2 * 1024 * 1024, 0.0); // 2 GiB available: between the 1 GiB critical and 3 GiB reserve => Severe.
         let app: AppId = "org.templaros.Hog".parse().unwrap();
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         fixture.add_app_instance(&app, id, 2 * crate::policy::GIB);
 
         let mut ctx = TickContext::new(GovernorConfig::default(), fixture.paths());
@@ -1268,7 +1314,7 @@ mod tests {
         let fixture = Fixture::new("observe-only-no-write");
         fixture.write_proc(16 * 1024 * 1024, 0.0); // plenty available => Normal.
         let app: AppId = "org.templaros.Idle".parse().unwrap();
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         fixture.add_app_instance(&app, id, 50 * 1024 * 1024);
 
         let mut ctx = TickContext::new(GovernorConfig::default(), fixture.paths());
@@ -1278,7 +1324,7 @@ mod tests {
         let high_path = fixture
             .dir
             .join("app.slice")
-            .join(unit::unit_name(&app, id))
+            .join(unit::unit_name(&app, templar_types::InstanceId::from_uuid(id.uuid())))
             .join("memory.high");
         let before = fs::read_to_string(&high_path).unwrap();
 
@@ -1307,7 +1353,7 @@ mod tests {
         let fixture = Fixture::new("normal-idle-no-trace");
         fixture.write_proc(16 * 1024 * 1024, 0.0);
         let app: AppId = "org.templaros.Idle".parse().unwrap();
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         fixture.add_app_instance(&app, id, 50 * 1024 * 1024);
 
         let mut ctx = TickContext::new(GovernorConfig::default(), fixture.paths());
@@ -1328,7 +1374,7 @@ mod tests {
     fn restoring_a_real_override_still_writes_and_is_traced() {
         let fixture = Fixture::new("restore-active-override");
         let app: AppId = "org.templaros.Hog".parse().unwrap();
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         fixture.add_app_instance(&app, id, 2 * crate::policy::GIB);
 
         let mut ctx = TickContext::new(GovernorConfig::default(), fixture.paths());
@@ -1341,7 +1387,7 @@ mod tests {
         let high_path = fixture
             .dir
             .join("app.slice")
-            .join(unit::unit_name(&app, id))
+            .join(unit::unit_name(&app, templar_types::InstanceId::from_uuid(id.uuid())))
             .join("memory.high");
         assert_ne!(fs::read_to_string(&high_path).unwrap().trim(), "0");
 
@@ -1373,7 +1419,7 @@ mod tests {
     fn observe_only_still_traces_the_end_of_an_episode_though_nothing_was_ever_applied() {
         let fixture = Fixture::new("observe-only-episode-end");
         let app: AppId = "org.templaros.Hog".parse().unwrap();
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         fixture.add_app_instance(&app, id, 2 * crate::policy::GIB);
 
         let mut ctx = TickContext::new(GovernorConfig::default(), fixture.paths());

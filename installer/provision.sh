@@ -23,6 +23,7 @@ if [ -f "$repo/distro/deploy/layout.toml" ]; then
     data_os_release="$repo/distro/branding/os-release"
     data_flatpak_refs="$repo/distro/seeds/flatpak-refs.list"
     data_base="$repo/distro/base.toml"
+    data_state_helper="$repo/installer/deployment-layout.py"
 else
     # The live medium is itself a TemplarOS: templaros-hostd ships the GRUB stub and the identity is
     # the running system's own, so only the layout needs a home of its own (templaros-cli).
@@ -31,6 +32,7 @@ else
     data_os_release=/usr/lib/os-release
     data_flatpak_refs=/usr/share/templaros/flatpak-refs.list
     data_base=/usr/share/templaros/base.toml
+    data_state_helper=/usr/libexec/templaros-deployment-layout
 fi
 
 # --- C1: package selection (D1 owns these names; they are variables so a rename is one edit) -----
@@ -97,6 +99,7 @@ data_arg=""
 format_data=0
 reuse=0
 resume=0
+read_only=0
 inspect=0
 plan_out=""
 plan_in=""
@@ -155,6 +158,8 @@ usage: provision.sh --image PATH [--apply] [options]
   --nvidia PACKAGE    the NVIDIA metapackage variant (default: $TEMPLAROS_NVIDIA).
   --set ID            install a specific TemplarOS build set instead of the `current` marker.
   --layout PATH       an alternative layout declaration (testing).
+  --read-only         opt-in sealed System root with narrow persistent State binds and owned
+                      password maintenance. Default remains writable until boot/recovery proof.
   --data PART         an independent data filesystem (layout [data]). Reused, never formatted,
                       unless --format-data says otherwise.
   --format-data       make a new filesystem on --data. The explicit, destructive opt-in.
@@ -194,6 +199,7 @@ while [ $# -gt 0 ]; do
         --nvidia) TEMPLAROS_NVIDIA="${2:?--nvidia needs a package}"; shift 2 ;;
         --set) DEVREPO_MARKER="${2:?--set needs an id}"; shift 2 ;;
         --layout) layout="${2:?--layout needs a path}"; shift 2 ;;
+        --read-only) read_only=1; shift ;;
         --data) data_arg="${2:?--data needs a partition}"; shift 2 ;;
         --format-data) format_data=1; shift ;;
         --reuse) reuse=1; shift ;;
@@ -250,6 +256,13 @@ DATA_FORMAT="$(layout_value data format)"
 DATA_LABEL="$(layout_value data label)"
 DATA_MOUNT="$(layout_value data mount)"
 DATA_MOUNT_OPTIONS="$(layout_value data mount_options)"
+STATE_STORE="$(layout_value state store_mount)"
+DEPLOYMENT_MOUNT="$(layout_value deployment mount)"
+DEPLOYMENT_SUBVOLUME="$(python3 -c 'import sys,tomllib; print(tomllib.load(open(sys.argv[1],"rb"))["deployment"]["subvolume_template"].removesuffix("/{id}"))' "$layout")"
+[ -f "$data_state_helper" ] || die "missing owned deployment layout helper: $data_state_helper"
+layout_flags=()
+[ "$read_only" = 0 ] || layout_flags+=(--read-only)
+python3 "$data_state_helper" --layout "$layout" --bindings "${layout_flags[@]}" >/dev/null
 for required in ESP_FORMAT ESP_LABEL ROOT_FORMAT ROOT_LABEL SUBVOLUMES CMDLINE_TEMPLATE; do
     [ -n "${!required}" ] || die "$layout does not declare $required"
 done
@@ -262,6 +275,7 @@ if [ -n "$plan_in" ]; then
 fi
 esp_dir="${ESP_DIR_TEMPLATE/\{id\}/$deployment_id}"
 cmdline="${CMDLINE_TEMPLATE/\{id\}/$deployment_id}"
+[ "$read_only" = 0 ] || cmdline="${cmdline/ rw / ro }"
 
 # --- Refusals ------------------------------------------------------------------------------------
 # Everything below this line is destructive. These are the conditions under which it must not run,
@@ -528,6 +542,7 @@ state_file=/var/lib/templaros/provision/state
 verdict=""
 verdict_reason=""
 state_phase=""
+legacy_layout=0
 state_deployment=""
 inspect_target() {
     local esp_pl root_pl rtype rlabel ruuid esp_pu top state="" legacy_uuid="" populated=0 known_good=0
@@ -560,12 +575,17 @@ inspect_target() {
     top="$(mktemp -d "${TMPDIR:-/tmp}/templaros-inspect.XXXXXX")"
     mount -o ro,subvolid=5 "$root_arg" "$top" \
         || { rmdir "$top"; die "cannot mount $root_arg read-only to read its install state"; }
-    if [ -f "$top/@var${state_file#/var}" ]; then state="$(cat "$top/@var${state_file#/var}")"; fi
+    if [ -f "$top/@var$state_file" ]; then
+        state="$(cat "$top/@var$state_file")"
+    elif [ -f "$top/@var${state_file#/var}" ]; then
+        state="$(cat "$top/@var${state_file#/var}")"
+        legacy_layout=1
+    fi
     if [ -f "$top/@/etc/templaros/install.toml" ]; then
         legacy_uuid="$(sed -n 's/^root_uuid = "\(.*\)"$/\1/p' "$top/@/etc/templaros/install.toml")"
     fi
     if [ -d "$top/@" ] && [ -n "$(find "$top/@" -mindepth 1 -maxdepth 1 -print -quit)" ]; then populated=1; fi
-    if [ -f "$top/@var/lib/templaros/hostd/grub/known-good" ]; then known_good=1; fi
+    if [ -f "$top/@var/var/lib/templaros/hostd/grub/known-good" ] || [ -f "$top/@var/lib/templaros/hostd/grub/known-good" ]; then known_good=1; fi
     umount "$top" && rmdir "$top"
 
     if [ -n "$state" ]; then
@@ -634,6 +654,7 @@ if [ "$inspect" = 1 ] || [ "$resume" = 1 ]; then
     fi
     [ "$verdict" = resumable ] \
         || die "--resume refused: $esp_arg + $root_arg is $verdict — $verdict_reason"
+    [ "$legacy_layout" = 0 ] || die "legacy blanket-/var resume requires reviewed offline package-metadata/state migration; no target writes were performed"
     # The deployment the bootstrapped target was begun as keeps its name: its ESP directory and
     # its command line are derived from it.
     [ -n "$plan_in" ] || deployment_id="$state_deployment"
@@ -641,6 +662,7 @@ if [ "$inspect" = 1 ] || [ "$resume" = 1 ]; then
         || die "the plan is for deployment $deployment_id, and the target records $state_deployment"
     esp_dir="${ESP_DIR_TEMPLATE/\{id\}/$deployment_id}"
     cmdline="${CMDLINE_TEMPLATE/\{id\}/$deployment_id}"
+    [ "$read_only" = 0 ] || cmdline="${cmdline/ rw / ro }"
 fi
 
 real_disk=0
@@ -723,6 +745,7 @@ request_state() {
         "mirror=$UBUNTU_MIRROR" "security_mirror=$UBUNTU_SECURITY_MIRROR" \
         "components=$UBUNTU_COMPONENTS" "bootstrap_backend=$bootstrap_backend" \
         "layout_sha256=$(sha256sum "$layout" | awk '{print $1}')" \
+        "read_only=$read_only" "layout_helper_sha256=$(sha256sum "$data_state_helper" | awk '{print $1}')" \
         "provisioner_sha256=$(sha256sum "$0" | awk '{print $1}')" \
         "archive=$(canonical_device "$DEVREPO_ROOT")" "archive_set=$selected_set" \
         "archive_digest=$archive_digest" "mount=$mnt"
@@ -851,17 +874,17 @@ failure_report() { # status
 # The install's own record of how far it got (see inspect_target). Written to a temporary name and
 # renamed, so an interrupted write leaves the previous phase rather than half a file.
 write_state() { # phase
-    local ruuid epu
+    local ruuid epu record_path="$mnt$STATE_STORE$state_file"
     state_phase="$1"
-    note "install state: $1 (recorded in $mnt$state_file)"
+    note "install state: $1 (recorded in $record_path)"
     [ "$apply" = 1 ] || return 0
     ruuid="$(uuid_of "$root_part")"; epu="$(partuuid_of "$esp_part")"
     [ -n "$ruuid" ] && [ -n "$epu" ] || die "cannot read the root UUID or ESP PARTUUID to record the install state"
-    mkdir -p "$mnt${state_file%/*}"
+    mkdir -p "${record_path%/*}"
     printf 'version=1\nphase=%s\nroot_uuid=%s\nesp_partuuid=%s\ndeployment=%s\narchive_set=%s\nsuite=%s\nmirror=%s\nusername=%s\nrecorded=%s\n' \
         "$1" "$ruuid" "$epu" "$deployment_id" "$selected_set" "$UBUNTU_SUITE" "$UBUNTU_MIRROR" "$username" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        > "$mnt$state_file.new"
-    mv "$mnt$state_file.new" "$mnt$state_file"
+        > "$record_path.new"
+    mv "$record_path.new" "$record_path"
 }
 
 write_plan() {
@@ -1146,9 +1169,9 @@ for subvol in $SUBVOLUMES; do
     case "$subvol" in
         /@) continue ;;
         /@home) dir=home ;;
-        /@var) dir=var ;;
+        /@var) dir="${STATE_STORE#/}" ;;
         /@snapshots) dir=.snapshots ;;
-        /@deployments) dir=.deployments ;;
+        "/$DEPLOYMENT_SUBVOLUME") dir="${DEPLOYMENT_MOUNT#/}" ;;
         *) dir="${subvol#/@}" ;;
     esac
     run mkdir -p "$mnt/$dir"
@@ -1221,9 +1244,9 @@ if [ "$apply" = 1 ]; then
             case "$subvol" in
                 /@) continue ;;
                 /@home) dir=/home ;;
-                /@var) dir=/var ;;
+                /@var) dir="$STATE_STORE" ;;
                 /@snapshots) dir=/.snapshots ;;
-                /@deployments) dir=/.deployments ;;
+                "/$DEPLOYMENT_SUBVOLUME") dir="$DEPLOYMENT_MOUNT" ;;
                 *) dir="/${subvol#/@}" ;;
             esac
             printf 'UUID=%s  %s  %s  %s,subvol=%s  0 0\n' \
@@ -1242,6 +1265,8 @@ if [ "$apply" = 1 ]; then
         printf '# absent means fall back to LABEL=%s, which is what every earlier install has.\n' "$ROOT_LABEL"
         printf 'root_uuid = "%s"\n' "$root_uuid"
         printf 'esp_partuuid = "%s"\n' "$esp_partuuid"
+        printf 'esp_uuid = "%s"\n' "$(uuid_of "$esp_part")"
+        printf 'read_only = %s\n' "$([ "$read_only" = 1 ] && echo true || echo false)"
         [ -n "$data_uuid" ] && printf 'data_uuid = "%s"\n' "$data_uuid"
     } > "$mnt/etc/templaros/install.toml"
 fi
@@ -1455,6 +1480,18 @@ if [ "$apply" = 1 ]; then
 fi
 run install -D -m 0755 "$data_grub_stub" "$mnt$GRUB_STUB"
 
+step "Prepare narrow persistent State; package metadata and credentials remain root-paired System"
+run python3 "$data_state_helper" --root "$mnt" --layout "$layout" "${layout_flags[@]}"
+while IFS=$'\t' read -r state_source state_target; do
+    mount_owned --bind "$mnt$state_source" "$mnt$state_target"
+done < <(python3 "$data_state_helper" --layout "$layout" --bindings "${layout_flags[@]}")
+if [ "$read_only" = 1 ]; then
+    GRUB_ENTRIES="$ESP_MOUNT/EFI/templaros/grub/templaros-entries.cfg"
+    run mkdir -p "$mnt$ESP_MOUNT/EFI/templaros/grub"
+    run grub-editenv "$mnt$ESP_MOUNT/EFI/templaros/grub/grubenv" create
+    run grub-editenv "$mnt$ESP_MOUNT/EFI/templaros/grub/grubenv" set "saved_entry=$deployment_id"
+fi
+
 step "Seed deployment $deployment_id"
 note "kernel and initramfs are copied into the ESP directory hostd owns, so Ubuntu's initramfs"
 note "hooks cannot rewrite this deployment's boot files: $esp_dir"
@@ -1479,7 +1516,14 @@ note "writing $GRUB_ENTRIES, in the exact shape templar-hostd regenerates it:"
 note "    menuentry 'TemplarOS ($deployment_id) — known good' --id '$deployment_id'"
 note "    linux $esp_dir/vmlinuz $cmdline"
 if [ "$apply" = 1 ]; then
-    printf '%s\n@\n' "$deployment_id" > "$mnt/var/lib/templaros/hostd/grub/known-good"
+    printf '%s\n@\n%s\n' "$deployment_id" "$([ "$read_only" = 1 ] && echo true || echo false)" > "$mnt/var/lib/templaros/hostd/grub/known-good"
+    python3 - "$mnt/var/lib/templaros/hostd/deployments.json" "$deployment_id" "$esp_dir" "$read_only" <<'PY'
+import json,os,sys
+path,id,esp,readonly=sys.argv[1:]
+deployment={"id":id,"subvolume":"@","esp_dir":esp,"kernel":None,"nvidia_modules":None,"known_good":True,"read_only":readonly=="1"}
+with open(path,"w") as stream: json.dump({"schema":1,"deployments":[deployment],"current":id,"previous":None,"known_good":id},stream)
+os.chmod(path,0o600)
+PY
     mkdir -p "$mnt$(dirname "$GRUB_ENTRIES")"
     cat > "$mnt$GRUB_ENTRIES" <<EOF
 # GENERATED by installer/provision.sh — templar-hostd rewrites this file from here on.
@@ -1498,6 +1542,12 @@ note "then, after the first real boot: templar doctor --hardware, and installer/
 note "Secure Boot, module-trust and rollback checks that only a person at the machine can make."
 
 write_state complete
+if [ "$read_only" = 1 ]; then
+    step "Seal the fully installed and boot-artifact-complete System root"
+    run sync -f "$mnt"
+    run sync -f "$mnt$ESP_MOUNT"
+    run btrfs property set -ts "$mnt" ro true
+fi
 
 if [ "$apply" = 1 ]; then
     step "Unmount"

@@ -246,7 +246,7 @@ fn draw_locations(ui: &mut Ui<'_>, inner: Rect, y: &mut i32, data: FilesData<'_>
             },
             Align::Centre,
         );
-        if ui.input.take_click(chip) {
+        if super::window::custom_control(ui, chip, label) {
             action = FilesAction::Open(pinned.location.clone());
         }
         x += width + gap;
@@ -309,7 +309,7 @@ fn draw_conditions(ui: &mut Ui<'_>, inner: Rect, y: &mut i32, data: FilesData<'_
             design::text_dim(),
             Align::Right,
         );
-        if ui.input.take_click(strip) {
+        if super::window::custom_control(ui, strip, drawer.name()) {
             // Downloads is a real directory and the pinned list knows where it is; the rest are
             // feeds and are their own location.
             action = data.sources.by_label(drawer.name()).map_or_else(
@@ -341,7 +341,7 @@ fn draw_conditions(ui: &mut Ui<'_>, inner: Rect, y: &mut i32, data: FilesData<'_
                 },
                 Align::Centre,
             );
-            if ui.input.take_click(control) {
+            if super::window::custom_control(ui, control, empty_label) {
                 action = FilesAction::Run("trash.empty");
             }
         }
@@ -386,7 +386,7 @@ fn draw_listing(ui: &mut Ui<'_>, inner: Rect, y: i32, data: FilesData<'_>) -> Fi
             if ui.input.hovering(strip) {
                 ui.painter.fill_rect(strip, design::accent_soft());
             }
-            if ui.input.take_click(strip) {
+            if super::window::custom_control(ui, strip, name) {
                 action = FilesAction::OpenRecent(
                     entry.path.clone(),
                     entry.mime.as_deref() == Some("inode/directory"),

@@ -6,10 +6,9 @@
 //! and wrong at the load boundary, where the two directions are not the same problem at all.
 //!
 //! **Older** is a problem this crate can solve: it knows what changed, so it can bring the
-//! document forward. [`DOCUMENT_MIGRATIONS`] is where those steps go. It is empty today, which is
-//! the honest state — nothing has changed yet — and the point of landing it empty is that the
-//! *first* format change should be a table entry rather than an argument about what to do with
-//! everyone's saved layout.
+//! document forward. [`DOCUMENT_MIGRATIONS`] is where those steps go. Version 2 gives the
+//! formerly ordinary Desktop folder its independent dock kind, retaining its tile identity
+//! and every location. Resolving the current XDG path remains a merge-time responsibility.
 //!
 //! **Newer** is a problem this crate cannot solve, and the only question is what it does about
 //! it. A document written by a build from the future is refused, the caller is told, and
@@ -53,11 +52,29 @@ impl fmt::Debug for DocumentMigration {
 
 /// Every step from an older document version to the current one, in order.
 ///
-/// Empty, and correctly so: `DOCUMENT_VERSION` is still 1 and every layout change so far has been
-/// an add-only merge-time migration in the shell, which needs no format change at all. This exists
-/// so that when a format change finally is unavoidable, it is one row here rather than a decision
-/// made under pressure about what to do with every saved layout on every machine.
-pub const DOCUMENT_MIGRATIONS: &[DocumentMigration] = &[];
+/// The first versioned step introduces the independent Desktop dock. Only the historic
+/// named Desktop tile is recognised here: arbitrary folders titled Desktop are not docks.
+pub const DOCUMENT_MIGRATIONS: &[DocumentMigration] = &[DocumentMigration {
+    from: 1,
+    to: 2,
+    summary: "Independent Desktop dock, retaining placement",
+    apply: migrate_desktop_dock,
+}];
+
+fn migrate_desktop_dock(value: &mut serde_json::Value) {
+    let Some(tiles) = value.get_mut("tiles").and_then(serde_json::Value::as_array_mut) else {
+        return;
+    };
+    for tile in tiles {
+        if tile.get("id").and_then(serde_json::Value::as_u64)
+            == Some(crate::TileId::for_key("folder:desktop").0)
+            && tile.pointer("/kind/kind").and_then(serde_json::Value::as_str) == Some("folder")
+        {
+            tile["kind"]["kind"] = "desktop-dock".into();
+            tile["kind"]["order"] = serde_json::json!([]);
+        }
+    }
+}
 
 /// Why a persisted document could not be read.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -223,9 +240,7 @@ mod tests {
 
     #[test]
     fn the_registry_is_a_chain_with_no_gaps_and_no_forks() {
-        // Vacuous today, and deliberately written now: the first migration to be added has to
-        // satisfy this on the day it is written rather than after someone notices two rows
-        // claiming to read the same version.
+        // Every registered migration must be a one-step, unambiguous forward chain.
         let mut seen = std::collections::BTreeSet::new();
         for migration in DOCUMENT_MIGRATIONS {
             assert_eq!(
@@ -258,8 +273,30 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_migrated_today_and_that_is_the_honest_state() {
-        assert!(DOCUMENT_MIGRATIONS.is_empty());
+    fn current_version_has_no_pending_migrations() {
         assert!(migrations_from(DOCUMENT_VERSION).is_empty());
+        assert_eq!(migrations_from(1), vec!["Independent Desktop dock, retaining placement"]);
+    }
+
+    #[test]
+    fn version_one_desktop_cutover_preserves_id_geometry_and_other_folders() {
+        use crate::{Cell, Located, Placement, Span, TileId, TileKind, folder_tile};
+        let mut doc = document();
+        let id = TileId::for_key("folder:desktop");
+        let at = Located { container: None, placement: Placement::new(Cell::new(1, 2), Span::new(3, 3)) };
+        doc.tiles.push(folder_tile(id, std::path::Path::new("/home/a/Bureau"), 8, 6));
+        let other = TileId(4);
+        doc.tiles.push(folder_tile(other, std::path::Path::new("/work/Desktop"), 8, 6));
+        doc.tiles.sort_by_key(|tile| tile.id);
+        doc.located.push((id, at));
+        doc.version = 1;
+        let migrated = load_document(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(migrated.version, DOCUMENT_VERSION);
+        assert_eq!(migrated.location(id), Some(at));
+        assert!(matches!(&migrated.tile(id).unwrap().kind, TileKind::DesktopDock { path, order }
+            if path == std::path::Path::new("/home/a/Bureau") && order.is_empty()));
+        assert!(matches!(&migrated.tile(other).unwrap().kind, TileKind::Folder { .. }));
+        assert_eq!(migrated.tiles.len(), doc.tiles.len());
+        assert_eq!(migrated.revision, doc.revision);
     }
 }

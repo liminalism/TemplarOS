@@ -28,16 +28,21 @@ orders windows *inside* a unit only.
 It is a pure function over `ShellToplevel` rather than a method on the service, because the
 compositor holds those records and the shell receives exactly the same ones: both sides run the
 same function on the same bytes. Recency is not recomputed anywhere — `ShellToplevel::mru_rank` is
-`WindowRecord::last_activated`, bumped in `WindowService::activate`, so `Alt+Tab`, the fan, the
-launcher's Enter and a chip's unshelve target cannot invent an order of their own.
+`WindowRecord::last_activated`, bumped in `WindowService::activate`, so `Alt+Tab`, the chip's row,
+the launcher's Enter and a chip's unshelve target cannot invent an order of their own.
 
-`ChipAction` decides what a chip does by how many windows are on screen: 0–1 activates, 2–4 fans
-out of the chip, more hands over to Taskfield. The bar is insufficient by design; a linear strip is
-intrinsically bad at thirty windows.
+`ChipAction` decides what a chip does: a unit of one window activates it (unparking it first); a
+unit of two or more opens a **row** of separate cards above the chip — on-screen windows first,
+then parked ones, at most `FAN_MAX` — unless more than `FAN_MAX` are on screen, which hands over to
+Taskfield. Parked windows count toward the row because a terminal put away by the drop-down chord
+is still one of that terminal's windows; they never push a chip to Taskfield, whose unit filter
+shows on-screen windows only. The row's cards sit side by side with a gap, each titled, never over
+each other — the earlier overlapping fan hid every card but the top one. The bar is insufficient by
+design; a linear strip is intrinsically bad at thirty windows.
 
 A chip is the application's icon, never a word: the name is a hover tooltip. A group, which is more
 than one application, wears its most recently activated member's icon beside its accent stripe, and each
-fan card falls back to its own window's icon until a capture arrives. An initial is drawn only when
+row card falls back to its own window's icon until a capture arrives. An initial is drawn only when
 no icon resolves at all — the lookup tries the desktop entry's `Icon=`, then the desktop file's own
 name, and is repeated with the manifest's hints once the application catalogue arrives.
 
@@ -45,8 +50,11 @@ name, and is repeated with the manifest's hints once the application catalogue a
 
 `Alt+Tab` walks `WindowService::alt_tab_order`: every mapped application window, parked ones
 included, most recently activated first — the same windows the island shows, so the two never
-disagree about what is open. The list is frozen at the first press; `Tab` only moves the selection
-in the compositor's HUD, and releasing the modifier activates it (unparking a parked window).
+disagree about what is open. The list is frozen at the first press; `Tab` only moves the selection,
+and releasing the modifier activates it (unparking a parked window). The shell draws the walk —
+icons and live previews — on its `Layer::Presentation` surface, which the compositor shows only
+while Taskfield or a walk is up (`WindowService::set_switch_walk`); with no visible shell surface
+the compositor's own text HUD draws instead.
 `Escape`, a click or any other chord cancels the walk without activating anything, and a window that
 closes mid-walk leaves the list. `` Alt+` `` is the same walk scoped to the focused window's unit.
 
@@ -92,5 +100,5 @@ every group as a section. Every one is a manifest declaration with a pointer rou
 (`crates/templar-types/src/action.rs`, `xtask check-actions`).
 
 See `compositor/COMPOSITOR.md` for the compositor's half of the contract,
-`interfaces/wayland/templar-shell-v1.xml` (manager v8) for the wire, and
+`interfaces/wayland/templar-shell-v2.xml` for the wire, and
 `docs/task-system-taskfield-island-peek.md` for the design this came from.

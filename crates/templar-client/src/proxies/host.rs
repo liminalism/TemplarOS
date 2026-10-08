@@ -139,3 +139,14 @@ pub trait HostSession {
     /// Report that the session's own startup sequence finished and a client frame was observed.
     fn report_session_healthy(&self) -> zbus::Result<()>;
 }
+
+#[proxy(
+    interface = "org.templaros.Host.Accounts1",
+    default_service = "org.templaros.Host",
+    default_path = "/org/templaros/Host"
+)]
+pub trait HostAccounts {
+    /// Atomically change the caller's own password across current and rollback roots.
+    /// A fully sealed memfd carries 1..1024 UTF-8 bytes; no plaintext enters logs or plans.
+    fn change_self_password(&self, sealed_secret_fd: zbus::zvariant::OwnedFd) -> zbus::Result<()>;
+}

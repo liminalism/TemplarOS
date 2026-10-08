@@ -26,8 +26,11 @@
      right now), not an error — and the governor may still terminate after the deadline. A D-Bus
      error means something else went wrong entirely.
 
-     The session daemon must verify the peer before trusting an answer: resolve the name's PID
-     to its cgroup, exactly as AppIdentity1 resolves a window. A bus name is a claim. -->
+     The session daemon resolves the claimed name to its unique owner, then verifies that
+     owner's PID against the broker/current-user-manager registered ControlGroup and instance,
+     exactly as AppIdentity1 resolves a window. Unknown/self-describing cgroups grant nothing.
+     The request is sent to the verified unique owner so a later well-known name handoff
+     cannot redirect it. A bus name is a claim. -->
 <node>
   <interface name="org.templaros.Checkpoint1">
     <method name="Request">

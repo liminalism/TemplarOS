@@ -21,12 +21,15 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    use std::io::IsTerminal as _;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "templar_files=info".into()),
         )
         .compact()
+        // No ANSI under the journal: journald stores coloured MESSAGE fields as byte arrays.
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
     let cli = Cli::parse();
     if cli.print {

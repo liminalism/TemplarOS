@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Displays
+Comment=Configure X11 display layout, modes and actual supported hardware borders
+Exec=templar-displays
+Icon=video-display
+Terminal=false
+Categories=Settings;HardwareSettings;
+StartupNotify=true

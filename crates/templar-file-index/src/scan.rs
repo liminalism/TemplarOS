@@ -39,7 +39,7 @@ fn walk(
     {
         // Depth is a budget like any other: it makes the pass incomplete rather than quietly
         // trimming the tree.
-        session.note_depth_limit();
+        session.set_limited(BudgetKind::Depth);
         return Ok(());
     }
 
@@ -127,14 +127,3 @@ fn device_of(metadata: &std::fs::Metadata) -> u64 {
     metadata.dev()
 }
 
-trait DepthLimit {
-    fn note_depth_limit(&mut self);
-}
-
-impl DepthLimit for ScanSession {
-    /// A depth budget bounds this branch, and makes the pass incomplete — but the rest of the
-    /// tree is still worth indexing, so it does not end the walk.
-    fn note_depth_limit(&mut self) {
-        self.set_limited(BudgetKind::Depth);
-    }
-}

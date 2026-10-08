@@ -1,42 +1,37 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <!-- Bus: org.templaros.Session. Path: /org/templaros/Session/Power.
-
-     The stored idle and lid policy for each power source (crates/templar-session-core/src/power.rs),
-     as a document to get, set and reset. Implemented in
-     services/templar-sessiond/src/apis/power.rs.
-
-     This records policy. One field of it is now enforced, and only one: `screen_off_after` is
-     read by templar-shell and relayed to the compositor over templar_shell_v1.set_idle_timeout, and
-     templar-comp turns the outputs off after that much idle time and back on at the next input
-     (compositor/templar-comp/src/idle.rs). The compositor is the only process in the session that
-     can see the seat go quiet, which is why the enforcement lives there and the policy lives
-     here.
-
-     Nothing else here is enforced. `dim_after` needs a backlight ramp through
-     org.templaros.Backlight1; `lock_after` needs a lock surface, and Session.Lifecycle1.Lock is
-     still a NotSupported stub; `suspend_after` and the two lid actions store an interval and an
-     intention and call neither logind nor upower. Those are deliberate remaining scope, and
-     saying so is better than describing an intended feature as though it were the code.
-
-     Battery state and brightness are NOT this interface: they are org.templaros.Battery1 and
-     org.templaros.Backlight1, hardware readings rather than stored policy. -->
+     Stored profiles are not effect confirmation. A single sessiond policy owner schedules
+     from compositor-owned idle elapsed/real activity serials and performs native SetIdleTimeout,
+     Backlight1 dim/conditional restore, Lifecycle1 LockRequested and authorized logind effects.
+     UPower properties supply actual source/lid state; unsupported/missing owners remain explicit.
+     Automatic sleep requires fresh native current-generation protected-output coverage, not a
+     saved Locked signal. The existing sole PrepareForSleep watcher feeds shared SessionEdges;
+     its live registration witness gates sleep capability/delay ownership and loss releases them.
+     Scoped handle-lid-switch ownership exists only while handling is available; external sleep
+     delay is finite and cannot guarantee cancellation after logind's InhibitDelayMaxUSec.
+     Awake closed-panel choices are additive serde-defaulted profile fields; sleep never disables
+     outputs to manufacture a coverage acknowledgment. Compositor owns validated panel reopen.
+     https://www.freedesktop.org/software/systemd/man/org.freedesktop.login1.html
+     https://upower.freedesktop.org/docs/UPower.html -->
 <node>
   <interface name="org.templaros.Power1">
-    <!-- source is "battery" or "mains". Returns the effective PowerProfile as JSON (a stored
-         override if one was set, otherwise the distribution default). -->
+    <!-- source: battery or mains. Stored override or distribution default, not applied state. -->
     <method name="GetProfile">
       <arg name="source" type="s" direction="in"/>
       <arg name="profile_json" type="s" direction="out"/>
     </method>
-    <!-- profile_json must parse as a PowerProfile; persisted as this source's override. -->
+    <!-- Store this source. Selected policy reconciles owners; failures can leave a stored
+         but unapplied/partially supported policy, which Inspect distinguishes per field. -->
     <method name="SetProfile">
       <arg name="source" type="s" direction="in"/>
       <arg name="profile_json" type="s" direction="in"/>
     </method>
-    <!-- Remove a stored override, returning to the distribution default for that source. -->
-    <method name="ResetProfile">
-      <arg name="source" type="s" direction="in"/>
-    </method>
+    <method name="ResetProfile"><arg name="source" type="s" direction="in"/></method>
+    <!-- PowerObservation JSON: stored battery/mains, actual selected source/profile,
+         observed native timeout/coverage/activity, per-field capability/armed/error,
+         actual lid/topology, scoped inhibitor ownership and pending-not-completed sleep. -->
+    <method name="Inspect"><arg name="observation_json" type="s" direction="out"/></method>
+    <signal name="Changed"><arg name="revision_json" type="s"/></signal>
   </interface>
 </node>

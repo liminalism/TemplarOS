@@ -4,8 +4,8 @@
 use crate::taskfield::{self, TaskFilter, TaskfieldState};
 use crate::{
     geometry::{
-        Output, Point, RecoveryAffordance, Rect, ResizeEdges, bounding_rect, choose_target_output,
-        recovery_affordance, repair_window, resize_rect,
+        Corner, Output, Point, RecoveryAffordance, Rect, ResizeEdges, TabPolicy, WindowLayout,
+        bounding_rect, choose_target_output, recovery_affordance, repair_window, resize_rect,
     },
     group::{GroupId, GroupRecord, accent_for},
     layers::{ClientKind, Layer, LayerError, LayerStack, StackPosition},
@@ -109,6 +109,15 @@ impl Decoration {
     }
 }
 
+/// User-selected application stacking, independent of protocol layer authorization.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WindowStacking {
+    AlwaysOnTop,
+    #[default]
+    Normal,
+    AlwaysOnBottom,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowRecord {
     pub id: WindowId,
@@ -129,6 +138,8 @@ pub struct WindowRecord {
     /// Holds an exclusive input grab (a dialog, a permission prompt). See
     /// [`WindowService::escape`].
     pub modal: bool,
+    /// Transient presentation relationship only: never inherits identity, grants or input focus.
+    pub transient_parent: Option<WindowId>,
     pub decoration: Decoration,
     /// Explicit minimisation: the window goes to the visible Window Shelf, never vanishes.
     pub shelved: bool,
@@ -148,19 +159,16 @@ pub struct WindowRecord {
     /// The window group this window belongs to, if any (`crate::group`). Membership lives here,
     /// on the window, so no window can be in two groups.
     pub group: Option<GroupId>,
-    /// Pinned above the other client windows by its owner — a click on its name tag
-    /// ([`WindowService::toggle_always_on_top`]). Not a layer of its own: the window stays on
-    /// [`Layer::Normal`] and is *sorted* as if it were on [`Layer::AppOnTop`]
-    /// ([`WindowService::stack_key`]), the same shape as the fullscreen exception, so nothing
-    /// about layer authorization or `layer_of` changes for a pin.
-    pub always_on_top: bool,
+    /// In-session user stacking preference. Never changes identity, focus, or assigned layer.
+    pub stacking: WindowStacking,
 }
 
 impl WindowRecord {
     /// Whether this window is filling its output — maximized or fullscreen, and on screen to do
     /// it. The one predicate behind every "there is a window over the bottom edge" rule: the
-    /// window wears no frame ([`WindowService::has_frame`]), its own tag and controls are shown
-    /// on a dwell in the corners instead, and the shell's machine cluster is not there at all.
+    /// window wears no exterior tabs ([`WindowService::has_frame`]), its own title and controls
+    /// are shown overlaid inside it on approach instead, and the shell's machine cluster is not
+    /// there at all.
     ///
     /// Maximized counts because the bar reserves nothing (a zone of 0), so a maximized window's
     /// work area *is* the whole output: "maximized" and "fullscreen" differ in what the client
@@ -183,6 +191,23 @@ pub enum EscapeAction {
 struct DragState {
     window_id: WindowId,
     anchor_in_window: Point,
+}
+
+/// One deadline per transition, preserved across motion until entry or exit completes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TabPending {
+    reveal_at: Option<u64>,
+    exit_at: Option<u64>,
+}
+
+/// What firing the tab grace deadlines at `now` decided for one window.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TabDeadlineFired {
+    /// The reveal grace elapsed with the pointer still approaching: show the controls.
+    Reveal(WindowId),
+    /// The exit grace elapsed with the pointer still gone: hide the controls, keep the
+    /// title and the last corner.
+    Exit(WindowId),
 }
 
 /// An interactive resize in flight. Unlike a drag, this remembers where the window *started*
@@ -223,18 +248,33 @@ pub struct WindowService<I> {
     /// preset was requested (`arrange_windows`): preset switches are auditioned over this one
     /// baseline, and `restore_arrangement` returns surviving windows exactly to it.
     arrangement_baseline: Option<Vec<(WindowId, Rect, bool)>>,
-    /// The screen-filling window whose own chrome is currently shown over it
-    /// (`set_covering_chrome`). Such a window wears no frame — its geometry is the whole
-    /// output and the client owns every pixel — so its name tag and controls are drawn *over* it,
-    /// on the strip its geometry already puts along the output's bottom edge, and only while the
-    /// pointer has asked for them.
-    covering_chrome: Option<WindowId>,
+    /// The one tab policy every window shares: arrangement, follow, visibility, defaults.
+    tab_policy: TabPolicy,
+    /// Each window's active tab corner. Survives park/restore, maximize/fullscreen and
+    /// regrouping — it is per-window state, not derived from transient geometry.
+    tab_corners: HashMap<WindowId, Corner>,
+    /// Windows whose tabs are frozen: the pointer is aiming at a visible title/control, a
+    /// button is down on one, or a move/resize/menu is in flight. Set on press/aim/grab
+    /// start, cleared from the grab's own termination path — never by timeout — so Close
+    /// cannot flee the pointer mid-reach.
+    tab_latched: HashSet<WindowId>,
+    /// Windows whose hover controls are currently revealed. Reveal changes nothing else:
+    /// no focus, no raise, no action fires.
+    tab_revealed: HashSet<WindowId>,
+    /// Monotonic entry/exit deadlines, fired by the compositor's shared dwell wakeup.
+    /// Further motion never postpones a transition or queues another timer.
+    tab_pending: HashMap<WindowId, TabPending>,
     /// The output whose bottom edge the pointer is currently resting on, under a window that
     /// fills it (`set_peek_output`). While set, [`Self::stacking_order`]'s fullscreen exception is
     /// suspended on that output — and the compositor tells the shell either way
-    /// (`templar_shell_manager_v1.bar_peeked`), because under a *maximized* window there is no
+    /// (`templar_shell_manager_v2.bar_peeked`), because under a *maximized* window there is no
     /// exception to suspend and the event is the whole of the reveal.
     peek_output: Option<String>,
+    /// Whether an `Alt+Tab` / `` Alt+` `` walk is showing (`set_switch_walk`). The walk itself —
+    /// its frozen ring and selection — is the compositor's input state; this is only the part
+    /// [`Self::is_visible`] needs, because the shell draws that walk on a `Layer::Presentation`
+    /// surface exactly as it draws Taskfield, and a surface this predicate hides is never drawn.
+    switch_walk: bool,
     /// Every live window group. Ordered so that iteration — the switcher's group list, the
     /// snapshot — is deterministic rather than hash-ordered.
     groups: BTreeMap<GroupId, GroupRecord>,
@@ -256,8 +296,13 @@ impl<I: IdentityCache> WindowService<I> {
             spent_activation_tokens: HashMap::new(),
             presentation: Presentation::Normal,
             arrangement_baseline: None,
-            covering_chrome: None,
+            tab_policy: TabPolicy::default(),
+            tab_corners: HashMap::new(),
+            tab_latched: HashSet::new(),
+            tab_revealed: HashSet::new(),
+            tab_pending: HashMap::new(),
             peek_output: None,
+            switch_walk: false,
             groups: BTreeMap::new(),
             next_group_id: 1,
         }
@@ -326,13 +371,14 @@ impl<I: IdentityCache> WindowService<I> {
                 last_activated: 0,
                 fullscreen: false,
                 modal: false,
+                transient_parent: None,
                 decoration: Decoration::ServerSide,
                 shelved: false,
                 shelf_rank: None,
                 maximized: false,
                 restore_geometry: None,
                 fullscreen_restore: None,
-                always_on_top: false,
+                stacking: WindowStacking::Normal,
                 group: None,
             },
         );
@@ -357,6 +403,7 @@ impl<I: IdentityCache> WindowService<I> {
         }
 
         self.identity.request_resolution(id, peer_pid, claims);
+        self.tab_corners.insert(id, self.tab_policy.default_corner);
         id
     }
 
@@ -395,8 +442,12 @@ impl<I: IdentityCache> WindowService<I> {
         window.mapped = mapped;
         if !mapped {
             window.activated = false;
+            // Unmapped windows hold no latch, reveal or deadline: nothing stranded across
+            // the unmap, and the stored corner is still there on remap.
+            self.tab_latched.remove(&window_id);
+            self.tab_revealed.remove(&window_id);
+            self.tab_pending.remove(&window_id);
         }
-        self.forget_stale_covering_chrome();
         true
     }
 
@@ -407,9 +458,9 @@ impl<I: IdentityCache> WindowService<I> {
     /// unknown window or a no-op.
     ///
     /// The result is *not* recoverable in [`crate::geometry::is_recoverable`]'s sense, and must
-    /// not be: that predicate measures a window's tag strip against `usable()`, and a fullscreen
-    /// window has no tag strip ([`Self::has_frame`]). Its recovery route is the escape chord
-    /// ([`Self::escape`]), which restores through this same slot, and
+    /// not be: that predicate measures a window's recovery band against `usable()`, and a
+    /// fullscreen window keeps no band on screen ([`Self::has_frame`]). Its recovery route is
+    /// the escape chord ([`Self::escape`]), which restores through this same slot, and
     /// [`Self::on_outputs_changed`] never repairs it.
     pub fn set_fullscreen(&mut self, window_id: WindowId, fullscreen: bool) -> Option<Rect> {
         let outputs = &self.outputs;
@@ -430,7 +481,6 @@ impl<I: IdentityCache> WindowService<I> {
             };
         }
         let geometry = window.geometry;
-        self.forget_stale_covering_chrome();
         Some(geometry)
     }
 
@@ -438,6 +488,32 @@ impl<I: IdentityCache> WindowService<I> {
         if let Some(window) = self.windows.get_mut(&window_id) {
             window.modal = modal;
         }
+    }
+
+    /// Set a compositor-validated transient relationship between ordinary application windows.
+    /// The adapter checks protocol ownership; this boundary rejects cycles and protected roles.
+    pub fn set_transient_parent(&mut self, child: WindowId, parent: Option<WindowId>) -> bool {
+        if !self.is_client_window(child)
+            || !matches!(self.layer_of(child), Some(Layer::Normal | Layer::AppOnTop))
+        {
+            return false;
+        }
+        if let Some(parent) = parent {
+            if !self.is_client_window(parent)
+                || !matches!(self.layer_of(parent), Some(Layer::Normal | Layer::AppOnTop))
+            {
+                return false;
+            }
+            let mut ancestor = Some(parent);
+            while let Some(id) = ancestor {
+                if id == child {
+                    return false;
+                }
+                ancestor = self.windows.get(&id).and_then(|window| window.transient_parent);
+            }
+        }
+        self.windows.get_mut(&child).unwrap().transient_parent = parent;
+        true
     }
 
     pub fn set_decoration(&mut self, window_id: WindowId, decoration: Decoration) {
@@ -460,6 +536,17 @@ impl<I: IdentityCache> WindowService<I> {
     pub fn on_toplevel_destroyed(&mut self, window_id: WindowId) {
         let group = self.group_of(window_id);
         self.windows.remove(&window_id);
+        // Tab state is per-window and dies with it: no latch, reveal or deadline may
+        // outlive its window into a grab, a wakeup or a reused id.
+        self.tab_corners.remove(&window_id);
+        self.tab_latched.remove(&window_id);
+        self.tab_revealed.remove(&window_id);
+        self.tab_pending.remove(&window_id);
+        for window in self.windows.values_mut() {
+            if window.transient_parent == Some(window_id) {
+                window.transient_parent = None;
+            }
+        }
         self.layers.remove(window_id);
         // Rule 5: a group has at least two members, so the last-but-one departure — a window
         // closing included — dissolves it rather than leaving a group of one.
@@ -504,6 +591,9 @@ impl<I: IdentityCache> WindowService<I> {
     /// [`geometry::shell_surface_placement`]'s job and the compositor re-runs it on every
     /// topology change (`backend::recompute_outputs`); recovery is a client-window property.
     pub fn on_outputs_changed(&mut self, outputs: Vec<Output>) -> Vec<(WindowId, Rect)> {
+        if self.outputs != outputs {
+            self.clear_tab_interaction();
+        }
         self.outputs = outputs;
         let dragging = self.drag.map(|drag| drag.window_id);
         let resizing = self.resize.map(|resize| resize.window_id);
@@ -560,7 +650,6 @@ impl<I: IdentityCache> WindowService<I> {
             window.geometry = repair_window(restore, outputs);
         }
         let geometry = window.geometry;
-        self.forget_stale_covering_chrome();
         Some(geometry)
     }
 
@@ -705,13 +794,13 @@ impl<I: IdentityCache> WindowService<I> {
         if !window.mapped {
             return false;
         }
-        // `Layer::Presentation` exists only while the mode it draws does: the shell's overview
-        // surface is configured to the whole output and reserves nothing, so leaving it mapped
-        // outside the mode would put an invisible sheet over the desktop that takes every click.
-        // Here, in the one predicate `space_sync`, the hit-test and the chrome all consult, so
-        // the three cannot disagree about it.
+        // `Layer::Presentation` exists only while a mode it draws does — Taskfield, or an
+        // `Alt+Tab` walk: the shell's surface is configured to the whole output and reserves
+        // nothing, so leaving it mapped outside them would put an invisible sheet over the
+        // desktop. Here, in the one predicate `space_sync`, the hit-test and the chrome all
+        // consult, so the three cannot disagree about it.
         if self.layer_of(window_id) == Some(Layer::Presentation) {
-            return matches!(self.presentation, Presentation::Taskfield(_));
+            return self.switch_walk || matches!(self.presentation, Presentation::Taskfield(_));
         }
         if matches!(self.presentation, Presentation::Taskfield(_)) {
             // The overview is a picture of cards, not of the ordinary scene: an application
@@ -788,6 +877,9 @@ impl<I: IdentityCache> WindowService<I> {
         };
         let changed = self.presentation != next;
         self.presentation = next;
+        if changed {
+            self.clear_tab_interaction();
+        }
         changed
     }
 
@@ -795,6 +887,15 @@ impl<I: IdentityCache> WindowService<I> {
     #[must_use]
     pub fn presentation(&self) -> &Presentation {
         &self.presentation
+    }
+
+    /// Mark an `Alt+Tab` / `` Alt+` `` walk as showing or ended. Returns whether anything changed.
+    /// Only `Layer::Presentation`'s visibility depends on it: the shell's switcher surface takes no
+    /// input (an empty input region), so showing it moves no pointer or keyboard focus.
+    pub fn set_switch_walk(&mut self, active: bool) -> bool {
+        let changed = self.switch_walk != active;
+        self.switch_walk = active;
+        changed
     }
 
     /// Open Taskfield over `filter`, laying it out once. `false` — and no change — when the filter
@@ -827,6 +928,9 @@ impl<I: IdentityCache> WindowService<I> {
         let next = Presentation::Taskfield(state);
         let changed = self.presentation != next;
         self.presentation = next;
+        if changed {
+            self.clear_tab_interaction();
+        }
         changed
     }
 
@@ -1019,6 +1123,9 @@ impl<I: IdentityCache> WindowService<I> {
                 y: pointer_global.y.saturating_sub(window.geometry.y),
             },
         });
+        // A gesture owns the tabs for its whole duration: frozen now, released from
+        // `finish_drag`, so the title being dragged cannot slide corners mid-move.
+        self.tab_latched.insert(window_id);
         true
     }
 
@@ -1033,9 +1140,11 @@ impl<I: IdentityCache> WindowService<I> {
         Some((window.id, window.geometry))
     }
 
-    /// Drag ended: the invariant is enforced once, at the end.
+    /// Drag ended: the invariant is enforced once, at the end — and the tab latch taken
+    /// for the gesture is released from this same termination path, never by timeout.
     pub fn finish_drag(&mut self) -> Option<(WindowId, Rect)> {
         let drag = self.drag.take()?;
+        self.tab_latched.remove(&drag.window_id);
         let window = self.windows.get_mut(&drag.window_id)?;
         window.geometry = repair_window(window.geometry, &self.outputs);
         Some((window.id, window.geometry))
@@ -1074,6 +1183,8 @@ impl<I: IdentityCache> WindowService<I> {
             origin: window.geometry,
             pointer_origin: pointer_global,
         });
+        // Same freeze as a drag, released from `finish_resize`.
+        self.tab_latched.insert(window_id);
         true
     }
 
@@ -1096,6 +1207,7 @@ impl<I: IdentityCache> WindowService<I> {
     /// formality — a window grown upward past the top of its output is repaired back down.
     pub fn finish_resize(&mut self) -> Option<(WindowId, Rect)> {
         let resize = self.resize.take()?;
+        self.tab_latched.remove(&resize.window_id);
         let window = self.windows.get_mut(&resize.window_id)?;
         window.geometry = repair_window(window.geometry, &self.outputs);
         Some((window.id, window.geometry))
@@ -1106,16 +1218,8 @@ impl<I: IdentityCache> WindowService<I> {
             .is_some_and(|resize| resize.window_id == window_id)
     }
 
-    /// Whether `window_id` wears the compositor's frame — the tag strip drawn below its client
-    /// area rather than over it. Every client window does except one that covers the screen
-    /// ([`WindowRecord::covers_screen`]).
-    ///
-    /// A frame *below* the client area is a strip of screen the window does not get. On a window
-    /// filling the output that is a black row across the bottom of the display, permanently, in
-    /// exchange for chrome nobody asked to see — which is not what filling the screen means. Such
-    /// a window has no frame at all; resting the pointer in either bottom corner shows its name
-    /// tag and its controls *over* it instead ([`Self::covering_chrome`]), and the controls are
-    /// therefore never out of reach.
+    /// Whether `window_id` has an exterior resize perimeter. Screen-filling windows
+    /// still draw the shared title/control layout, but cannot be resized until restored.
     pub fn has_frame(&self, window_id: WindowId) -> bool {
         if !self.is_client_window(window_id) {
             return false;
@@ -1125,17 +1229,13 @@ impl<I: IdentityCache> WindowService<I> {
             .is_some_and(|window| !window.covers_screen())
     }
 
-    /// The rectangle `window_id`'s client surface occupies: above the tags for a framed window
-    /// ([`client_area`](crate::geometry::client_area)), the whole geometry for anything else —
-    /// a shell surface, a fullscreen window. What the compositor maps the surface at and
-    /// configures the client to; the geometry itself is the frame.
+    /// The rectangle `window_id`'s client surface occupies: its geometry, whole. The client
+    /// rectangle is authoritative — tabs live outside it, or overlaid over it when there is no
+    /// exterior room — so showing, hiding or relocating tabs never changes this rectangle and
+    /// never configures the client. What the compositor maps the surface at and configures the
+    /// client to.
     pub fn client_area(&self, window_id: WindowId) -> Option<Rect> {
-        let window = self.windows.get(&window_id)?;
-        Some(if self.has_frame(window_id) {
-            crate::geometry::client_area(window.geometry)
-        } else {
-            window.geometry
-        })
+        self.windows.get(&window_id).map(|window| window.geometry)
     }
 
     /// Move `window_id` to the visible Window Shelf: a hidden window cannot sensibly hold
@@ -1151,7 +1251,9 @@ impl<I: IdentityCache> WindowService<I> {
         window.shelved = true;
         window.shelf_rank = Some(rank);
         window.activated = false;
-        self.forget_stale_covering_chrome();
+        self.tab_latched.remove(&window_id);
+        self.tab_revealed.remove(&window_id);
+        self.tab_pending.remove(&window_id);
         true
     }
 
@@ -1208,20 +1310,30 @@ impl<I: IdentityCache> WindowService<I> {
             .map(|position| position.layer)
     }
 
-    /// Raise `window_id` to the top of its current layer.
+    /// Raise a window's ordinary transient family, without changing any member's focus.
     pub fn raise(&mut self, window_id: WindowId) -> Option<StackPosition> {
+        self.raise_transient_ancestors(window_id);
         self.layers.raise(window_id)
+    }
+
+    fn raise_transient_ancestors(&mut self, window_id: WindowId) {
+        let mut ancestor = self.windows.get(&window_id).and_then(|window| window.transient_parent);
+        while let Some(id) = ancestor {
+            if !matches!(self.layer_of(id), Some(Layer::Normal | Layer::AppOnTop)) {
+                break;
+            }
+            self.layers.raise(id);
+            ancestor = self.windows.get(&id).and_then(|window| window.transient_parent);
+        }
     }
 
     /// Every window, top-most first.
     ///
     /// The one exception to [`LayerStack`]'s pure layer order: while a visible fullscreen client
-    /// window's output is not being peeked, that window sorts *above* [`Layer::ShellOverlay`] and
-    /// [`Layer::Notification`]. Without it the bar would sit on top of every fullscreen video,
-    /// because `ShellOverlay` is above `Normal` by design — which is why the shell used to destroy
-    /// its own bar to get out of the way. It never rises above [`Layer::SystemModal`],
-    /// [`Layer::Recovery`] or [`Layer::SecureLock`]: a permission prompt and the lock screen
-    /// outrank anything a client can ask for.
+    /// window's output is not being peeked, that window sorts *above* [`Layer::ShellOverlay`].
+    /// The shell admits only critical notifications during fullscreen; [`Layer::Notification`]
+    /// stays above this promotion so admitted cards remain visible. The bar still steps behind
+    /// fullscreen work. Presentation, system modals, recovery and secure lock remain above both.
     ///
     /// This is the whole of the bottom-edge peek: [`Self::set_peek_output`] suspends the
     /// exception for one output and the bar comes back, with no protocol change, no surface
@@ -1233,37 +1345,52 @@ impl<I: IdentityCache> WindowService<I> {
         let mut order = self.layers.order();
         if !order
             .iter()
-            .any(|id| self.outranks_overlay(*id) || self.is_always_on_top(*id))
+            .any(|id| self.outranks_overlay(*id)
+                || self.windows.get(id).is_some_and(|window| window.stacking != WindowStacking::Normal
+                    || window.transient_parent.is_some()))
         {
             return order;
         }
-        // A stable second pass: only a promoted window's key differs, so everything else keeps
-        // the order `LayerStack` already put it in. A scene holds a handful of windows.
+        // A stable second pass applies user stacking and transient-family presentation.
+        // Windows with ordinary keys keep LayerStack's order.
         order.sort_by_key(|id| std::cmp::Reverse(self.stack_key(*id)));
         order
     }
 
     /// The key [`Self::stacking_order`] sorts by, greatest first: the layer doubled so a promoted
-    /// fullscreen window can take the half step between `SystemModal` and `ShellOverlay`, then the
+    /// fullscreen window can take the half step between `Notification` and `ShellOverlay`, then the
     /// within-layer rank. Doubling rather than renumbering [`Layer`] leaves every discriminant —
     /// and so every [`crate::layers::may_request_layer`] answer — exactly as it was.
-    fn stack_key(&self, window_id: WindowId) -> (i32, u64) {
+    fn stack_key(&self, window_id: WindowId) -> (i32, u64, usize, u64) {
         let Some(position) = self.layers.position(window_id) else {
-            return (i32::MIN, 0);
+            return (i32::MIN, 0, 0, 0);
         };
         let layer = if self.outranks_overlay(window_id) {
             i32::from(Layer::ShellOverlay.depth()) * 2 - 1
         } else if self.is_always_on_top(window_id) {
-            // Sorted onto `AppOnTop` — the layer that exists for exactly this — without being
-            // *assigned* to it. `layer_of` therefore still answers `Normal` for a pinned window,
-            // so every rule written in terms of layers (`home_is_covered`, `may_request_layer`,
-            // the shell's snapshot) reads a pinned window as the ordinary window it is.
             i32::from(position.layer.depth().min(Layer::AppOnTop.depth())) * 2
+        } else if self.windows.get(&window_id)
+            .is_some_and(|window| window.stacking == WindowStacking::AlwaysOnBottom)
+            && matches!(position.layer, Layer::Normal | Layer::AppOnTop)
+        {
+            // Half-step below Normal, still above Home: bottom remains a visible, usable client.
+            i32::from(Layer::Normal.depth()) * 2 + 1
         } else {
             i32::from(position.layer.depth()) * 2
         };
         // Negated because `Layer`'s discriminants count *down* the screen: `SecureLock` is 0.
-        (-layer, position.rank)
+        let mut key = (-layer, position.rank, 0, position.rank);
+        if let Some(parent) = self.windows.get(&window_id).and_then(|window| window.transient_parent)
+            && self.is_visible(parent)
+            && matches!(position.layer, Layer::Normal | Layer::AppOnTop)
+            && matches!(self.layer_of(parent), Some(Layer::Normal | Layer::AppOnTop))
+        {
+            let parent_key = self.stack_key(parent);
+            // Follow only an ordinary parent's presentation rank (including fullscreen).
+            // Neither the assigned layer nor any authorization/activation state changes.
+            key = (parent_key.0, parent_key.1, parent_key.2 + 1, position.rank);
+        }
+        key
     }
 
     /// Whether `window_id` is the one kind of window that outranks the shell's overlay: a visible
@@ -1277,7 +1404,9 @@ impl<I: IdentityCache> WindowService<I> {
         let Some(window) = self.windows.get(&window_id) else {
             return false;
         };
-        if !window.fullscreen || window.shelved || !self.is_client_window(window_id) {
+        if !window.fullscreen || window.shelved || !self.is_client_window(window_id)
+            || window.stacking == WindowStacking::AlwaysOnBottom
+        {
             return false;
         }
         // Only the ordinary scene has a fullscreen window to promote: a reveal hides every client
@@ -1298,59 +1427,282 @@ impl<I: IdentityCache> WindowService<I> {
             || choose_target_output(geometry, &self.outputs).name.as_str() == peeked
     }
 
-    /// The screen-filling window showing its own chrome, if any.
-    #[must_use]
-    pub fn covering_chrome(&self) -> Option<WindowId> {
-        self.covering_chrome.filter(|id| {
-            self.windows
-                .get(id)
-                .is_some_and(WindowRecord::covers_screen)
-        })
+
+    // ---- Corner-following window tabs --------------------------------------------------
+    //
+    // One [`WindowLayout`] per window, derived here so paint, hit, damage, recovery and
+    // configure all share it. Policy is one value for every window; the active corner, the
+    // aim/press latch and the hover reveal are per-window state that survives park/restore,
+    // maximize/fullscreen and regrouping.
+
+    /// The tab policy in force.
+    pub fn tab_policy(&self) -> TabPolicy {
+        self.tab_policy
     }
 
-    /// Show or hide one screen-filling window's chrome (`None` hides it). Returns whether
-    /// anything changed, so the compositor re-renders only when it must.
-    ///
-    /// Filtered on read *and* dropped on the state change, which is not belt and braces: the
-    /// filter alone made the slot un-clearable. A window leaving fullscreen or maximized reads
-    /// back as `None`, so the compositor's "the pointer left the chrome" branch never runs and
-    /// never clears the slot — and the window filling the screen again brought the strip straight
-    /// back with no dwell ever asked for.
-    pub fn set_covering_chrome(&mut self, window_id: Option<WindowId>) -> bool {
-        let changed = self.covering_chrome != window_id;
-        self.covering_chrome = window_id;
+    /// Replace the tab policy. Returns whether anything changed, so the compositor
+    /// re-renders only when it must. Stored corners are kept: a policy change rearranges
+    /// chrome, it never forgets where a window's tabs were.
+    pub fn set_tab_policy(&mut self, policy: TabPolicy) -> bool {
+        let changed = self.tab_policy != policy;
+        self.tab_policy = policy;
         changed
     }
 
-    /// Drop the chrome slot if the window holding it no longer covers the screen. Called from
-    /// every path that can change that: [`Self::set_maximized`], [`Self::set_fullscreen`] and
-    /// [`Self::shelve`].
-    fn forget_stale_covering_chrome(&mut self) {
-        if self.covering_chrome().is_none() {
-            self.covering_chrome = None;
+    /// The corner `window_id`'s tabs currently follow: the stored corner while
+    /// `follow_pointer` holds, else the fixed fallback. Unknown windows answer the policy
+    /// default rather than failing — there is always a corner.
+    pub fn tab_corner(&self, window_id: WindowId) -> Corner {
+        if !self.tab_policy.follow_pointer {
+            return self.tab_policy.fixed_corner;
         }
+        self.tab_corners
+            .get(&window_id)
+            .copied()
+            .unwrap_or(self.tab_policy.default_corner)
+    }
+
+    /// Store `window_id`'s active corner. Returns whether it changed. Unknown windows and
+    /// non-client windows are refused — there is nothing to follow with.
+    pub fn set_tab_corner(&mut self, window_id: WindowId, corner: Corner) -> bool {
+        if !self.is_client_window(window_id) || !self.windows.contains_key(&window_id) {
+            return false;
+        }
+        let changed = self.tab_corners.get(&window_id).copied() != Some(corner);
+        self.tab_corners.insert(window_id, corner);
+        changed
+    }
+
+    /// Follow the pointer to the nearest client corner, with deterministic ties and
+    /// hysteresis ([`WindowLayout::nearest_corner`]). Returns the previous and the new
+    /// corner, or `None` for an unknown or non-client window.
+    ///
+    /// A latched window ([`Self::set_tab_latched`]) keeps its corner: aiming at a visible
+    /// title/control, pressing one, or running a move/resize/menu freezes the tabs until
+    /// the grab's own termination path releases them. With `follow_pointer` off the fixed
+    /// corner holds and this is a no-op that still reports it.
+    pub fn select_tab_corner(
+        &mut self,
+        window_id: WindowId,
+        pointer: Point,
+    ) -> Option<(Corner, Corner)> {
+        if !self.is_client_window(window_id) {
+            return None;
+        }
+        let geometry = self.windows.get(&window_id)?.geometry;
+        let previous = self.tab_corner(window_id);
+        if self.tab_latched.contains(&window_id) || !self.tab_policy.follow_pointer {
+            return Some((previous, previous));
+        }
+        let next = WindowLayout::nearest_corner(geometry, pointer, Some(previous));
+        self.tab_corners.insert(window_id, next);
+        Some((previous, next))
+    }
+
+    /// Freeze (`true`) or release (`false`) `window_id`'s tabs. Returns whether anything
+    /// changed. Set while the pointer aims at a visible title/control and across
+    /// press/release, menu, drag and resize; released from the grab's own termination
+    /// path, so a latch can never outlive the gesture that took it.
+    pub fn set_tab_latched(&mut self, window_id: WindowId, latched: bool) -> bool {
+        if latched {
+            self.tab_latched.insert(window_id)
+        } else {
+            self.tab_latched.remove(&window_id)
+        }
+    }
+
+    /// Whether `window_id`'s tabs are frozen.
+    pub fn is_tab_latched(&self, window_id: WindowId) -> bool {
+        self.tab_latched.contains(&window_id)
+    }
+
+    /// Release press/aim latches when no grab holds them.
+    pub fn clear_tab_latches(&mut self) {
+        self.tab_latched.clear();
+    }
+
+    /// Cancel transient chrome interaction on lock, topology or presentation changes.
+    /// Stored corners and committed policy survive; no delayed reveal may survive.
+    pub fn clear_tab_interaction(&mut self) {
+        self.tab_latched.clear();
+        self.tab_revealed.clear();
+        self.tab_pending.clear();
+    }
+
+    /// Show (`true`) or hide (`false`) `window_id`'s hover controls. Returns whether
+    /// anything changed. Reveal changes nothing else — no focus, no raise, no action —
+    /// and a hidden control takes no input.
+    pub fn set_controls_revealed(&mut self, window_id: WindowId, revealed: bool) -> bool {
+        if revealed {
+            self.tab_revealed.insert(window_id)
+        } else {
+            self.tab_revealed.remove(&window_id)
+        }
+    }
+
+    /// Whether `window_id`'s controls are currently drawn and clickable: always, under the
+    /// always-controls policy, else only while revealed.
+    pub fn controls_revealed(&self, window_id: WindowId) -> bool {
+        self.tab_policy.controls_always || self.tab_revealed.contains(&window_id)
+    }
+
+    /// Whether `window_id`'s title is currently drawn: always, under the default policy,
+    /// else only while revealed.
+    pub fn title_revealed(&self, window_id: WindowId) -> bool {
+        self.tab_policy.title_always || self.tab_revealed.contains(&window_id)
+    }
+
+    /// `window_id`'s complete tab geometry: the stored corner, the shared policy, the
+    /// window's own output for the exterior/overlay decision. `None` for unknown or
+    /// non-client windows. Every consumer — paint, hit, damage, recovery, configure —
+    /// derives its rectangles from this and nothing else.
+    pub fn window_layout(&self, window_id: WindowId) -> Option<WindowLayout> {
+        if !self.is_client_window(window_id) {
+            return None;
+        }
+        let geometry = self.windows.get(&window_id)?.geometry;
+        let output = if self.outputs.is_empty() {
+            // No outputs: nothing is on screen, so nothing can be off it either — lay
+            // out exterior and let the next topology change re-derive.
+            Rect::new(
+                geometry.x - 4096,
+                geometry.y - 4096,
+                geometry.width + 8192,
+                geometry.height + 8192,
+            )
+        } else {
+            choose_target_output(geometry, &self.outputs).usable()
+        };
+        Some(WindowLayout::new(
+            geometry,
+            self.tab_corner(window_id),
+            self.tab_policy.placement,
+            output,
+        ))
+    }
+
+    /// Arm once on entry, preserving the original deadline across further motion.
+    pub fn note_tab_approach(&mut self, window_id: WindowId, now_ns: u64) {
+        if !self.is_visible(window_id) || !self.is_client_window(window_id) {
+            return;
+        }
+        if self.tab_revealed.contains(&window_id)
+            || (self.tab_policy.controls_always && self.tab_policy.title_always)
+        {
+            self.tab_pending.remove(&window_id);
+            return;
+        }
+        let pending = self.tab_pending.entry(window_id).or_default();
+        pending.reveal_at.get_or_insert(
+            now_ns.saturating_add(crate::geometry::TAB_REVEAL_GRACE_MS * 1_000_000),
+        );
+        pending.exit_at = None;
+    }
+
+    /// Cancel an unfinished reveal immediately; arm one exit for revealed hover tabs.
+    pub fn note_tab_leave(&mut self, window_id: WindowId, now_ns: u64) {
+        if !self.tab_revealed.contains(&window_id) {
+            self.tab_pending.remove(&window_id);
+            return;
+        }
+        let pending = self.tab_pending.entry(window_id).or_default();
+        pending.reveal_at = None;
+        pending.exit_at.get_or_insert(
+            now_ns.saturating_add(crate::geometry::TAB_EXIT_GRACE_MS * 1_000_000),
+        );
+    }
+
+    /// Fire every tab grace deadline reached by monotonic `now_ns`, oldest first, applying
+    /// the reveal/hide to the stored state and returning what changed. Run from the
+    /// compositor's existing dwell wakeup: one shared wakeup, never a timer per motion.
+    /// A latched window's exit deadline waits — hiding controls mid-aim would be the flee
+    /// the latch exists to prevent — while its reveal still fires.
+    pub fn fire_tab_deadlines(&mut self, now_ns: u64) -> Vec<TabDeadlineFired> {
+        let mut due: Vec<(u64, WindowId, bool)> = Vec::new();
+        for (window_id, pending) in &self.tab_pending {
+            if pending.reveal_at.is_some_and(|at| at <= now_ns) {
+                due.push((pending.reveal_at.unwrap_or(u64::MAX), *window_id, true));
+            } else if pending.exit_at.is_some_and(|at| at <= now_ns)
+                && !self.tab_latched.contains(window_id)
+            {
+                due.push((pending.exit_at.unwrap_or(u64::MAX), *window_id, false));
+            }
+        }
+        due.sort();
+        let mut fired = Vec::with_capacity(due.len());
+        for (_, window_id, reveal) in due {
+            if let Some(pending) = self.tab_pending.get_mut(&window_id) {
+                if reveal {
+                    pending.reveal_at = None;
+                    if self.tab_revealed.insert(window_id) {
+                        fired.push(TabDeadlineFired::Reveal(window_id));
+                    }
+                } else {
+                    pending.exit_at = None;
+                    if self.tab_revealed.remove(&window_id) {
+                        fired.push(TabDeadlineFired::Exit(window_id));
+                    }
+                }
+                if pending.reveal_at.is_none() && pending.exit_at.is_none() {
+                    self.tab_pending.remove(&window_id);
+                }
+            }
+        }
+        fired
+    }
+
+
+    /// The earliest pending tab deadline, if any — what the shared wakeup waits for.
+    pub fn next_tab_deadline(&self) -> Option<u64> {
+        self.tab_pending
+            .iter()
+            .filter_map(|(id, pending)| {
+                pending.reveal_at.into_iter()
+                    .chain(pending.exit_at.filter(|_| !self.tab_latched.contains(id)))
+                    .min()
+            })
+            .min()
+    }
+
+    /// Whether `window_id` currently holds any pending tab deadline. The motion path
+    /// consults it so leaving an already-settled window notes nothing — otherwise every
+    /// motion would arm an exit for every window on screen.
+    pub fn has_tab_pending(&self, window_id: WindowId) -> bool {
+        self.tab_pending.contains_key(&window_id)
     }
 
     /// Whether `window_id` is pinned above the other client windows.
     #[must_use]
     pub fn is_always_on_top(&self, window_id: WindowId) -> bool {
-        self.windows
-            .get(&window_id)
-            .is_some_and(|window| window.always_on_top)
+        matches!(self.layer_of(window_id), Some(Layer::Normal | Layer::AppOnTop))
+            && self.windows.get(&window_id)
+                .is_some_and(|window| window.stacking == WindowStacking::AlwaysOnTop)
     }
 
     /// Pin or unpin `window_id`, returning its new state. Client windows only — a shell surface
     /// already sits on the layer its trust bought it, and nothing about a pin should be able to
     /// move it.
     pub fn toggle_always_on_top(&mut self, window_id: WindowId) -> bool {
-        if !self.is_client_window(window_id) {
+        let stacking = if self.is_always_on_top(window_id) {
+            WindowStacking::Normal
+        } else {
+            WindowStacking::AlwaysOnTop
+        };
+        self.set_window_stacking(window_id, stacking)
+            && stacking == WindowStacking::AlwaysOnTop
+    }
+
+    /// Set mutually-exclusive user stacking without raising, activating, or granting authority.
+    /// Protected scene roles/layers cannot be moved by an application title menu.
+    pub fn set_window_stacking(&mut self, window_id: WindowId, stacking: WindowStacking) -> bool {
+        if !self.is_client_window(window_id)
+            || !matches!(self.layer_of(window_id), Some(Layer::Normal | Layer::AppOnTop))
+        {
             return false;
         }
-        let Some(window) = self.windows.get_mut(&window_id) else {
-            return false;
-        };
-        window.always_on_top = !window.always_on_top;
-        window.always_on_top
+        let Some(window) = self.windows.get_mut(&window_id) else { return false; };
+        window.stacking = stacking;
+        true
     }
 
     /// The output whose overlay surfaces are peeked out from under a fullscreen window, if any.
@@ -1446,11 +1798,12 @@ impl<I: IdentityCache> WindowService<I> {
                 .collect();
             order.insert(0, window_id);
             self.layers.raise_many(&order);
+            self.raise_transient_ancestors(window_id);
             if let Some(record) = self.groups.get_mut(&group) {
                 record.last_active = window_id;
             }
         } else {
-            self.layers.raise(window_id);
+            self.raise(window_id);
         }
         if self
             .windows
@@ -1518,9 +1871,10 @@ impl<I: IdentityCache> WindowService<I> {
         true
     }
 
-    /// The compositor's grab affordance for `window_id`: the tag strip, and whether the
-    /// compositor must paint a temporary tab over it (client-side-decorated / borderless).
-    /// Answered for every client window; whether the tags are *drawn* is [`Self::has_frame`].
+    /// The compositor's grab affordance for `window_id`: the recovery band, and whether
+    /// the compositor must paint a temporary tab over it (client-side-decorated /
+    /// borderless). Answered for every client window; whether tabs are *drawn* is
+    /// [`Self::has_frame`] plus the tab reveal state.
     pub fn recovery_affordance(&self, window_id: WindowId) -> Option<RecoveryAffordance> {
         if !self.is_client_window(window_id) {
             return None;
@@ -1899,6 +2253,9 @@ impl<I: IdentityCache> WindowService<I> {
                     accent: record.accent,
                 })
             }),
+            // Tab counts arrive from sessiond adapters bound to this toplevel; the feed lands
+            // with the protocol owner (hook: fill from the compositor's tab-count store).
+            tab_count: None,
         }
     }
 }
@@ -1927,6 +2284,7 @@ fn fullscreen_geometry(current: Rect, outputs: &[Output]) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::TabPlacement;
     use crate::test_support::{arb_hotplug_sequence, arb_window, load_topology_sequence};
     use proptest::prelude::*;
     use std::sync::Mutex;
@@ -2256,10 +2614,9 @@ mod tests {
         assert_eq!(service.window(bar).unwrap().geometry, placed);
     }
 
-    /// A window that fills the screen wears no frame, whichever way it got there and whatever
-    /// the bar happens to be reserving. The frame is a strip *below* the client area, so on a
-    /// window filling the output it is a black row across the bottom of the display; the tag and
-    /// the controls are shown over the window on a dwell instead (`covering_chrome`).
+    /// A window that fills the screen wears no exterior tabs, whichever way it got there
+    /// and whatever the bar happens to be reserving: there is no exterior to wear them on.
+    /// The shared layout overlays its title and hover controls inside the output.
     #[test]
     fn a_window_that_fills_the_screen_has_no_frame() {
         let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
@@ -2267,7 +2624,7 @@ mod tests {
         assert!(service.has_frame(id));
 
         service.set_maximized(id, true);
-        assert!(!service.has_frame(id), "maximized: no black row");
+        assert!(!service.has_frame(id), "maximized: no exterior tabs");
         assert_eq!(
             service.client_area(id),
             service.window(id).map(|window| window.geometry),
@@ -2299,43 +2656,47 @@ mod tests {
         );
     }
 
-    /// The chrome slot is dropped the moment its window stops filling the screen. Filtering it on
-    /// read alone made it un-clearable: the compositor's "the pointer has left the chrome" branch
-    /// is gated on the slot reading back as `Some`, so a window that unmaximized while showing
-    /// its chrome left the slot set, and the next maximize brought the strip straight back with
-    /// no dwell ever asked for, both corners suspended with it.
+
     #[test]
-    fn chrome_does_not_survive_the_window_leaving_the_state_that_earned_it() {
-        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
-
-        service.set_maximized(id, true);
-        assert!(service.set_covering_chrome(Some(id)));
-        service.set_maximized(id, false);
-        assert_eq!(service.covering_chrome(), None);
-        // The slot itself, not merely the filter: setting it again has to *change* something,
-        // which it cannot if the stale id is still sitting there.
-        assert!(
-            service.set_covering_chrome(Some(id)),
-            "unmaximizing left the stale window in the slot"
-        );
-        service.set_covering_chrome(None);
-
-        service.set_fullscreen(id, true);
-        service.set_covering_chrome(Some(id));
-        service.set_fullscreen(id, false);
-        assert!(
-            service.set_covering_chrome(Some(id)),
-            "leaving fullscreen left the stale window in the slot"
-        );
-        service.set_covering_chrome(None);
-
-        service.set_maximized(id, true);
-        service.set_covering_chrome(Some(id));
-        service.shelve(id);
-        assert!(
-            service.set_covering_chrome(Some(id)),
-            "parking left the stale window in the slot"
-        );
+    fn transient_children_follow_fullscreen_without_authority_or_focus() {
+        let (mut service, parent) = one_window(Rect::new(100, 100, 400, 300));
+        let child = service.on_toplevel_mapped(2, ClientKind::Application,
+            WindowClaims::default(), "chooser".into(), Rect::new(120, 120, 200, 100));
+        let sibling = service.on_toplevel_mapped(3, ClientKind::Application,
+            WindowClaims::default(), "other chooser".into(), Rect::new(140, 140, 200, 100));
+        let identity = service.window(child).unwrap().identity.clone();
+        service.set_fullscreen(parent, true);
+        service.activate(parent);
+        assert!(service.set_transient_parent(child, Some(parent)));
+        assert!(service.set_transient_parent(sibling, Some(parent)));
+        let order = service.stacking_order();
+        assert!(order.iter().position(|id| *id == child) < order.iter().position(|id| *id == parent));
+        assert!(order.iter().position(|id| *id == sibling) < order.iter().position(|id| *id == parent));
+        assert_eq!(service.layer_of(child), Some(Layer::Normal));
+        assert_eq!(service.window(child).unwrap().identity, identity);
+        assert!(!service.window(child).unwrap().activated);
+        assert!(!service.set_transient_parent(parent, Some(child)), "cycle");
+        assert!(!service.set_transient_parent(child, Some(child)), "self");
+        assert!(!service.set_transient_parent(child, Some(WindowId(u64::MAX))), "dead");
+        let protected = shell_surface(&mut service, Layer::SystemModal, Rect::new(0, 0, 100, 100));
+        assert!(!service.set_transient_parent(child, Some(protected)));
+        assert!(!service.set_transient_parent(protected, Some(parent)));
+        service.set_role(protected, WindowRole::Application);
+        assert!(!service.set_transient_parent(child, Some(protected)), "protected layer despite ordinary role");
+        assert!(!service.set_transient_parent(protected, Some(parent)));
+        assert!(service.set_transient_parent(child, Some(sibling)), "parent replacement");
+        assert_eq!(service.window(child).unwrap().transient_parent, Some(sibling));
+        assert_eq!(service.window(sibling).unwrap().transient_parent, Some(parent));
+        assert!(service.set_transient_parent(child, None), "property deletion");
+        assert_eq!(service.window(child).unwrap().transient_parent, None);
+        assert_eq!(service.window(sibling).unwrap().transient_parent, Some(parent),
+            "detaching one child must preserve unrelated siblings");
+        assert_eq!(service.window(child).unwrap().identity, identity);
+        assert!(!service.window(child).unwrap().activated);
+        service.on_toplevel_destroyed(parent);
+        assert_eq!(service.window(child).unwrap().transient_parent, None);
+        assert_eq!(service.window(sibling).unwrap().transient_parent, None);
+        assert!(service.is_visible(child));
     }
 
     /// A pin sorts a window as if it were on `AppOnTop` without moving it there: `layer_of` still
@@ -2369,6 +2730,79 @@ mod tests {
 
         assert!(!service.toggle_always_on_top(lower));
         assert_eq!(service.stacking_order().first().copied(), Some(upper));
+    }
+
+    #[test]
+    fn user_stacking_is_exclusive_persistent_and_keeps_bottom_above_home() {
+        let (mut service, first) = one_window(Rect::new(100, 100, 400, 300));
+        let second = service.on_toplevel_mapped(2, ClientKind::Application,
+            WindowClaims::default(), String::new(), Rect::new(200, 200, 400, 300));
+        let home = shell_surface(&mut service, Layer::HomeSurface, Rect::new(0, 0, 1920, 1080));
+        let identity = service.window(first).unwrap().identity.clone();
+        service.activate(second);
+        let mru = service.switch_order();
+        for preference in [WindowStacking::AlwaysOnTop, WindowStacking::AlwaysOnBottom] {
+            assert!(service.set_window_stacking(first, preference));
+            service.raise(second);
+            let order = service.stacking_order();
+            let rank = |id| order.iter().position(|candidate| *candidate == id).unwrap();
+            assert_eq!(rank(first) < rank(second), preference == WindowStacking::AlwaysOnTop);
+            assert!(rank(first) < rank(home));
+            assert!(service.is_visible(first));
+            assert_eq!(service.layer_of(first), Some(Layer::Normal));
+            assert_eq!(service.window(first).unwrap().identity, identity);
+            assert!(!service.window(first).unwrap().activated);
+            assert_eq!(service.switch_order(), mru);
+            assert!(service.set_window_stacking(first, WindowStacking::Normal));
+            assert_eq!(service.stacking_order().first().copied(), Some(second));
+        }
+        service.set_window_stacking(first, WindowStacking::AlwaysOnBottom);
+        service.activate(first);
+        assert_eq!(service.stacking_order().first().copied(), Some(second),
+            "activation and raises do not erase the bottom preference");
+        assert!(service.toggle_always_on_top(first));
+        assert_eq!(service.window(first).unwrap().stacking, WindowStacking::AlwaysOnTop);
+        assert!(!service.toggle_always_on_top(first));
+        assert_eq!(service.window(first).unwrap().stacking, WindowStacking::Normal);
+        assert!(!service.set_window_stacking(home, WindowStacking::AlwaysOnTop));
+        let protected = shell_surface(&mut service, Layer::SystemModal, Rect::new(0, 0, 100, 100));
+        service.set_role(protected, WindowRole::Application);
+        assert!(!service.set_window_stacking(protected, WindowStacking::AlwaysOnBottom));
+        assert!(!service.set_window_stacking(WindowId(u64::MAX), WindowStacking::Normal));
+    }
+
+    #[test]
+    fn transient_family_follows_user_stacking_without_focus_or_identity_changes() {
+        let (mut service, parent) = one_window(Rect::new(100, 100, 400, 300));
+        let child = service.on_toplevel_mapped(2, ClientKind::Application,
+            WindowClaims::default(), "dialog".into(), Rect::new(200, 200, 200, 100));
+        let other = service.on_toplevel_mapped(3, ClientKind::Application,
+            WindowClaims::default(), "other".into(), Rect::new(200, 200, 400, 300));
+        let home = shell_surface(&mut service, Layer::HomeSurface, Rect::new(0, 0, 1920, 1080));
+        assert!(service.set_transient_parent(child, Some(parent)));
+        let identity = service.window(child).unwrap().identity.clone();
+        service.activate(other);
+        for preference in [WindowStacking::AlwaysOnTop, WindowStacking::AlwaysOnBottom] {
+            service.set_window_stacking(parent, preference);
+            service.raise(other);
+            let order = service.stacking_order();
+            let rank = |id| order.iter().position(|candidate| *candidate == id).unwrap();
+            assert!(rank(child) < rank(parent), "dialogs stay usable above their parent");
+            assert_eq!(rank(child) < rank(other), preference == WindowStacking::AlwaysOnTop);
+            assert!(rank(parent) < rank(home));
+            assert!(!service.window(child).unwrap().activated);
+            assert_eq!(service.window(child).unwrap().identity, identity);
+            assert_eq!(service.layer_of(child), Some(Layer::Normal));
+        }
+        service.set_fullscreen(parent, true);
+        assert_eq!(service.stacking_order().first().copied(), Some(other),
+            "explicit bottom overrides fullscreen promotion, not visibility");
+        service.set_window_stacking(parent, WindowStacking::Normal);
+        assert_eq!(service.stacking_order().first().copied(), Some(child),
+            "Normal restores fullscreen's family presentation precedence");
+        service.on_toplevel_destroyed(parent);
+        assert_eq!(service.window(child).unwrap().transient_parent, None);
+        assert!(service.is_visible(child));
     }
 
     #[test]
@@ -3308,6 +3742,38 @@ mod tests {
     }
 
     #[test]
+    fn the_shell_switcher_surface_is_visible_only_during_a_walk() {
+        let (mut service, ids) = service_with(2);
+        let overlay = service.on_toplevel_mapped(
+            9,
+            ClientKind::TrustedShell,
+            WindowClaims::default(),
+            "switcher".into(),
+            Rect::new(0, 0, 1920, 1080),
+        );
+        service
+            .set_layer(overlay, Layer::Presentation, ClientKind::TrustedShell)
+            .unwrap();
+        service.set_role(overlay, WindowRole::Overlay);
+        assert!(
+            !service.is_visible(overlay),
+            "no mode, no sheet over the desktop"
+        );
+        assert!(service.set_switch_walk(true));
+        assert!(
+            service.is_visible(overlay),
+            "the walk is drawn by this surface"
+        );
+        assert!(
+            ids.iter().all(|id| service.is_visible(*id)),
+            "a walk is not the overview: windows stay on screen under it"
+        );
+        assert!(!service.set_switch_walk(true), "already showing");
+        assert!(service.set_switch_walk(false));
+        assert!(!service.is_visible(overlay));
+    }
+
+    #[test]
     fn mapping_an_application_leaves_taskfield() {
         let (mut service, _ids) = service_with(1);
         assert!(service.enter_taskfield(TaskFilter::All));
@@ -3636,8 +4102,7 @@ mod tests {
         assert!(crate::is_recoverable(before, service.outputs()));
     }
 
-    /// The stacking exception, as a table. A fullscreen window outranks the shell's own overlay
-    /// and notifications — otherwise the bar draws over every video — and nothing else.
+    /// Fullscreen hides the shell bar, not an admitted critical notification or secure UI.
     #[test]
     fn a_fullscreen_window_outranks_the_overlay_and_nothing_above_it() {
         for (layer, fullscreen_wins) in [
@@ -3645,7 +4110,7 @@ mod tests {
             (Layer::Recovery, false),
             (Layer::SystemModal, false),
             (Layer::ShellOverlay, true),
-            (Layer::Notification, true),
+            (Layer::Notification, false),
         ] {
             let (mut service, app, _) = service_with_a_bar();
             // `SecureLock` and `Recovery` are compositor-owned; the rest are the shell's.
@@ -3676,6 +4141,22 @@ mod tests {
                 "fullscreen against {layer}: {order:?}"
             );
         }
+    }
+
+    #[test]
+    fn admitted_notifications_cover_fullscreen_without_changing_application_state() {
+        let (mut service, app, _) = service_with_a_bar();
+        service.activate(app);
+        service.set_fullscreen(app, true);
+        let before = service.window(app).unwrap().geometry;
+        let work_before = service.shell_toplevels();
+        let toast = shell_surface(&mut service, Layer::Notification, Rect::new(1500, 800, 380, 80));
+        let order = service.stacking_order();
+        assert!(order.iter().position(|id| *id == toast) < order.iter().position(|id| *id == app));
+        assert!(!service.should_activate_on_map(toast));
+        assert!(service.window(app).unwrap().activated);
+        assert_eq!(service.window(app).unwrap().geometry, before);
+        assert_eq!(service.shell_toplevels(), work_before);
     }
 
     /// The whole of the peek: one flag, and the bar is back over the fullscreen window. No
@@ -3828,6 +4309,293 @@ mod tests {
             prop_assert_eq!(placed.height, window.height);
             prop_assert!(placed.intersection(target).is_none(), "{placed:?} overlaps {target:?}");
             prop_assert!(crate::is_recoverable(placed, &outputs));
+        }
+    }
+
+    /// Child 2 (`no-client-reconfigure`): the client rectangle is the geometry, whole, and
+    /// pure tab moves — corner changes, policy changes, reveal — never touch it.
+    #[test]
+    fn pure_tab_moves_never_resize_the_client() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        let client = service.client_area(id).unwrap();
+        assert_eq!(client, Rect::new(100, 100, 400, 300));
+
+        for corner in Corner::ALL {
+            service.set_tab_corner(id, corner);
+            assert_eq!(service.client_area(id).unwrap(), client);
+            assert_eq!(service.window_layout(id).unwrap().client, client);
+        }
+        let policy = TabPolicy {
+            placement: TabPlacement::OppositeCorners,
+            ..TabPolicy::default()
+        };
+        assert!(service.set_tab_policy(policy));
+        assert!(!service.set_tab_policy(policy));
+        assert_eq!(service.client_area(id).unwrap(), client);
+        service.set_controls_revealed(id, true);
+        assert_eq!(service.client_area(id).unwrap(), client);
+        // Maximized geometry is still the whole client: no strip is subtracted anywhere.
+        service.set_maximized(id, true);
+        assert_eq!(
+            service.client_area(id),
+            service.window(id).map(|window| window.geometry)
+        );
+    }
+
+    /// Child 2 (`recovery-and-consumers`): one layout for every consumer — paint and hit
+    /// derive from `window_layout`, and the stored corner survives park/restore,
+    /// maximize/fullscreen and regrouping.
+    #[test]
+    fn one_shared_layout_survives_transitions() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        assert_eq!(service.tab_corner(id), Corner::TopRight);
+        assert!(service.set_tab_corner(id, Corner::BottomLeft));
+        assert!(!service.set_tab_corner(id, Corner::BottomLeft));
+        let layout = service.window_layout(id).unwrap();
+        assert_eq!(layout.corner, Corner::BottomLeft);
+        assert_eq!(layout.placement, TabPlacement::SameCorner);
+
+        service.shelve(id);
+        service.unshelve(id);
+        assert_eq!(service.tab_corner(id), Corner::BottomLeft);
+        service.set_maximized(id, true);
+        assert_eq!(service.tab_corner(id), Corner::BottomLeft);
+        assert!(service.window_layout(id).unwrap().overlay);
+        service.set_maximized(id, false);
+        service.set_fullscreen(id, true);
+        assert_eq!(service.tab_corner(id), Corner::BottomLeft);
+        service.set_fullscreen(id, false);
+
+        let other = service.on_toplevel_mapped(
+            2,
+            ClientKind::Application,
+            WindowClaims::default(),
+            String::new(),
+            Rect::new(600, 100, 400, 300),
+        );
+        service.group(id, other);
+        assert_eq!(service.tab_corner(id), Corner::BottomLeft);
+        assert_eq!(service.tab_corner(other), Corner::TopRight);
+        // Output loss re-derives the layout against the surviving topology without
+        // forgetting the corner.
+        service.on_outputs_changed(vec![Output::new("eDP-1", Rect::new(0, 0, 800, 600), 1000)]);
+        assert_eq!(service.tab_corner(id), Corner::BottomLeft);
+        assert!(service.window_layout(id).is_some());
+        // Unknown windows answer the default corner and no layout.
+        assert_eq!(service.tab_corner(WindowId(9999)), Corner::TopRight);
+        assert!(service.window_layout(WindowId(9999)).is_none());
+    }
+
+    /// Child 3 (`follow-and-latch`): selection follows the pointer until latched — aiming,
+    /// pressing, dragging and resizing freeze the corner, and the latch releases from the
+    /// grab's own termination path. Close never flees because the layout cannot move under it.
+    #[test]
+    fn latched_tabs_hold_their_corner_until_the_grab_ends() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        service.set_tab_corner(id, Corner::TopLeft);
+        // Unlatched, the far corner wins.
+        assert_eq!(
+            service.select_tab_corner(id, Point { x: 900, y: 700 }),
+            Some((Corner::TopLeft, Corner::BottomRight))
+        );
+        // Latched, nothing moves.
+        assert!(service.set_tab_latched(id, true));
+        assert!(!service.set_tab_latched(id, true));
+        assert_eq!(
+            service.select_tab_corner(id, Point { x: 0, y: 0 }),
+            Some((Corner::BottomRight, Corner::BottomRight))
+        );
+        assert!(service.is_tab_latched(id));
+        assert!(!service.is_tab_latched(WindowId(9999)));
+        // A drag latches on begin and releases on finish — the real termination path.
+        assert!(service.set_tab_latched(id, false));
+        assert!(service.begin_drag(id, Point { x: 150, y: 150 }));
+        assert!(service.is_tab_latched(id));
+        assert_eq!(
+            service.select_tab_corner(id, Point { x: 0, y: 0 }),
+            Some((Corner::BottomRight, Corner::BottomRight))
+        );
+        service.finish_drag();
+        assert!(!service.is_tab_latched(id));
+        assert_eq!(
+            service.select_tab_corner(id, Point { x: 0, y: 0 }),
+            Some((Corner::BottomRight, Corner::TopLeft))
+        );
+        // Same for resize.
+        assert!(service.begin_resize(
+            id,
+            Point { x: 500, y: 400 },
+            crate::ResizeEdges::BOTTOM_RIGHT
+        ));
+        assert!(service.is_tab_latched(id));
+        service.finish_resize();
+        assert!(!service.is_tab_latched(id));
+        // Destroying the window drops every scrap of tab state with it.
+        service.set_tab_latched(id, true);
+        service.set_controls_revealed(id, true);
+        service.note_tab_approach(id, 0);
+        service.on_toplevel_destroyed(id);
+        assert!(!service.is_tab_latched(id));
+        assert!(!service.has_tab_pending(id));
+    }
+
+    /// One pending deadline per purpose; reveal fires, exit hides controls but keeps
+    /// the title and last corner, and a latched exit waits.
+    #[test]
+    fn tab_grace_deadlines_fire_once_and_never_pile() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        service.set_tab_corner(id, Corner::BottomRight);
+        // Ten approaches note one deadline, and firing it reveals exactly once.
+        for now in 0..10u64 {
+            service.note_tab_approach(id, now);
+        }
+        assert!(service.has_tab_pending(id));
+        assert!(service.fire_tab_deadlines(0).is_empty());
+        let fired = service.fire_tab_deadlines(10_000_000_000);
+        assert_eq!(fired, vec![TabDeadlineFired::Reveal(id)]);
+        assert!(service.controls_revealed(id));
+        assert!(service.fire_tab_deadlines(20_000_000_000).is_empty());
+        assert!(!service.has_tab_pending(id));
+        // Leaving arms the exit; firing hides the controls, keeps the title and the corner.
+        service.note_tab_leave(id, 0);
+        assert_eq!(
+            service.next_tab_deadline(),
+            Some(crate::geometry::TAB_EXIT_GRACE_MS * 1_000_000)
+        );
+        let fired = service.fire_tab_deadlines(u64::MAX);
+        assert_eq!(fired, vec![TabDeadlineFired::Exit(id)]);
+        assert!(!service.controls_revealed(id));
+        assert!(service.title_revealed(id));
+        assert_eq!(service.tab_corner(id), Corner::BottomRight);
+        // A latched window's exit waits for the release, then fires.
+        service.set_controls_revealed(id, true);
+        service.set_tab_latched(id, true);
+        service.note_tab_leave(id, 0);
+        assert!(service.fire_tab_deadlines(u64::MAX).is_empty());
+        assert!(service.controls_revealed(id));
+        service.set_tab_latched(id, false);
+        assert_eq!(
+            service.fire_tab_deadlines(u64::MAX),
+            vec![TabDeadlineFired::Exit(id)]
+        );
+        assert!(service.next_tab_deadline().is_none());
+    }
+
+    /// Child 3: reveal changes nothing but the reveal — no focus, no raise, no activation —
+    /// and the fixed-corner fallback holds every window still when following is off.
+    #[test]
+    fn reveal_changes_nothing_and_fixed_corner_holds_still() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        assert!(!service.window(id).unwrap().activated);
+        service.set_controls_revealed(id, true);
+        assert!(!service.window(id).unwrap().activated);
+        assert!(!service.set_controls_revealed(id, true));
+
+        let policy = TabPolicy {
+            follow_pointer: false,
+            fixed_corner: Corner::BottomLeft,
+            ..TabPolicy::default()
+        };
+        service.set_tab_policy(policy);
+        assert_eq!(service.tab_corner(id), Corner::BottomLeft);
+        assert_eq!(
+            service.select_tab_corner(id, Point { x: 900, y: 0 }),
+            Some((Corner::BottomLeft, Corner::BottomLeft))
+        );
+        assert_eq!(
+            service.window_layout(id).unwrap().corner,
+            Corner::BottomLeft
+        );
+    }
+
+    /// Child 4 (`options-and-transitions`): both arrangements lay out from every corner, and
+    /// the placement survives the same transitions the corner does.
+    #[test]
+    fn both_arrangements_serve_every_corner() {
+        let (mut service, id) = one_window(Rect::new(300, 200, 640, 480));
+        for placement in [TabPlacement::SameCorner, TabPlacement::OppositeCorners] {
+            let policy = TabPolicy {
+                placement,
+                ..TabPolicy::default()
+            };
+            service.set_tab_policy(policy);
+            for corner in Corner::ALL {
+                service.set_tab_corner(id, corner);
+                let layout = service.window_layout(id).unwrap();
+                assert_eq!(layout.corner, corner);
+                assert_eq!(layout.placement, placement);
+                assert_eq!(layout.controls.len(), 3);
+                assert!(layout.title.width >= layout.title.height);
+            }
+        }
+        service.set_maximized(id, true);
+        assert!(service.window_layout(id).unwrap().overlay);
+        service.set_maximized(id, false);
+        assert!(!service.window_layout(id).unwrap().overlay);
+    }
+
+    #[test]
+    fn continued_motion_does_not_postpone_or_rearm_tab_deadlines() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        let reveal = crate::TAB_REVEAL_GRACE_MS * 1_000_000;
+        service.note_tab_approach(id, 0);
+        service.note_tab_approach(id, reveal - 1);
+        assert_eq!(service.next_tab_deadline(), Some(reveal));
+        assert_eq!(service.fire_tab_deadlines(reveal), vec![TabDeadlineFired::Reveal(id)]);
+        service.note_tab_approach(id, reveal + 1);
+        assert_eq!(service.next_tab_deadline(), None);
+        service.note_tab_leave(id, reveal);
+        let exit = reveal + crate::TAB_EXIT_GRACE_MS * 1_000_000;
+        service.note_tab_leave(id, exit - 1);
+        assert_eq!(service.next_tab_deadline(), Some(exit));
+        assert_eq!(service.fire_tab_deadlines(exit), vec![TabDeadlineFired::Exit(id)]);
+    }
+
+    #[test]
+    fn privacy_and_visibility_transitions_retire_pending_tabs() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        service.note_tab_approach(id, 0);
+        service.note_tab_leave(id, 1);
+        assert_eq!(service.next_tab_deadline(), None, "an unrevealed leave needs no timer");
+        for transition in 0..5 {
+            service.note_tab_approach(id, 0);
+            service.set_controls_revealed(id, true);
+            service.set_tab_latched(id, true);
+            match transition {
+                0 => service.clear_tab_interaction(),
+                1 => { service.shelve(id); },
+                2 => { service.set_mapped(id, false); },
+                3 => { service.set_home_revealed(true); },
+                _ => { service.on_outputs_changed(vec![Output::new("other", Rect::new(0, 0, 800, 600), 1000)]); },
+            }
+            assert!(service.fire_tab_deadlines(u64::MAX).is_empty());
+            assert!(!service.is_tab_latched(id));
+            assert!(!service.controls_revealed(id));
+            assert_eq!(service.next_tab_deadline(), None);
+            service.set_mapped(id, true);
+            service.unshelve(id);
+            service.set_home_revealed(false);
+        }
+    }
+
+    #[test]
+    fn screen_filling_windows_keep_title_and_bounded_controls_without_a_second_owner() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        for fullscreen in [false, true] {
+            if fullscreen {
+                service.set_fullscreen(id, true);
+            } else {
+                service.set_maximized(id, true);
+            }
+            assert!(service.title_revealed(id));
+            assert!(!service.controls_revealed(id));
+            for corner in Corner::ALL {
+                service.set_tab_corner(id, corner);
+                let layout = service.window_layout(id).unwrap();
+                assert!(layout.overlay);
+                assert!(layout.title.y >= 16);
+                assert!(layout.title.bottom() <= service.outputs()[0].usable().bottom() - 16);
+            }
         }
     }
 }

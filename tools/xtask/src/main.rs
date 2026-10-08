@@ -3,6 +3,7 @@
 mod archive;
 mod build_set;
 mod index_bench;
+mod ownership;
 mod seeds;
 mod signatures;
 mod wayland_versions;
@@ -16,7 +17,11 @@ use std::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "xtask", about = "TemplarOS repository automation")]
+#[command(
+    name = "xtask",
+    about = "TemplarOS repository automation",
+    long_about = "TemplarOS repository automation.\n\nOne subcommand per invocation: xtask runs a single check and exits. To run the whole family, invoke each subcommand as its own process (as the justfile does), or loop them in the shell."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -28,10 +33,12 @@ enum Command {
     TreeCheck,
     /// `templar-window` must not depend on tokio or zbus (compositor render-thread rule).
     DepsCheck,
-    /// Every zbus interface name in the code has an XML file in interfaces/dbus/.
+    /// Every shipping zbus interface name has an XML file in interfaces/dbus/.
     CheckInterfaces,
     /// Every `debian/control` Package: has a matching `[package.metadata.deb]` crate.
     CheckPackaging,
+    /// Tier/owner/write declarations, package destinations and unit permissions agree.
+    CheckOwnership,
     /// Every client `#[proxy(interface = "org.templaros...")]` has a live `#[zbus::interface]`
     /// implementation somewhere in the workspace, not just an XML file.
     CheckProxies,
@@ -41,8 +48,16 @@ enum Command {
     /// Every `ActionDecl` with a `cli_verb` names a real `templar` subcommand, every action a shell
     /// surface performs is declared, and every action with a chord also has a pointer route.
     CheckActions,
-    /// Every `since` in the private Wayland protocols is reachable, and both ends' negotiated
-    /// version constants are the version the XML actually declares.
+    /// Every shipped binary that initialises `tracing_subscriber::fmt()` gates ANSI escape
+    /// codes on stdout being a TTY, so journald stores searchable text, not byte arrays.
+    CheckLogging,
+    /// `Cargo.toml`'s `rust-version`, `clippy.toml`'s `msrv` and `rust-toolchain.toml`'s
+    /// channel name the same Rust minimum — a bump that edits two of the three used to
+    /// surface only as a repeated warning.
+    CheckMsrv,
+    /// Every `since` in the private Wayland protocols is reachable, both ends' negotiated
+    /// version constants are the version the XML actually declares, and no protocol file uses
+    /// an XML entity reference (wayland-scanner panics on those with no line number).
     CheckWaylandVersions,
     /// Print a DEP-5 copyright stanza list from cargo metadata (stub).
     Copyright,
@@ -184,6 +199,129 @@ const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[
 /// accelerator, never the only route... a chord with no pointer path is a bug"), and until this
 /// check existed it was aspirational: eight actions were reachable from a keyboard and nowhere
 /// else, and nothing said so.
+/// Every shipped binary entry point that initialises `tracing_subscriber::fmt()`. A new
+/// binary belongs here the moment it formats a log line.
+const LOGGING_MAINS: &[&str] = &[
+    "apps/templar-files/src/main.rs",
+    "apps/templar-greeter/src/main.rs",
+    "apps/templar-settings/src/main.rs",
+    "compositor/templar-comp/src/main.rs",
+    "portals/xdg-desktop-portal-templar/src/main.rs",
+    "services/templar-boot-health/src/main.rs",
+    "services/templar-filed/src/main.rs",
+    "services/templar-hostd/src/main.rs",
+    "services/templar-resourced/src/main.rs",
+    "services/templar-sessiond/src/main.rs",
+    "session/templar-session/src/main.rs",
+    "shell/templar-shell/src/main.rs",
+];
+
+/// The mains that format tracing output without gating ANSI on a TTY — each is a binary
+/// whose journal lines land as byte arrays. Separated from [`check_logging`]'s printing so
+/// the rule can be tested without a repository.
+fn mains_missing_ansi_guard(root: &Path) -> Vec<String> {
+    let mut missing = Vec::new();
+    for rel in LOGGING_MAINS {
+        let path = root.join(rel);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            missing.push(format!("{rel} is not there anymore — update LOGGING_MAINS"));
+            continue;
+        };
+        if !text.contains("tracing_subscriber::fmt()") {
+            missing.push(format!(
+                "{rel} no longer initialises tracing_subscriber::fmt() — update LOGGING_MAINS"
+            ));
+        } else if !text.contains(".with_ansi(") {
+            missing.push(format!(
+                "{rel} formats tracing output without .with_ansi(stdout().is_terminal())"
+            ));
+        }
+    }
+    missing
+}
+
+fn check_logging(root: &Path) -> Result<()> {
+    let missing = mains_missing_ansi_guard(root);
+    if !missing.is_empty() {
+        for entry in &missing {
+            eprintln!("check-logging: {entry}");
+        }
+        bail!(
+            "{} binary(ies) would write ANSI colour codes into the journal",
+            missing.len()
+        );
+    }
+    println!(
+        "check-logging: {} binaries gate ANSI on a TTY",
+        LOGGING_MAINS.len()
+    );
+    Ok(())
+}
+
+/// Where the three MSRV declarations disagree, each naming its file. `channel` carries a
+/// patch version the other two do not, so only its major.minor is compared. Pure so the
+/// rule can be tested without a repository.
+fn msrv_mismatches(rust_version: &str, clippy_msrv: &str, toolchain_channel: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let channel_minor = toolchain_channel
+        .split('.')
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(".");
+    if rust_version != clippy_msrv {
+        problems.push(format!(
+            "Cargo.toml says rust-version {rust_version} but clippy.toml says msrv {clippy_msrv}"
+        ));
+    }
+    if rust_version != channel_minor {
+        problems.push(format!(
+            "Cargo.toml says rust-version {rust_version} but rust-toolchain.toml pins \
+             channel {toolchain_channel}"
+        ));
+    }
+    problems
+}
+
+fn check_msrv(root: &Path) -> Result<()> {
+    let cargo: toml::Value = toml::from_str(
+        &std::fs::read_to_string(root.join("Cargo.toml")).context("reading Cargo.toml")?,
+    )
+    .context("parsing Cargo.toml")?;
+    let clippy: toml::Value = toml::from_str(
+        &std::fs::read_to_string(root.join("clippy.toml")).context("reading clippy.toml")?,
+    )
+    .context("parsing clippy.toml")?;
+    let toolchain: toml::Value = toml::from_str(
+        &std::fs::read_to_string(root.join("rust-toolchain.toml"))
+            .context("reading rust-toolchain.toml")?,
+    )
+    .context("parsing rust-toolchain.toml")?;
+    let rust_version = cargo
+        .get("workspace")
+        .and_then(|workspace| workspace.get("package"))
+        .and_then(|package| package.get("rust-version"))
+        .and_then(toml::Value::as_str)
+        .context("Cargo.toml [workspace.package] has no rust-version")?;
+    let clippy_msrv = clippy
+        .get("msrv")
+        .and_then(toml::Value::as_str)
+        .context("clippy.toml has no msrv")?;
+    let channel = toolchain
+        .get("toolchain")
+        .and_then(|toolchain| toolchain.get("channel"))
+        .and_then(toml::Value::as_str)
+        .context("rust-toolchain.toml [toolchain] has no channel")?;
+    let problems = msrv_mismatches(rust_version, clippy_msrv, channel);
+    if !problems.is_empty() {
+        for problem in &problems {
+            eprintln!("check-msrv: {problem}");
+        }
+        bail!("{} MSRV declaration(s) disagree", problems.len());
+    }
+    println!("check-msrv: rust-version, clippy msrv and toolchain channel agree on {rust_version}");
+    Ok(())
+}
+
 fn check_actions(root: &Path) -> Result<()> {
     let manifest = std::fs::read_to_string(root.join("crates/templar-types/src/action.rs"))
         .context("reading the action manifest")?;
@@ -376,12 +514,12 @@ fn pointer_routes(root: &Path) -> Result<BTreeMap<String, Vec<String>>> {
 /// used — and neither may claim a version the XML does not define.
 const PROTOCOL_VERSION_CONSTANTS: &[(&str, &str, &str)] = &[
     (
-        "templar_shell_manager_v1",
+        "templar_shell_manager_v2",
         "compositor/templar-comp/src/protocols_shell.rs",
         "pub const SHELL_PROTOCOL_VERSION: u32 = ",
     ),
     (
-        "templar_shell_manager_v1",
+        "templar_shell_manager_v2",
         "shell/templar-shell/src/wayland_bridge.rs",
         "const SHELL_PROTOCOL_VERSION: u32 = ",
     ),
@@ -418,6 +556,13 @@ fn check_wayland_versions(root: &Path) -> Result<()> {
     for file in &files {
         let text =
             std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+        for (line, entity) in wayland_versions::entity_references(&text) {
+            problems.push(format!(
+                "{}:{line}: `&{entity};` — wayland-scanner panics on any XML entity reference \
+                 with no line number; spell the character out",
+                file.display()
+            ));
+        }
         let parsed = wayland_versions::parse(&text)
             .with_context(|| format!("parsing {}", file.display()))?;
         versions.extend(parsed.versions);
@@ -472,8 +617,8 @@ fn check_shell_object_versions(
     requests: &[u32],
     problems: &mut Vec<String>,
 ) {
-    let Some(manager) = versions.get("templar_shell_manager_v1") else {
-        problems.push("templar_shell_manager_v1 is missing".into());
+    let Some(manager) = versions.get("templar_shell_manager_v2") else {
+        problems.push("templar_shell_manager_v2 is missing".into());
         return;
     };
     for interface in [
@@ -502,7 +647,7 @@ mod shell_version_tests {
     #[test]
     fn manager_children_equal_and_requests_use_manager_revision_numbers() {
         let mut versions = BTreeMap::from([
-            ("templar_shell_manager_v1".into(), 13),
+            ("templar_shell_manager_v2".into(), 13),
             ("templar_shell_toplevel_list_v1".into(), 13),
             ("templar_shell_toplevel_v1".into(), 13),
         ]);
@@ -600,9 +745,12 @@ fn main() -> Result<()> {
         Command::DepsCheck => deps_check(&root),
         Command::CheckInterfaces => check_interfaces(&root),
         Command::CheckPackaging => check_packaging(&root),
+        Command::CheckOwnership => ownership::check(&root),
         Command::CheckProxies => check_proxies(&root),
         Command::CheckAssets => check_assets(&root),
         Command::CheckActions => check_actions(&root),
+        Command::CheckLogging => check_logging(&root),
+        Command::CheckMsrv => check_msrv(&root),
         Command::CheckWaylandVersions => check_wayland_versions(&root),
         Command::Copyright => copyright(&root),
         Command::BuildSet {
@@ -830,7 +978,7 @@ fn deps_check(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Every zbus interface name in the code has an XML file in `interfaces/dbus/`.
+/// Every shipping zbus interface name has an XML file in `interfaces/dbus/`.
 ///
 /// Two independent passes, reported separately, because they check two different things that
 /// happen to share one contract file:
@@ -903,8 +1051,8 @@ fn check_interfaces(root: &Path) -> Result<()> {
     }
 }
 
-/// Walks `dir` recursively, adding every `org.templaros.*` server interface name it finds to
-/// `server` and every `org.templaros.*` client (proxy) interface name to `client`.
+/// Walks production Rust sources, adding `org.templaros.*` server and proxy names.
+/// Cargo's test/example/bench targets and explicitly `#[cfg(test)]` items are not shipped.
 fn collect_interfaces(
     dir: &Path,
     server: &mut BTreeSet<String>,
@@ -913,20 +1061,193 @@ fn collect_interfaces(
     if !dir.exists() {
         return Ok(());
     }
+    let crate_root = dir.join("Cargo.toml").is_file();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
         if path.is_dir() {
-            if path.file_name().is_some_and(|n| n == "target") {
+            if path.file_name().is_some_and(|name| {
+                name == "target"
+                    || (crate_root
+                        && matches!(name.to_str(), Some("tests" | "examples" | "benches")))
+            }) {
                 continue;
             }
             collect_interfaces(&path, server, client)?;
         } else if path.extension().is_some_and(|e| e == "rs") {
             let text = std::fs::read_to_string(&path)?;
+            let text = shipping_interface_source(&text)
+                .with_context(|| format!("scoping {}", path.display()))?;
             server.extend(server_interface_names(&text));
             client.extend(client_interface_names(&text));
         }
     }
     Ok(())
+}
+
+/// Exclude each test-only item, not the file's tail: production declarations may follow a test
+/// module. Keep the existing attribute extractor; this pass only establishes its source scope.
+/// Other cfg predicates remain in scope so a platform/feature-gated shipping API is still audited.
+fn shipping_interface_source(text: &str) -> Result<std::borrow::Cow<'_, str>> {
+    let mut source = std::borrow::Cow::Borrowed(text);
+    let mut cursor = 0;
+    let mut attributes_start = None;
+    let mut seen_item = false;
+    while cursor < text.len() {
+        if let Some(end) = rust_non_code_end(text, cursor) {
+            cursor = end;
+            continue;
+        }
+        let rest = &text[cursor..];
+        let inner = rest.starts_with("#![");
+        if rest.starts_with("#[") || inner {
+            let open = cursor + if inner { 2 } else { 1 };
+            let end =
+                rust_delimiter_end(text, open, b'[', b']').context("unbalanced Rust attribute")?;
+            let start = *attributes_start.get_or_insert(cursor);
+            let body = text[open + 1..end - 1].trim();
+            let test_only = body.strip_prefix("cfg").is_some_and(|args| {
+                args.trim()
+                    .strip_prefix('(')
+                    .and_then(|args| args.strip_suffix(')'))
+                    .is_some_and(|predicate| predicate.trim() == "test")
+            });
+            if test_only {
+                if inner {
+                    anyhow::ensure!(!seen_item, "inner cfg(test) must scope a source file");
+                    return Ok(std::borrow::Cow::Borrowed(""));
+                }
+                let item_end =
+                    rust_item_end(text, end).context("unbalanced test-only Rust item")?;
+                // ASCII whitespace preserves UTF-8 and line boundaries without leaving any
+                // declaration inside the excluded item for the attribute scanner to discover.
+                let replacement: String = text[start..item_end]
+                    .bytes()
+                    .map(|byte| if byte == b'\n' { '\n' } else { ' ' })
+                    .collect();
+                source.to_mut().replace_range(start..item_end, &replacement);
+                cursor = item_end;
+                attributes_start = None;
+                continue;
+            }
+            cursor = end;
+            continue;
+        }
+        let ch = rest.chars().next().context("missing Rust character")?;
+        if !ch.is_whitespace() {
+            attributes_start = None;
+            seen_item = true;
+        }
+        cursor += ch.len_utf8();
+    }
+    Ok(source)
+}
+
+/// End of the attributed item, skipping attribute arguments and function parameters before its
+/// body (or a semicolon for an out-of-line module). Delimiters in literals/comments are opaque.
+fn rust_item_end(text: &str, mut cursor: usize) -> Option<usize> {
+    while cursor < text.len() {
+        if let Some(end) = rust_non_code_end(text, cursor) {
+            cursor = end;
+            continue;
+        }
+        match text.as_bytes()[cursor] {
+            b'{' => return rust_delimiter_end(text, cursor, b'{', b'}'),
+            b';' => return Some(cursor + 1),
+            b'[' => cursor = rust_delimiter_end(text, cursor, b'[', b']')?,
+            b'(' => cursor = rust_delimiter_end(text, cursor, b'(', b')')?,
+            _ => cursor += text[cursor..].chars().next()?.len_utf8(),
+        }
+    }
+    None
+}
+
+fn rust_delimiter_end(text: &str, open: usize, left: u8, right: u8) -> Option<usize> {
+    let mut depth = 0;
+    let mut cursor = open;
+    while cursor < text.len() {
+        if let Some(end) = rust_non_code_end(text, cursor) {
+            cursor = end;
+            continue;
+        }
+        match text.as_bytes()[cursor] {
+            byte if byte == left => depth += 1,
+            byte if byte == right => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(cursor + 1);
+                }
+            }
+            _ => {}
+        }
+        cursor += text[cursor..].chars().next()?.len_utf8();
+    }
+    None
+}
+
+/// Skip Rust comments and literals while locating structural delimiters. Apostrophes that start
+/// lifetimes are not character literals. Raw strings may contain arbitrary quotes and braces.
+fn rust_non_code_end(text: &str, at: usize) -> Option<usize> {
+    let rest = &text[at..];
+    if rest.starts_with("//") {
+        return Some(rest.find('\n').map_or(text.len(), |end| at + end));
+    }
+    if rest.starts_with("/*") {
+        let mut cursor = at + 2;
+        let mut depth = 1;
+        while cursor < text.len() {
+            if text[cursor..].starts_with("/*") {
+                depth += 1;
+                cursor += 2;
+            } else if text[cursor..].starts_with("*/") {
+                depth -= 1;
+                cursor += 2;
+                if depth == 0 {
+                    return Some(cursor);
+                }
+            } else {
+                cursor += text[cursor..].chars().next()?.len_utf8();
+            }
+        }
+        return Some(text.len());
+    }
+    if let Some(raw) = rest.strip_prefix('r') {
+        let hashes = raw.bytes().take_while(|byte| *byte == b'#').count();
+        if raw.as_bytes().get(hashes) == Some(&b'"') {
+            let body_start = at + hashes + 2;
+            for (offset, _) in text[body_start..].match_indices('"') {
+                let after_quote = body_start + offset + 1;
+                if text
+                    .as_bytes()
+                    .get(after_quote..after_quote + hashes)
+                    .is_some_and(|suffix| suffix.iter().all(|byte| *byte == b'#'))
+                {
+                    return Some(after_quote + hashes);
+                }
+            }
+            return Some(text.len());
+        }
+    }
+    let quote = *rest.as_bytes().first()?;
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    if quote == b'\'' {
+        let character = rest[1..].chars().next()?;
+        if character != '\\' && rest.as_bytes().get(1 + character.len_utf8()) != Some(&b'\'') {
+            return None;
+        }
+    }
+    let mut escaped = false;
+    for (offset, byte) in rest.bytes().enumerate().skip(1) {
+        if escaped {
+            escaped = false;
+        } else if byte == b'\\' {
+            escaped = true;
+        } else if byte == quote {
+            return Some(at + offset + 1);
+        }
+    }
+    Some(text.len())
 }
 
 /// Server-side interface names: `#[zbus::interface(name = "org.templaros...")]`.
@@ -1143,6 +1464,7 @@ fn check_packaging(root: &Path) -> Result<()> {
         deb_assets,
         maintainerless,
         missing_asset_sources,
+        unbuilt_asset_sources,
     } = deb_metadata(packages);
 
     let mut problems = packaging_problems(&control_packages, &deb_name_to_crate);
@@ -1157,9 +1479,11 @@ fn check_packaging(root: &Path) -> Result<()> {
     ));
     problems.extend(maintainerless);
     problems.extend(missing_asset_sources);
+    problems.extend(unbuilt_asset_sources);
     problems.extend(garden_hook_delivery_problems(packages));
+    let control_depends = parse_control_depends(&control_text);
     problems.extend(dependency_drift(
-        &parse_control_depends(&control_text),
+        &control_depends,
         &deb_depends,
         &deb_name_to_crate,
     ));
@@ -1173,7 +1497,12 @@ fn check_packaging(root: &Path) -> Result<()> {
     let units = unit_exec_starts(root)?;
     let shipped = shipped_destinations(root, &deb_assets)?;
     let installed: BTreeSet<String> = shipped.iter().map(|(path, _)| path.clone()).collect();
-    problems.extend(unshipped_unit_binaries(&units, &installed));
+    problems.extend(unshipped_unit_binaries(
+        &units,
+        &installed,
+        &shipped,
+        &control_depends,
+    )?);
     problems.extend(colliding_destinations(&shipped));
     problems.extend(dangling_manifest_executables(
         root,
@@ -1222,29 +1551,61 @@ fn check_packaging(root: &Path) -> Result<()> {
 /// terminal's shell will actually read it from.
 const GARDEN_HOOK_PAYLOAD: &str = "etc/profile.d/60-templaros-garden.sh";
 const GARDEN_HOOK_DELIVERY: &str = "/etc/bash.bashrc";
+/// The foreground-completion hook beside it, delivered the same way.
+const COMPLETION_HOOK_PAYLOAD: &str = "etc/profile.d/61-templaros-completion.sh";
 
-/// The garden's terminal hook has to arrive in a file bash reads for an *interactive, non-login*
+/// One shell hook that has to reach an interactive, non-login bash.
+struct HookDelivery {
+    /// The payload path as shipped, e.g. `etc/profile.d/60-templaros-garden.sh`.
+    payload: &'static str,
+    /// The postrm marker that takes the block back out.
+    postrm_marker: &'static str,
+    /// What the hook is, for diagnostics.
+    name: &'static str,
+}
+
+/// The terminal hooks have to arrive in a file bash reads for an *interactive, non-login*
 /// shell, because that is the only kind a graphical terminal spawns: kitty runs the login wrapper
 /// on macOS only. `/etc/profile.d` is read by `/etc/profile`, and `/etc/profile` is read by login
-/// shells alone — so the hook was packaged, installed, unit-tested and never once loaded, and the
-/// garden heard nothing from a full day at the terminal.
+/// shells alone — so the garden hook was packaged, installed, unit-tested and never once loaded,
+/// and the garden heard nothing from a full day at the terminal.
 ///
 /// `/etc/bash.bashrc` is the one system-wide file that qualifies. It belongs to `base-files`, so
 /// the package appends a marker-guarded line to it from its maintainer scripts rather than
 /// shipping a file over it; this is what fails if that delivery is ever lost again.
 fn garden_hook_delivery_problems(packages: &[serde_json::Value]) -> Vec<String> {
     let mut problems = Vec::new();
+    for hook in [
+        HookDelivery {
+            payload: GARDEN_HOOK_PAYLOAD,
+            postrm_marker: "templaros garden hook",
+            name: "the garden's terminal source",
+        },
+        HookDelivery {
+            payload: COMPLETION_HOOK_PAYLOAD,
+            postrm_marker: "templaros completion hook",
+            name: "the completion hook",
+        },
+    ] {
+        problems.extend(hook_delivery_problems(packages, &hook));
+    }
+    problems
+}
+
+fn hook_delivery_problems(packages: &[serde_json::Value], hook: &HookDelivery) -> Vec<String> {
+    let mut problems = Vec::new();
     let Some(package) = packages.iter().find(|package| {
         package["metadata"]["deb"]["assets"]
             .as_array()
             .is_some_and(|assets| {
                 assets.iter().any(|asset| {
-                    asset.get(1).and_then(serde_json::Value::as_str) == Some(GARDEN_HOOK_PAYLOAD)
+                    asset.get(1).and_then(serde_json::Value::as_str) == Some(hook.payload)
                 })
             })
     }) else {
         problems.push(format!(
-            "no package ships {GARDEN_HOOK_PAYLOAD}: the garden's terminal source has no payload"
+            "no package ships {}: {} has no payload",
+            hook.payload, hook.name
         ));
         return problems;
     };
@@ -1255,17 +1616,15 @@ fn garden_hook_delivery_problems(packages: &[serde_json::Value]) -> Vec<String> 
         .to_owned();
     let Some(scripts) = package["metadata"]["deb"]["maintainer-scripts"].as_str() else {
         problems.push(format!(
-            "{deb_name} ships {GARDEN_HOOK_PAYLOAD} but declares no maintainer-scripts, so \
+            "{deb_name} ships {} but declares no maintainer-scripts, so \
              nothing puts it in {GARDEN_HOOK_DELIVERY}; only a login shell would ever read it \
-             and a graphical terminal never starts one"
+             and a graphical terminal never starts one",
+            hook.payload
         ));
         return problems;
     };
     let scripts = manifest_dir.join(scripts);
-    for (name, must_mention) in [
-        ("postinst", GARDEN_HOOK_PAYLOAD),
-        ("postrm", "templaros garden hook"),
-    ] {
+    for (name, must_mention) in [("postinst", hook.payload), ("postrm", hook.postrm_marker)] {
         let path = scripts.join(name);
         match std::fs::read_to_string(&path) {
             Ok(text) if text.contains(GARDEN_HOOK_DELIVERY) && text.contains(must_mention) => {}
@@ -1290,6 +1649,25 @@ struct DebMetadata {
     deb_assets: Vec<(String, String)>,
     maintainerless: Vec<String>,
     missing_asset_sources: Vec<String>,
+    unbuilt_asset_sources: Vec<String>,
+}
+
+/// Whether a cargo-deb asset source names a workspace build output rather than a static file:
+/// `../../target/preview-codecs/...` escapes the crate directory into the workspace `target/`
+/// tree. Those only exist after their builder runs (`just preview-codecs`), so a missing one on
+/// a fresh checkout means "not built yet", not "wrong path" — the verdict has to say so.
+fn is_workspace_build_output(source: &str) -> bool {
+    use std::path::Component;
+    let mut escapes = false;
+    let mut through_target = false;
+    for component in Path::new(source).components() {
+        match component {
+            Component::ParentDir => escapes = true,
+            Component::Normal(name) if name == "target" => through_target = true,
+            _ => {}
+        }
+    }
+    escapes && through_target
 }
 
 fn deb_metadata(packages: &[serde_json::Value]) -> DebMetadata {
@@ -1301,6 +1679,7 @@ fn deb_metadata(packages: &[serde_json::Value]) -> DebMetadata {
     let mut deb_assets = Vec::new();
     let mut maintainerless = Vec::new();
     let mut missing_asset_sources = Vec::new();
+    let mut unbuilt_asset_sources = Vec::new();
     for package in packages {
         if let Some(deb_name) = package["metadata"]["deb"]["name"].as_str() {
             let crate_name = package["name"].as_str().unwrap_or("?");
@@ -1346,11 +1725,21 @@ fn deb_metadata(packages: &[serde_json::Value]) -> DebMetadata {
                     && !source.contains(['*', '?', '['])
                     && !manifest_dir.join(source).exists()
                 {
-                    missing_asset_sources.push(format!(
-                        "{deb_name}: asset source {source} does not exist \
-                         (cargo-deb resolves it relative to {})",
-                        manifest_dir.display()
-                    ));
+                    if is_workspace_build_output(source) {
+                        unbuilt_asset_sources.push(format!(
+                            "{deb_name}: asset source {source} is not built yet \
+                             (cargo-deb resolves it relative to {}); run the builder first \
+                             (`just preview-codecs` for target/preview-codecs) — if it is \
+                             still missing after a build, the path itself is wrong",
+                            manifest_dir.display()
+                        ));
+                    } else {
+                        missing_asset_sources.push(format!(
+                            "{deb_name}: asset source {source} does not exist \
+                             (cargo-deb resolves it relative to {})",
+                            manifest_dir.display()
+                        ));
+                    }
                 }
             }
         }
@@ -1362,6 +1751,7 @@ fn deb_metadata(packages: &[serde_json::Value]) -> DebMetadata {
         deb_assets,
         maintainerless,
         missing_asset_sources,
+        unbuilt_asset_sources,
     }
 }
 
@@ -1718,9 +2108,37 @@ fn shipped_destinations(
             )
         })
         .collect();
-    let debian = root.join("debian");
-    if debian.is_dir() {
-        for entry in std::fs::read_dir(&debian).context("reading debian/")? {
+    let registered = fork_packages(root)?;
+    let mut directories = vec![(root.join("debian"), None)];
+    let forks = root.join("distro/forks");
+    if forks.is_dir() {
+        for entry in std::fs::read_dir(&forks).context("reading external package overlays")? {
+            let debian = entry?.path().join("debian");
+            let control = debian.join("control");
+            if !control.is_file() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&control)
+                .with_context(|| format!("reading {}", control.display()))?;
+            let packages: BTreeSet<String> = text
+                .lines()
+                .filter_map(|line| line.strip_prefix("Package:"))
+                .map(str::trim)
+                .filter(|package| registered.contains(*package))
+                .map(str::to_owned)
+                .collect();
+            if !packages.is_empty() {
+                directories.push((debian, Some(packages)));
+            }
+        }
+    }
+    for (debian, packages) in directories {
+        if !debian.is_dir() {
+            continue;
+        }
+        for entry in
+            std::fs::read_dir(&debian).with_context(|| format!("reading {}", debian.display()))?
+        {
             let path = entry?.path();
             if path.extension().and_then(|e| e.to_str()) != Some("install") {
                 continue;
@@ -1730,9 +2148,18 @@ fn shipped_destinations(
                 .and_then(|s| s.to_str())
                 .unwrap_or("?")
                 .to_owned();
+            if packages
+                .as_ref()
+                .is_some_and(|packages| !packages.contains(&package))
+            {
+                continue;
+            }
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
             for line in text.lines() {
+                if line.trim_start().starts_with('#') {
+                    continue;
+                }
                 let mut fields = line.split_whitespace();
                 let (Some(source), Some(destination)) = (fields.next(), fields.next()) else {
                     continue;
@@ -1761,16 +2188,57 @@ fn shipped_destinations(
 /// This is the leg `packaging_problems` cannot cover. That one checks `debian/control` and the
 /// crate metadata against *each other*, so a binary missing from both looks perfectly consistent —
 /// which is exactly how `templar-comp` came to have a unit pointing at `/usr/bin/templar-comp` that no
-/// package shipped. A unit is a promise that a binary will be at a path; this checks the promise
-/// against what is actually installed there.
-fn unshipped_unit_binaries(units: &[(String, String)], shipped: &BTreeSet<String>) -> Vec<String> {
-    units
-        .iter()
-        .filter(|(_, binary)| !shipped.contains(binary.as_str()))
-        .map(|(unit, binary)| {
-            format!("{unit}: ExecStart={binary}, but no package installs that path")
-        })
-        .collect()
+/// package shipped. Native distribution executables are also valid, but only if their actual
+/// dpkg owner is a declared dependency of the package installing this particular unit.
+fn unshipped_unit_binaries(
+    units: &[(String, String)],
+    installed: &BTreeSet<String>,
+    assets: &[(String, String)],
+    dependencies: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<Vec<String>> {
+    let mut problems = Vec::new();
+    for (unit, binary) in units {
+        if installed.contains(binary) {
+            continue;
+        }
+        let unit_package = assets
+            .iter()
+            .find(|(path, _)| path.rsplit('/').next() == Some(unit.as_str()))
+            .map(|(_, package)| package);
+        let mut provided = false;
+        if let Some(declared) = unit_package.and_then(|package| dependencies.get(package)) {
+            let output = std::process::Command::new("dpkg-query")
+                .args(["--search", binary])
+                .output()
+                .context("querying native Ubuntu executable ownership")?;
+            if output.status.success() {
+                provided = String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                    let Some((owner, path)) = line.rsplit_once(": ") else {
+                        return false;
+                    };
+                    if path != binary {
+                        return false;
+                    }
+                    let owner = owner.split(':').next().unwrap_or(owner);
+                    declared.iter().any(|entry| {
+                        entry.split('|').any(|alternative| {
+                            alternative
+                                .split_whitespace()
+                                .next()
+                                .and_then(|name| name.split(':').next())
+                                == Some(owner)
+                        })
+                    })
+                });
+            }
+        }
+        if !provided {
+            problems.push(format!(
+                "{unit}: ExecStart={binary}, but no source asset or declared native package provides that path"
+            ));
+        }
+    }
+    Ok(problems)
 }
 
 /// Every service names its authority, its lifetime, its recovery and its deadlines, and its
@@ -2308,8 +2776,9 @@ fn copyright(root: &Path) -> Result<()> {
 #[cfg(test)]
 mod extraction_tests {
     use super::{
-        GARDEN_HOOK_PAYLOAD, VendoredAssets, chord_route_problems, client_interface_names,
-        colliding_destinations, declared_actions, dependency_drift, garden_hook_delivery_problems,
+        COMPLETION_HOOK_PAYLOAD, GARDEN_HOOK_PAYLOAD, VendoredAssets, check_interfaces,
+        check_proxies, chord_route_problems, client_interface_names, colliding_destinations,
+        declared_actions, dependency_drift, garden_hook_delivery_problems,
         manifest_executable_is_provided, metapackage_dependency_problems, packaging_problems,
         parse_control_depends, parse_control_packages, parse_depends_list, seed_problems,
         server_interface_names, service_inventory_problems, unlicensed_assets,
@@ -2502,21 +2971,66 @@ mod extraction_tests {
     }
 
     #[test]
-    fn check_proxies_goes_green_when_every_client_has_a_server() {
-        let server =
-            server_interface_names(r#"#[zbus::interface(name = "org.templaros.Widgets1")]"#);
-        let client = client_interface_names(r#"#[proxy(interface = "org.templaros.Widgets1")]"#);
-        let orphaned: Vec<&String> = client.iter().filter(|n| !server.contains(*n)).collect();
-        assert!(orphaned.is_empty());
-    }
-
-    #[test]
-    fn check_proxies_goes_red_for_a_client_interface_with_no_server() {
-        let server =
-            server_interface_names(r#"#[zbus::interface(name = "org.templaros.Widgets1")]"#);
-        let client = client_interface_names(r#"#[proxy(interface = "org.templaros.Ghost1")]"#);
-        let orphaned: Vec<&String> = client.iter().filter(|n| !server.contains(*n)).collect();
-        assert_eq!(orphaned, [&"org.templaros.Ghost1".to_owned()]);
+    fn shipping_interface_audits_reject_missing_contracts_and_fixture_only_servers() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let service = root.join("services/audit-consumer");
+        std::fs::create_dir_all(service.join("src")).unwrap();
+        std::fs::create_dir_all(service.join("tests")).unwrap();
+        std::fs::create_dir_all(root.join("interfaces/dbus")).unwrap();
+        std::fs::write(
+            service.join("Cargo.toml"),
+            "[package]\nname = \"audit-consumer\"\n",
+        )
+        .unwrap();
+        let production = r##"
+            #[cfg(unix)]
+            #[zbus::interface(name = "org.templaros.Shipping1")]
+            impl Shipping {}
+            #[cfg (
+                test
+            )]
+            mod fixtures {
+                const DELIMITERS: &str = r#"} { #[cfg(test)]"#;
+                const UNICODE: &str = "é";
+                /* } /* { */ } */
+                #[zbus::interface(name = "org.templaros.Fixture1")]
+                impl Fixture {}
+                #[proxy(interface = "org.templaros.FixtureClient1")]
+                trait FixtureClient {}
+            }
+            #[proxy(interface = "org.templaros.Fixture1")]
+            trait ShippingClient {}
+        "##;
+        std::fs::write(service.join("src/lib.rs"), production).unwrap();
+        std::fs::write(
+            service.join("tests/private_bus.rs"),
+            r#"#[zbus::interface(name = "org.templaros.IntegrationFixture1")] impl Fixture {}"#,
+        )
+        .unwrap();
+        let undocumented = check_interfaces(root).unwrap_err().to_string();
+        assert_eq!(undocumented, "2 interface(s) undocumented");
+        for name in ["Shipping1", "Fixture1"] {
+            std::fs::write(
+                root.join(format!("interfaces/dbus/org.templaros.{name}.xml")),
+                format!("<node><interface name=\"org.templaros.{name}\"/></node>"),
+            )
+            .unwrap();
+        }
+        check_interfaces(root).unwrap();
+        assert_eq!(
+            check_proxies(root).unwrap_err().to_string(),
+            "1 client interface(s) with no server implementation"
+        );
+        std::fs::write(
+            service.join("src/lib.rs"),
+            format!(
+                "{production}\n#[zbus::interface(name = \"org.templaros.Fixture1\")] impl Real {{}}"
+            ),
+        )
+        .unwrap();
+        check_interfaces(root).unwrap();
+        check_proxies(root).unwrap();
     }
 
     #[test]
@@ -2663,16 +3177,19 @@ mod extraction_tests {
     }
 
     /// The real tree first — the check has to hold for what is actually shipped — and then the
-    /// regression it exists for: shipping the hook to `/etc/profile.d` and calling it delivered.
+    /// regression it exists for: shipping the hooks to `/etc/profile.d` and calling them delivered.
     #[test]
-    fn the_garden_hook_must_reach_a_file_a_non_login_interactive_bash_reads() {
+    fn the_terminal_hooks_must_reach_a_file_a_non_login_interactive_bash_reads() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cli/templar/Cargo.toml");
         let real = serde_json::json!({
             "manifest_path": manifest.to_string_lossy(),
             "metadata": { "deb": {
                 "name": "templaros-cli",
                 "maintainer-scripts": "../../packaging/templaros-cli",
-                "assets": [["../../session/profile.d/60-templaros-garden.sh", GARDEN_HOOK_PAYLOAD, "644"]],
+                "assets": [
+                    ["../../session/profile.d/60-templaros-garden.sh", GARDEN_HOOK_PAYLOAD, "644"],
+                    ["../../session/profile.d/61-templaros-completion.sh", COMPLETION_HOOK_PAYLOAD, "644"],
+                ],
             }},
         });
         assert!(garden_hook_delivery_problems(std::slice::from_ref(&real)).is_empty());
@@ -2683,13 +3200,17 @@ mod extraction_tests {
             .unwrap()
             .remove("maintainer-scripts");
         let problems = garden_hook_delivery_problems(&[profile_d_only]);
-        assert_eq!(problems.len(), 1);
-        assert!(problems[0].contains("/etc/bash.bashrc"));
+        assert_eq!(problems.len(), 2);
+        assert!(
+            problems
+                .iter()
+                .all(|problem| problem.contains("/etc/bash.bashrc"))
+        );
 
         assert_eq!(
             garden_hook_delivery_problems(&[serde_json::json!({})]).len(),
-            1,
-            "a tree that ships the payload nowhere is a mismatch too"
+            2,
+            "a tree that ships the payloads nowhere is a mismatch too"
         );
     }
 
@@ -2871,20 +3392,10 @@ mod extraction_tests {
             "/usr/bin/templar-comp".to_owned(),
         )];
         let shipped = BTreeSet::from(["/usr/bin/templar-shell".to_owned()]);
-        let problems = unshipped_unit_binaries(&units, &shipped);
+        let problems = unshipped_unit_binaries(&units, &shipped, &[], &BTreeMap::new()).unwrap();
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("templar-comp.service"));
         assert!(problems[0].contains("/usr/bin/templar-comp"));
-    }
-
-    #[test]
-    fn check_packaging_accepts_a_unit_whose_binary_is_shipped() {
-        let units = vec![(
-            "templar-sessiond.service".to_owned(),
-            "/usr/libexec/templar-sessiond".to_owned(),
-        )];
-        let shipped = BTreeSet::from(["/usr/libexec/templar-sessiond".to_owned()]);
-        assert!(unshipped_unit_binaries(&units, &shipped).is_empty());
     }
 
     #[test]
@@ -2921,5 +3432,108 @@ mod extraction_tests {
         assert_eq!(missing.len(), 1);
         assert!(missing[0].contains("distro/deploy/components.toml"));
         assert!(missing[0].contains("templaros-ghost"));
+    }
+
+    #[test]
+    fn workspace_build_output_sources_get_a_not_built_yet_verdict() {
+        // `../../target/preview-codecs/...` does not exist until `just preview-codecs` runs, so
+        // on a fresh checkout it must read as "not built yet" with the remedy — not as a wrong
+        // path, which sends the reader to fix a Cargo.toml that is already correct.
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("Cargo.toml").display().to_string();
+        let packages = vec![serde_json::json!({
+            "name": "templar-filed",
+            "manifest_path": manifest_path,
+            "authors": ["TemplarOS"],
+            "metadata": { "deb": { "name": "templaros-filed", "assets": [
+                ["../../target/preview-codecs/templar-preview-codecs", "usr/libexec/templar-preview-codecs", "755"],
+            ]}},
+        })];
+        let metadata = crate::deb_metadata(&packages);
+        assert!(metadata.missing_asset_sources.is_empty());
+        assert_eq!(metadata.unbuilt_asset_sources.len(), 1);
+        assert!(metadata.unbuilt_asset_sources[0].contains("not built yet"));
+        assert!(metadata.unbuilt_asset_sources[0].contains("just preview-codecs"));
+    }
+
+    #[test]
+    fn workspace_build_output_classification() {
+        assert!(crate::is_workspace_build_output(
+            "../../target/preview-codecs/templar-preview-codecs"
+        ));
+        assert!(crate::is_workspace_build_output("../target/gen/output"));
+        assert!(!crate::is_workspace_build_output(
+            "target/release/templar-x"
+        ));
+        assert!(!crate::is_workspace_build_output(
+            "distro/deploy/components.toml"
+        ));
+        assert!(!crate::is_workspace_build_output("../sibling-crate/data"));
+    }
+
+    #[test]
+    fn xtask_takes_one_subcommand_per_invocation() {
+        use clap::Parser as _;
+        assert!(crate::Cli::try_parse_from(["xtask", "tree-check"]).is_ok());
+        // A second subcommand is rejected rather than silently ignored: `xtask tree-check
+        // deps-check` used to read like a family run and only ever ran the first word.
+        assert!(crate::Cli::try_parse_from(["xtask", "tree-check", "deps-check"]).is_err());
+    }
+
+    #[test]
+    fn xtask_help_says_one_subcommand_per_invocation() {
+        use clap::CommandFactory as _;
+        let help = crate::Cli::command().render_long_help().to_string();
+        assert!(help.contains("One subcommand per invocation"));
+    }
+
+    #[test]
+    fn msrv_agreement_ignores_the_toolchain_patch_version() {
+        assert!(crate::msrv_mismatches("1.97", "1.97", "1.97.1").is_empty());
+    }
+
+    #[test]
+    fn msrv_mismatches_name_the_file_that_drifted() {
+        let problems = crate::msrv_mismatches("1.97", "1.93", "1.97.1");
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("clippy.toml"));
+        let problems = crate::msrv_mismatches("1.93", "1.93", "1.97.1");
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].contains("rust-toolchain.toml"));
+    }
+
+    #[test]
+    fn check_logging_names_the_main_that_formats_without_an_ansi_guard() {
+        // A scratch root with one guarded and one unguarded main: only the unguarded one
+        // may be reported. Every other LOGGING_MAINS entry is absent and reported as such,
+        // which is the point — the list must track the tree.
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, guarded) in [
+            ("shell/templar-shell/src/main.rs", true),
+            ("services/templar-filed/src/main.rs", false),
+        ] {
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let init = if guarded {
+                "tracing_subscriber::fmt().with_ansi(std::io::stdout().is_terminal()).init();"
+            } else {
+                "tracing_subscriber::fmt().init();"
+            };
+            std::fs::write(&path, format!("fn main() {{ {init} }}\n")).unwrap();
+        }
+        let missing = crate::mains_missing_ansi_guard(dir.path());
+        assert!(
+            missing
+                .iter()
+                .any(|entry| entry.contains("services/templar-filed/src/main.rs")
+                    && entry.contains(".with_ansi(")),
+            "{missing:?}"
+        );
+        assert!(
+            !missing
+                .iter()
+                .any(|entry| entry.contains("shell/templar-shell/src/main.rs")),
+            "{missing:?}"
+        );
     }
 }

@@ -9,16 +9,7 @@
 //! already says exactly this is a **skip** — no change, no generation bump, counted in
 //! [`Applied::skipped`].
 
-use crate::{
-    IndexError, Result,
-    generation::{fold, refresh_fts},
-    model::{
-        Coverage, EntryId, EntryKind, EntryMeta, Generation, NativePath, ObjectKey, RootId,
-        RootPolicy, StaleReason, now_ms,
-    },
-    schema,
-};
-use rusqlite::{Connection, Transaction};
+use crate::model::{EntryId, EntryKind, EntryMeta, Generation, NativePath, RootId, StaleReason};
 use serde::{Deserialize, Serialize};
 
 /// Where a batch came from. Recorded for diagnostics; it does not change the semantics.
@@ -183,6 +174,19 @@ pub trait ChangeSink: Send + Sync + std::fmt::Debug {
     fn metadata_repair_requested(&self, _root: RootId) {}
 }
 
+#[cfg(feature = "store")]
+pub(crate) use store::{append_change, prune_changes, read_latest_change_seq};
+
+#[cfg(feature = "store")]
+mod store {
+use super::{
+    RootId, NativePath, EntryKind, MutationBatch, Applied,
+    ChangesBatch, StaleReason, Change, Generation, Mutation, EntryMeta, ChangeOp, EntryId,
+};
+use crate::{IndexError, Result, generation::{fold, refresh_fts}, schema,
+    model::{Coverage, ObjectKey, RootPolicy, now_ms}};
+use rusqlite::{Connection, Transaction};
+
 /// Each touched root's path and policy, read once per batch so the live-write path can stamp the
 /// same coverage tier the scanner would have.
 ///
@@ -221,7 +225,8 @@ impl crate::Index {
     /// Applies a batch: one transaction, one generation, one notification.
     ///
     /// A batch larger than `max_batch` is split, and each part commits on its own — a watcher
-    /// storm must not turn into one unbounded transaction.
+    /// storm must not turn into one unbounded transaction. Bounded delta catch-up uses
+    /// [`Self::apply_atomic`] instead, so its checkpoint has exactly one commit boundary.
     // `batch` is taken by value: this is the frozen C5 contract signature (F1-contract.md §7),
     // which F2/Files/CLI already code against. The chunk-splitting path below needs an owned
     // `MutationSource` to build each sub-batch; the transaction path only ever borrows it.
@@ -244,11 +249,17 @@ impl crate::Index {
             }
             return Ok(total);
         }
+        self.apply_atomic(&batch)
+    }
+
+    /// Apply an already bounded acquisition as one transaction/generation. The delta decoder's
+    /// transfer cap bounds this batch; it must not publish only a prefix against a checkpoint.
+    pub fn apply_atomic(&self, batch: &MutationBatch) -> Result<Applied> {
 
         let max_changes = self.config().max_changes;
-        let tiers = self.tiers_for(&batch);
+        let tiers = self.tiers_for(batch);
         let (applied, invalidations, stale_aggregates) = self.with_write(|connection| {
-            self.apply_transaction(connection, &batch, &tiers, max_changes)
+            self.apply_transaction(connection, batch, &tiers, max_changes)
         })?;
 
         for (root, reason) in invalidations {
@@ -812,7 +823,7 @@ fn place_at(
             SET path_bytes = ?1, path_display = ?2, name_bytes = ?3, name_display = ?4,
                 name_fold = ?5, kind = ?6, size_bytes = ?7, alloc_bytes = ?8, mtime_ns = ?9,
                 ctime_ns = ?10, mode = ?11, hidden = ?12, dev = ?13, inode = ?14, nlink = ?15,
-                coverage = ?16,
+                coverage = ?16, parent_id = ?19,
                 written_generation = ?17, last_seen_generation = ?17, deleted_generation = NULL
           WHERE entry_id = ?18",
         rusqlite::params![
@@ -834,6 +845,7 @@ fn place_at(
             coverage.as_i64(),
             generation_id,
             source.0,
+            parent_id(transaction, root, to)?,
         ],
     )?;
     Ok((source, 0))
@@ -888,7 +900,7 @@ fn rename_descendants(
         let mut statement = transaction.prepare(
             "SELECT entry_id, path_bytes FROM entries
               WHERE root_id = ?1 AND deleted_generation IS NULL
-                AND path_bytes >= ?2 AND path_bytes < ?3",
+                AND path_bytes >= ?2 AND path_bytes < ?3 ORDER BY path_bytes",
         )?;
         let mapped = statement.query_map(rusqlite::params![root.0, low.clone(), high], |row| {
             Ok((row.get(0)?, row.get(1)?))
@@ -902,7 +914,7 @@ fn rename_descendants(
     let prefix_len = low.len() - 1; // the "from" path without its trailing separator
     let mut statement = transaction.prepare(
         "UPDATE entries SET path_bytes = ?1, path_display = ?2, written_generation = ?3,
-                            last_seen_generation = ?3
+                            last_seen_generation = ?3, parent_id = ?5
           WHERE entry_id = ?4",
     )?;
     let mut descendants = 0u64;
@@ -922,12 +934,17 @@ fn rename_descendants(
             take_over(transaction, generation_id, victim, EntryId(id))?;
             tombstone(transaction, generation_id, EntryId(id))?;
             collided += i64::from(victim_was_live);
+            transaction.execute(
+                "UPDATE entries SET parent_id = ?1 WHERE entry_id = ?2",
+                rusqlite::params![parent_id(transaction, root, &rebuilt)?, victim.0],
+            )?;
         } else {
             statement.execute(rusqlite::params![
                 rebuilt.as_bytes(),
                 rebuilt.display(),
                 generation_id,
-                id
+                id,
+                parent_id(transaction, root, &rebuilt)?,
             ])?;
         }
         descendants += 1;
@@ -1096,6 +1113,19 @@ fn live_row(
         })
 }
 
+fn parent_id(transaction: &Transaction<'_>, root: RootId, path: &NativePath) -> Result<Option<i64>> {
+    use rusqlite::OptionalExtension as _;
+    let Some(parent) = path.parent() else {
+        return Ok(None);
+    };
+    Ok(transaction.query_row(
+        "SELECT entry_id FROM entries
+          WHERE root_id = ?1 AND path_bytes = ?2 AND deleted_generation IS NULL",
+        rusqlite::params![root.0, parent.as_bytes()],
+        |row| row.get(0),
+    ).optional()?)
+}
+
 fn write_entry(
     transaction: &Transaction<'_>,
     generation: Generation,
@@ -1105,16 +1135,7 @@ fn write_entry(
     coverage: Coverage,
 ) -> Result<EntryId> {
     let name = path.file_name().unwrap_or_else(|| path.clone());
-    let parent_id: Option<i64> = match path.parent() {
-        Some(parent) => transaction
-            .query_row(
-                "SELECT entry_id FROM entries WHERE root_id = ?1 AND path_bytes = ?2",
-                rusqlite::params![root.0, parent.as_bytes()],
-                |row| row.get(0),
-            )
-            .ok(),
-        None => None,
-    };
+    let parent_id = parent_id(transaction, root, path)?;
     transaction.execute(
         "INSERT INTO entries
            (root_id, parent_id, name_bytes, name_display, name_fold, path_bytes, path_display,
@@ -1249,6 +1270,7 @@ pub(crate) fn read_latest_change_seq(connection: &rusqlite::Connection) -> Resul
 mod tests {
     use super::*;
     use crate::{Index, IndexConfig, ScanOptions, model::RootPolicy};
+    use crate::MutationSource;
     use std::{
         collections::BTreeMap,
         path::{Path, PathBuf},
@@ -1754,4 +1776,5 @@ mod tests {
             "the batch cost grew with the tree: {small:?} at 5,000 entries, {large:?} at 20,000"
         );
     }
+}
 }

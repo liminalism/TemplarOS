@@ -1,7 +1,6 @@
-//! The Home Field's document as the shell keeps it: the persisted layout (one day; for now an
-//! in-session one) *merged* with what is live — active applications, every window the compositor
-//! reports, and the standard Home drawers — so useful tiles appear without covering the field in
-//! every installed desktop entry, and keep their places once they have.
+//! Persisted Home geometry merged with verified live windows. Garden membership and tending
+//! are server authority: this module applies snapshots and preserves user placement, rather
+//! than deriving new projects or manufacturing a global machine-facts Files object.
 //!
 //! Pure: takes snapshots, returns ops. The background refresh hands the result to
 //! [`merge`], and everything it decides is expressed as `templar_field::FieldOp`s applied through
@@ -9,7 +8,6 @@
 //! exact inverses) and a test needs neither a bus nor a compositor.
 
 use std::path::Path;
-use templar_field::field::Placement;
 use templar_field::field::Tray;
 use templar_field::{
     Cell, FieldDocument, FieldError, FieldOp, Landing, PanelId, Span, SpanRange, Tile, TileId,
@@ -120,7 +118,7 @@ pub fn files_tile_id() -> TileId {
 
 /// The drawer a widget tile stood for, back when each drawer was its own tile.
 ///
-/// Nothing places one of these any more — [`merge_files`] places the single Files object instead —
+/// Nothing places these any more; saved layouts are retired by [`migrate_drawer_tiles`].
 /// but a saved document written before that is still out there, and this is how
 /// [`migrate_drawer_tiles`] recognises one. It stays for as long as such a document might exist,
 /// which is to say for good.
@@ -149,12 +147,18 @@ pub fn tile_id_for(key: &str) -> TileId {
 pub fn merge(doc: &mut FieldDocument, live: &LiveState<'_>) -> Vec<FieldOp> {
     let mut applied = Vec::new();
     migrate_system_tiles(doc, &mut applied);
-    migrate_desktop_tray(doc, &mut applied);
-    // The eight drawer tiles are superseded by the single Files
-    // object, and the migration has to run before `merge_files` so the replacement can inherit
-    // the place the block held instead of landing in the default corner.
     migrate_drawer_tiles(doc, &mut applied);
-    merge_files(doc, &mut applied);
+    if doc.tile(files_tile_id()).is_some_and(
+        |tile| matches!(&tile.kind, TileKind::Widget { widget, .. } if widget == FILES_WIDGET),
+    ) {
+        try_apply(
+            doc,
+            FieldOp::Remove {
+                id: files_tile_id(),
+            },
+            &mut applied,
+        );
+    }
     merge_projects(doc, live, &mut applied);
     adopt_loose_files(doc, &mut applied);
     merge_windows(doc, live.toplevels, &mut applied);
@@ -375,41 +379,18 @@ pub fn drawer_panel_id() -> PanelId {
 /// The span range the Files object accepts: a 2×2 floor so a busy field can compact it, a 4×3
 /// preferred size — wide enough for the pinned locations to sit beside the recent list — and the
 /// widget class's own 8×6 ceiling.
+#[cfg(test)]
 fn files_spans(doc: &FieldDocument) -> SpanRange {
     let class = SpanRange::for_kind(&files_kind(), doc.cols, doc.rows);
     SpanRange::new(Span::new(2, 2), Span::new(4, 3), class.max)
 }
 
+#[cfg(test)]
 fn files_kind() -> TileKind {
     TileKind::Widget {
         widget: FILES_WIDGET.to_owned(),
         scope: None,
     }
-}
-
-/// The one Files object, in the corner the eight drawers used to fill between them.
-///
-/// One object with many sizes of representation, rather than eight shortcuts to the same file
-/// service: Downloads, Recent, Documents, Media, Drives, Operations, Trash and Projects were
-/// eight headings for one thing, and the block of them was a third of the field's width before a
-/// single window existed.
-fn merge_files(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
-    let id = files_tile_id();
-    if doc.tile(id).is_some() {
-        return;
-    }
-    let tile = Tile {
-        id,
-        kind: files_kind(),
-        title: "Files".to_owned(),
-        spans: files_spans(doc),
-        accent: None,
-    };
-    let landing = Landing {
-        container: None,
-        cell: Cell::new(0, 0),
-    };
-    try_apply(doc, FieldOp::Place { tile, landing }, applied);
 }
 
 /// Take every retired system widget off a saved field.
@@ -432,20 +413,6 @@ fn migrate_system_tiles(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
         .map(|(_, id)| id)
         .collect();
     for id in retired {
-        try_apply(doc, FieldOp::Remove { id }, applied);
-    }
-}
-
-/// Remove the Desktop tray the shell used to place on its own (`folder:desktop`). Desktop is an
-/// ordinary garden Place now, whose tile wears `garden_tile_id`, so a saved field that still
-/// carries the tray would show Desktop twice. Kind- and path-checked like every migration here:
-/// only a Folder tile at that id goes, and only the one tile.
-fn migrate_desktop_tray(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
-    let id = tile_id_for("folder:desktop");
-    if doc
-        .tile(id)
-        .is_some_and(|tile| matches!(tile.kind, TileKind::Folder { .. }))
-    {
         try_apply(doc, FieldOp::Remove { id }, applied);
     }
 }
@@ -488,22 +455,6 @@ fn migrate_drawer_tiles(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
         }
         return;
     }
-    // The first of their positions in the order Home originally placed them, and the largest
-    // span any of them had grown to: a person who made Downloads a full-width treemap gets a
-    // Files object that size rather than the default corner tile.
-    let placements: Vec<Placement> = legacy
-        .iter()
-        .filter_map(|id| doc.location(*id))
-        .map(|located| located.placement)
-        .collect();
-    let inherited = placements.first().map(|first| {
-        let largest = placements
-            .iter()
-            .map(|placement| placement.span)
-            .max_by_key(|span| span.cells())
-            .unwrap_or(first.span);
-        (first.cell, largest)
-    });
     for id in legacy {
         try_apply(doc, FieldOp::Remove { id }, applied);
     }
@@ -516,29 +467,6 @@ fn migrate_drawer_tiles(doc: &mut FieldDocument, applied: &mut Vec<FieldOp>) {
             applied,
         );
     }
-    if doc.tile(files_tile_id()).is_some() {
-        // A field that already carries the replacement wanted only the leftovers gone; placing a
-        // second one is impossible anyway, and asking would move the tile in use.
-        return;
-    }
-    let Some((cell, span)) = inherited else {
-        // Every drawer was on the shelf: nothing to inherit, and `merge_files` lands the
-        // replacement in its own corner.
-        return;
-    };
-    let spans = files_spans(doc);
-    let tile = Tile {
-        id: files_tile_id(),
-        kind: files_kind(),
-        title: "Files".to_owned(),
-        spans: SpanRange::new(spans.min, span.clamp(spans.min, spans.max), spans.max),
-        accent: None,
-    };
-    let landing = Landing {
-        container: None,
-        cell,
-    };
-    try_apply(doc, FieldOp::Place { tile, landing }, applied);
 }
 
 /// Projects from the right edge, stacked down. Add-only: a project tile is never removed by a
@@ -819,7 +747,7 @@ mod tests {
     use super::*;
     // The drawer fixture rebuilds a saved field that still had a panel; nothing on Home creates
     // one any more, so these live here rather than at the top of the module.
-    use templar_field::{Arrangement, Panel};
+    use templar_field::{Arrangement, Panel, Placement};
     use templar_window::{Layer, Rect};
 
     fn toplevel(id: u64, app: Option<&str>, title: &str, shelved: bool) -> ShellToplevel {
@@ -838,6 +766,7 @@ mod tests {
             geometry: Rect::new(0, 0, 640, 480),
             layer: Layer::Normal,
             group: None,
+            tab_count: None,
         }
     }
 
@@ -921,7 +850,6 @@ mod tests {
             doc = apply(&doc, &op).expect("the folder window places").0;
         }
         let shelved: Vec<TileId> = [
-            files_tile_id(),
             folder_tile_id(desktop),
             tile_id_for("app:org.templaros.Files"),
         ]
@@ -970,8 +898,8 @@ mod tests {
             projects: &[],
         };
         let ops = merge(&mut doc, &live);
-        assert_eq!(ops.len(), 3);
-        assert_eq!(doc.tiles.len(), 3);
+        assert_eq!(ops.len(), 2);
+        assert_eq!(doc.tiles.len(), 2);
         for window in &windows {
             let tile = session_tile_for(&doc, window).expect("every open window has an entry");
             assert_eq!(
@@ -988,12 +916,11 @@ mod tests {
                 .iter()
                 .any(|tile| matches!(tile.kind, TileKind::App { .. }))
         );
-        assert_eq!(doc.located.len(), 1);
-
-        let files = files_tile_id();
-        let located = doc.location(files).expect("the Files object is placed");
-        assert_eq!(located.placement.cell, Cell::new(0, 0));
-        assert_eq!(located.placement.span, Span::new(4, 3));
+        assert!(doc.located.is_empty());
+        assert!(
+            doc.tile(files_tile_id()).is_none(),
+            "machine facts stay off Home"
+        );
 
         // A second merge with the same state changes nothing.
         let before = doc.clone();
@@ -1092,16 +1019,9 @@ mod tests {
             );
         }
         assert!(doc.panel(drawer_panel_id()).is_none(), "the panel went too");
-        let located = doc.location(files_tile_id()).expect("the Files object");
-        assert_eq!(
-            located.placement.cell,
-            Cell::new(6, 4),
-            "the replacement did not inherit the first of their places"
-        );
-        assert_eq!(
-            located.placement.span,
-            Span::new(4, 3),
-            "the replacement did not inherit the largest of their sizes"
+        assert!(
+            doc.tile(files_tile_id()).is_none(),
+            "Files remains available through its role, not Home"
         );
         // Idempotent: a second merge of the same state asks for nothing.
         assert!(merge(&mut doc, &LiveState::default()).is_empty());
@@ -1138,11 +1058,9 @@ mod tests {
             doc.tile(tile_id_for("drawer:Recent")).is_none(),
             "the leftover drawer is gone"
         );
-        assert_eq!(
-            doc.location(files_tile_id())
-                .map(|located| located.placement.cell),
-            Some(chosen),
-            "the tile a person is already using was moved"
+        assert!(
+            doc.tile(files_tile_id()).is_none(),
+            "the retired Files tile is removed"
         );
     }
 
@@ -1468,60 +1386,6 @@ mod tests {
         );
     }
 
-    /// Home merges no Desktop tray of its own any more.
-    ///
-    /// The permanent tray was the one Folder tile on the field the person never chose, and it
-    /// carried a Place's roles row pointing back at itself, so it manufactured its own evidence:
-    /// after a real day of work the garden held exactly one place, `~/Desktop`, grown out of
-    /// Home's chrome. Desktop is an ordinary Place now — the daemon records one `placed-on-home`
-    /// for it on a first run, so it arrives pinned and unpin, hide and recession then work on it
-    /// like any other. An existing field keeps whatever Desktop tile it already has: nothing
-    /// here removes one.
-    /// A field saved before Desktop became a garden Place still carries the shell's own tray at
-    /// `folder:desktop`; the merge removes it, once, and leaves any other folder tile alone.
-    #[test]
-    fn a_saved_desktop_tray_is_removed_by_the_merge() {
-        let mut doc = FieldDocument::new("eDP-1", 16, 8);
-        let tray = Tile {
-            id: tile_id_for("folder:desktop"),
-            kind: TileKind::Folder {
-                path: "/home/dk/Desktop".into(),
-            },
-            title: "Desktop".to_owned(),
-            spans: SpanRange::new(Span::new(2, 2), Span::new(2, 2), Span::new(2, 2)),
-            accent: None,
-        };
-        let other = Tile {
-            id: templar_field::garden::garden_tile_id(Path::new("/home/dk/Desktop")),
-            kind: TileKind::Folder {
-                path: "/home/dk/Desktop".into(),
-            },
-            title: "Desktop".to_owned(),
-            spans: SpanRange::new(Span::new(2, 2), Span::new(2, 2), Span::new(2, 2)),
-            accent: None,
-        };
-        for tile in [tray, other] {
-            let landing = Landing {
-                container: None,
-                cell: Cell::new(0, 0),
-            };
-            let (next, _) = apply(&doc, &FieldOp::Place { tile, landing }).expect("placed");
-            doc = next;
-        }
-        merge(&mut doc, &LiveState::default());
-        assert!(
-            doc.tile(tile_id_for("folder:desktop")).is_none(),
-            "the tray is gone"
-        );
-        assert!(
-            doc.tile(templar_field::garden::garden_tile_id(Path::new(
-                "/home/dk/Desktop"
-            )))
-            .is_some(),
-            "the garden's Desktop tile stays"
-        );
-    }
-
     #[test]
     fn home_merges_no_desktop_tray_of_its_own() {
         let mut doc = FieldDocument::new("eDP-1", 16, 8);
@@ -1655,6 +1519,36 @@ mod tests {
 pub fn reconcile_remote(local: &FieldDocument, remote: &FieldDocument) -> Vec<FieldOp> {
     let mut ops = Vec::new();
     for (id, located) in &remote.located {
+        if let Some(tile) = remote.tile(*id)
+            && let TileKind::DesktopDock { path, order } = &tile.kind
+        {
+            let replace = match local.kind_of(*id) {
+                Some(TileKind::Folder { .. }) => true,
+                Some(TileKind::DesktopDock { path: old, .. }) => old != path,
+                _ => false,
+            };
+            if replace {
+                ops.push(FieldOp::Batch {
+                    ops: vec![
+                        FieldOp::Remove { id: *id },
+                        FieldOp::AddTile {
+                            tile: tile.clone(),
+                            at: Some(*located),
+                            container: None,
+                        },
+                    ],
+                });
+                continue;
+            }
+            if let Some(TileKind::DesktopDock { order: old, .. }) = local.kind_of(*id)
+                && old != order
+            {
+                ops.push(FieldOp::DesktopDockOrder {
+                    id: *id,
+                    order: order.clone(),
+                });
+            }
+        }
         match local.location(*id) {
             None => {
                 if let Some(tile) = remote.tile(*id) {
@@ -1683,7 +1577,12 @@ pub fn reconcile_remote(local: &FieldDocument, remote: &FieldDocument) -> Vec<Fi
             .iter()
             .map(|(id, _)| *id)
             .filter(|id| remote.location(*id).is_none())
-            .filter(|id| matches!(local.kind_of(*id), Some(TileKind::Folder { .. })))
+            .filter(|id| {
+                matches!(
+                    local.kind_of(*id),
+                    Some(TileKind::Folder { .. } | TileKind::DesktopDock { .. })
+                )
+            })
             .map(|id| FieldOp::Remove { id }),
     );
     ops
@@ -1691,6 +1590,53 @@ pub fn reconcile_remote(local: &FieldDocument, remote: &FieldDocument) -> Vec<Fi
 
 #[cfg(test)]
 mod reconcile_tests {
+
+    #[test]
+    fn remote_desktop_cutover_preserves_identity_geometry_and_user_order() {
+        let path = Path::new("/home/a/Desktop");
+        let mut local = FieldDocument::new("test", 12, 8);
+        let id = folder_tile_id(path);
+        local = apply(
+            &local,
+            &FieldOp::AddTile {
+                tile: templar_field::folder_tile(id, path, 12, 8),
+                at: Some(templar_field::Located {
+                    container: None,
+                    placement: Placement::new(Cell::new(3, 2), Span::new(3, 2)),
+                }),
+                container: None,
+            },
+        )
+        .unwrap()
+        .0;
+        let location = local.location(id);
+        let mut remote = local.clone();
+        templar_field::ensure_desktop_dock(&mut remote, path).unwrap();
+        for op in reconcile_remote(&local, &remote) {
+            local = apply(&local, &op).unwrap().0;
+        }
+        assert_eq!(local.location(id), location);
+        assert_eq!(local.kind_of(id), remote.kind_of(id));
+        remote = apply(
+            &remote,
+            &FieldOp::DesktopDockOrder {
+                id,
+                order: vec!["L2hvbWUvYS9EZXNrdG9wL2E=".to_owned()],
+            },
+        )
+        .unwrap()
+        .0;
+        let changes = reconcile_remote(&local, &remote);
+        assert!(matches!(
+            changes.as_slice(),
+            [FieldOp::DesktopDockOrder { .. }]
+        ));
+        for op in changes {
+            local = apply(&local, &op).unwrap().0;
+        }
+        assert_eq!(local.location(id), location);
+        assert_eq!(local.kind_of(id), remote.kind_of(id));
+    }
     use super::*;
     use std::path::Path;
     use templar_field::{Cell, Landing, Placement, Span, apply};

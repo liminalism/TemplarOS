@@ -1,8 +1,10 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <!-- Bus: org.templaros.Session (session bus). Path: /org/templaros/Session/AppIdentity.
-     Which application owns this PID/window? Verified through the launch cgroup, never through
-     the client's self-declared app_id. Implemented in crates/templar-appd/src/dbus.rs. -->
+     Which application owns this PID/window? Verified only against a broker/current-user-manager
+     registered ControlGroup whose unit/AppId/instance agree. Self-describing cgroup names and
+     client app/title claims cannot restore or authorize an unknown instance.
+     Implemented in crates/templar-appd/src/dbus.rs. -->
 <node>
   <interface name="org.templaros.AppIdentity1">
     <!-- confidence: 0 unknown, 1 claim-only, 2 verified-launch, 3 verified-launch-claim-mismatch -->

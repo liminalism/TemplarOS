@@ -27,6 +27,10 @@
     <method name="List">
       <arg name="values" type="a(ss)" direction="out"/>
     </method>
+    <!-- One coherent audit revision and typed key capabilities/values as Observation JSON. -->
+    <method name="Inspect">
+      <arg name="observation_json" type="s" direction="out"/>
+    </method>
     <!-- Recent settings_changes audit rows as JSON: {"key","old_json","new_json","origin","at_ms"}. -->
     <method name="Changes">
       <arg name="limit" type="u" direction="in"/>

@@ -49,3 +49,17 @@ It is not in `run.sh`: it is a hands-on gate, not a headless one.
 The remaining `mkosi vm`/real-hardware journey will execute the representative load (browser tab
 set + Rust build + cross-drive copy + video + deliberate pressure + monitor hotplug) and assert
 pointer/switching/audio/overlay/terminal stay usable.
+
+## Native deployment/account contracts
+
+`python3 tests/integration/test-deployment-contract.py` exercises the real helper
+parsers and an owned temporary tree without root, live buses or services: sealed
+bounded secret FD/colon handling, malformed/future/Work-root intent refusal,
+package DB/Work state-bind exclusion, offline GPU-mode-only preservation and
+pre-write legacy whole-/var refusal. Hostd/CLI Rust tests cover native queue
+identity, real factory wiring over an in-process private D-Bus peer, interrupted
+transaction identity and future-schema backups.
+
+These are **not** Btrfs property, native PAM policy, loop/ESP, signature/module or
+physical boot proofs. Run the owned disposable-media and hardware cases in
+`installer/CHECKLIST.md` before adopting explicit RO mode. Default stays RW.

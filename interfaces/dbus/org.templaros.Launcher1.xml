@@ -1,12 +1,42 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <!-- Bus: org.templaros.Session. Path: /org/templaros/Session/Launcher.
-     Launch by canonical AppId into a dedicated unit/cgroup; never executes Exec= through a shell. -->
+     Launch by canonical AppId into a dedicated unit/cgroup; never executes Exec= through a shell.
+     Both systemd transports disable environment expansion: ${HOME}, $VAR and $$ in argv
+     are literal application arguments, including registered desktop/Flatpak fixed arguments.
+     Identity uses the broker/current user-manager ControlGroup record only, not a matching
+     cgroup name or a derived path when the manager property is unavailable. -->
 <node>
   <interface name="org.templaros.Launcher1">
     <method name="Launch">
       <arg name="app_id" type="s" direction="in"/>
       <arg name="arguments" type="as" direction="in"/>
+      <arg name="activation_token" type="s" direction="in"/>
+      <arg name="instance_id" type="s" direction="out"/>
+    </method>
+    <!-- Actual process cwd, for programs without a directory CLI switch.
+         directory accepts an absolute UTF-8 pathname or an absolute local file URI
+         (empty authority or localhost); percent decoding preserves Unix pathname bytes.
+         The target must be an existing absolute directory and is canonicalized.
+         UTF-8 cwd uses systemd WorkingDirectory; native-byte cwd is established by the
+         exec-in-place adapter before the application replaces it, without another PID.
+         Registered executable and typed arguments only; returns one new managed instance.
+         The broker publishes canonical cwd as separate typed launch evidence, never argv. -->
+    <method name="LaunchInDirectoryV1">
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="arguments" type="as" direction="in"/>
+      <arg name="directory" type="s" direction="in"/>
+      <arg name="activation_token" type="s" direction="in"/>
+      <arg name="instance_id" type="s" direction="out"/>
+    </method>
+    <!-- Local file targets with retained desktop Exec fixed arguments and field codes.
+         %f/%F receive native pathname bytes; %u/%U receive percent-encoded URIs.
+         Invalid-UTF8 argv/cwd uses a real exec-in-place adapter inside the same managed cgroup;
+         its bounded typed JSON payload preserves native paths with the shared path_b64 codec.
+         No shell parsing, environment expansion, lossy paths or unregistered executables. -->
+    <method name="LaunchFilesV1">
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="file_uris" type="as" direction="in"/>
       <arg name="activation_token" type="s" direction="in"/>
       <arg name="instance_id" type="s" direction="out"/>
     </method>

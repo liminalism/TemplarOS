@@ -30,6 +30,24 @@
       <arg name="report_json" type="s" direction="out"/>
     </method>
 
+    <!-- Additive generic snapshot; Report retains its shipped application-only shape.
+         instance_id is the historical UUID field name, now internally typed as ResourceId.
+         identity.kind is application|workload|flatpak; scope claims grant no app permissions. -->
+    <method name="Targets">
+      <arg name="targets_json" type="s" direction="out"/>
+    </method>
+    <method name="ResolvePid">
+      <arg name="pid" type="u" direction="in"/>
+      <arg name="resource_id" type="s" direction="out"/>
+    </method>
+    <method name="ExplainTarget">
+      <arg name="resource_id" type="s" direction="in"/>
+      <arg name="explanation_json" type="s" direction="out"/>
+    </method>
+    <!-- Subscribe before snapshot/PID resolution; emitted after the sampled target set changes. -->
+    <signal name="TargetsChanged"/>
+
+
     <!-- Why this instance would (or would not) be chosen next, in words and in numbers. -->
     <method name="ExplainInstance">
       <arg name="instance_id" type="s" direction="in"/>

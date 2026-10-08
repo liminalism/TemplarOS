@@ -1,8 +1,34 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <node>
   <interface name="org.templaros.Notifications1">
+    <!-- Active notification documents, newest first, encoded as JSON. Each document carries
+         the full presentation row the shell renders (app_name, app_id, summary, body, icon,
+         urgency, category, actions, created_ms, expires_ms) plus:
+         - format_version: the presentation document version (1 today).
+         - event_id: the replacement generation. A same-ID replacement carries a new one,
+           so (id, event_id) — never the highest numeric ID — distinguishes content.
+         - sequence: the journal position of this row's last change, or 0 when the row
+           predates the current owner (a restart) and must never toast as new. -->
     <method name="ListActive">
       <arg name="notifications_json" type="as" direction="out"/>
+    </method>
+    <!-- The whole active set at one journal position: {"format_version": 1, "owner_epoch":
+         "...", "sequence": N, "notifications": [...]}. Subscribe to Changed first, then call
+         this; rows already present are existing state, and every later Changed is answered
+         with TransitionsSince. -->
+    <method name="Snapshot">
+      <arg name="snapshot_json" type="s" direction="out"/>
+    </method>
+    <!-- The committed transitions after a Snapshot cursor: {"format_version": 1,
+         "owner_epoch": "...", "sequence": N, "must_resync": false, "transitions": [...]}.
+         Each transition carries sequence, kind (created, replaced, closed, expired,
+         dismissed, action), id, event_id, and the full row for arrivals. An owner_epoch from
+         another owner lifetime, or a cursor that fell out of the bounded ring, answers
+         must_resync with no transitions: re-snapshot instead. -->
+    <method name="TransitionsSince">
+      <arg name="sequence" type="t" direction="in"/>
+      <arg name="owner_epoch" type="s" direction="in"/>
+      <arg name="transitions_json" type="s" direction="out"/>
     </method>
     <method name="Dismiss">
       <arg name="id" type="u" direction="in"/>
@@ -20,6 +46,10 @@
       <arg name="action_key" type="s" direction="in"/>
       <arg name="invoked" type="b" direction="out"/>
     </method>
+    <!-- One committed transition happened: creation, replacement, sender close, expiry,
+         dismiss or action — exactly one emission per transition. Re-read with
+         TransitionsSince. Standard NotificationClosed/ActionInvoked signals for the same
+         transitions use the freedesktop path/interface. -->
     <signal name="Changed"/>
   </interface>
 </node>

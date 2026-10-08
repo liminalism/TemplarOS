@@ -66,6 +66,8 @@ pub struct ChangeSet {
     pub nvidia_userspace: Option<String>,
     pub firmware: Vec<String>,
     pub other_packages: Vec<String>,
+    #[serde(default)]
+    pub archive: Option<String>,
 }
 
 /// Why a transaction failed, when the reason is one a person can act on differently.
@@ -109,9 +111,35 @@ impl FailureClass {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeploymentIdentity {
+    mount: PathBuf,
+    subvolume: String,
+    esp_mount: PathBuf,
+    esp_dir: String,
+    read_only: bool,
+}
+
+fn identity(layout: &crate::layout::DeploymentLayout, id: &str) -> DeploymentIdentity {
+    DeploymentIdentity {
+        mount: layout.candidate_mount(id),
+        subvolume: layout.subvolume(id),
+        esp_mount: layout.mounted_esp.clone(),
+        esp_dir: layout.esp_identity(id),
+        read_only: layout.read_only,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Transaction {
+    #[serde(
+        default = "crate::persistence::schema",
+        deserialize_with = "crate::persistence::supported_schema"
+    )]
+    pub schema: u32,
     pub id: String,
     pub changes: ChangeSet,
+    #[serde(default)]
+    pub deployment_identity: Option<DeploymentIdentity>,
     pub phase: Phase,
     /// Deployment identifier of the candidate (snapshot / boot entry).
     pub candidate_deployment: Option<String>,
@@ -126,8 +154,10 @@ pub struct Transaction {
 impl Transaction {
     pub fn new(id: impl Into<String>, changes: ChangeSet) -> Self {
         Self {
+            schema: crate::persistence::SCHEMA,
             id: id.into(),
             changes,
+            deployment_identity: None,
             phase: Phase::Planned,
             candidate_deployment: None,
             previous_deployment: None,
@@ -159,11 +189,9 @@ pub struct Engine {
     clock: Arc<dyn Clock>,
     /// Source root snapshotted into each candidate (`/` on a live system).
     root: PathBuf,
-    /// Where candidate snapshots live (e.g. `<root>/@deployments`).
-    deployments_dir: PathBuf,
-    /// The hostd-owned ESP directory boot files are copied into.
-    esp_root: PathBuf,
+    layout: crate::layout::DeploymentLayout,
     current: Mutex<Option<Transaction>>,
+    mutation: parking_lot::Mutex<()>,
 }
 
 impl Engine {
@@ -176,11 +204,25 @@ impl Engine {
         boot: Arc<dyn deploy::BootManager>,
         clock: Arc<dyn Clock>,
         root: PathBuf,
-        deployments_dir: PathBuf,
-        esp_root: PathBuf,
+        layout: crate::layout::DeploymentLayout,
     ) -> Result<Self> {
-        let resumed = journal.unresolved()?;
-        if let Some(txn) = &resumed {
+        let mut resumed = journal.unresolved()?;
+        if let Some(txn) = &mut resumed {
+            let expected = identity(&layout, &txn.id);
+            match &txn.deployment_identity {
+                Some(recorded) if recorded != &expected => bail!(
+                    "deployment layout changed during {}; refusing to reinterpret a staged root",
+                    txn.id
+                ),
+                Some(_) => {}
+                None if matches!(txn.phase, Phase::Downloading | Phase::Staging) => {
+                    txn.deployment_identity = Some(expected);
+                    journal.save(txn)?;
+                }
+                None => bail!(
+                    "legacy staged transaction lacks a boot identity; reviewed recovery is required"
+                ),
+            }
             tracing::info!(id = %txn.id, phase = ?txn.phase, "resuming transaction from journal");
         }
         Ok(Self {
@@ -190,8 +232,8 @@ impl Engine {
             boot,
             clock,
             root,
-            deployments_dir,
-            esp_root,
+            layout,
+            mutation: parking_lot::Mutex::new(()),
             current: Mutex::new(resumed),
         })
     }
@@ -215,6 +257,24 @@ impl Engine {
         self.journal.save(txn)
     }
 
+    pub fn with_maintenance<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        let _guard = self.mutation.lock();
+        operation()
+    }
+
+    pub fn mounted_deployment(&self, subvolume: &str) -> Result<PathBuf> {
+        self.layout.mount_for_subvolume(subvolume)
+    }
+    pub fn root_read_only(&self) -> bool {
+        self.layout.read_only
+    }
+    pub fn check_boot_target(&self, target: &Path) -> Result<()> {
+        crate::accounts::ensure_compatible(&self.root, target)?;
+        self.layout.check_readers(&self.root, target)
+    }
+    pub fn maintenance_guard(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.mutation.lock()
+    }
     /// Plan a new transaction, recording the deployment it would displace.
     ///
     /// The predecessor is recorded at planning time, not at promotion time, because the moment it
@@ -229,42 +289,54 @@ impl Engine {
         changes: ChangeSet,
         previous_deployment: Option<String>,
     ) -> Result<String> {
+        let mut guard = self.current.lock().expect("poisoned");
+        if let Some(existing) = guard.as_ref()
+            && !existing.phase.is_terminal()
         {
-            let guard = self.current.lock().expect("poisoned");
-            if let Some(existing) = guard.as_ref()
-                && !existing.phase.is_terminal()
-            {
-                bail!(
-                    "transaction {} is in phase {:?}",
-                    existing.id,
-                    existing.phase
-                );
-            }
+            bail!(
+                "transaction {} is in phase {:?}",
+                existing.id,
+                existing.phase
+            );
         }
-        let id = format!("txn-{}", clock::stamp(self.clock.now()));
+        // Keep the guard through persistence: concurrent planners cannot replace each other.
+        let stamp = clock::stamp(self.clock.now());
+        let mut id = format!("txn-{stamp}");
+        let mut collision = 0u64;
+        while self.journal.load(&id)?.is_some() {
+            collision += 1;
+            id = format!("txn-{stamp}-{collision}");
+        }
         let mut txn = Transaction::new(id.clone(), changes);
+        txn.deployment_identity = Some(identity(&self.layout, &id));
         txn.previous_deployment = previous_deployment;
         txn.advance(Phase::Downloading, "planned")
             .map_err(anyhow::Error::msg)?;
         self.persist(&txn)?;
-        *self.current.lock().expect("poisoned") = Some(txn);
+        *guard = Some(txn);
         Ok(id)
     }
 
     fn candidate_dir(&self, id: &str) -> PathBuf {
-        self.deployments_dir.join(id)
+        self.layout.candidate_mount(id)
     }
 
     /// Drive the current transaction from wherever it is up to [`Phase::AwaitingReboot`].
     /// Idempotent: each phase's side effect runs only if the transaction has not already recorded
     /// moving past it, so this is exactly what a restart calls to resume.
     pub fn run_to_awaiting_reboot(&self) -> Result<()> {
+        let _mutation = self.mutation.lock();
         let Some(mut txn) = self.current() else {
             bail!("no current transaction");
         };
 
         if txn.phase == Phase::Downloading {
-            match self.apt.download(&txn.id, &txn.changes) {
+            let candidate = self.candidate_dir(&txn.id);
+            let result = self
+                .snapshotter
+                .create_rw(&self.root, &candidate)
+                .and_then(|()| self.apt.download(&txn.id, &txn.changes, &candidate));
+            match result {
                 Ok(()) => {
                     txn.advance(Phase::Staging, "apt download complete")
                         .map_err(anyhow::Error::msg)?;
@@ -276,10 +348,15 @@ impl Engine {
 
         if txn.phase == Phase::Staging {
             let candidate = self.candidate_dir(&txn.id);
-            let result = self
-                .snapshotter
-                .create_rw(&self.root, &candidate)
-                .and_then(|()| self.apt.install_into(&txn.id, &txn.changes, &candidate));
+            // Downloading already owns the snapshot/cache. A resume continues
+            // dpkg inside that candidate, never merges new files into the live root.
+            let result = if candidate.exists() {
+                self.apt.install_into(&txn.id, &txn.changes, &candidate)
+            } else {
+                self.snapshotter
+                    .create_rw(&self.root, &candidate)
+                    .and_then(|()| self.apt.install_into(&txn.id, &txn.changes, &candidate))
+            };
             match result {
                 Ok(()) => {
                     txn.candidate_deployment = Some(txn.id.clone());
@@ -308,30 +385,41 @@ impl Engine {
             // already there.
             let candidate = self.candidate_dir(&txn.id);
             let result = verify_candidate(&candidate, &txn.changes)
-                .and_then(|()| self.snapshotter.seal_read_only(&candidate))
+                .and_then(|()| crate::accounts::ensure_compatible(&self.root, &candidate))
+                .and_then(|()| self.layout.check_readers(&self.root, &candidate))
+                .and_then(|()| crate::drivers::derive_candidate_lock(&candidate))
+                .and_then(|()| self.layout.preserve_gpu_mode(&self.root))
+                .and_then(|()| self.layout.prepare_candidate(&candidate, &txn.id))
                 .and_then(|()| {
-                    deploy::place_boot_files(&candidate, &self.esp_root, &txn.id).map(|_| ())
+                    deploy::place_boot_files(&candidate, &self.layout.mounted_esp, &txn.id)
+                        .map(|_| ())
+                })
+                .and_then(|()| {
+                    if self.layout.read_only {
+                        self.snapshotter.seal_read_only(&candidate)
+                    } else {
+                        Ok(())
+                    }
                 })
                 .and_then(|()| {
                     let deployment = deploy::Deployment {
                         id: txn.id.clone(),
-                        subvolume: candidate.display().to_string(),
-                        esp_dir: self
-                            .esp_root
-                            .join("EFI/templaros")
-                            .join(&txn.id)
-                            .display()
-                            .to_string(),
+                        subvolume: self.layout.subvolume(&txn.id),
+                        esp_dir: self.layout.esp_identity(&txn.id),
                         kernel: txn.changes.kernel.clone(),
                         nvidia_modules: txn.changes.nvidia_modules.clone(),
                         known_good: false,
+                        read_only: self.layout.read_only,
                     };
                     self.boot.stage_candidate(&deployment, 3)
                 });
             match result {
                 Ok(()) => {
-                    txn.advance(Phase::AwaitingReboot, "verified, sealed, staged for boot")
-                        .map_err(anyhow::Error::msg)?;
+                    txn.advance(
+                        Phase::AwaitingReboot,
+                        "verified, root policy applied, boot artifacts placed, staged for boot",
+                    )
+                    .map_err(anyhow::Error::msg)?;
                     self.persist(&txn)?;
                 }
                 Err(error) => return self.fail(txn, error),
@@ -375,17 +463,13 @@ impl Engine {
         let txn = self.current()?;
         let id = txn.candidate_deployment?;
         Some(deploy::Deployment {
-            subvolume: self.candidate_dir(&id).display().to_string(),
-            esp_dir: self
-                .esp_root
-                .join("EFI/templaros")
-                .join(&id)
-                .display()
-                .to_string(),
+            subvolume: self.layout.subvolume(&id),
+            esp_dir: self.layout.esp_identity(&id),
             id,
             kernel: txn.changes.kernel,
             nvidia_modules: txn.changes.nvidia_modules,
             known_good: false,
+            read_only: self.layout.read_only,
         })
     }
 
@@ -422,11 +506,33 @@ impl Engine {
 /// `.ko`'s embedded signature verifies — that needs `modinfo`/kernel keyring inspection this
 /// crate does not yet do.
 fn verify_candidate(candidate_root: &Path, changes: &ChangeSet) -> Result<()> {
-    if changes.kernel.is_some() && !deploy::has_bootable_files(&candidate_root.join("boot")) {
+    if !deploy::has_bootable_files(&candidate_root.join("boot")) {
         bail!(
             "candidate is missing a kernel image or initramfs under {}/boot",
             candidate_root.display()
         );
+    }
+    if candidate_root
+        .join(crate::layout::INSTALLED_LAYOUT)
+        .exists()
+    {
+        let packages =
+            templar_hwdetect::dpkg::scan_status(&candidate_root.join("var/lib/dpkg/status"));
+        for requested in changes.package_list() {
+            let (name, version) = requested
+                .split_once('=')
+                .map_or((requested.as_str(), None), |(name, version)| {
+                    (name, Some(version))
+                });
+            let name = name.split_once(':').map_or(name, |(name, _)| name);
+            if !packages.iter().any(|package| {
+                package.name == name
+                    && package.installed
+                    && version.is_none_or(|version| package.version == version)
+            }) {
+                bail!("candidate did not install requested package/version {requested}");
+            }
+        }
     }
 
     if let (Some(modules), Some(userspace)) = (&changes.nvidia_modules, &changes.nvidia_userspace) {
@@ -529,11 +635,17 @@ mod tests {
         journal_dir: PathBuf,
     }
 
+    fn package_metadata(root: &Path) {
+        fs::create_dir_all(root.join("var/lib/dpkg")).unwrap();
+        fs::write(root.join("var/lib/dpkg/status"), "").unwrap();
+    }
+
     fn harness(dir: &Path) -> Harness {
         let root = dir.join("root");
         fs::create_dir_all(root.join("boot")).unwrap();
         fs::write(root.join("boot/vmlinuz-7.2.0-generic"), b"kernel").unwrap();
         fs::write(root.join("boot/initrd.img-7.2.0-generic"), b"initrd").unwrap();
+        package_metadata(&root);
 
         let journal_dir = dir.join("journal");
         let apt = Arc::new(FakeApt::default());
@@ -542,6 +654,7 @@ mod tests {
         let boot = Arc::new(SystemdBoot {
             commands: commands.clone(),
             esp_root: dir.join("esp"),
+            sysroot: root.clone(),
         });
         let clock = Arc::new(FixedClock(UNIX_EPOCH + Duration::from_secs(1_786_960_800)));
         let engine = Engine::new(
@@ -551,8 +664,7 @@ mod tests {
             boot,
             clock,
             root.clone(),
-            dir.join("deployments"),
-            dir.join("esp"),
+            crate::layout::DeploymentLayout::fixture(dir.join("deployments"), dir.join("esp")),
         )
         .unwrap();
         Harness {
@@ -572,6 +684,7 @@ mod tests {
             nvidia_userspace: Some("nvidia-driver-580-open".into()),
             firmware: vec![],
             other_packages: vec![],
+            archive: None,
         }
     }
 
@@ -586,21 +699,15 @@ mod tests {
         assert_eq!(txn.id, id);
         assert_eq!(txn.phase, Phase::AwaitingReboot);
         assert_eq!(txn.candidate_deployment.as_deref(), Some(id.as_str()));
-
-        assert_eq!(h.apt.calls().len(), 2);
-        assert!(
-            h.snapshotter
-                .sealed
-                .lock()
-                .unwrap()
-                .contains(&h.engine.candidate_dir(&id))
-        );
-        assert!(
-            h.commands
-                .calls()
-                .iter()
-                .any(|c| c.program == "bootctl" && c.args[0] == "set-default")
-        );
+        let lock = crate::drivers::read_version_lock(
+            &h.engine
+                .candidate_dir(&id)
+                .join("etc/templaros/hardware/version-lock.toml"),
+        )
+        .unwrap();
+        assert_eq!(lock.kernel.as_deref(), Some("7.2.0-generic"));
+        assert_eq!(lock.nvidia_lrm, None);
+        assert_eq!(lock.nvidia_userspace, None);
 
         // A second transaction cannot start while this one is in flight.
         assert!(h.engine.plan_from(changes(), None).is_err());
@@ -614,6 +721,7 @@ mod tests {
         fs::create_dir_all(root.join("boot")).unwrap();
         fs::write(root.join("boot/vmlinuz-x"), b"k").unwrap();
         fs::write(root.join("boot/initrd.img-x"), b"i").unwrap();
+        package_metadata(&root);
 
         let journal_dir = dir.join("journal");
         let journal = Journal::new(&journal_dir).unwrap();
@@ -631,6 +739,7 @@ mod tests {
         let boot = Arc::new(SystemdBoot {
             commands,
             esp_root: dir.join("esp"),
+            sysroot: root.clone(),
         });
         let clock = Arc::new(FixedClock(UNIX_EPOCH));
         let engine = Engine::new(
@@ -640,8 +749,7 @@ mod tests {
             boot,
             clock,
             root,
-            dir.join("deployments"),
-            dir.join("esp"),
+            crate::layout::DeploymentLayout::fixture(dir.join("deployments"), dir.join("esp")),
         )
         .unwrap();
 
@@ -665,18 +773,17 @@ mod tests {
     }
 
     #[test]
-    fn resuming_staging_with_a_partially_populated_candidate_directory_succeeds() {
-        // The scenario a crash is most likely to land in: Staging is create_rw() followed by a
-        // multi-minute apt install, so hostd dying mid-install leaves the candidate directory on
-        // disk with the journal still saying Staging. Nothing has sealed that directory or
-        // pointed a boot entry at it, so it is safe to discard — and `create_rw` must do exactly
-        // that rather than fail with "File exists" the way a raw `btrfs subvolume snapshot` would.
+    fn resuming_an_incomplete_candidate_refuses_boot_without_merging_the_live_root() {
+        // Downloading already owns this candidate. A failed/interrupted install
+        // must not discard its cache or copy a newer live root into it; if the
+        // resumed install leaves it without boot images, validation fails closed.
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
         let root = dir.join("root");
         fs::create_dir_all(root.join("boot")).unwrap();
         fs::write(root.join("boot/vmlinuz-x"), b"k").unwrap();
         fs::write(root.join("boot/initrd.img-x"), b"i").unwrap();
+        package_metadata(&root);
 
         let journal_dir = dir.join("journal");
         let journal = Journal::new(&journal_dir).unwrap();
@@ -700,6 +807,7 @@ mod tests {
         let boot = Arc::new(SystemdBoot {
             commands,
             esp_root: dir.join("esp"),
+            sysroot: root.clone(),
         });
         let clock = Arc::new(FixedClock(UNIX_EPOCH));
         let engine = Engine::new(
@@ -709,17 +817,21 @@ mod tests {
             boot,
             clock,
             root,
-            dir.join("deployments"),
-            dir.join("esp"),
+            crate::layout::DeploymentLayout::fixture(dir.join("deployments"), dir.join("esp")),
         )
         .unwrap();
 
         assert_eq!(engine.current().unwrap().phase, Phase::Staging);
-        engine.run_to_awaiting_reboot().unwrap();
-        assert_eq!(engine.current().unwrap().phase, Phase::AwaitingReboot);
-        assert!(
-            !candidate.join("stale-partial-file").exists(),
-            "the stale leftover must have been discarded, not merged into"
+        assert!(engine.run_to_awaiting_reboot().is_err());
+        assert_eq!(engine.current().unwrap().phase, Phase::Failed);
+        assert_eq!(
+            fs::read(candidate.join("stale-partial-file")).unwrap(),
+            b"leftover from the crashed attempt",
+        );
+        assert_eq!(fs::read(engine.root.join("boot/vmlinuz-x")).unwrap(), b"k");
+        assert_eq!(
+            fs::read(engine.root.join("boot/initrd.img-x")).unwrap(),
+            b"i"
         );
     }
 
@@ -735,10 +847,15 @@ mod tests {
         fs::create_dir_all(root.join("boot")).unwrap();
         fs::write(root.join("boot/vmlinuz-x"), b"k").unwrap();
         fs::write(root.join("boot/initrd.img-x"), b"i").unwrap();
+        package_metadata(&root);
 
         let journal_dir = dir.join("journal");
         let journal = Journal::new(&journal_dir).unwrap();
         let mut txn = Transaction::new("txn-resume-verifying", changes());
+        txn.deployment_identity = Some(identity(
+            &crate::layout::DeploymentLayout::fixture(dir.join("deployments"), dir.join("esp")),
+            &txn.id,
+        ));
         txn.advance(Phase::Downloading, "planned").unwrap();
         txn.advance(Phase::Staging, "apt download complete")
             .unwrap();
@@ -752,6 +869,7 @@ mod tests {
         fs::create_dir_all(candidate.join("boot")).unwrap();
         fs::write(candidate.join("boot/vmlinuz-x"), b"k").unwrap();
         fs::write(candidate.join("boot/initrd.img-x"), b"i").unwrap();
+        package_metadata(&candidate);
 
         // A previous attempt already got as far as writing the ESP entry before crashing.
         let esp = dir.join("esp");
@@ -770,6 +888,7 @@ mod tests {
         let boot = Arc::new(SystemdBoot {
             commands,
             esp_root: esp.clone(),
+            sysroot: root.clone(),
         });
         let clock = Arc::new(FixedClock(UNIX_EPOCH));
         let engine = Engine::new(
@@ -779,8 +898,7 @@ mod tests {
             boot,
             clock,
             root,
-            dir.join("deployments"),
-            esp,
+            crate::layout::DeploymentLayout::fixture(dir.join("deployments"), esp),
         )
         .unwrap();
 
@@ -831,6 +949,7 @@ mod tests {
             nvidia_userspace: Some("nvidia-driver-575-open".into()),
             firmware: vec![],
             other_packages: vec![],
+            archive: None,
         };
         let error = verify_candidate(dir.path(), &mismatched).unwrap_err();
         assert!(error.to_string().contains("mismatch"));
@@ -874,6 +993,13 @@ mod tests {
             {
                 let journal = Journal::new(&journal_dir).unwrap();
                 let mut txn = Transaction::new("txn-trial", changes());
+                txn.deployment_identity = Some(identity(
+                    &crate::layout::DeploymentLayout::fixture(
+                        dir.join("deployments"),
+                        dir.join("esp"),
+                    ),
+                    &txn.id,
+                ));
                 txn.previous_deployment = Some("txn-earlier".to_owned());
                 for (phase, note) in [
                     (Phase::Downloading, "planned"),
@@ -923,11 +1049,11 @@ mod tests {
             Arc::new(SystemdBoot {
                 commands: h.commands.clone(),
                 esp_root: dir.join("esp"),
+                sysroot: h.root.clone(),
             }),
             Arc::new(FixedClock(UNIX_EPOCH)),
             h.root.clone(),
-            dir.join("deployments"),
-            dir.join("esp"),
+            crate::layout::DeploymentLayout::fixture(dir.join("deployments"), dir.join("esp")),
         )
         .unwrap();
         h.journal_dir = journal_dir.to_path_buf();
@@ -940,7 +1066,7 @@ mod tests {
     struct FullDiskApt;
 
     impl Apt for FullDiskApt {
-        fn download(&self, _id: &str, _changes: &ChangeSet) -> Result<()> {
+        fn download(&self, _id: &str, _changes: &ChangeSet, _target_root: &Path) -> Result<()> {
             Ok(())
         }
 
@@ -964,11 +1090,11 @@ mod tests {
             Arc::new(SystemdBoot {
                 commands: h.commands.clone(),
                 esp_root: dir.join("esp"),
+                sysroot: h.root.clone(),
             }),
             Arc::new(FixedClock(UNIX_EPOCH)),
             h.root.clone(),
-            dir.join("deployments"),
-            dir.join("esp"),
+            crate::layout::DeploymentLayout::fixture(dir.join("deployments"), dir.join("esp")),
         )
         .unwrap();
 
@@ -1000,11 +1126,11 @@ mod tests {
             Arc::new(SystemdBoot {
                 commands: h.commands.clone(),
                 esp_root: dir.join("esp"),
+                sysroot: h.root.clone(),
             }),
             Arc::new(FixedClock(UNIX_EPOCH)),
             h.root.clone(),
-            dir.join("deployments"),
-            dir.join("esp"),
+            crate::layout::DeploymentLayout::fixture(dir.join("deployments"), dir.join("esp")),
         )
         .unwrap();
         let recorded = after.transaction(&txn.id).unwrap().unwrap();

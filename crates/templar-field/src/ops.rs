@@ -144,6 +144,11 @@ pub enum FieldOp {
     Remove {
         id: TileId,
     },
+    /// Persist the independent Desktop shelf's user order without changing its geometry.
+    DesktopDockOrder {
+        id: TileId,
+        order: Vec<String>,
+    },
     /// An existing tile dropped at `landing` (possibly on another grid, or out of a project).
     Move {
         id: TileId,
@@ -197,6 +202,7 @@ pub enum FieldOp {
     },
     AddReference {
         tray: TrayId,
+        #[serde(with = "templar_types::native_path")]
         path: PathBuf,
         /// Where in the tray's order the reference lands; `None` appends. Carried so that
         /// `RemoveReference`'s inverse restores the exact prior order, not just membership.
@@ -205,6 +211,7 @@ pub enum FieldOp {
     },
     RemoveReference {
         tray: TrayId,
+        #[serde(with = "templar_types::native_path")]
         path: PathBuf,
     },
     /// A new Home-only layout group (`crate::panel`). Grouping only: no tile moves.
@@ -242,6 +249,7 @@ impl FieldOp {
             Self::Place { .. } => "PLACE",
             Self::AddTile { .. } => "ADD",
             Self::Remove { .. } => "REMOVE FROM FIELD",
+            Self::DesktopDockOrder { .. } => "REORDER DESKTOP",
             Self::Move { .. } => "MOVE",
             Self::MoveMany { .. } => "MOVE SELECTION",
             Self::Resize { .. } => "RESIZE",
@@ -283,6 +291,22 @@ pub fn apply(doc: &FieldDocument, op: &FieldOp) -> Result<(FieldDocument, FieldO
     Ok((next, inverse))
 }
 
+fn desktop_dock_order(
+    doc: &mut FieldDocument,
+    id: TileId,
+    order: &[String],
+) -> Result<FieldOp, FieldError> {
+    let tile = doc.tile_mut(id).ok_or(FieldError::UnknownTile)?;
+    let crate::TileKind::DesktopDock {
+        order: previous, ..
+    } = &mut tile.kind
+    else {
+        return Err(FieldError::NotAContainer);
+    };
+    let before = std::mem::replace(previous, order.to_vec());
+    Ok(FieldOp::DesktopDockOrder { id, order: before })
+}
+
 fn apply_in_place(doc: &mut FieldDocument, op: &FieldOp) -> Result<FieldOp, FieldError> {
     match op {
         FieldOp::Place { tile, landing } => place(doc, tile, *landing),
@@ -292,6 +316,7 @@ fn apply_in_place(doc: &mut FieldDocument, op: &FieldOp) -> Result<FieldOp, Fiel
             container,
         } => add_tile(doc, tile, *at, container.as_ref()),
         FieldOp::Remove { id } => remove(doc, *id),
+        FieldOp::DesktopDockOrder { id, order } => desktop_dock_order(doc, *id, order),
         FieldOp::Move { id, landing } => move_tile(doc, *id, *landing),
         FieldOp::MoveMany {
             ids,
@@ -755,7 +780,7 @@ fn create_project(
     let absorb = &absorb;
     for id in absorb {
         let tile = doc.tile(*id).ok_or(FieldError::UnknownTile)?;
-        if tile.kind.is_container() {
+        if tile.kind.is_container() || matches!(tile.kind, crate::TileKind::DesktopDock { .. }) {
             return Err(FieldError::NestingTooDeep);
         }
     }
@@ -826,7 +851,7 @@ fn check_grid_accepts(
     tile: &Tile,
 ) -> Result<(), FieldError> {
     if let Some(project) = container {
-        if tile.kind.is_container() {
+        if tile.kind.is_container() || matches!(tile.kind, crate::TileKind::DesktopDock { .. }) {
             return Err(FieldError::NestingTooDeep);
         }
         let parent = doc.tile(project).ok_or(FieldError::UnknownContainer)?;

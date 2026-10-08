@@ -580,6 +580,9 @@ fn a_delta_equals_a_fresh_scan_and_costs_what_the_change_costs() {
         return;
     };
     let fixture = Fixture::new(&mount);
+    // Correctness before cost: the edge-case round trip panics on divergence, so a failing
+    // delta never reaches the report below.
+    edge_case_round_trip(&fixture);
     let sizes: Vec<usize> = std::env::var("TEMPLAR_BTRFS_TREE_SIZES").ok().map_or_else(
         || vec![1_000, 10_000, 100_000],
         |text| {
@@ -640,7 +643,14 @@ fn a_delta_equals_a_fresh_scan_and_costs_what_the_change_costs() {
     let table = render(&results);
     println!("{table}");
     if let Some(dir) = std::env::var_os("TEMPLAR_BTRFS_REPORT_DIR") {
-        write_report(Path::new(&dir), &table);
+        // Reaching here means every correctness assert passed: each step's delta==fresh-scan
+        // asserts above, plus the edge-case round trip demanded first. The report says so.
+        let verdict = format!(
+            "correctness: PASS — hard_links_symlinks_and_a_directory_rename_survive_a_round_trip \
+             and all {} scenario delta==fresh-scan asserts\n\n",
+            results.len()
+        );
+        write_report(Path::new(&dir), &format!("{verdict}{table}"));
     }
 }
 
@@ -697,6 +707,13 @@ fn hard_links_symlinks_and_a_directory_rename_survive_a_round_trip() {
         return;
     };
     let fixture = Fixture::new(&mount);
+    edge_case_round_trip(&fixture);
+}
+
+/// The edge-case round trip as a callable step, so the cost run can demand it first: a cost
+/// table published while this fails is a fast wrong answer. Panics on divergence, like the
+/// test it came from.
+fn edge_case_round_trip(fixture: &Fixture) {
     let tree = fixture.home.join("edges");
     build_tree(&tree, 300);
 

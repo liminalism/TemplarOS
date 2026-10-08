@@ -17,7 +17,12 @@
 //!   other clusters whenever that is possible.
 //! - **Overflow.** Windows that fit nowhere are counted on one overflow card, which takes the
 //!   cells of the least recently used card placed in this pass (else the least recent kept one).
+//! - **By hand.** A card the person dragged keeps the cells it was dropped on ([`Arrangement::
+//!   move_card`]). The drop is remembered as a [`Pin`]: a soft hint, not a field tile, honoured
+//!   when the card next needs cells on the same grid and those cells are still free, and
+//!   otherwise ignored in favour of the rules above.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use templar_field::{Cell, Placement, Span};
@@ -74,7 +79,50 @@ impl Arrangement {
     pub fn slot(&self, window: WindowId) -> Option<&Slot> {
         self.slots.iter().find(|slot| slot.window == window)
     }
+
+    /// Whether `window`'s card could sit on `to`: on the grid, and clear of `occupied` (the
+    /// persistent tiles), every other card and the overflow card. Its own current cells do not
+    /// count against it, so a card can be nudged by a single cell.
+    pub fn can_move(&self, window: WindowId, to: Placement, occupied: &[Placement]) -> bool {
+        if self.slot(window).is_none() {
+            return false;
+        }
+        let mut board = Board::new(self.grid.0, self.grid.1, occupied);
+        for slot in self.slots.iter().filter(|slot| slot.window != window) {
+            board.mark(slot.placement, Use::Fixed);
+        }
+        if let Some(card) = self.overflow_card {
+            board.mark(card, Use::Fixed);
+        }
+        board.is_free(to)
+    }
+
+    /// Put `window`'s card on `to` if [`Self::can_move`] allows it, leaving every other card
+    /// where it is. Returns whether the card moved; a refused or unchanged move changes nothing.
+    pub fn move_card(&mut self, window: WindowId, to: Placement, occupied: &[Placement]) -> bool {
+        if !self.can_move(window, to, occupied) {
+            return false;
+        }
+        match self.slots.iter_mut().find(|slot| slot.window == window) {
+            Some(slot) if slot.placement != to => {
+                slot.placement = to;
+                true
+            }
+            _ => false,
+        }
+    }
 }
+
+/// Where the person dropped a card, and on which grid. Only ever a hint: [`arrange_with_hints`]
+/// uses it for a card that needs cells, on that grid, when every one of them is still free.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pin {
+    pub grid: (u16, u16),
+    pub placement: Placement,
+}
+
+/// Hand placements by window.
+pub type Pins = BTreeMap<WindowId, Pin>;
 
 /// Arrange `windows` on a `cols`×`rows` grid whose `occupied` placements belong to persistent
 /// tiles, keeping every slot of `previous` that is still valid. Pass `Arrangement::default()` as
@@ -94,9 +142,13 @@ pub fn arrange(
         occupied,
         windows,
         &crate::work_positions::WorkPositions::default(),
+        &Pins::new(),
     )
 }
 
+/// [`arrange`], with the soft memory: per-folder centroids for a cluster that has no cards yet,
+/// and hand placements for a card whose previous slot is gone. A kept slot always wins over
+/// both, so neither can ever move a card that is already on the grid.
 pub fn arrange_with_hints(
     previous: &Arrangement,
     cols: u16,
@@ -104,6 +156,7 @@ pub fn arrange_with_hints(
     occupied: &[Placement],
     windows: &[WorkWindow],
     hints: &crate::work_positions::WorkPositions,
+    pins: &Pins,
 ) -> Arrangement {
     let mut board = Board::new(cols, rows, occupied);
     let clusters = clusters(windows);
@@ -132,6 +185,14 @@ pub fn arrange_with_hints(
             }
         }
     }
+    place_pins(
+        &mut board,
+        &mut slots,
+        windows,
+        pins,
+        (cols, rows),
+        cluster_index,
+    );
     let kept = slots.len();
 
     let preferred = clamp(CARD, cols, rows);
@@ -200,6 +261,34 @@ pub fn arrange_with_hints(
         slots,
         overflow,
         overflow_card,
+    }
+}
+
+/// Give each window that kept no slot the cells it was dropped on, when its pin is for this grid
+/// and those cells are still free.
+fn place_pins(
+    board: &mut Board,
+    slots: &mut Vec<Slot>,
+    windows: &[WorkWindow],
+    pins: &Pins,
+    grid: (u16, u16),
+    cluster_index: impl Fn(&ClusterKey) -> usize,
+) {
+    for window in windows {
+        if slots.iter().any(|slot| slot.window == window.window) {
+            continue;
+        }
+        if let Some(pin) = pins.get(&window.window)
+            && pin.grid == grid
+            && board.is_free(pin.placement)
+        {
+            board.mark(pin.placement, Use::Card(cluster_index(&window.cluster)));
+            slots.push(Slot {
+                window: window.window,
+                cluster: window.cluster.clone(),
+                placement: pin.placement,
+            });
+        }
     }
 }
 
@@ -408,7 +497,15 @@ mod tests {
             PathBuf::from("/a"),
             (50000, 50000),
         )]));
-        let layout = arrange_with_hints(&Arrangement::default(), 16, 10, &[], &windows, &hints);
+        let layout = arrange_with_hints(
+            &Arrangement::default(),
+            16,
+            10,
+            &[],
+            &windows,
+            &hints,
+            &Pins::new(),
+        );
         assert_disjoint(&layout, &[]);
         for slot in &layout.slots {
             assert_eq!(slot.placement.cell.row % CARD.rows, 0);
@@ -422,7 +519,15 @@ mod tests {
             .iter()
             .map(|slot| slot.placement)
             .collect::<Vec<_>>();
-        let moved = arrange_with_hints(&Arrangement::default(), 16, 10, &blocked, &windows, &hints);
+        let moved = arrange_with_hints(
+            &Arrangement::default(),
+            16,
+            10,
+            &blocked,
+            &windows,
+            &hints,
+            &Pins::new(),
+        );
         assert_disjoint(&moved, &blocked);
     }
     #[test]
@@ -585,6 +690,80 @@ mod tests {
                 .unwrap()
                 .placement
                 .overlaps(covered)
+        );
+    }
+
+    #[test]
+    fn a_moved_card_lands_only_on_free_cells_and_others_stay_put() {
+        let windows = [window(1, Some("/a"), 0), window(2, Some("/b"), 1)];
+        let occupied = [at(0, 0, 2, 2)];
+        let mut layout = arrange(&Arrangement::default(), 16, 10, &occupied, &windows);
+        let before = layout.clone();
+        let other = layout.slot(WindowId(2)).unwrap().placement;
+        // Onto a persistent tile, onto another card, or off the grid: refused, nothing moves.
+        for refused in [
+            at(1, 1, 3, 2),
+            Placement::new(other.cell, CARD),
+            at(15, 9, 3, 2),
+        ] {
+            assert!(!layout.move_card(WindowId(1), refused, &occupied));
+            assert_eq!(layout, before);
+        }
+        // One cell over, away from the other card, overlapping its own old cells: allowed, and
+        // only the moved card changes.
+        let own = layout.slot(WindowId(1)).unwrap().placement;
+        let col = if other.cell.col > own.cell.col {
+            own.cell.col - 1
+        } else {
+            own.cell.col + 1
+        };
+        let nudged = Placement::new(Cell::new(col, own.cell.row), own.span);
+        assert!(nudged.overlaps(own));
+        assert!(layout.move_card(WindowId(1), nudged, &occupied));
+        assert_eq!(layout.slot(WindowId(1)).unwrap().placement, nudged);
+        assert_eq!(layout.slot(WindowId(2)).unwrap().placement, other);
+        assert!(
+            !layout.move_card(WindowId(1), nudged, &occupied),
+            "unchanged is no move"
+        );
+        assert!(layout.move_card(WindowId(1), at(13, 8, 3, 2), &occupied));
+        assert_eq!(layout.slot(WindowId(1)).unwrap().placement, at(13, 8, 3, 2));
+        assert_eq!(layout.slot(WindowId(2)).unwrap().placement, other);
+        assert_disjoint(&layout, &occupied);
+    }
+
+    #[test]
+    fn a_pin_places_a_card_that_needs_cells_while_they_are_free_on_that_grid() {
+        let windows = [window(1, None, 0), window(2, None, 1)];
+        let pins = Pins::from([(
+            WindowId(1),
+            Pin {
+                grid: (16, 10),
+                placement: at(12, 7, 3, 2),
+            },
+        )]);
+        let hints = crate::work_positions::WorkPositions::default();
+        let fresh = Arrangement::default();
+        let pinned = arrange_with_hints(&fresh, 16, 10, &[], &windows, &hints, &pins);
+        assert_eq!(pinned.slot(WindowId(1)).unwrap().placement, at(12, 7, 3, 2));
+        assert_disjoint(&pinned, &[]);
+        // A tile on the remembered cells, or another grid: the card is placed as usual.
+        let covered =
+            arrange_with_hints(&fresh, 16, 10, &[at(13, 8, 1, 1)], &windows, &hints, &pins);
+        assert!(
+            !covered
+                .slot(WindowId(1))
+                .unwrap()
+                .placement
+                .overlaps(at(13, 8, 1, 1))
+        );
+        let other_grid = arrange_with_hints(&fresh, 20, 12, &[], &windows, &hints, &pins);
+        assert_eq!(
+            other_grid.slot(WindowId(1)).unwrap().placement,
+            arrange(&fresh, 20, 12, &[], &windows)
+                .slot(WindowId(1))
+                .unwrap()
+                .placement
         );
     }
 }

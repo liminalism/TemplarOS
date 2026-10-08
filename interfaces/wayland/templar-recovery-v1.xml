@@ -8,10 +8,10 @@
      and calls straight into `templar_window::WindowService`, so they work with no client connected
      at all (`docs/architecture/accessibility.md`):
        * the "show every window" scatter (`WindowService::handle_command(ShowAllWindows, ...)` /
-         `geometry::scatter_layout`) — `templar_shell_manager_v1.show_all_windows` in
-         `templar-shell-v1.xml` exists only so the *shell's own UI* can also trigger it;
+         `geometry::scatter_layout`) — `templar_shell_manager_v2.show_all_windows` in
+         `templar-shell-v2.xml` exists only so the *shell's own UI* can also trigger it;
        * the fullscreen/modal escape route (`WindowService::escape`) — likewise mirrored as
-         `templar_shell_manager_v1.escape_fullscreen_or_modal` for the shell's UI;
+         `templar_shell_manager_v2.escape_fullscreen_or_modal` for the shell's UI;
        * the minimal fallback window switcher (`WindowService::cycle_focus`);
        * the per-window recovery tab the compositor paints over client-side-decorated and
          borderless windows (`WindowService::recovery_affordance`) — pure compositor-side

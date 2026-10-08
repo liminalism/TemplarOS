@@ -12,6 +12,7 @@
 
 use std::{
     collections::BTreeMap,
+    ffi::OsString,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -185,6 +186,13 @@ pub enum ExecToken {
     DesktopFilePath,
 }
 
+/// A broker-validated local file, with native bytes for %f/%F and its URI for %u/%U.
+#[derive(Clone, Debug)]
+pub struct FileTarget {
+    pub path: PathBuf,
+    pub uri: String,
+}
+
 /// `Exec=` parsed into words, field codes intact — never expanded through a shell.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExecTemplate(Vec<ExecToken>);
@@ -210,38 +218,40 @@ impl ExecTemplate {
         }
     }
 
-    /// Expand into the arguments *after* argv\[0\] (the launcher already has the resolved
-    /// executable as argv\[0\]). `targets` are the files/URIs to substitute for `%f/%F/%u/%U`.
+    /// Expand arguments after argv[0], preserving imported fixed words and field-code types.
+    /// Native filenames never pass through a lossy display string.
     pub fn expand_arguments(
         &self,
-        targets: &[String],
+        targets: &[FileTarget],
         icon: &str,
         translated_name: &str,
-        desktop_file_path: &str,
-    ) -> Vec<String> {
+        desktop_file_path: &Path,
+    ) -> Vec<OsString> {
         let mut arguments = Vec::new();
         for token in self.0.iter().skip(1) {
             match token {
-                ExecToken::Literal(word) => arguments.push(word.clone()),
-                ExecToken::SingleFile | ExecToken::SingleUrl => {
-                    if let Some(target) = targets.first() {
-                        arguments.push(target.clone());
-                    }
+                ExecToken::Literal(word) => arguments.push(word.as_str().into()),
+                ExecToken::SingleFile => {
+                    if let Some(target) = targets.first() { arguments.push(target.path.as_os_str().to_owned()); }
                 }
-                ExecToken::MultipleFiles | ExecToken::MultipleUrls => {
-                    arguments.extend(targets.iter().cloned());
+                ExecToken::MultipleFiles => arguments.extend(targets.iter().map(|target| target.path.as_os_str().to_owned())),
+                ExecToken::SingleUrl => {
+                    if let Some(target) = targets.first() { arguments.push(target.uri.as_str().into()); }
                 }
+                ExecToken::MultipleUrls => arguments.extend(targets.iter().map(|target| target.uri.as_str().into())),
                 ExecToken::Icon => {
-                    if !icon.is_empty() {
-                        arguments.push("--icon".into());
-                        arguments.push(icon.to_owned());
-                    }
+                    if !icon.is_empty() { arguments.push("--icon".into()); arguments.push(icon.into()); }
                 }
-                ExecToken::TranslatedName => arguments.push(translated_name.to_owned()),
-                ExecToken::DesktopFilePath => arguments.push(desktop_file_path.to_owned()),
+                ExecToken::TranslatedName => arguments.push(translated_name.into()),
+                ExecToken::DesktopFilePath => arguments.push(desktop_file_path.as_os_str().to_owned()),
             }
         }
         arguments
+    }
+
+    pub fn accepts_files(&self) -> bool {
+        self.0.iter().any(|token| matches!(token, ExecToken::SingleFile | ExecToken::MultipleFiles
+            | ExecToken::SingleUrl | ExecToken::MultipleUrls))
     }
 }
 
@@ -617,12 +627,13 @@ pub fn derive_manifest(
         return None;
     }
 
-    let executable = match entry.x_flatpak.as_deref() {
+    let executable = resolver.resolve_program(program)?;
+    // The export wrapper proves the installed Flatpak/provenance, but executing that wrapper
+    // with the retained `flatpak run ...` words would duplicate the launch prefix.
+    let executable_for_provenance = match entry.x_flatpak.as_deref() {
         Some(flatpak_id) => resolver.resolve_flatpak(flatpak_id)?,
-        None => resolver.resolve_program(program)?,
+        None => executable.clone(),
     };
-
-    let executable_for_provenance = executable.clone();
     let app_id = derive_variant_id(desktop_id, entry.x_flatpak.as_deref());
     let mut aliases = AppAliases {
         desktop_file_ids: [desktop_id.to_owned()].into(),
@@ -640,6 +651,7 @@ pub fn derive_manifest(
         aliases.flatpak_ids.insert(flatpak_id.clone());
     }
     aliases.executable_paths.insert(executable.clone());
+    aliases.executable_paths.insert(executable_for_provenance.clone());
 
     let display_name = if entry.name.is_empty() {
         desktop_id.trim_end_matches(".desktop").to_owned()
@@ -669,6 +681,9 @@ pub fn derive_manifest(
             source,
             &executable_for_provenance,
         )),
+        // Desktop entries are not native manifests: their `X-TemplarOS-Provides=` claims were
+        // recorded on the provenance above, and `provides` stays empty here.
+        provides: Vec::new(),
     };
     Some(DerivedManifest {
         manifest,
@@ -740,6 +755,12 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    fn file_targets(paths: &[&str]) -> Vec<FileTarget> {
+        paths.iter().map(|path| FileTarget {
+            path: (*path).into(), uri: templar_types::uri_list::encode_path(Path::new(path)),
+        }).collect()
+    }
+
     struct StaticResolver {
         programs: HashMap<&'static str, &'static str>,
         flatpaks: HashMap<&'static str, &'static str>,
@@ -801,10 +822,10 @@ Icon=templar-viewer
     fn exec_template_expands_field_codes() {
         let template = ExecTemplate::parse("templar-viewer --icon %i --title %c %F");
         let args = template.expand_arguments(
-            &["/tmp/a.pdf".into(), "/tmp/b.pdf".into()],
+            &file_targets(&["/tmp/a.pdf", "/tmp/b.pdf"]),
             "templar-viewer",
             "Templar Viewer",
-            "/usr/share/applications/org.templaros.Viewer.desktop",
+            Path::new("/usr/share/applications/org.templaros.Viewer.desktop"),
         );
         assert_eq!(
             args,
@@ -823,19 +844,42 @@ Icon=templar-viewer
     #[test]
     fn single_file_code_takes_only_the_first_target() {
         let template = ExecTemplate::parse("templar-viewer %f");
-        let args = template.expand_arguments(&["a.pdf".into(), "b.pdf".into()], "", "", "");
-        assert_eq!(args, vec!["a.pdf"]);
+        let args = template.expand_arguments(&file_targets(&["/tmp/a.pdf", "/tmp/b.pdf"]), "", "", Path::new(""));
+        assert_eq!(args, vec!["/tmp/a.pdf"]);
         assert_eq!(
-            ExecTemplate::parse("templar-viewer %f").expand_arguments(&[], "", "", ""),
-            Vec::<String>::new()
+            ExecTemplate::parse("templar-viewer %f").expand_arguments(&[], "", "", Path::new("")),
+            Vec::<OsString>::new()
         );
+    }
+
+    #[test]
+    fn native_file_and_uri_codes_preserve_distinct_bytes_and_cardinality() {
+        use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+        let paths = [b"/tmp/name-\xff.pdf".to_vec(), b"/tmp/name-\xfe.pdf".to_vec()];
+        let targets: Vec<_> = paths.iter().map(|bytes| {
+            let path = PathBuf::from(OsString::from_vec(bytes.clone()));
+            let uri = templar_types::uri_list::encode_path(&path);
+            FileTarget { path, uri }
+        }).collect();
+        let first = ExecTemplate::parse("viewer --reader %f").expand_arguments(&targets, "", "", Path::new(""));
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[1].as_bytes(), paths[0]);
+        let all = ExecTemplate::parse("viewer --reader %F").expand_arguments(&targets, "", "", Path::new(""));
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[1].as_bytes(), paths[0]);
+        assert_eq!(all[2].as_bytes(), paths[1]);
+        let uris = ExecTemplate::parse("viewer %U").expand_arguments(&targets, "", "", Path::new(""));
+        assert_eq!(uris, [OsString::from(&targets[0].uri), OsString::from(&targets[1].uri)]);
+        let uri = ExecTemplate::parse("viewer %u").expand_arguments(&targets, "", "", Path::new(""));
+        assert_eq!(uri, [OsString::from(&targets[0].uri)]);
+        assert_ne!(targets[0].uri, targets[1].uri);
     }
 
     #[test]
     fn percent_percent_and_deprecated_codes() {
         let template = ExecTemplate::parse("prog 100%% %D --flag");
         assert_eq!(
-            template.expand_arguments(&[], "", "", ""),
+            template.expand_arguments(&[], "", "", Path::new("")),
             vec!["100%", "--flag"]
         );
     }
@@ -1001,15 +1045,15 @@ Icon=templar-viewer
         assert_eq!(
             derived
                 .exec_template
-                .expand_arguments(&["a.pdf".into()], "", "", ""),
-            vec!["--reader", "a.pdf"]
+                .expand_arguments(&file_targets(&["/tmp/a.pdf"]), "", "", Path::new("")),
+            vec!["--reader", "/tmp/a.pdf"]
         );
     }
 
     #[test]
-    fn flatpak_entries_resolve_through_the_export_wrapper() {
+    fn flatpak_entries_execute_the_full_desktop_template_without_a_wrapper_prefix() {
         let resolver = StaticResolver {
-            programs: HashMap::new(),
+            programs: HashMap::from([("/usr/bin/flatpak", "/usr/bin/flatpak")]),
             flatpaks: HashMap::from([(
                 "org.mozilla.firefox",
                 "/var/lib/flatpak/exports/bin/org.mozilla.firefox",
@@ -1026,7 +1070,7 @@ Icon=templar-viewer
         .unwrap();
         assert_eq!(
             derived.manifest.executable,
-            PathBuf::from("/var/lib/flatpak/exports/bin/org.mozilla.firefox")
+            PathBuf::from("/usr/bin/flatpak")
         );
         assert!(
             derived
@@ -1034,6 +1078,10 @@ Icon=templar-viewer
                 .aliases
                 .flatpak_ids
                 .contains("org.mozilla.firefox")
+        );
+        assert_eq!(
+            derived.exec_template.expand_arguments(&file_targets(&["/tmp/a.pdf"]), "", "", Path::new("")),
+            ["run", "org.mozilla.firefox", "file:///tmp/a.pdf"],
         );
     }
 
@@ -1176,7 +1224,7 @@ Icon=templar-viewer
     fn a_flatpak_export_reads_as_a_flatpak_wherever_the_file_sits() {
         use templar_types::{AppOriginKind, LaunchMechanism, TrustTier, UpdateOwner};
         let resolver = StaticResolver {
-            programs: HashMap::new(),
+            programs: HashMap::from([("/usr/bin/flatpak", "/usr/bin/flatpak")]),
             flatpaks: HashMap::from([(
                 "org.mozilla.firefox",
                 "/var/lib/flatpak/exports/bin/org.mozilla.firefox",

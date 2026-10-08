@@ -1,6 +1,7 @@
 //! `templar-hostd` — the one privileged policy daemon (ADR-0003). System bus `org.templaros.Host`,
 //! polkit actions `org.templaros.host.*`.
 
+mod accounts;
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::{future::pending, path::PathBuf, sync::Arc};
@@ -13,10 +14,14 @@ mod boot_entries;
 mod clock;
 mod cmd;
 mod deploy;
+mod display_devices;
+mod display_recovery;
 mod drivers;
 mod hardware;
 mod index_checkpoint;
 mod journal;
+mod layout;
+mod persistence;
 mod polkit;
 mod session_report;
 mod snapshot;
@@ -42,38 +47,35 @@ struct Cli {
 /// Wires the real backends: apt as a `systemd-run --collect` child unit, btrfs for snapshots,
 /// the boot manager ADR-0004 auto-detects from the installation's actual loader, and the real
 /// polkit authority over the same system-bus connection hostd serves on.
-fn real_config(root: &std::path::Path, connection: zbus::Connection) -> HostdConfig {
+fn real_config(root: &std::path::Path, connection: zbus::Connection) -> Result<HostdConfig> {
     let commands: Arc<dyn cmd::CommandRunner> = Arc::new(cmd::RealCommandRunner::default());
     let state_dir = root.join("var/lib/templaros/hostd");
-    HostdConfig {
+    let deployment_layout = layout::DeploymentLayout::read(root)?;
+    Ok(HostdConfig {
         apt: Arc::new(apt::SystemdRunApt {
             commands: commands.clone(),
+            source_root: root.to_path_buf(),
         }),
         snapshotter: Arc::new(snapshot::BtrfsSnapshotter {
             commands: commands.clone(),
         }),
-        boot: deploy::detect_backend(root, commands.clone(), state_dir.join("grub")).into(),
+        boot: deploy::detect_backend(root, commands.clone(), state_dir.join("grub"), deployment_layout.read_only, deployment_layout.mounted_esp.clone()).into(),
         commands,
         clock: Arc::new(clock::SystemClock),
         polkit: Arc::new(polkit::SystemPolkit::new(connection.clone())),
         journal_dir: state_dir.join("transactions"),
         source_root: root.to_path_buf(),
-        // Candidate snapshots live alongside the running deployment on the same btrfs volume;
-        // where exactly that top-level subvolume is mounted is an image-layout question
-        // (`distro/deploy/README.md`), not one this daemon can discover on its own, so it is a
-        // configurable default rather than a hardcoded assumption about `/`.
-        deployments_dir: state_dir.join("deployments"),
-        esp_root: deploy::esp_root(root),
+        deployment_layout,
         deployments_path: state_dir.join("deployments.json"),
         sys_root: root.join("sys"),
         apt_root: root.to_path_buf(),
-        etc_dir: root.join("etc/templaros/hardware"),
+        hardware_state_dir: root.join("var/lib/templaros/hardware"),
         // templar-hostd's own RuntimeDirectory (`session/units/system/templar-hostd.service`); the two
         // markers `templar-boot-health` reads live here, written only through Session1.
         run_dir: root.join("run/templaros"),
         cmdline_path: root.join("proc/cmdline"),
         caller_identity: Arc::new(session_report::SystemCallerIdentity::new(connection)),
-    }
+    })
 }
 
 /// The system bus, by its real path rather than the `/var/run` compatibility symlink.
@@ -151,10 +153,13 @@ fn read_trimmed(path: &str) -> Option<String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    use std::io::IsTerminal as _;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
+        // No ANSI under the journal: journald stores coloured MESSAGE fields as byte arrays.
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
     let cli = Cli::parse();
 
@@ -171,20 +176,21 @@ async fn main() -> Result<()> {
     }
     let address = system_bus_address();
     let connection = connection::Builder::address(address.as_str())?
-        .name(names::BUS_NAME)?
         .build()
         .await
         .with_context(|| {
             format!(
-                "claiming org.templaros.Host on the system bus at {address}\n{}",
+                "connecting to the system bus at {address}\n{}",
                 describe_bus_reachability(&address)
             )
         })?;
 
     let state = Arc::new(
-        HostdState::new(real_config(&cli.root, connection.clone()))
+        HostdState::new(real_config(&cli.root, connection.clone())?)
             .context("initializing hostd state")?,
     );
+    // Prepared account maintenance is recovered before boot selection or any API resumes.
+    accounts::recover(&state).context("recovering root-paired account maintenance")?;
     // Before anything is served: a candidate that was staged and never booted has spent an
     // attempt, and this is the only moment userspace can tell.
     let reconciliation = state.reconcile_boot();
@@ -196,6 +202,11 @@ async fn main() -> Result<()> {
     }
 
     state.resume();
+    connection.object_server().at(names::ROOT_PATH,
+        display_recovery::DisplayRecoveryApi::new(&cli.root, connection.clone())?)
+        .await.context("serving DisplayRecovery1")?;
+    connection.object_server().at(names::ROOT_PATH, accounts::AccountsApi(state.clone()))
+        .await.context("serving Accounts1")?;
 
     connection
         .object_server()
@@ -257,7 +268,46 @@ async fn main() -> Result<()> {
         .await
         .context("serving IndexCheckpoint1")?;
 
+    // Publish the well-known name only after recovery and all interfaces are ready.
+    // Calls sent to an early name owner can otherwise be lost during initialization.
+    connection
+        .request_name(names::BUS_NAME)
+        .await
+        .context("claiming org.templaros.Host after interface readiness")?;
+
     tracing::info!(name = names::BUS_NAME, "templar-hostd ready");
     pending::<()>().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn real_factory_consumes_installed_mounts_and_boot_identities() {
+        let root = tempfile::tempdir().unwrap();
+        let text = include_str!("../../../distro/deploy/layout.toml")
+            .replace("@deployments", "@candidates")
+            .replace("/var/lib/templaros/deployments", "/candidates")
+            .replace("/boot/efi", "/esp");
+        let installed = root.path().join(layout::INSTALLED_LAYOUT);
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(installed, text).unwrap();
+        std::fs::create_dir_all(root.path().join("esp/loader")).unwrap();
+        std::fs::write(root.path().join("esp/loader/loader.conf"), "default templaros-base.conf\n").unwrap();
+        let (client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (connection, _server) = tokio::try_join!(
+            zbus::connection::Builder::unix_stream(client).p2p().build(),
+            zbus::connection::Builder::unix_stream(server).server(zbus::Guid::generate()).unwrap().p2p().build(),
+        ).unwrap();
+        let config = real_config(root.path(), connection).unwrap();
+        assert_eq!(config.deployment_layout.candidate_mount("txn-1"), root.path().join("candidates/txn-1"));
+        assert_eq!(config.deployment_layout.subvolume("txn-1"), "@candidates/txn-1");
+        assert_eq!(config.deployment_layout.mounted_esp, root.path().join("esp"));
+        assert_eq!(config.boot.name(), "systemd-boot");
+        let host = state::HostdState::new(config).unwrap();
+        assert_eq!(host.engine.mounted_deployment("@candidates/txn-1").unwrap(), root.path().join("candidates/txn-1"));
+        assert_eq!(host.engine.mounted_deployment("@").unwrap(), root.path().join("var/lib/templaros/roots/bootstrap"));
+    }
 }

@@ -3,8 +3,9 @@
 //! Two questions the OS could not answer before this crate existed:
 //!
 //! 1. **What is installed?** Every package in a set carries the same version string, the
-//!    [`BuildSetId`](build_set_id): `0.1.0~dev<epoch>+g<sha7>[.dirty]`. One string across all
-//!    thirteen packages turns "is this a coherent set?" into a string comparison, and turns
+//!    [`BuildSetId`](build_set_id): `0.1.0~dev<epoch>+g<sha7>[.dirty]` for Git checkouts,
+//!    or `0.1.0~dev<epoch>+s<bundle-sha256>` for exact source closures. One string across all
+//!    packages turns "is this a coherent set?" into a string comparison, and turns
 //!    rollback into `apt-get install --allow-downgrades pkg=<previous>`. `templar doctor` used to
 //!    guess at this from package mtimes, and said so in a comment.
 //!
@@ -45,7 +46,7 @@ use std::{
 pub struct BuildIdentity {
     /// The Debian version shared by every package in this build set.
     pub build_set: String,
-    /// Abbreviated commit the set was built from.
+    /// Abbreviated Git commit; empty when a closed source origin has no checkout.
     pub git_sha: String,
     /// Whether the working tree had uncommitted tracked changes at build time.
     pub dirty: bool,
@@ -157,6 +158,8 @@ pub struct ParsedBuildSetId {
     pub version: String,
     pub epoch: u64,
     pub git_sha: String,
+    /// Exact closed-source bundle hash, for a source-origin id rather than a Git-origin id.
+    pub source_content_sha256: Option<String>,
     pub dirty: bool,
 }
 
@@ -171,18 +174,28 @@ pub struct ParsedBuildSetId {
 #[must_use]
 pub fn parse_build_set_id(id: &str) -> Option<ParsedBuildSetId> {
     let (version, rest) = id.split_once("~dev")?;
-    let (epoch, rest) = rest.split_once("+g")?;
-    let (git_sha, dirty) = match rest.strip_suffix(".dirty") {
-        Some(sha) => (sha, true),
-        None => (rest, false),
+    let (epoch, origin) = rest.split_once('+')?;
+    let (origin, dirty) = match origin.strip_suffix(".dirty") {
+        Some(origin) => (origin, true),
+        None => (origin, false),
     };
-    if git_sha.is_empty() || !git_sha.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
+    let (git_sha, source_content_sha256) = if let Some(sha) = origin.strip_prefix('g') {
+        if sha.is_empty() || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        (sha.to_owned(), None)
+    } else {
+        let hash = origin.strip_prefix('s')?;
+        if dirty || hash.len() != 64 || !hash.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        (String::new(), Some(hash.to_owned()))
+    };
     Some(ParsedBuildSetId {
         version: version.to_owned(),
         epoch: epoch.parse().ok()?,
-        git_sha: git_sha.to_owned(),
+        git_sha,
+        source_content_sha256,
         dirty,
     })
 }
@@ -203,10 +216,15 @@ pub fn changelog_entry(id: &str, distribution: &str, maintainer: &str, when: u64
     let commit = parse_build_set_id(id).map_or_else(
         || "an unrecognised id".to_owned(),
         |parsed| {
-            format!(
-                "commit {}{}",
-                parsed.git_sha,
-                if parsed.dirty { " (dirty tree)" } else { "" }
+            parsed.source_content_sha256.map_or_else(
+                || {
+                    format!(
+                        "commit {}{}",
+                        parsed.git_sha,
+                        if parsed.dirty { " (dirty tree)" } else { "" }
+                    )
+                },
+                |hash| format!("closed source SHA256 {hash}"),
             )
         },
     );
@@ -576,6 +594,35 @@ mod tests {
                 .unwrap()
                 .dirty
         );
+    }
+
+    #[test]
+    fn a_source_build_set_has_a_full_content_origin_not_a_fictional_commit() {
+        let hash = "ab".repeat(32);
+        let id = format!("0.1.0~dev1788439680+s{hash}");
+        let parsed = parse_build_set_id(&id).unwrap();
+        assert_eq!(parsed.epoch, 1_788_439_680);
+        assert!(parsed.git_sha.is_empty());
+        assert_eq!(parsed.source_content_sha256.as_deref(), Some(hash.as_str()));
+        assert!(!parsed.dirty);
+        let stanza = changelog_entry(
+            &id,
+            "resolute",
+            "TemplarOS contributors <dev@templaros.org>",
+            parsed.epoch,
+        );
+        assert!(stanza.contains(&format!("closed source SHA256 {hash}")));
+        assert!(!stanza.contains("commit "));
+        assert!(stanza.contains("Thu, 03 Sep 2026 12:48:00 +0000"));
+        assert_eq!(
+            changelog_head_version(&stanza).as_deref(),
+            Some(id.as_str())
+        );
+        assert_eq!(changelog_with_head(&stanza, &stanza), stanza);
+        assert!(parse_build_set_id("0.1.0~dev1+sabcdef1").is_none());
+        assert!(parse_build_set_id(&format!("0.1.0~dev1+s{}", "z".repeat(64))).is_none());
+        assert!(parse_build_set_id(&format!("{id}.dirty")).is_none());
+        assert!(parse_build_set_id(&format!("{id}+gabcdef1")).is_none());
     }
 
     #[test]

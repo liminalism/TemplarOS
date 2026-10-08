@@ -11,10 +11,10 @@
 use crate::apis::failed;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use futures_util::{Stream, StreamExt as _};
+use futures_util::StreamExt as _;
 use std::sync::Arc;
 use templar_types::{dbus::session as names, unit};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use zbus::{fdo, object_server::SignalEmitter};
 
 /// One edge of the session's own life, as distinct from the machine's.
@@ -28,8 +28,7 @@ use zbus::{fdo, object_server::SignalEmitter};
 pub enum SessionEdge {
     /// templar-sessiond started, so this is a new session.
     Started,
-    /// A lock was *asked for*. Not "the screen is covered": sessiond speaks no Wayland and
-    /// cannot observe that (see [`LifecycleApi::lock`]).
+    /// The trusted shell observed the compositor's per-output protected-frame acknowledgment.
     Locked,
     /// The shell released the compositor's lock and said so through `NotifyUnlocked`.
     Unlocked,
@@ -295,31 +294,37 @@ impl LifecycleApi {
     }
 }
 
-/// Turn a stream of logind `PrepareForSleep` booleans into session edges.
-///
-/// Split out from the match rule around it because that is the only part a test can reach: a
-/// system bus, a seat and a machine willing to suspend are not available to `cargo test`.
-pub async fn pump_sleep<S>(signals: S, edges: SessionEdges)
-where
-    S: Stream<Item = bool>,
-{
-    let mut signals = std::pin::pin!(signals);
-    while let Some(going_to_sleep) = signals.next().await {
-        let _ = edges.send(SessionEdge::Sleeping(going_to_sleep));
+/// Own the sole logind stream and retain its actual registration/lifetime witness.
+#[derive(Debug)]
+pub struct SleepWatch {
+    ready: watch::Receiver<bool>,
+    state: watch::Sender<bool>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl SleepWatch {
+    pub fn readiness(&self) -> watch::Receiver<bool> { self.ready.clone() }
+}
+
+impl Drop for SleepWatch {
+    fn drop(&mut self) {
+        self.state.send_replace(false);
+        if let Some(task) = self.task.take() { task.abort(); }
     }
 }
 
 /// Watch logind for `PrepareForSleep`. One match rule, no polling, no wakeups of its own.
 ///
-/// Best-effort by design, exactly as `SystemLogind` is: a session that cannot reach the system bus
-/// still runs, it just cannot tell sleep from an idle gap. Saying so once in the log is better
-/// than refusing to start.
-pub fn spawn_sleep_watch(system_connection: Option<zbus::Connection>, edges: SessionEdges) {
+/// No system bus or a lost stream leaves sleep-delay capability unavailable.
+pub fn spawn_sleep_watch(system_connection: Option<zbus::Connection>, edges: SessionEdges) -> SleepWatch {
+    let (state, ready) = watch::channel(false);
+    let mut owner = SleepWatch { ready, state, task: None };
     let Some(connection) = system_connection else {
         tracing::warn!("no system bus; sleep will not be counted against session time");
-        return;
+        return owner;
     };
-    tokio::spawn(async move {
+    let state = owner.state.clone();
+    owner.task = Some(tokio::spawn(async move {
         let rule = match zbus::MatchRule::builder()
             .msg_type(zbus::message::Type::Signal)
             .sender("org.freedesktop.login1")
@@ -332,21 +337,31 @@ pub fn spawn_sleep_watch(system_connection: Option<zbus::Connection>, edges: Ses
                 return;
             }
         };
-        let stream = match zbus::MessageStream::for_match_rule(rule, &connection, Some(4)).await {
+        let mut stream = match zbus::MessageStream::for_match_rule(rule, &connection, Some(4)).await {
             Ok(stream) => stream,
             Err(error) => {
                 tracing::warn!(%error, "watching logind for PrepareForSleep");
                 return;
             }
         };
-        pump_sleep(
-            stream.filter_map(
-                |message| async move { message.ok()?.body().deserialize::<bool>().ok() },
-            ),
-            edges,
-        )
-        .await;
-    });
+        state.send_replace(true);
+        while let Some(message) = stream.next().await {
+            let message = match message {
+                Ok(message) => message,
+                Err(error) => {
+                    tracing::warn!(%error, "logind sleep stream failed");
+                    break;
+                }
+            };
+            match message.body().deserialize::<bool>() {
+                Ok(going_to_sleep) => { let _ = edges.send(SessionEdge::Sleeping(going_to_sleep)); }
+                Err(error) => tracing::warn!(%error, "invalid logind sleep signal"),
+            }
+        }
+        state.send_replace(false);
+        tracing::warn!("logind sleep stream ended; sleep-delay capability unavailable");
+    }));
+    owner
 }
 
 /// Re-emit every session edge as its `Lifecycle1` signal.
@@ -436,14 +451,25 @@ impl LifecycleApi {
     /// honest in a way the old `NotSupported` was not, and it is the only thing this process is
     /// in a position to promise.
     async fn lock(&self, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> fdo::Result<()> {
-        // The edge is the request, not the covered screen — the same honesty the doc comment
-        // above claims. A lock the compositor then refuses is followed by an unlock, because the
-        // shell tears the attempt down through the same `release_lock` path.
-        let _ = self.edges.send(SessionEdge::Locked);
         emitter
             .lock_requested()
             .await
             .map_err(|error| fdo::Error::Failed(format!("emitting LockRequested: {error}")))
+    }
+
+    /// Only the trusted lock client can observe ext-session-lock-v1's presented-frame barrier.
+    async fn notify_locked(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> fdo::Result<()> {
+        let sender = header.sender().map(ToString::to_string).unwrap_or_default();
+        if self.caller.unit_of(&sender).await.as_deref() != Some(SHELL_UNIT) {
+            return Err(fdo::Error::AccessDenied(format!(
+                "only {SHELL_UNIT} may report a confirmed lock"
+            )));
+        }
+        let _ = self.edges.send(SessionEdge::Locked);
+        Ok(())
     }
 
     /// The trusted shell reporting that it has released the compositor's lock.
@@ -625,35 +651,6 @@ mod tests {
         )
     }
 
-    /// The whole point of the broadcast: a subscriber sees the edges in order, including the one
-    /// carrying its argument.
-    #[tokio::test]
-    async fn sleep_signals_become_session_edges() {
-        let edges: SessionEdges = broadcast::channel(EDGE_CAPACITY).0;
-        let mut seen = edges.subscribe();
-        pump_sleep(futures_util::stream::iter([true, false]), edges).await;
-        assert_eq!(seen.recv().await.unwrap(), SessionEdge::Sleeping(true));
-        assert_eq!(seen.recv().await.unwrap(), SessionEdge::Sleeping(false));
-    }
-
-    /// Asking for a lock is an edge even though the screen is not covered yet: it is the only
-    /// moment sessiond can observe, and the shell's unlock closes the interval either way.
-    #[tokio::test]
-    async fn asking_for_a_lock_is_a_session_edge() {
-        let edges: SessionEdges = broadcast::channel(EDGE_CAPACITY).0;
-        let mut seen = edges.subscribe();
-        let api = LifecycleApi::new(
-            Arc::new(FakeLogind::default()),
-            Arc::new(FakeSession::default()),
-            Arc::new(FakeUnit(Some(SHELL_UNIT))),
-            edges,
-        );
-        // `lock()` needs a real bus for its signal emitter, so the edge is what is checked here;
-        // the signal half is `spawn_signal_relay`'s job and is the same code path for all four.
-        let _ = api.edges.send(SessionEdge::Locked);
-        assert_eq!(seen.recv().await.unwrap(), SessionEdge::Locked);
-    }
-
     /// Only `templar-shell.service` knows the compositor's lock is gone. Everything else — including
     /// a caller whose unit cannot be established at all — is refused rather than believed.
     #[tokio::test]
@@ -801,24 +798,4 @@ mod tests {
         );
     }
 
-    /// `Lock` used to refuse: nothing drove the compositor's protocol, so reporting success
-    /// would have been a lie. It now emits `LockRequested` and the trusted shell does the
-    /// locking — which means the interface has a signal, and this checks the interface declares
-    /// it rather than calling `lock()`, whose signal emitter needs a real bus connection.
-    #[test]
-    fn lock_asks_for_a_lock_through_a_signal_rather_than_refusing() {
-        let xml = include_str!("../../../../interfaces/dbus/org.templaros.Session.Lifecycle1.xml");
-        assert!(
-            xml.contains(r#"<signal name="LockRequested"/>"#),
-            "the interface no longer declares the signal Lock emits"
-        );
-        assert!(
-            !xml.contains("NotSupported"),
-            "the interface still documents Lock as refusing"
-        );
-        // The implementation emits it; a `NotSupported` left behind would mean the two halves
-        // disagree about what calling Lock does.
-        let source = include_str!("lifecycle.rs");
-        assert!(source.contains("emitter\n            .lock_requested()"));
-    }
 }

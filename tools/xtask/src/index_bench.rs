@@ -14,16 +14,18 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 use std::{
     fs,
-    io::Read,
+    io::{BufRead as _, BufReader, Read},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use templar_file_index::{
-    Index, IndexConfig, MutationBatch, MutationSource, NativePath, Query, RootPolicy, ScanOptions,
+    Index, IndexConfig, MutationBatch, MutationSource, NativePath, Query, RootPolicy, RootState,
+    ScanOptions, StaleReason,
     coalesce::{Clock, SystemClock},
     model::EntryKind,
+    reconcile::{self, Trigger},
     snapshot::SnapshotRequest,
-    watch::{InotifySource, WatchBudget, WatchLimits, WatchOwner},
+    watch::{EventSource, InotifySource, WatchBudget, WatchLimits, WatchOwner},
 };
 
 #[derive(Debug, Args)]
@@ -63,10 +65,9 @@ pub enum IndexBenchCommand {
         #[arg(long)]
         out: Option<PathBuf>,
     },
-    /// Idle-cost sampling of a real `templar-filed`, isolated on its own D-Bus session via
-    /// `dbus-run-session` so it never touches the user's live session bus. Reports
-    /// `/proc/<pid>/schedstat` timeslices for the `templar-index-watcher` thread, voluntary context
-    /// switches, and background read I/O, over a settled window.
+    /// Idle-cost sampling of a real `templar-filed` on a directly owned private D-Bus daemon.
+    /// Holds an Index1 observation and waits for complete current roots before sampling `/proc`
+    /// watcher timeslices, context switches and I/O. Both child processes are reaped.
     Idle {
         /// Settled sampling window, in seconds.
         #[arg(long, default_value_t = 60)]
@@ -624,7 +625,7 @@ fn workloads(
         // Reindex what the downtime mutation above already changed, so touch/rename/delete start
         // from a settled, fully-indexed tree.
         index.reconcile_root(root_id, ScanOptions::reconcile(policy.clone()))?;
-        drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6);
+        drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6)?;
 
         let live_files: Vec<PathBuf> = walk_existing_files(&home, mutate.min(200_000) as usize);
         let ops = mutate.min(live_files.len() as u64) as usize;
@@ -632,7 +633,7 @@ fn workloads(
         if ops > 0 {
             let start = Instant::now();
             touch_files(&live_files[..ops])?;
-            let applied = drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6);
+            let applied = drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6)?;
             let elapsed = start.elapsed();
             println!(
                 "touch {ops}: {applied} mutation(s) applied in {:.2}s",
@@ -652,7 +653,7 @@ fn workloads(
                     renamed.push(target);
                 }
             }
-            let applied = drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6);
+            let applied = drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6)?;
             let elapsed = start.elapsed();
             println!(
                 "rename {}: {applied} mutation(s) applied in {:.2}s",
@@ -672,7 +673,7 @@ fn workloads(
                     deleted += 1;
                 }
             }
-            let applied = drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6);
+            let applied = drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6)?;
             let elapsed = start.elapsed();
             println!(
                 "delete {deleted}: {applied} mutation(s) applied in {:.2}s",
@@ -697,7 +698,7 @@ fn workloads(
                 b"templarbench object\n",
             )?;
         }
-        let applied = drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6);
+        let applied = drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6)?;
         let elapsed = start.elapsed();
         println!(
             "build-shaped burst ({burst_count} creates): {applied} mutation(s) applied in {:.2}s",
@@ -712,7 +713,7 @@ fn workloads(
         // 5. A `cargo clean`-shaped mass delete: the burst directory, removed whole.
         let start = Instant::now();
         fs::remove_dir_all(&burst_dir)?;
-        let applied = drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6);
+        let applied = drain_watcher(&mut owner, &index, &clock, Duration::from_millis(100), 6)?;
         let elapsed = start.elapsed();
         println!(
             "clean-shaped mass delete ({burst_count} entries): {applied} mutation(s) applied in {:.2}s",
@@ -895,44 +896,97 @@ fn touch_files(files: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-/// Pump-apply loop: keep draining the watcher and applying whatever mutations arrive until
-/// `quiet_polls` consecutive polls return nothing, meaning the kernel's event queue — and the
-/// index's own view — has caught up with what the filesystem just did. Returns the total number
-/// of mutations applied.
-///
-/// This measures the watcher-pump-apply latency directly, **without** the production coalescing
-/// debounce window (`services/templar-filed/src/watcher.rs`, owned by another lane in this
-/// campaign): each pumped batch is applied immediately rather than held for quiet time. That is a
-/// different, and generally lower, number than end-to-end production latency; it isolates what
-/// this crate's own watch-and-apply path costs.
-fn drain_watcher(
-    owner: &mut WatchOwner<InotifySource>,
+/// Immediate pump/apply/repair cost, not production coalescer latency. Quiet polls are only a
+/// settle window: success also requires no unpaired move and complete, current tracked roots.
+/// Loss is repaired with the same watch-before-read protocol as the daemon; failures are errors,
+/// never an apparently successful mutation count. The deadline is cooperative during scans.
+fn drain_watcher<S: EventSource>(
+    owner: &mut WatchOwner<S>,
     index: &Index,
     clock: &dyn Clock,
     poll_timeout: Duration,
     quiet_polls: u32,
-) -> u64 {
+) -> Result<u64> {
+    drain_watcher_until(owner, index, clock, poll_timeout, quiet_polls,
+        Instant::now() + Duration::from_secs(120))
+}
+
+fn drain_watcher_until<S: EventSource>(
+    owner: &mut WatchOwner<S>,
+    index: &Index,
+    clock: &dyn Clock,
+    poll_timeout: Duration,
+    quiet_polls: u32,
+    deadline: Instant,
+) -> Result<u64> {
     let mut applied = 0u64;
     let mut quiet = 0u32;
-    // A generous ceiling so a stuck watcher cannot hang the harness forever.
-    for _ in 0..20_000 {
-        let pumped = owner.pump(Some(poll_timeout), clock);
-
-        if pumped.mutations.is_empty() {
-            quiet += 1;
-            if quiet >= quiet_polls {
-                break;
+    loop {
+        let remaining = deadline.checked_duration_since(Instant::now())
+            .context("watcher drain deadline exhausted; index is not proven settled")?;
+        let before = owner.status(0).last_event_ms;
+        let pumped = owner.pump(Some(poll_timeout.min(remaining)), clock);
+        if let Some(error) = pumped.failed {
+            for root in owner.tracked_roots() {
+                index.mark_stale(root, &StaleReason::WatcherFailed { detail: error.clone() })?;
             }
-            continue;
+            bail!("watcher drain source failed: {error}");
         }
-        quiet = 0;
-        let count = pumped.mutations.len() as u64;
-        let batch = MutationBatch::new(MutationSource::Watcher, pumped.mutations);
-        if index.apply(batch).is_ok() {
+        for root in &pumped.offline {
+            index.mark_offline(*root, "filesystem disappeared during benchmark drain")?;
+        }
+        if !pumped.offline.is_empty() {
+            bail!("watcher drain root went offline: {:?}", pumped.offline);
+        }
+        let activity = !pumped.mutations.is_empty() || !pumped.repairs.is_empty()
+            || owner.status(0).last_event_ms != before;
+        if !pumped.mutations.is_empty() {
+            let count = pumped.mutations.len() as u64;
+            index.apply(MutationBatch::new(MutationSource::Watcher, pumped.mutations))
+                .context("applying watcher drain mutations")?;
             applied += count;
         }
+        // Apply invalidations before the repair which supersedes them, as the daemon does.
+        for request in pumped.repairs {
+            if request.mark_root_stale {
+                index.mark_stale(request.root, &request.reason)?;
+            }
+            let trigger = match request.reason {
+                StaleReason::WatcherOverflow => Trigger::Overflow,
+                StaleReason::WatcherExhausted { armed, refused } =>
+                    Trigger::Exhausted { armed, refused },
+                _ => Trigger::RenameAmbiguous,
+            };
+            let mut options = ScanOptions::reconcile(index.root_policy(request.root)?);
+            options.budget = index.config().scan_budget;
+            let remaining = deadline.checked_duration_since(Instant::now())
+                .context("watcher drain deadline exhausted before reconciliation")?;
+            options.budget.max_duration = Some(options.budget.max_duration
+                .map_or(remaining, |configured| configured.min(remaining)));
+            let (outcome, _) = reconcile::reconcile(index, owner, request.root,
+                request.scope, &trigger, options).context("reconciling watcher drain loss")?;
+            if !outcome.complete {
+                bail!("watcher drain reconciliation incomplete: {outcome:?}");
+            }
+        }
+        if activity || owner.next_move_deadline(clock.now_ms()).is_some() {
+            quiet = 0;
+            continue;
+        }
+        quiet = quiet.saturating_add(1);
+        if quiet >= quiet_polls {
+            for root in owner.tracked_roots() {
+                let status = index.root_status(root)?;
+                if !status.complete || status.state != RootState::Current {
+                    bail!("watcher drain root is not settled: {status:?}");
+                }
+            }
+            if Instant::now() >= deadline {
+                bail!("watcher drain deadline exhausted after maintenance");
+            }
+            return Ok(applied);
+        }
     }
-    applied
 }
 
 fn walk_existing_files(root: &Path, limit: usize) -> Vec<PathBuf> {
@@ -972,6 +1026,18 @@ struct IdleSample {
     read_bytes_delta: Option<u64>,
     syscw_delta: Option<u64>,
     wchar_delta: Option<u64>,
+    #[serde(default)]
+    binary: Option<PathBuf>,
+    #[serde(default)]
+    filed_pid: Option<u32>,
+    #[serde(default)]
+    bus_pid: Option<u32>,
+    #[serde(default)]
+    roots_before: Option<templar_client::file_index::IndexRoots>,
+    #[serde(default)]
+    roots_after: Option<templar_client::file_index::IndexRoots>,
+    #[serde(default)]
+    owned_children_reaped: bool,
 }
 
 fn idle_binary(binary: Option<PathBuf>, profile: &str) -> Result<PathBuf> {
@@ -1002,94 +1068,16 @@ fn idle(
             if release { " --release" } else { "" }
         );
     }
-    if which("dbus-run-session").is_none() {
-        bail!("dbus-run-session is not on PATH — install dbus-user-session to isolate this");
+    if which("dbus-daemon").is_none() {
+        bail!("dbus-daemon is not on PATH — install dbus-user-session to isolate this");
     }
-
+    let binary = binary.canonicalize().context("resolving the explicit filed binary")?;
     let scratch = tempfile::tempdir().context("creating an idle-sampling scratch directory")?;
     let home = scratch.path().join("home");
-    let index_db = scratch.path().join("cache").join("file-index-v1.sqlite3");
-    let state_db = scratch.path().join("state").join("session.db");
     println!("generating a {entries}-entry fixture for idle sampling");
     build_fixture(&home, entries)?;
-
-    let mut child = std::process::Command::new("dbus-run-session")
-        .arg("--")
-        .arg(&binary)
-        .arg("--index-root")
-        .arg(&home)
-        .arg("--index-db")
-        .arg(&index_db)
-        .arg("--state-db")
-        .arg(&state_db)
-        .arg("--reserve-percent")
-        .arg("0")
-        .env("HOME", scratch.path())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .context("spawning an isolated templar-filed")?;
-
-    // `dbus-run-session -- templar-filed` means the child we spawned is dbus-run-session itself,
-    // which execve's into a helper before templar-filed runs; wait for the index db to appear as a
-    // simple, robust "it is up" signal instead of parsing process trees.
-    let up_deadline = Instant::now() + Duration::from_secs(20);
-    while !index_db.exists() && Instant::now() < up_deadline {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    // Let initial indexing and watch-arming settle before the measurement window starts, so the
-    // window captures idle cost, not startup cost.
-    std::thread::sleep(Duration::from_secs(5));
-
-    let marker = scratch.path().to_string_lossy().into_owned();
-    let pid = find_templar_filed_pid(&marker);
-    let sample = match pid {
-        None => {
-            println!(
-                "could not find a running templar-filed process to sample (reporting nothing)"
-            );
-            IdleSample {
-                label,
-                seconds,
-                fixture_entries: entries,
-                watcher_thread_found: false,
-                schedstat_pcount_delta: None,
-                voluntary_ctxt_switches_delta: None,
-                read_bytes_delta: None,
-                syscw_delta: None,
-                wchar_delta: None,
-            }
-        }
-        Some(pid) => {
-            let tid = find_thread(pid, "templar-index-watc"); // comm is truncated to 15 bytes
-            let before = ProcSample::read(pid, tid);
-            println!("sampling pid {pid} (watcher tid {tid:?}) for {seconds}s...");
-            std::thread::sleep(Duration::from_secs(seconds));
-            let after = ProcSample::read(pid, tid);
-            IdleSample {
-                label,
-                seconds,
-                fixture_entries: entries,
-                watcher_thread_found: tid.is_some(),
-                schedstat_pcount_delta: delta(before.schedstat_pcount, after.schedstat_pcount),
-                voluntary_ctxt_switches_delta: delta(
-                    before.voluntary_ctxt_switches,
-                    after.voluntary_ctxt_switches,
-                ),
-                read_bytes_delta: delta(before.read_bytes, after.read_bytes),
-                syscw_delta: delta(before.syscw, after.syscw),
-                wchar_delta: delta(before.wchar, after.wchar),
-            }
-        }
-    };
-
-    if let Some(pid) = pid {
-        kill_pid(pid);
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-
+    let runtime = tokio::runtime::Runtime::new().context("starting the private bus executor")?;
+    let sample = runtime.block_on(sample_idle(&binary, scratch.path(), &home, seconds, entries, label))?;
     println!("{}", serde_json::to_string_pretty(&sample)?);
     if let Some(out) = out {
         if let Some(parent) = out.parent() {
@@ -1099,6 +1087,111 @@ fn idle(
             .with_context(|| format!("writing {}", out.display()))?;
     }
     Ok(())
+}
+
+struct OwnedChild(std::process::Child);
+
+impl OwnedChild {
+    fn stop(&mut self) -> Result<()> {
+        if self.0.try_wait()?.is_none() {
+            self.0.kill()?;
+        }
+        self.0.wait().context("reaping an owned benchmark child")?;
+        Ok(())
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+async fn sample_idle(
+    binary: &Path, scratch: &Path, home: &Path, seconds: u64, entries: u64,
+    label: Option<String>,
+) -> Result<IdleSample> {
+    use std::{os::unix::fs::PermissionsExt as _, process::{Command, Stdio}};
+    use templar_client::{file_index::{self, Observation}, proxies::FilesIndexProxy};
+    for name in ["config", "data", "state", "cache", "runtime"] {
+        fs::create_dir_all(scratch.join(name))?;
+    }
+    let runtime = scratch.join("runtime");
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
+    let mut bus = OwnedChild(Command::new("dbus-daemon")
+        .args(["--session", "--nofork", "--print-address=1"])
+        .arg(format!("--address=unix:tmpdir={}", runtime.display()))
+        .stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn()
+        .context("spawning the owned private bus")?);
+    let mut address = String::new();
+    BufReader::new(bus.0.stdout.take().context("private bus address pipe")?)
+        .read_line(&mut address)?;
+    if !address.starts_with("unix:") { bail!("private bus did not publish a Unix address"); }
+    let address = address.trim();
+    let mut filed = OwnedChild(Command::new(binary)
+        .arg("--index-root").arg(home)
+        .arg("--index-db").arg(scratch.join("cache/file-index-v1.sqlite3"))
+        .arg("--state-db").arg(scratch.join("state/session.db"))
+        .args(["--reserve-percent", "0"])
+        .env("HOME", home).env("XDG_CONFIG_HOME", scratch.join("config"))
+        .env("XDG_DATA_HOME", scratch.join("data")).env("XDG_STATE_HOME", scratch.join("state"))
+        .env("XDG_CACHE_HOME", scratch.join("cache")).env("XDG_RUNTIME_DIR", &runtime)
+        .env("DBUS_SESSION_BUS_ADDRESS", address).env("DBUS_SYSTEM_BUS_ADDRESS", address)
+        .env("TEMPLAR_INDEX_FIXTURE_GUARD", "1").env("RUST_LOG", "warn")
+        .stdout(Stdio::null()).stderr(Stdio::inherit()).spawn()
+        .context("spawning the owned native filed")?);
+    let connection = zbus::connection::Builder::address(address)?.build().await?;
+    let proxy = FilesIndexProxy::new(&connection).await?;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut observation = None;
+    let roots_before = loop {
+        if let Some(status) = filed.0.try_wait()? { bail!("owned filed exited during startup: {status}"); }
+        if Instant::now() >= deadline { bail!("native filed did not reach complete current roots within 120s"); }
+        if observation.is_none()
+            && let Ok(Ok(acquired)) = tokio::time::timeout(Duration::from_secs(2),
+                Observation::acquire(&connection)).await
+        {
+            observation = Some(acquired);
+        }
+        if observation.is_some()
+            && let Ok(Ok(roots)) = tokio::time::timeout(Duration::from_secs(2),
+                file_index::roots(&proxy)).await
+            && !roots.roots.is_empty()
+            && roots.roots.iter().all(|root| root.current() && root.metadata == "verified"
+                && root.watch.as_ref().is_some_and(|watch| watch.pending_events == 0))
+        {
+            break roots;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    // The final coalescer/status turn may follow the committed root by one dispatch.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let pid = filed.0.id();
+    let tid = find_thread(pid, &"templar-index-watcher"[..15])
+        .context("owned filed watcher thread is absent")?;
+    let before = ProcSample::read(pid, Some(tid));
+    println!("sampling owned pid {pid} (watcher tid {tid}) for {seconds}s...");
+    tokio::time::sleep(Duration::from_secs(seconds)).await;
+    if let Some(status) = filed.0.try_wait()? { bail!("owned filed exited during sampling: {status}"); }
+    let after = ProcSample::read(pid, Some(tid));
+    let roots_after = tokio::time::timeout(Duration::from_secs(2), file_index::roots(&proxy)).await??;
+    if roots_before.roots != roots_after.roots {
+        bail!("native idle sample included namespace maintenance; roots changed");
+    }
+    let mut sample = IdleSample {
+        label, seconds, fixture_entries: entries, watcher_thread_found: true,
+        schedstat_pcount_delta: delta(before.schedstat_pcount, after.schedstat_pcount),
+        voluntary_ctxt_switches_delta: delta(before.voluntary_ctxt_switches, after.voluntary_ctxt_switches),
+        read_bytes_delta: delta(before.read_bytes, after.read_bytes),
+        syscw_delta: delta(before.syscw, after.syscw), wchar_delta: delta(before.wchar, after.wchar),
+        binary: Some(binary.to_path_buf()), filed_pid: Some(pid), bus_pid: Some(bus.0.id()),
+        roots_before: Some(roots_before), roots_after: Some(roots_after), owned_children_reaped: false,
+    };
+    if let Some(mut observation) = observation { observation.close().await?; }
+    filed.stop()?;
+    bus.stop()?;
+    sample.owned_children_reaped = true;
+    Ok(sample)
 }
 
 fn delta(before: Option<u64>, after: Option<u64>) -> Option<u64> {
@@ -1182,51 +1275,6 @@ fn find_thread(pid: u32, comm_prefix: &str) -> Option<u32> {
     None
 }
 
-/// The `templar-filed` process whose command line names `marker` (this run's scratch directory) —
-/// never just "any `templar-filed` on the machine". A prior run's process can outlive its
-/// `dbus-run-session` parent (killing the parent does not reliably kill the grandchild across a
-/// D-Bus disconnect), and sampling the wrong one silently reports someone else's idle window.
-fn find_templar_filed_pid(marker: &str) -> Option<u32> {
-    let entries = fs::read_dir("/proc").ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Ok(pid) = name.to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let comm = read_to_string(&format!("/proc/{pid}/comm")).unwrap_or_default();
-        if comm.trim() != "templar-filed" {
-            continue;
-        }
-        let Some(cmdline) = fs::read(format!("/proc/{pid}/cmdline")).ok() else {
-            continue;
-        };
-        let cmdline = String::from_utf8_lossy(&cmdline);
-        if cmdline.contains(marker) {
-            return Some(pid);
-        }
-    }
-    None
-}
-
-/// `SIGTERM`, then `SIGKILL` after a short grace period if it did not exit — best-effort (via the
-/// `kill(1)` binary, so this needs no `libc`/`nix` dependency), so a benchmark run never leaves an
-/// idle `templar-filed` behind for the next one to accidentally sample.
-fn kill_pid(pid: u32) {
-    let _ = std::process::Command::new("kill")
-        .arg(pid.to_string())
-        .status();
-    for _ in 0..20 {
-        if !Path::new(&format!("/proc/{pid}")).exists() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let _ = std::process::Command::new("kill")
-        .arg("-9")
-        .arg(pid.to_string())
-        .status();
-}
-
 fn which(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
@@ -1281,4 +1329,83 @@ fn idle_compare(before: &Path, after: &Path) -> Result<()> {
     row("syscw", before.syscw_delta, after.syscw_delta);
     row("wchar", before.wchar_delta, after.wchar_delta);
     Ok(())
+}
+
+#[cfg(test)]
+mod drain_tests {
+    use super::*;
+    use templar_file_index::{RootId, ScanScope, watch::{FakeSource, RawKind}};
+
+    fn fixture<S: EventSource>(source: S, budget: u64) ->
+        (tempfile::TempDir, PathBuf, Index, RootId, WatchOwner<S>)
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        fs::create_dir(&home).unwrap();
+        let index = Index::open(&temp.path().join("index.db"), IndexConfig::default()).unwrap();
+        let policy = RootPolicy::default_home();
+        let root = index.add_root(&NativePath::from_path(&home), policy.clone()).unwrap().root;
+        let mut owner = WatchOwner::new(source, WatchBudget { max_watches: budget });
+        owner.track_root(root, &home, policy.clone());
+        let (outcome, _) = reconcile::reconcile(&index, &mut owner, root, ScanScope::Root,
+            &Trigger::Requested, ScanOptions::reconcile(policy)).unwrap();
+        assert!(outcome.complete);
+        (temp, home, index, root, owner)
+    }
+
+    #[test]
+    fn drain_real_inotify_repairs_loss_and_retains_all_names() {
+        let (_temp, home, index, root, mut owner) = fixture(InotifySource::open().unwrap(), 64);
+        // Stalled genuine consumer: this exceeds the bounded reader handoff, not a scripted event.
+        for number in 0..10_000 {
+            fs::write(home.join(format!("burst-{number:05}.txt")), b"payload").unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        let clock = SystemClock::new();
+        drain_watcher(&mut owner, &index, &clock, Duration::from_millis(20), 6).unwrap();
+        assert!(owner.status(0).overflow_count > 0, "fixture must exercise actual event loss");
+        assert_eq!(index.search(&Query::new("burst-")).unwrap().total, Some(10_000));
+        assert!(index.root_status(root).unwrap().complete);
+        for number in 0..100 {
+            fs::rename(home.join(format!("burst-{number:05}.txt")),
+                home.join(format!("renamed-{number:05}.txt"))).unwrap();
+        }
+        drain_watcher(&mut owner, &index, &clock, Duration::from_millis(20), 6).unwrap();
+        assert_eq!(index.search(&Query::new("renamed-")).unwrap().total, Some(100));
+        for number in 0..100 { fs::remove_file(home.join(format!("renamed-{number:05}.txt"))).unwrap(); }
+        drain_watcher(&mut owner, &index, &clock, Duration::from_millis(20), 6).unwrap();
+        assert_eq!(index.search(&Query::new("burst-")).unwrap().total, Some(9_900));
+        assert_eq!(index.search(&Query::new("renamed-")).unwrap().total, Some(0));
+    }
+
+    #[test]
+    fn drain_reports_apply_failure_instead_of_quiet_success() {
+        let (_temp, home, index, root, mut owner) = fixture(FakeSource::new(), 64);
+        fs::write(home.join("added"), b"payload").unwrap();
+        let watch = owner.source_mut().watch_for(&home).unwrap();
+        owner.source_mut().push_named(watch, "added", RawKind::Created, false);
+        index.forget_root(root).unwrap();
+        let error = drain_watcher(&mut owner, &index, &SystemClock::new(), Duration::ZERO, 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("applying watcher drain mutations"));
+    }
+
+    #[test]
+    fn drain_reports_exhaustion_partial_truth_and_deadline() {
+        let (_temp, home, index, root, mut owner) = fixture(FakeSource::new(), 1);
+        fs::create_dir(home.join("uncovered")).unwrap();
+        fs::write(home.join("uncovered/hidden"), b"payload").unwrap();
+        owner.source_mut().push_overflow();
+        let error = drain_watcher(&mut owner, &index, &SystemClock::new(), Duration::ZERO, 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("reconciliation incomplete"));
+        let status = index.root_status(root).unwrap();
+        assert!(!status.complete);
+        assert_ne!(status.state, RootState::Current);
+        assert!(drain_watcher(&mut owner, &index, &SystemClock::new(), Duration::ZERO, 1).is_err(),
+            "quiet input cannot upgrade partial coverage");
+        let error = drain_watcher_until(&mut owner, &index, &SystemClock::new(), Duration::ZERO, 1,
+            Instant::now()).unwrap_err();
+        assert!(error.to_string().contains("deadline exhausted"));
+    }
 }

@@ -3,12 +3,13 @@
 //!
 //! [`snapshot`] itself is a cheap, synchronous, render-thread-safe read (it only clones what
 //! `WindowService` already exposes — no D-Bus, no I/O). What must stay off the render thread is
-//! turning that snapshot into `templar_shell_v1` protocol events: encoding and the actual Wayland
+//! turning that snapshot into `templar_shell_v2` protocol events: encoding and the actual Wayland
 //! write can stall behind a slow or wedged shell client. [`ShellStateBroadcaster::publish`]
 //! hands the snapshot to a channel and returns immediately; a background task drains the channel
 //! and calls a [`ShellStateSink`] the fork implements over the real protocol object.
 
-use templar_window::{IdentityCache, ShellToplevel, WindowId, WindowService};
+use std::collections::HashMap;
+use templar_window::{IdentityCache, ShellToplevel, TabCount, WindowId, WindowService};
 use tokio::sync::watch;
 
 /// Everything the shell needs to redraw the dock, switcher and Window Shelf after one state
@@ -29,16 +30,26 @@ pub struct ShellStateSnapshot {
 /// Build one snapshot from the current `WindowService` state. Called from the render thread
 /// after any change worth telling the shell about (map/unmap, activation, shelve/unshelve,
 /// layer change) — it is a handful of clones of already-computed data, not a scan.
-pub fn snapshot<I: IdentityCache>(service: &WindowService<I>) -> ShellStateSnapshot {
-    ShellStateSnapshot {
+pub fn snapshot<I: IdentityCache>(
+    service: &WindowService<I>,
+    tab_counts: &HashMap<WindowId, TabCount>,
+) -> ShellStateSnapshot {
+    let mut snapshot = ShellStateSnapshot {
         toplevels: service.shell_toplevels(),
         shelf: service.shelf(),
         stacking_order: service.stacking_order(),
         home_revealed: service.home_revealed(),
+    };
+    // Counts participate in snapshot equality, so a count-only update wakes the
+    // broadcaster just like a title change. Keep parked and ordinary projections
+    // on the same committed metadata, including unknown after invalidation.
+    for window in snapshot.toplevels.iter_mut().chain(snapshot.shelf.iter_mut()) {
+        window.tab_count = tab_counts.get(&window.window_id).cloned();
     }
+    snapshot
 }
 
-/// What the fork's `templar_shell_v1` implementation does with one broadcast: turn it into
+/// What the fork's `templar_shell_v2` implementation does with one broadcast: turn it into
 /// protocol events on the shell's connection (or drop it if no shell is bound — `set_layer_surface`
 /// is how the shell claims `Layer::ShellOverlay` / `Layer::Notification` / `Layer::HomeSurface`
 /// surfaces in the first place, so the sink knows whether one is currently listening). Implemented
@@ -117,7 +128,7 @@ mod tests {
         );
         service.shelve(shelved);
 
-        let snap = snapshot(&service);
+        let snap = snapshot(&service, &HashMap::new());
         assert_eq!(snap.toplevels.len(), 2);
         assert_eq!(snap.shelf.len(), 1);
         assert_eq!(snap.shelf[0].window_id, shelved);
@@ -164,6 +175,44 @@ mod tests {
         // assert.
         tokio::task::yield_now().await;
         assert_eq!(received.lock().unwrap().as_slice(), &[snap]);
+    }
+
+    #[tokio::test]
+    async fn count_only_updates_and_invalidation_reach_live_and_shelf_consumers() {
+        let mut service = WindowService::new(
+            NullCache,
+            vec![Output::new("test", Rect::new(0, 0, 1920, 1080), 1000)],
+        );
+        let window = service.on_toplevel_mapped(
+            42, ClientKind::Application, WindowClaims::default(),
+            "unchanging title".into(), Rect::new(0, 0, 100, 100),
+        );
+        service.shelve(window);
+        struct CountSink(tokio::sync::mpsc::UnboundedSender<ShellStateSnapshot>);
+        impl ShellStateSink for CountSink {
+            fn send(&mut self, snapshot: ShellStateSnapshot) { self.0.send(snapshot).unwrap(); }
+        }
+        let (sender, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let broadcaster = ShellStateBroadcaster::spawn(
+            &tokio::runtime::Handle::current(),
+            CountSink(sender),
+        );
+        let mut counts = HashMap::new();
+        // No geometry, title, stacking, activation or shelf state changes here.
+        for next in [None, Some(3), Some(4), None] {
+            match next {
+                Some(count) => {
+                    counts.insert(window, TabCount::verified(count, 1, "native".into()).unwrap());
+                },
+                None => { counts.remove(&window); },
+            }
+            broadcaster.publish(snapshot(&service, &counts));
+            let snapshot = tokio::time::timeout(std::time::Duration::from_secs(1), received.recv())
+                .await.expect("count-only change must wake the broadcaster")
+                .expect("snapshot consumer is connected");
+            assert_eq!(snapshot.toplevels[0].tab_count.as_ref().map(|count| count.count), next);
+            assert_eq!(snapshot.shelf[0].tab_count.as_ref().map(|count| count.count), next);
+        }
     }
 
     #[tokio::test]

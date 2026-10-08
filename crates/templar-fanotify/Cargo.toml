@@ -13,7 +13,7 @@ repository.workspace = true
 # binding here rather than taking a dependency is that no fanotify crate in the registry parses
 # the `FAN_REPORT_DFID_NAME` info records, which is the only mode this index can use.
 [dependencies]
-templar-file-index = { workspace = true }
+templar-file-index = { workspace = true, features = ["store"] }
 libc = { workspace = true }
 
 # Examples only. `fanotify-lab`'s overflow workload has to drive a raw inotify fd with no reader

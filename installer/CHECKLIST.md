@@ -89,7 +89,8 @@ With the target still mounted, or from a live USB afterwards:
 - [ ] `lsmod | grep nvidia` is non-empty and `dmesg | grep -i 'module verification failed'` is
       empty — the modules loaded *and* the kernel trusted their signature.
 - [ ] `nvidia-smi` prints the card. If it does not, `templar doctor --hardware` before anything else.
-- [ ] The account created in §2 required a new password at first login, and there was no autologin.
+- [ ] The account created in §2 authenticates with its chosen password without autologin
+      or forced-expiry lockout; use `templar account password` for paired changes.
 
 ## 5. The previous kernel is still selectable
 
@@ -145,3 +146,64 @@ are installed from the checkout *after* first boot, not by rewriting the USB.
 
 For each unticked box: the step, the exact command, its output, and whether the machine was usable
 afterwards. "It worked" without the commands is not evidence anyone can act on later.
+
+## 8. Native ownership and opt-in read-only acceptance
+
+These are **pending owner proofs**, not agent/test success. First use an owned
+disposable raw image/loop device and private mount namespace; then repeat actual
+boot trials on the target. Do not run these against a mounted/live desktop root
+or an unrelated disk. Keep the image/device identity, exact commands, output,
+root/ESP UUIDs and failure phase with the evidence.
+
+- [ ] `just check-ownership` resolves every pinned exception to fresh active
+      normative authority. Proposed source-candidates are not release approval.
+- [ ] Provision and resume a disposable default-RW target, then a separately
+      reviewed `--read-only` target. Inspect actual Btrfs subvolumes/default,
+      fstab and mounts: `@var` is the narrow State store, never whole `/var`;
+      dpkg/APT DB/cache have the selected root's own mount identity.
+- [ ] Image finalization owns only its unused regular image, exact loop device
+      and private mounts. Boot files/entry/registry precede sealing; refreshed
+      unsigned SHA256SUMS match the resulting raw file. Signed inputs refuse
+      before mutation unless a separately implemented re-signing path exists.
+- [ ] Native developer deploy returns **queued**, not installed/promoted/running;
+      live dpkg status and live desktop services are unchanged. Candidate APT
+      actually runs ordinary and kernel/LRM maintainer scripts; failure cannot
+      be hidden by fake update-grub/initramfs effects.
+- [ ] Stage, restart mid-download/install/verification, and resume the same
+      mounted candidate/relative subvolume/ESP identity. Changing layout mid-flight
+      refuses reinterpretation. A matching latest kernel/initrd pair is copied
+      before the opt-in candidate's RO property becomes true.
+- [ ] With each real backend, actual `/proc/cmdline` and `findmnt` show the
+      recorded root UUID, selected root's own subvolume and ro/rw policy.
+      GRUB uses the correct ESP-owned grubenv for RO; systemd-boot uses the
+      declared ESP. Healthy promotion and three failed trials retain/select the
+      known-good root without overwriting `@`, profiles or Work.
+- [ ] As a normal local UID >= 1000, `templar account password` applies real
+      PAM policy and changes only that caller. Another UID/root/arbitrary target,
+      an unsealed/oversized/invalid secret FD or cancelled authorization refuses.
+      Colon works; NUL/CR/LF do not. Password/fingerprint login still follows
+      the unchanged existing stack after success.
+- [ ] During maintenance the persistent root-owned non-secret marker gates
+      common-account for password/fingerprint/login/su/polkit irrespective of
+      real UID; State-bind absence, malformed marker and malformed/future intent
+      fail closed. No caller can create the marker, read the private intent, or
+      bypass recovery by unreadable-journal existence semantics.
+- [ ] Kill only the exact owned helper PID / interrupt the disposable operation
+      before intent, while preparing, after prepared partial propagation, and
+      after committed intent. Restart recovery before allowing any PAM login.
+      Orphan marker/scratch cleanup is proven; lost-marker intent recreates the
+      gate; prepared restores old and committed preserves new encrypted rows.
+      Current/fallback/candidate all authenticate the intended password and
+      restore every original Btrfs RO property/file metadata. The live user root
+      mount never becomes writable.
+- [ ] Inspect owned process argv, logs, journal/request/temporary files: no
+      plaintext password appears. Unknown account structure, unjournaled concurrent
+      credentials, incompatible/future State readers or unsupported profile
+      rewind refuses without touching Work.
+- [ ] Record retention behavior: booted/current/previous/known-good/trial roots
+      survive; removed roots do not remain password-writer registry targets.
+      RO package cache is not reported as reclaimed. Logical unlink estimates
+      are not claimed as exact physical CoW space.
+
+Unattended privilege failure or missing real reboot/hardware leaves these boxes
+unticked. Writable default stays in force; an RO opt-in is not promotion evidence.

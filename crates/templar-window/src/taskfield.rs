@@ -416,6 +416,7 @@ mod tests {
             geometry,
             layer: Layer::Normal,
             group: None,
+            tab_count: None,
         }
     }
 

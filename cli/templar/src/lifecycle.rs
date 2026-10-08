@@ -5,7 +5,7 @@
 //! `templar` too"), and this one doubly so: the CLI is how you end a session whose shell has died.
 //!
 //! The bus call goes through [`LifecycleClient`] so the rendering below is testable with a
-//! fixture rather than a live logind — the same shape `crate::power`'s `PowerClient` uses.
+//! fixture rather than a live logind.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;

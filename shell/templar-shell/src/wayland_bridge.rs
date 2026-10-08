@@ -1,10 +1,10 @@
-//! Reaching the compositor's private `templar_shell_v1` protocol from a window
+//! Reaching the compositor's private `templar_shell_v2` protocol from a window
 //! `pixelkit_shell`/winit created — the piece M2's design doc calls out by name: "work out the
 //! cleanest way for a winit-based client to also speak our protocol on that connection".
 //!
 //! # Why this needs `unsafe` at all
 //!
-//! `templar_shell_manager_v1.set_layer_surface`/`set_exclusive_zone` take a `wl_surface` argument.
+//! `templar_shell_manager_v2.set_layer_surface`/`set_exclusive_zone` take a `wl_surface` argument.
 //! Wayland objects are scoped to one client *connection* — an object created on one `wl_display`
 //! connection cannot be named from a different one, even to the same socket, because the
 //! compositor treats each accepted stream as a distinct client with its own object-id namespace
@@ -64,6 +64,7 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, Raw
 use std::os::fd::AsFd;
 
 use wayland_backend::client::{Backend as WBackend, ObjectData, ObjectId};
+use wayland_backend::protocol::{Argument, Message};
 use wayland_client::protocol::{
     wl_data_device::{self, WlDataDevice},
     wl_data_device_manager::{self, WlDataDeviceManager},
@@ -80,14 +81,14 @@ use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum
 use crate::data_device::{ClipboardPayload, ForeignSelection, InputSerials, choose_target};
 use templar_types::{AppId, InstanceId};
 use templar_window::{
-    GroupInfo, Layer, Rect, RevealHome, ShellToplevel, WindowId,
+    GroupInfo, Layer, Rect, RevealHome, ShellToplevel, TabCount, WindowId,
     geometry::{Alignment, Edge},
     taskfield::TaskFilter,
 };
 
-/// The highest `templar_shell_v1` version this shell speaks (`interfaces/wayland/templar-shell-v1.xml`).
-/// Bound at the lower of this and what the compositor advertises, so a newer shell against an
-/// older compositor still gets version 1's events rather than a protocol error.
+/// Highest v2 manager feature version spoken by this shell (`templar-shell-v2.xml`).
+/// Only the distinct v2 manager may bind; v1 peers must be updated together, never reinterpret
+/// removed input/idle opcodes as other commands.
 ///
 /// Version 5 is the window-group and drop-down-terminal set. The manager's version is what gates
 /// *every* interface in this protocol, including `templar_shell_toplevel_v1`'s own version 3
@@ -96,7 +97,7 @@ use templar_window::{
 /// group requests below check `self.manager.version()` and not `toplevel.version()` — against a
 /// version-4 compositor the latter also reads 4, which is `>= 3` and would happily send a request
 /// that compositor has never heard of.
-const SHELL_PROTOCOL_VERSION: u32 = 13;
+const SHELL_PROTOCOL_VERSION: u32 = 14;
 
 /// The manager version that carries `set_edge_alignment`. A version-5 compositor has never heard
 /// of it, so the shell asks only when the manager it actually bound is new enough — the same rule
@@ -119,6 +120,15 @@ const GESTURE_SINCE: u32 = 9;
 /// wire), so this gate is the manager's, the same rule `GROUP_SINCE` follows.
 const MINIMIZE_TARGET_SINCE: u32 = 12;
 
+/// The manager version that carries `set_preview_demand` and the `tab_count` event: the
+/// visible-only Home preview contract. Below it the shell requests without demand and the
+/// compositor admits as before.
+const PREVIEW_DEMAND_SINCE: u32 = 14;
+
+/// The manager version that carries `set_tab_policy`: the committed window tab policy.
+/// Below it the compositor keeps its default policy.
+const TAB_POLICY_SINCE: u32 = 14;
+
 /// How many masked buffers one surface may hold. Two is the smallest pool in which the frame
 /// after one the compositor is still reading has a buffer to go to; more would only pay for a
 /// compositor that holds buffers for several frames, which this one does not.
@@ -135,8 +145,8 @@ pub enum PresentOutcome {
     Deferred,
 }
 
-use crate::protocol::templar_shell_v1::{
-    templar_shell_manager_v1::{self, TemplarShellManagerV1},
+use crate::protocol::templar_shell_v2::{
+    templar_shell_manager_v2::{self, TemplarShellManagerV2},
     templar_shell_toplevel_list_v1::{self, TemplarShellToplevelListV1},
     templar_shell_toplevel_v1::{self, TemplarShellToplevelV1},
 };
@@ -178,6 +188,9 @@ struct ToplevelState {
     /// The window group this window belongs to, as the `group` event last reported it
     /// (version 3). `None` is "in no group" — the wire says so with a `group_id` of 0.
     group: Option<GroupInfo>,
+    /// The verified application tab count, from `tab_count` (version 14). `None` is unknown —
+    /// the wire says so with a count of -1 — and never renders as a fabricated 0/1.
+    tab_count: Option<TabCount>,
     /// The compositor's semantic [`WindowId`], from `window_id` (version 5). Distinct from this
     /// object's Wayland protocol_id, which is only a transport identity.
     semantic_id: Option<WindowId>,
@@ -212,6 +225,7 @@ impl Default for ToplevelState {
             // least surprising guess and self-corrects the moment any state changes.
             layer: Layer::Normal,
             group: None,
+            tab_count: None,
             semantic_id: None,
         }
     }
@@ -261,7 +275,7 @@ impl ToplevelState {
                 shelf_rank: _,
             } => {
                 // `shelf_rank` is the wire's authoritative shelve order (see
-                // `interfaces/wayland/templar-shell-v1.xml`); `crate::drawers::window_shelf`
+                // `interfaces/wayland/templar-shell-v2.xml`); `crate::drawers::window_shelf`
                 // currently sorts by `window_id` instead (its own module doc explains why: the
                 // sanitized `ShellToplevel` this crate renders against has no such field yet).
                 // Wiring it through is the natural follow-up once that struct grows one — not a
@@ -300,6 +314,15 @@ impl ToplevelState {
             templar_shell_toplevel_v1::Event::WindowId { id } => {
                 self.semantic_id = Some(WindowId(u64::from(id)));
             }
+            templar_shell_toplevel_v1::Event::TabCount {
+                count,
+                generation,
+                provenance,
+            } => {
+                self.tab_count = u32::try_from(count)
+                    .ok()
+                    .and_then(|count| TabCount::verified(count, u64::from(generation), provenance));
+            }
             templar_shell_toplevel_v1::Event::Closed => unreachable!("handled by the dispatcher"),
         }
     }
@@ -320,6 +343,7 @@ impl ToplevelState {
             geometry: self.geometry,
             layer: self.layer,
             group: self.group.clone(),
+            tab_count: self.tab_count.clone(),
         }
     }
 }
@@ -358,11 +382,11 @@ pub struct SwitcherStatus {
 /// with the result lives in [`ShellBridge`] instead, which is what stays free of `unsafe`.
 #[derive(Default)]
 pub struct BridgeState {
-    manager: Option<TemplarShellManagerV1>,
+    manager: Option<TemplarShellManagerV2>,
     toplevels: HashMap<ObjectId, TrackedToplevel>,
-    /// `templar_shell_manager_v1.home_revealed`'s last word, whichever side started the reveal.
+    /// `templar_shell_manager_v2.home_revealed`'s last word, whichever side started the reveal.
     home_revealed: bool,
-    /// `templar_shell_manager_v1.bar_peeked`'s last word: whether the pointer is resting on the
+    /// `templar_shell_manager_v2.bar_peeked`'s last word: whether the pointer is resting on the
     /// bottom edge of an output under a window that fills the screen. Empty means no.
     ///
     /// The compositor has to tell us, because under such a window the pointer never reaches our
@@ -373,7 +397,7 @@ pub struct BridgeState {
     /// window exists. Counted rather than flagged: two quick presses are two launches asked for,
     /// and a flag would silently drop the second.
     terminal_requests: u32,
-    /// `templar_shell_manager_v1.taskfield_state`'s last word (version 8): whether the window
+    /// `templar_shell_manager_v2.taskfield_state`'s last word (version 8): whether the window
     /// overview is up and what it is showing. The compositor owns the mode and its keys, so this
     /// is the shell's whole view of it.
     taskfield: TaskfieldStatus,
@@ -389,7 +413,7 @@ pub struct BridgeState {
     /// Bumped on every toplevel or reveal event, so a host can redraw when the window list
     /// changed and only then, instead of on a timer.
     generation: u64,
-    /// `templar_shell_manager_v1.rail`'s last word (version 9): which opening, the output it is
+    /// `templar_shell_manager_v2.rail`'s last word (version 9): which opening, the output it is
     /// on and the side the pointer went. `None` is no rail. The mapping of side to rail is the
     /// shell's. The opening number tells a new rail from the one the shell just dismissed, whose
     /// last `rail_pointer` can still arrive before the compositor's answering `rail`.
@@ -429,6 +453,9 @@ pub struct TaskfieldStatus {
     pub selected: Option<WindowId>,
 }
 
+// wl_pointer button codes are Linux input-event-codes.h values; Home file lifting owns BTN_LEFT.
+const LEFT_POINTER_BUTTON: u32 = 0x110;
+
 /// Everything `wl_data_device` needs, on the same connection as the rest.
 #[derive(Default)]
 pub(crate) struct DataDeviceBridge {
@@ -441,7 +468,7 @@ pub(crate) struct DataDeviceBridge {
     pointer: Option<WlPointer>,
     serials: InputSerials,
     /// What to write when a receiver asks. Held for as long as the selection is Home's.
-    payload: Option<ClipboardPayload>,
+    payload: Option<Arc<ClipboardPayload>>,
     /// The source currently offered as the seat selection, and whether it is still live —
     /// `cancelled` arrives the moment another client takes the selection.
     source: Option<WlDataSource>,
@@ -452,6 +479,65 @@ pub(crate) struct DataDeviceBridge {
     /// The offer being built up: `wl_data_offer.offer` events arrive before the
     /// `wl_data_device.selection` that names which offer they belonged to.
     pending_mime_types: HashMap<ObjectId, Vec<String>>,
+    pointer_press_serial: Option<u32>,
+    pointer_focus: Option<WlSurface>,
+    pointer_press_surface: Option<WlSurface>,
+    drag_source: Option<WlDataSource>,
+    drag_payload: Option<Arc<ClipboardPayload>>,
+    drag_offer: Option<WlDataOffer>,
+    dropped_offer: Option<WlDataOffer>,
+    dropped_action: Option<wl_data_device_manager::DndAction>,
+    dropped_source_actions: Option<wl_data_device_manager::DndAction>,
+    drag_mime_types: Vec<String>,
+    drag_surface: Option<WlSurface>,
+    drag_serial: u32,
+    drag_position: (f64, f64),
+    source_actions: Option<wl_data_device_manager::DndAction>,
+    negotiated_action: Option<wl_data_device_manager::DndAction>,
+    drag_accepted: bool,
+    drag_events: Vec<NativeDragEvent>,
+    pending_source_actions: HashMap<ObjectId, wl_data_device_manager::DndAction>,
+}
+
+/// Real data-device destination events, in surface-local coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NativeDragEvent {
+    Enter {
+        x: f64,
+        y: f64,
+    },
+    Motion {
+        x: f64,
+        y: f64,
+    },
+    Leave,
+    Drop {
+        x: f64,
+        y: f64,
+        move_requested: bool,
+    },
+}
+
+fn legal_drop_actions(
+    version: u32,
+    negotiated: Option<wl_data_device_manager::DndAction>,
+    source: Option<wl_data_device_manager::DndAction>,
+) -> (bool, bool) {
+    use wl_data_device_manager::DndAction;
+    if version < 3 {
+        return (true, false);
+    }
+    match negotiated {
+        Some(action) if action == DndAction::Ask => {
+            let source = source.unwrap_or(DndAction::Copy);
+            (
+                source.contains(DndAction::Copy),
+                source.contains(DndAction::Move),
+            )
+        }
+        Some(action) => (action == DndAction::Copy, action == DndAction::Move),
+        None => (false, false),
+    }
 }
 
 impl Dispatch<WlRegistry, ()> for BridgeState {
@@ -469,10 +555,10 @@ impl Dispatch<WlRegistry, ()> for BridgeState {
             version,
         } = event
         {
-            if interface == "templar_shell_manager_v1" {
+            if interface == "templar_shell_manager_v2" {
                 let version = version.min(SHELL_PROTOCOL_VERSION);
                 state.manager =
-                    Some(registry.bind::<TemplarShellManagerV1, _, _>(name, version, qh, ()));
+                    Some(registry.bind::<TemplarShellManagerV2, _, _>(name, version, qh, ()));
             } else if interface == "wl_data_device_manager" {
                 // Version 3 is what everything ships; the drag/selection requests this uses have
                 // existed since version 1, so a lower advertisement still works.
@@ -496,6 +582,8 @@ impl Dispatch<WlRegistry, ()> for BridgeState {
                     .session_lock
                     .bind_global(registry, name, &interface, version, qh);
             }
+        } else if let wl_registry::Event::GlobalRemove { name } = event {
+            state.session_lock.remove_global(name);
         }
     }
 }
@@ -597,9 +685,37 @@ impl Dispatch<WlPointer, ()> for BridgeState {
         _qh: &QueueHandle<Self>,
     ) {
         match event {
-            wl_pointer::Event::Enter { serial, .. }
-            | wl_pointer::Event::Leave { serial, .. }
-            | wl_pointer::Event::Button { serial, .. } => state.data.serials.record(serial),
+            wl_pointer::Event::Button {
+                serial,
+                button: LEFT_POINTER_BUTTON,
+                state: WEnum::Value(wl_pointer::ButtonState::Pressed),
+                ..
+            } => {
+                state.data.serials.record(serial);
+                state.data.pointer_press_serial = Some(serial);
+                state.data.pointer_press_surface = state.data.pointer_focus.clone();
+            }
+            wl_pointer::Event::Button {
+                serial,
+                button: LEFT_POINTER_BUTTON,
+                state: WEnum::Value(wl_pointer::ButtonState::Released),
+                ..
+            } => {
+                state.data.serials.record(serial);
+                state.data.pointer_press_serial = None;
+                state.data.pointer_press_surface = None;
+            }
+            wl_pointer::Event::Enter {
+                serial, surface, ..
+            } => {
+                state.data.serials.record(serial);
+                state.data.pointer_focus = Some(surface);
+            }
+            wl_pointer::Event::Leave { serial, .. } => {
+                state.data.serials.record(serial);
+                state.data.pointer_focus = None;
+            }
+            wl_pointer::Event::Button { serial, .. } => state.data.serials.record(serial),
             _ => {}
         }
     }
@@ -638,7 +754,76 @@ impl Dispatch<WlDataDevice, ()> for BridgeState {
                         state.data.offer_mime_types.clear();
                     }
                 }
-                state.data.pending_mime_types.clear();
+                // Offers are keyed independently; a clipboard change must not erase a live drag.
+            }
+            wl_data_device::Event::Enter {
+                serial,
+                surface,
+                x,
+                y,
+                id,
+            } => {
+                if let Some(previous) = state.data.drag_offer.take() {
+                    previous.destroy();
+                }
+                state.data.drag_mime_types = id
+                    .as_ref()
+                    .and_then(|offer| state.data.pending_mime_types.remove(&offer.id()))
+                    .unwrap_or_default();
+                state.data.drag_offer = id;
+                state.data.drag_surface = Some(surface);
+                state.data.drag_serial = serial;
+                state.data.drag_position = (x, y);
+                state.data.drag_accepted = false;
+                state.data.source_actions = state
+                    .data
+                    .drag_offer
+                    .as_ref()
+                    .and_then(|offer| state.data.pending_source_actions.remove(&offer.id()));
+                state.data.negotiated_action = None;
+                state.data.drag_events.push(NativeDragEvent::Enter { x, y });
+            }
+            wl_data_device::Event::Motion { x, y, .. } => {
+                state.data.drag_position = (x, y);
+                state
+                    .data
+                    .drag_events
+                    .push(NativeDragEvent::Motion { x, y });
+            }
+            wl_data_device::Event::Leave => {
+                if let Some(offer) = state.data.drag_offer.take() {
+                    offer.destroy();
+                }
+                // A drop owns its offer until the filed operation commits, even after Leave.
+                if state.data.dropped_offer.is_none() {
+                    state.data.drag_surface = None;
+                }
+                state.data.drag_events.push(NativeDragEvent::Leave);
+            }
+            wl_data_device::Event::Drop => {
+                let (x, y) = state.data.drag_position;
+                let valid_action = state.data.drag_offer.as_ref().is_some_and(|offer| {
+                    offer.version() < 3
+                        || state.data.negotiated_action.is_some_and(|action| {
+                            action == wl_data_device_manager::DndAction::Copy
+                                || action == wl_data_device_manager::DndAction::Move
+                                || action == wl_data_device_manager::DndAction::Ask
+                        })
+                });
+                if state.data.drag_accepted && valid_action && state.data.dropped_offer.is_none() {
+                    state.data.dropped_action = state.data.negotiated_action;
+                    state.data.dropped_source_actions = state.data.source_actions;
+                    state.data.dropped_offer = state.data.drag_offer.take();
+                    let move_requested =
+                        state.data.dropped_action == Some(wl_data_device_manager::DndAction::Move);
+                    state.data.drag_events.push(NativeDragEvent::Drop {
+                        x,
+                        y,
+                        move_requested,
+                    });
+                } else if let Some(offer) = state.data.drag_offer.take() {
+                    offer.destroy();
+                }
             }
             _ => {}
         }
@@ -662,21 +847,124 @@ impl Dispatch<WlDataOffer, ()> for BridgeState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        if let wl_data_offer::Event::Offer { mime_type } = event {
-            // Before `selection` names the offer it belongs to, and afterwards for an offer that
-            // is already the selection; both end up in the right place.
-            if let Some(pending) = state.data.pending_mime_types.get_mut(&proxy.id()) {
-                pending.push(mime_type);
-            } else if state
-                .data
-                .offer
-                .as_ref()
-                .is_some_and(|offer| offer == proxy)
-            {
-                state.data.offer_mime_types.push(mime_type);
+        match event {
+            wl_data_offer::Event::Offer { mime_type } => {
+                if let Some(pending) = state.data.pending_mime_types.get_mut(&proxy.id()) {
+                    pending.push(mime_type);
+                } else if state
+                    .data
+                    .offer
+                    .as_ref()
+                    .is_some_and(|offer| offer == proxy)
+                {
+                    state.data.offer_mime_types.push(mime_type);
+                } else if state
+                    .data
+                    .drag_offer
+                    .as_ref()
+                    .is_some_and(|offer| offer == proxy)
+                {
+                    state.data.drag_mime_types.push(mime_type);
+                }
             }
+            wl_data_offer::Event::SourceActions {
+                source_actions: WEnum::Value(actions),
+            } => {
+                if state
+                    .data
+                    .drag_offer
+                    .as_ref()
+                    .is_some_and(|offer| offer == proxy)
+                {
+                    state.data.source_actions = Some(actions);
+                } else if state
+                    .data
+                    .dropped_offer
+                    .as_ref()
+                    .is_some_and(|offer| offer == proxy)
+                {
+                    state.data.dropped_source_actions = Some(actions);
+                } else if state.data.pending_mime_types.contains_key(&proxy.id()) {
+                    state
+                        .data
+                        .pending_source_actions
+                        .insert(proxy.id(), actions);
+                }
+            }
+            wl_data_offer::Event::Action {
+                dnd_action: WEnum::Value(action),
+            } => {
+                if state
+                    .data
+                    .drag_offer
+                    .as_ref()
+                    .is_some_and(|offer| offer == proxy)
+                {
+                    state.data.negotiated_action = Some(action);
+                } else if state
+                    .data
+                    .dropped_offer
+                    .as_ref()
+                    .is_some_and(|offer| offer == proxy)
+                {
+                    state.data.dropped_action = Some(action);
+                }
+            }
+            _ => {}
         }
     }
+}
+
+/// Serve a drag's immutable bytes when the transport reads the request, before the UI queue
+/// is pumped. A foreign client may synchronously read the offer with a short deadline while
+/// Home is painting. Lifecycle events still belong to the ordinary bridge queue.
+struct FileSourceData {
+    payload: Arc<ClipboardPayload>,
+    queued: Arc<dyn ObjectData>,
+}
+
+impl ObjectData for FileSourceData {
+    fn event(
+        self: Arc<Self>,
+        backend: &WBackend,
+        message: Message<ObjectId, std::os::fd::OwnedFd>,
+    ) -> Option<Arc<dyn ObjectData>> {
+        // wl_data_source.send is standard protocol opcode 1, with a string and an owned fd.
+        // The backend checks the signature before invoking this object callback.
+        if message.opcode != 1 {
+            return self.queued.clone().event(backend, message);
+        }
+        let mut arguments = message.args.into_iter();
+        if let (Some(Argument::Str(Some(mime))), Some(Argument::Fd(fd))) =
+            (arguments.next(), arguments.next())
+            && let Ok(mime) = mime.into_string()
+        {
+            send_file_payload(Arc::clone(&self.payload), mime, fd);
+        }
+        None
+    }
+
+    fn destroyed(&self, id: ObjectId) {
+        self.queued.destroyed(id);
+    }
+
+    fn data_as_any(&self) -> &dyn std::any::Any {
+        self.queued.data_as_any()
+    }
+}
+
+fn send_file_payload(payload: Arc<ClipboardPayload>, mime: String, fd: std::os::fd::OwnedFd) {
+    if payload.bytes_for(&mime).is_none() {
+        return;
+    }
+    // Neither a transport reader nor a Home frame waits for a slow foreign reader.
+    std::thread::spawn(move || {
+        if let Some(bytes) = payload.bytes_for(&mime)
+            && let Err(error) = crate::data_device::write_drop_transfer(fd, bytes)
+        {
+            tracing::debug!(%error, %mime, "file transfer ended early");
+        }
+    });
 }
 
 impl Dispatch<WlDataSource, ()> for BridgeState {
@@ -688,36 +976,40 @@ impl Dispatch<WlDataSource, ()> for BridgeState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        // Only the source currently offered may answer; a cancelled one that has not been dropped
-        // yet must not still be writing files to whoever asks.
-        if state
+        let is_drag = state
+            .data
+            .drag_source
+            .as_ref()
+            .is_some_and(|source| source == proxy);
+        let is_selection = state
             .data
             .source
             .as_ref()
-            .is_none_or(|source| source != proxy)
-        {
+            .is_some_and(|source| source == proxy);
+        if !is_drag && !is_selection {
             return;
         }
         match event {
             wl_data_source::Event::Send { mime_type, fd } => {
-                let Some(payload) = state.data.payload.as_ref() else {
+                let payload = if is_drag {
+                    state.data.drag_payload.clone()
+                } else {
+                    state.data.payload.clone()
+                };
+                let Some(payload) = payload else {
                     return;
                 };
-                let Some(bytes) = payload.bytes_for(&mime_type) else {
-                    // Asked for something never offered: close the pipe rather than writing an
-                    // empty file, which a receiver would read as "this really is empty".
-                    return;
-                };
-                // The fd is ours to close, which is what tells the receiver the transfer ended.
-                let mut file = std::fs::File::from(fd);
-                if let Err(error) = std::io::Write::write_all(&mut file, bytes) {
-                    // A receiver that went away mid-transfer is ordinary, not a fault here.
-                    tracing::debug!(%error, %mime_type, "selection transfer ended early");
+                send_file_payload(payload, mime_type, fd);
+            }
+            wl_data_source::Event::Cancelled | wl_data_source::Event::DndFinished if is_drag => {
+                state.data.drag_payload = None;
+                state.data.pointer_press_serial = None;
+                state.data.pointer_press_surface = None;
+                if let Some(source) = state.data.drag_source.take() {
+                    source.destroy();
                 }
             }
-            // Another client took the selection. Home's clipboard is no longer what the seat is
-            // offering, and `data_device::paste_source` reads exactly this fact.
-            wl_data_source::Event::Cancelled => {
+            wl_data_source::Event::Cancelled if is_selection => {
                 state.data.own_selection_live = false;
                 state.data.payload = None;
             }
@@ -726,17 +1018,17 @@ impl Dispatch<WlDataSource, ()> for BridgeState {
     }
 }
 
-impl Dispatch<TemplarShellManagerV1, ()> for BridgeState {
+impl Dispatch<TemplarShellManagerV2, ()> for BridgeState {
     fn event(
         state: &mut Self,
-        _proxy: &TemplarShellManagerV1,
-        event: templar_shell_manager_v1::Event,
+        _proxy: &TemplarShellManagerV2,
+        event: templar_shell_manager_v2::Event,
         (): &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
         match event {
-            templar_shell_manager_v1::Event::SwitcherState {
+            templar_shell_manager_v2::Event::SwitcherState {
                 active,
                 selected,
                 windows,
@@ -755,27 +1047,27 @@ impl Dispatch<TemplarShellManagerV1, ()> for BridgeState {
                 };
                 state.generation = state.generation.wrapping_add(1);
             }
-            templar_shell_manager_v1::Event::HomeRevealed { revealed } => {
+            templar_shell_manager_v2::Event::HomeRevealed { revealed } => {
                 state.home_revealed = revealed != 0;
                 state.generation = state.generation.wrapping_add(1);
             }
             // Version 7.
-            templar_shell_manager_v1::Event::BarPeeked { output } => {
+            templar_shell_manager_v2::Event::BarPeeked { output } => {
                 state.bar_peeked = !output.is_empty();
                 state.generation = state.generation.wrapping_add(1);
             }
             // The chord was pressed with no terminal window to toggle, so the launch is ours:
             // the compositor cannot start an application, and identity comes from the cgroup of
             // the unit the launcher starts.
-            templar_shell_manager_v1::Event::TerminalRequested => {
+            templar_shell_manager_v2::Event::TerminalRequested => {
                 state.terminal_requests = state.terminal_requests.saturating_add(1);
             }
             // Version 5: bound only once `SHELL_PROTOCOL_VERSION` reaches 5, with the
             // window-group work.
-            templar_shell_manager_v1::Event::GroupCycleBinding { .. } => {}
+            templar_shell_manager_v2::Event::GroupCycleBinding { .. } => {}
             // Version 8. Every field is the compositor's: it owns the mode, and its keys, and
             // this event is the whole of what the shell knows about either.
-            templar_shell_manager_v1::Event::TaskfieldState {
+            templar_shell_manager_v2::Event::TaskfieldState {
                 active,
                 filter,
                 key,
@@ -793,15 +1085,15 @@ impl Dispatch<TemplarShellManagerV1, ()> for BridgeState {
                 state.generation = state.generation.wrapping_add(1);
             }
             // Version 8: `Super+Space` revealed Home and wants the caret in the Apps bar.
-            templar_shell_manager_v1::Event::LauncherFocus => {
+            templar_shell_manager_v2::Event::LauncherFocus => {
                 state.launcher_focus = state.launcher_focus.saturating_add(1);
             }
             // Version 9: the gate opened a rail, or the open one closed. Kept apart from
             // `generation` on purpose — see `rail_generation`.
-            templar_shell_manager_v1::Event::Rail { output, side } => {
+            templar_shell_manager_v2::Event::Rail { output, side } => {
                 let side = match side {
-                    WEnum::Value(templar_shell_manager_v1::RailSide::Left) => Some(RailSide::Left),
-                    WEnum::Value(templar_shell_manager_v1::RailSide::Right) => {
+                    WEnum::Value(templar_shell_manager_v2::RailSide::Left) => Some(RailSide::Left),
+                    WEnum::Value(templar_shell_manager_v2::RailSide::Right) => {
                         Some(RailSide::Right)
                     }
                     _ => None,
@@ -815,7 +1107,7 @@ impl Dispatch<TemplarShellManagerV1, ()> for BridgeState {
                 });
                 state.rail_generation = state.rail_generation.wrapping_add(1);
             }
-            templar_shell_manager_v1::Event::RailPointer { x, y } => {
+            templar_shell_manager_v2::Event::RailPointer { x, y } => {
                 state.rail_pointer = Some((x, y));
                 state.rail_generation = state.rail_generation.wrapping_add(1);
             }
@@ -839,7 +1131,7 @@ impl Dispatch<TemplarShellToplevelListV1, ()> for BridgeState {
 
     fn event_created_child(opcode: u16, qh: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
         // `toplevel` is this interface's only event, so it is unconditionally opcode 0
-        // (`interfaces/wayland/templar-shell-v1.xml`'s `templar_shell_toplevel_list_v1`).
+        // (`interfaces/wayland/templar-shell-v2.xml`'s `templar_shell_toplevel_list_v1`).
         match opcode {
             0 => qh.make_data::<TemplarShellToplevelV1, ()>(()),
             other => panic!("templar_shell_toplevel_list_v1: unexpected event opcode {other}"),
@@ -886,34 +1178,34 @@ impl std::fmt::Debug for BridgeState {
 /// the generated enum — the two are separate Rust types (client- vs server-generated bindings)
 /// even though the wire encoding is one contract, so each side keeps its own explicit match rather
 /// than share a conversion function across a client/server boundary that cannot itself share code.
-fn wire_layer(layer: Layer) -> templar_shell_manager_v1::Layer {
+fn wire_layer(layer: Layer) -> templar_shell_manager_v2::Layer {
     match layer {
-        Layer::SecureLock => templar_shell_manager_v1::Layer::SecureLock,
-        Layer::Recovery => templar_shell_manager_v1::Layer::Recovery,
-        Layer::SystemModal => templar_shell_manager_v1::Layer::SystemModal,
-        Layer::ShellOverlay => templar_shell_manager_v1::Layer::ShellOverlay,
-        Layer::Notification => templar_shell_manager_v1::Layer::Notification,
-        Layer::AppOnTop => templar_shell_manager_v1::Layer::AppOnTop,
-        Layer::Normal => templar_shell_manager_v1::Layer::Normal,
-        Layer::HomeSurface => templar_shell_manager_v1::Layer::HomeSurface,
+        Layer::SecureLock => templar_shell_manager_v2::Layer::SecureLock,
+        Layer::Recovery => templar_shell_manager_v2::Layer::Recovery,
+        Layer::SystemModal => templar_shell_manager_v2::Layer::SystemModal,
+        Layer::ShellOverlay => templar_shell_manager_v2::Layer::ShellOverlay,
+        Layer::Notification => templar_shell_manager_v2::Layer::Notification,
+        Layer::AppOnTop => templar_shell_manager_v2::Layer::AppOnTop,
+        Layer::Normal => templar_shell_manager_v2::Layer::Normal,
+        Layer::HomeSurface => templar_shell_manager_v2::Layer::HomeSurface,
         // Version 8. Appended to the wire enum because a wire value can only be appended; its
         // place on screen is between `system_modal` and `shell_overlay`, which is `Layer::ALL`'s
         // order. Only the Taskfield surface asks for it, and only against a version-8 compositor.
-        Layer::Presentation => templar_shell_manager_v1::Layer::Presentation,
+        Layer::Presentation => templar_shell_manager_v2::Layer::Presentation,
     }
 }
 
-fn layer_from_wire(wire: templar_shell_manager_v1::Layer) -> Layer {
+fn layer_from_wire(wire: templar_shell_manager_v2::Layer) -> Layer {
     match wire {
-        templar_shell_manager_v1::Layer::SecureLock => Layer::SecureLock,
-        templar_shell_manager_v1::Layer::Recovery => Layer::Recovery,
-        templar_shell_manager_v1::Layer::SystemModal => Layer::SystemModal,
-        templar_shell_manager_v1::Layer::ShellOverlay => Layer::ShellOverlay,
-        templar_shell_manager_v1::Layer::Notification => Layer::Notification,
-        templar_shell_manager_v1::Layer::AppOnTop => Layer::AppOnTop,
-        templar_shell_manager_v1::Layer::Normal => Layer::Normal,
-        templar_shell_manager_v1::Layer::HomeSurface => Layer::HomeSurface,
-        templar_shell_manager_v1::Layer::Presentation => Layer::Presentation,
+        templar_shell_manager_v2::Layer::SecureLock => Layer::SecureLock,
+        templar_shell_manager_v2::Layer::Recovery => Layer::Recovery,
+        templar_shell_manager_v2::Layer::SystemModal => Layer::SystemModal,
+        templar_shell_manager_v2::Layer::ShellOverlay => Layer::ShellOverlay,
+        templar_shell_manager_v2::Layer::Notification => Layer::Notification,
+        templar_shell_manager_v2::Layer::AppOnTop => Layer::AppOnTop,
+        templar_shell_manager_v2::Layer::Normal => Layer::Normal,
+        templar_shell_manager_v2::Layer::HomeSurface => Layer::HomeSurface,
+        templar_shell_manager_v2::Layer::Presentation => Layer::Presentation,
     }
 }
 
@@ -925,19 +1217,19 @@ fn layer_from_wire(wire: templar_shell_manager_v1::Layer) -> Layer {
 fn wire_filter(
     filter: &TaskFilter,
     label: &str,
-) -> (templar_shell_manager_v1::TaskfieldFilter, String) {
+) -> (templar_shell_manager_v2::TaskfieldFilter, String) {
     match filter {
         TaskFilter::All => (
-            templar_shell_manager_v1::TaskfieldFilter::All,
+            templar_shell_manager_v2::TaskfieldFilter::All,
             String::new(),
         ),
-        TaskFilter::Unit(key) => (templar_shell_manager_v1::TaskfieldFilter::Unit, key.wire()),
+        TaskFilter::Unit(key) => (templar_shell_manager_v2::TaskfieldFilter::Unit, key.wire()),
         TaskFilter::Windows(_) => (
-            templar_shell_manager_v1::TaskfieldFilter::Windows,
+            templar_shell_manager_v2::TaskfieldFilter::Windows,
             label.to_owned(),
         ),
         TaskFilter::Shelved => (
-            templar_shell_manager_v1::TaskfieldFilter::Shelved,
+            templar_shell_manager_v2::TaskfieldFilter::Shelved,
             String::new(),
         ),
     }
@@ -947,79 +1239,101 @@ fn wire_filter(
 /// asked for, because the event does not carry one — an unknown key or a filter this shell does
 /// not recognise reads as `All`, which is what the compositor shows when it cannot narrow either.
 fn filter_from_wire(
-    wire: WEnum<templar_shell_manager_v1::TaskfieldFilter>,
+    wire: WEnum<templar_shell_manager_v2::TaskfieldFilter>,
     key: &str,
     windows: &[WindowId],
 ) -> TaskFilter {
     match wire.into_result() {
-        Ok(templar_shell_manager_v1::TaskfieldFilter::Unit) => {
+        Ok(templar_shell_manager_v2::TaskfieldFilter::Unit) => {
             templar_window::task::TaskKey::from_wire(key).map_or(TaskFilter::All, TaskFilter::Unit)
         }
-        Ok(templar_shell_manager_v1::TaskfieldFilter::Windows) => {
+        Ok(templar_shell_manager_v2::TaskfieldFilter::Windows) => {
             TaskFilter::Windows(windows.to_vec())
         }
-        Ok(templar_shell_manager_v1::TaskfieldFilter::Shelved) => TaskFilter::Shelved,
+        Ok(templar_shell_manager_v2::TaskfieldFilter::Shelved) => TaskFilter::Shelved,
         _ => TaskFilter::All,
     }
 }
 
 fn wire_preset(
     preset: templar_window::ArrangementPreset,
-) -> templar_shell_manager_v1::ArrangementPreset {
+) -> templar_shell_manager_v2::ArrangementPreset {
     match preset {
         templar_window::ArrangementPreset::Focus => {
-            templar_shell_manager_v1::ArrangementPreset::Focus
+            templar_shell_manager_v2::ArrangementPreset::Focus
         }
         templar_window::ArrangementPreset::Halves => {
-            templar_shell_manager_v1::ArrangementPreset::Halves
+            templar_shell_manager_v2::ArrangementPreset::Halves
         }
         templar_window::ArrangementPreset::Thirds => {
-            templar_shell_manager_v1::ArrangementPreset::Thirds
+            templar_shell_manager_v2::ArrangementPreset::Thirds
         }
         templar_window::ArrangementPreset::Quarters => {
-            templar_shell_manager_v1::ArrangementPreset::Quarters
+            templar_shell_manager_v2::ArrangementPreset::Quarters
         }
         templar_window::ArrangementPreset::MainAndStack => {
-            templar_shell_manager_v1::ArrangementPreset::MainAndStack
+            templar_shell_manager_v2::ArrangementPreset::MainAndStack
         }
         templar_window::ArrangementPreset::Cushion => {
-            templar_shell_manager_v1::ArrangementPreset::Cushion
+            templar_shell_manager_v2::ArrangementPreset::Cushion
         }
     }
 }
 
-fn wire_reveal(reveal: RevealHome) -> templar_shell_manager_v1::Reveal {
+fn wire_reveal(reveal: RevealHome) -> templar_shell_manager_v2::Reveal {
     match reveal {
-        RevealHome::Show => templar_shell_manager_v1::Reveal::Show,
-        RevealHome::Hide => templar_shell_manager_v1::Reveal::Hide,
-        RevealHome::Toggle => templar_shell_manager_v1::Reveal::Toggle,
+        RevealHome::Show => templar_shell_manager_v2::Reveal::Show,
+        RevealHome::Hide => templar_shell_manager_v2::Reveal::Hide,
+        RevealHome::Toggle => templar_shell_manager_v2::Reveal::Toggle,
     }
 }
 
-fn wire_alignment(alignment: Alignment) -> templar_shell_manager_v1::Alignment {
+fn wire_alignment(alignment: Alignment) -> templar_shell_manager_v2::Alignment {
     match alignment {
-        Alignment::Start => templar_shell_manager_v1::Alignment::Start,
-        Alignment::Centre => templar_shell_manager_v1::Alignment::Centre,
-        Alignment::End => templar_shell_manager_v1::Alignment::End,
+        Alignment::Start => templar_shell_manager_v2::Alignment::Start,
+        Alignment::Centre => templar_shell_manager_v2::Alignment::Centre,
+        Alignment::End => templar_shell_manager_v2::Alignment::End,
     }
 }
 
-fn wire_edge(edge: Edge) -> templar_shell_manager_v1::Edge {
+fn wire_edge(edge: Edge) -> templar_shell_manager_v2::Edge {
     match edge {
-        Edge::Top => templar_shell_manager_v1::Edge::Top,
-        Edge::Bottom => templar_shell_manager_v1::Edge::Bottom,
-        Edge::Left => templar_shell_manager_v1::Edge::Left,
-        Edge::Right => templar_shell_manager_v1::Edge::Right,
+        Edge::Top => templar_shell_manager_v2::Edge::Top,
+        Edge::Bottom => templar_shell_manager_v2::Edge::Bottom,
+        Edge::Left => templar_shell_manager_v2::Edge::Left,
+        Edge::Right => templar_shell_manager_v2::Edge::Right,
     }
 }
 
-/// A live connection to the compositor's trusted-shell socket, speaking `templar_shell_v1` on the
+fn wire_tab_placement(
+    placement: crate::settings::TabPlacement,
+) -> templar_shell_manager_v2::TabPlacement {
+    match placement {
+        crate::settings::TabPlacement::SameCorner => {
+            templar_shell_manager_v2::TabPlacement::SameCorner
+        }
+        crate::settings::TabPlacement::OppositeCorners => {
+            templar_shell_manager_v2::TabPlacement::OppositeCorners
+        }
+    }
+}
+
+fn wire_tab_corner(corner: crate::settings::TabCorner) -> templar_shell_manager_v2::TabCorner {
+    match corner {
+        crate::settings::TabCorner::TopLeft => templar_shell_manager_v2::TabCorner::TopLeft,
+        crate::settings::TabCorner::TopRight => templar_shell_manager_v2::TabCorner::TopRight,
+        crate::settings::TabCorner::BottomLeft => templar_shell_manager_v2::TabCorner::BottomLeft,
+        crate::settings::TabCorner::BottomRight => templar_shell_manager_v2::TabCorner::BottomRight,
+    }
+}
+
+/// A live connection to the compositor's trusted-shell socket, speaking `templar_shell_v2` on the
 /// exact same connection winit opened for a given window. See the module doc for the whole design
 /// and its safety argument.
 pub struct ShellBridge {
     connection: Connection,
     queue: EventQueue<BridgeState>,
-    manager: TemplarShellManagerV1,
+    manager: Option<TemplarShellManagerV2>,
     state: BridgeState,
     /// The `Argb8888` buffers behind [`Self::present_masked`], a small pool per surface, reused
     /// while their size holds. Per surface rather than one shared: the bar and the cluster are
@@ -1037,20 +1351,15 @@ impl std::fmt::Debug for ShellBridge {
 }
 
 impl ShellBridge {
-    /// Reach `templar_shell_v1` on the same Wayland connection `window` was created on.
-    ///
-    /// Fails cleanly (never panics) when: the window is not on Wayland at all, the process is not
-    /// connected to the compositor's trusted-shell socket (so `templar_shell_manager_v1` was never
-    /// advertised), or the initial registry round trip cannot complete. All three are ordinary,
-    /// expected conditions — running nested for development without the trusted socket wired up,
-    /// say — and the caller is expected to keep running with no protocol surface rather than
-    /// treat this as fatal, the same way every drawer degrades when its D-Bus service is absent.
+    /// Reach the window's Wayland connection and its optional trusted-shell protocol.
+    /// Ordinary Wayland compositors still provide the same alpha-capable SHM presenter;
+    /// native shell actions report unavailable when the private manager is absent.
     pub fn connect(window: &winit::window::Window) -> Result<ShellBridge> {
         let display_handle = window
             .display_handle()
             .context("reading the window's display handle")?;
         let RawDisplayHandle::Wayland(wayland_display) = display_handle.as_raw() else {
-            bail!("templar_shell_v1 is a Wayland-only protocol, and this window is not on Wayland");
+            bail!("templar_shell_v2 is a Wayland-only protocol, and this window is not on Wayland");
         };
 
         // SAFETY: `wayland_display.display` is winit's own `wl_display*`, guaranteed non-null and
@@ -1070,25 +1379,13 @@ impl ShellBridge {
             .roundtrip(&mut state)
             .context("initial registry round trip on the trusted-shell connection")?;
 
-        let manager = state.manager.take().ok_or_else(|| {
-            anyhow!(
-                "templar_shell_manager_v1 was not advertised on this connection — this process is \
-                 probably not connected to the compositor's trusted-shell socket \
-                 (WAYLAND_DISPLAY should name the `*-shell` socket logged by templar-comp, not the \
-                 ordinary one)"
-            )
-        })?;
-
-        let _list = manager.get_toplevel_list(&qh, ());
-        // One more round trip so the toplevel objects that already existed are in hand before the
-        // first frame draws. Their identity/title/state/layer can still be default-empty
-        // afterwards — `GetToplevelList`'s handler creates the objects but does not itself force
-        // a `sync_toplevels` (`compositor/templar-comp/src/protocols_shell.rs`), so a window that was
-        // already mapped and has not changed since arrives blank until it does. Cosmetic, not a
-        // correctness problem: the object and its later events are still exactly right.
-        queue
-            .roundtrip(&mut state)
-            .context("initial toplevel-list round trip")?;
+        let manager = state.manager.take();
+        if let Some(manager) = &manager {
+            let _list = manager.get_toplevel_list(&qh, ());
+            queue
+                .roundtrip(&mut state)
+                .context("initial toplevel-list round trip")?;
+        }
 
         Ok(ShellBridge {
             connection,
@@ -1099,6 +1396,22 @@ impl ShellBridge {
         })
     }
 
+    pub fn native_available(&self) -> bool {
+        self.manager.is_some()
+    }
+
+    fn protocol_version(&self) -> u32 {
+        self.manager.as_ref().map_or(0, Proxy::version)
+    }
+
+    fn shell_manager(&self) -> Result<&TemplarShellManagerV2> {
+        self.manager.as_ref().ok_or_else(|| {
+            anyhow!(
+                "templar_shell_manager_v2 is unavailable; use the compositor's trusted-shell socket"
+            )
+        })
+    }
+
     /// Declare `window`'s surface into `layer`. `window` must be the same window [`connect`] was
     /// called with (or another window on the same connection) — see the module doc for why a
     /// surface from a different connection could never work here regardless.
@@ -1106,7 +1419,8 @@ impl ShellBridge {
     /// [`connect`]: Self::connect
     pub fn set_layer(&self, window: &winit::window::Window, layer: Layer) -> Result<()> {
         let surface = self.wrap_surface(window)?;
-        self.manager.set_layer_surface(&surface, wire_layer(layer));
+        self.shell_manager()?
+            .set_layer_surface(&surface, wire_layer(layer));
         self.connection
             .flush()
             .context("flushing set_layer_surface")
@@ -1115,17 +1429,17 @@ impl ShellBridge {
     /// Borrow keyboard focus for a popup; `None` returns it without ending Home reveal.
     pub fn focus_surface(&self, window: Option<&winit::window::Window>) -> Result<()> {
         anyhow::ensure!(
-            self.manager.version() >= 11,
+            self.protocol_version() >= 11,
             "popup keyboard focus requires compositor protocol v11"
         );
         let surface = window.map(|window| self.wrap_surface(window)).transpose()?;
-        self.manager.focus_surface(surface.as_ref());
+        self.shell_manager()?.focus_surface(surface.as_ref());
         self.connection.flush().context("flushing focus_surface")
     }
 
     /// Reserve `size` logical pixels along `edge` of the output `window` is on, so ordinary
     /// windows are placed beside it. `size` of `0` releases a previous reservation
-    /// (`interfaces/wayland/templar-shell-v1.xml`'s `set_exclusive_zone` doc).
+    /// (`interfaces/wayland/templar-shell-v2.xml`'s `set_exclusive_zone` doc).
     pub fn set_exclusive_zone(
         &self,
         window: &winit::window::Window,
@@ -1133,7 +1447,7 @@ impl ShellBridge {
         size: u32,
     ) -> Result<()> {
         let surface = self.wrap_surface(window)?;
-        self.manager
+        self.shell_manager()?
             .set_exclusive_zone(&surface, wire_edge(edge), size);
         self.connection
             .flush()
@@ -1141,7 +1455,7 @@ impl ShellBridge {
     }
 
     /// Sit at `alignment` along `edge` rather than at the edge's start
-    /// (`interfaces/wayland/templar-shell-v1.xml`'s `set_edge_alignment`). Placement only: this
+    /// (`interfaces/wayland/templar-shell-v2.xml`'s `set_edge_alignment`). Placement only: this
     /// reserves nothing and moves no window, so it may be sent as freely as a redraw.
     ///
     /// Silently does nothing against a compositor too old to have the request — which is the
@@ -1157,12 +1471,15 @@ impl ShellBridge {
         edge: Edge,
         alignment: Alignment,
     ) -> Result<bool> {
-        if self.manager.version() < ALIGNMENT_SINCE {
+        if self.protocol_version() < ALIGNMENT_SINCE {
             return Ok(false);
         }
         let surface = self.wrap_surface(window)?;
-        self.manager
-            .set_edge_alignment(&surface, wire_edge(edge), wire_alignment(alignment));
+        self.shell_manager()?.set_edge_alignment(
+            &surface,
+            wire_edge(edge),
+            wire_alignment(alignment),
+        );
         self.connection
             .flush()
             .context("flushing set_edge_alignment")?;
@@ -1271,7 +1588,7 @@ impl ShellBridge {
             source.offer(mime_type.to_owned());
         }
         device.set_selection(Some(&source), serial);
-        self.state.data.payload = Some(payload);
+        self.state.data.payload = Some(Arc::new(payload));
         self.state.data.source = Some(source);
         self.state.data.own_selection_live = true;
         self.connection
@@ -1330,28 +1647,257 @@ impl ShellBridge {
         window: &winit::window::Window,
         payload: ClipboardPayload,
     ) -> Result<bool> {
+        if self.state.data.drag_source.is_some() {
+            return Ok(false);
+        }
         let (Some(manager), Some(device)) = (
             self.state.data.manager.clone(),
             self.state.data.device.clone(),
         ) else {
             return Ok(false);
         };
-        let Some(serial) = self.state.data.serials.latest() else {
+        let Some(serial) = self.state.data.pointer_press_serial else {
             return Ok(false);
         };
         let surface = self.wrap_surface(window)?;
+        if self.state.data.pointer_press_surface.as_ref() != Some(&surface) {
+            return Ok(false);
+        }
         let qh = self.queue.handle();
-        let source = manager.create_data_source(&qh, ());
+        let payload = Arc::new(payload);
+        let source: WlDataSource = manager
+            .send_constructor(
+                wl_data_device_manager::Request::CreateDataSource {},
+                Arc::new(FileSourceData {
+                    payload: Arc::clone(&payload),
+                    queued: qh.make_data::<WlDataSource, ()>(()),
+                }),
+            )
+            .context("creating the file transfer source")?;
         for mime_type in ClipboardPayload::offered_mime_types() {
             source.offer(mime_type.to_owned());
+        }
+        if source.version() >= 3 {
+            source.set_actions(
+                wl_data_device_manager::DndAction::Copy
+                    | wl_data_device_manager::DndAction::Move
+                    | wl_data_device_manager::DndAction::Ask,
+            );
         }
         // No icon surface: the compositor draws its own drag feedback, and a shell-drawn icon
         // would need a second surface on winit's connection that nothing here owns.
         device.start_drag(Some(&source), &surface, None, serial);
-        self.state.data.payload = Some(payload);
-        self.state.data.source = Some(source);
+        self.state.data.drag_payload = Some(payload);
+        self.state.data.drag_source = Some(source);
         self.connection.flush().context("flushing a drag start")?;
         Ok(true)
+    }
+
+    pub fn take_native_drag_events(&mut self) -> Vec<NativeDragEvent> {
+        std::mem::take(&mut self.state.data.drag_events)
+    }
+
+    /// Never interpret a bar or another shell-owned surface as the Home drop destination.
+    pub fn native_drag_on_window(&self, window: &winit::window::Window) -> bool {
+        self.wrap_surface(window).ok().as_ref() == self.state.data.drag_surface.as_ref()
+    }
+
+    /// Negotiate only on a real file target. Shift move must be supported by the source.
+    pub fn set_native_drag_target(&mut self, accept: bool, shift_move: bool) -> Result<bool> {
+        use wl_data_device_manager::DndAction;
+        let Some(offer) = &self.state.data.drag_offer else {
+            return Ok(false);
+        };
+        let has_files = self
+            .state
+            .data
+            .drag_mime_types
+            .iter()
+            .any(|mime| mime == crate::data_device::URI_LIST);
+        let action = if shift_move {
+            DndAction::Move
+        } else {
+            DndAction::Copy
+        };
+        let supported = self
+            .state
+            .data
+            .source_actions
+            .unwrap_or(DndAction::Copy)
+            .contains(action);
+        let accepted = accept && has_files && supported && self.state.data.dropped_offer.is_none();
+        offer.accept(
+            self.state.data.drag_serial,
+            accepted.then(|| crate::data_device::URI_LIST.to_owned()),
+        );
+        if offer.version() >= 3 {
+            offer.set_actions(
+                if accepted { action } else { DndAction::empty() },
+                if accepted { action } else { DndAction::empty() },
+            );
+        }
+        self.state.data.drag_accepted = accepted;
+        self.connection
+            .flush()
+            .context("flushing native drop target")?;
+        Ok(accepted)
+    }
+
+    /// Ask is the protocol's only legal way to offer Copy/Move choice after a project drop.
+    /// A source without Ask keeps its negotiated Copy or Shift-Move; it cannot be reinterpreted.
+    pub fn set_native_project_drag_target(
+        &mut self,
+        accept: bool,
+        shift_move: bool,
+    ) -> Result<bool> {
+        use wl_data_device_manager::DndAction;
+        let ask = !shift_move
+            && self
+                .state
+                .data
+                .drag_offer
+                .as_ref()
+                .is_some_and(|offer| offer.version() >= 3)
+            && self.state.data.source_actions.is_some_and(|actions| {
+                actions.contains(DndAction::Ask)
+                    && (actions.contains(DndAction::Copy) || actions.contains(DndAction::Move))
+            });
+        if !ask {
+            return self.set_native_drag_target(accept, shift_move);
+        }
+        let Some(offer) = &self.state.data.drag_offer else {
+            return Ok(false);
+        };
+        let accepted = accept
+            && self
+                .state
+                .data
+                .drag_mime_types
+                .iter()
+                .any(|mime| mime == crate::data_device::URI_LIST)
+            && self.state.data.dropped_offer.is_none();
+        offer.accept(
+            self.state.data.drag_serial,
+            accepted.then(|| crate::data_device::URI_LIST.to_owned()),
+        );
+        let actions = if accepted {
+            self.state.data.source_actions.unwrap_or(DndAction::Copy)
+                & (DndAction::Copy | DndAction::Move | DndAction::Ask)
+        } else {
+            DndAction::empty()
+        };
+        offer.set_actions(
+            actions,
+            if accepted {
+                DndAction::Ask
+            } else {
+                DndAction::empty()
+            },
+        );
+        self.state.data.drag_accepted = accepted;
+        self.connection
+            .flush()
+            .context("flushing project drop target")?;
+        Ok(accepted)
+    }
+
+    /// Legal final Copy/Move choices for the accepted offer, not the current hover offer.
+    pub fn native_drop_actions(&self) -> (bool, bool) {
+        let Some(offer) = &self.state.data.dropped_offer else {
+            return (false, false);
+        };
+        legal_drop_actions(
+            offer.version(),
+            self.state.data.dropped_action,
+            self.state.data.dropped_source_actions,
+        )
+    }
+
+    pub fn choose_native_drop_action(&mut self, move_requested: bool) -> Result<()> {
+        use wl_data_device_manager::DndAction;
+        let allowed = self.native_drop_actions();
+        anyhow::ensure!(
+            if move_requested { allowed.1 } else { allowed.0 },
+            "source did not negotiate this file transfer action"
+        );
+        let action = if move_requested {
+            DndAction::Move
+        } else {
+            DndAction::Copy
+        };
+        if self.state.data.dropped_action == Some(DndAction::Ask) {
+            let offer = self
+                .state
+                .data
+                .dropped_offer
+                .as_ref()
+                .context("no accepted native drop")?;
+            offer.set_actions(action, action);
+            self.state.data.dropped_action = Some(action);
+            self.connection
+                .flush()
+                .context("choosing project drop action")?;
+        }
+        Ok(())
+    }
+
+    /// Ask the foreign source for its URI bytes and read them on a bounded worker. The offer
+    /// stays alive until complete_native_drop; Leave or Home reveal cannot invalidate it.
+    pub fn receive_native_drop(
+        &mut self,
+        wake: impl FnOnce() + Send + 'static,
+    ) -> Result<std::sync::mpsc::Receiver<Result<Vec<std::path::PathBuf>, String>>> {
+        let offer = self
+            .state
+            .data
+            .dropped_offer
+            .as_ref()
+            .context("no accepted native drop")?;
+        let (read_end, write_end) =
+            std::os::unix::net::UnixStream::pair().context("opening native drop pipe")?;
+        offer.receive(crate::data_device::URI_LIST.to_owned(), write_end.as_fd());
+        self.connection
+            .flush()
+            .context("requesting native drop bytes")?;
+        drop(write_end);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("desktop-drop-reader".into())
+            .spawn(move || {
+                let result =
+                    crate::data_device::read_drop_transfer(std::os::fd::OwnedFd::from(read_end));
+                let _ = tx.send(result);
+                wake();
+            })
+            .context("starting native drop reader")?;
+        Ok(rx)
+    }
+
+    /// Only a committed filed operation is acknowledged as a successful move/copy. The caller
+    /// retains this across a project's Copy/Move choice and its journalled operation.
+    pub fn complete_native_drop(&mut self, success: bool) -> Result<()> {
+        if let Some(offer) = self.state.data.dropped_offer.take() {
+            if success
+                && offer.version() >= 3
+                && self.state.data.dropped_action.is_some_and(|action| {
+                    action == wl_data_device_manager::DndAction::Copy
+                        || action == wl_data_device_manager::DndAction::Move
+                })
+            {
+                offer.finish();
+            }
+            offer.destroy();
+        }
+        self.state.data.dropped_action = None;
+        self.state.data.dropped_source_actions = None;
+        self.state.data.drag_accepted = false;
+        self.connection.flush().context("completing native drop")?;
+        Ok(())
+    }
+
+    /// Keep drag sources alive when Home hides or reveals; only data-source completion ends it.
+    pub fn file_drag_live(&self) -> bool {
+        self.state.data.drag_source.is_some()
     }
 
     /// Every toplevel this connection currently knows about, for [`crate::dock`] and
@@ -1377,7 +1923,11 @@ impl ShellBridge {
             .toplevels
             .iter()
             .find(|(id, tracked)| {
-                tracked.state.semantic_id == Some(window_id) || synthetic_window_id(id) == window_id
+                tracked
+                    .state
+                    .semantic_id
+                    .unwrap_or_else(|| synthetic_window_id(id))
+                    == window_id
             })
             .map(|(_, tracked)| &tracked.proxy)
     }
@@ -1425,7 +1975,7 @@ impl ShellBridge {
         surface: &winit::window::Window,
         rect: Option<(i32, i32, i32, i32)>,
     ) -> Result<bool> {
-        if self.manager.version() < MINIMIZE_TARGET_SINCE {
+        if self.protocol_version() < MINIMIZE_TARGET_SINCE {
             return Ok(false);
         }
         let Some(toplevel) = self.toplevel_object(window_id) else {
@@ -1450,21 +2000,21 @@ impl ShellBridge {
             bail!("no such window on this connection: {window_id:?}");
         };
         if toplevel.version() < 2 {
-            bail!("the compositor speaks templar_shell_v1 version 1, which has no set_maximized");
+            bail!("the v2 compositor feature version is 1, which has no set_maximized");
         }
         toplevel.set_maximized(u32::from(maximized));
         self.connection.flush().context("flushing set_maximized")
     }
 
-    /// The `templar_shell_v1` version actually negotiated with this compositor. Window groups need
+    /// The `templar_shell_v2` version actually negotiated with this compositor. Window groups need
     /// version 5; anything below that is a compositor from before they existed, and a request it
     /// has never heard of is a protocol error that kills the connection — so every group
     /// operation refuses here rather than on the wire.
     fn group_requests_available(&self) -> Result<()> {
-        if self.manager.version() < GROUP_SINCE {
+        if self.protocol_version() < GROUP_SINCE {
             bail!(
-                "the compositor speaks templar_shell_v1 version {}, which has no window groups",
-                self.manager.version()
+                "the compositor speaks templar_shell_v2 feature version {}, which has no window groups",
+                self.protocol_version()
             );
         }
         Ok(())
@@ -1552,7 +2102,7 @@ impl ShellBridge {
     /// the scatter itself and does not consult this connection for it — the request exists
     /// precisely so the chord is not the only way in.
     pub fn show_all_windows(&self) -> Result<()> {
-        self.manager.show_all_windows();
+        self.shell_manager()?.show_all_windows();
         self.connection.flush().context("flushing show_all_windows")
     }
 
@@ -1566,7 +2116,8 @@ impl ShellBridge {
                 None => bail!("no such window on this connection: {window_id:?}"),
             },
         };
-        self.manager.escape_fullscreen_or_modal(toplevel.as_ref());
+        self.shell_manager()?
+            .escape_fullscreen_or_modal(toplevel.as_ref());
         self.connection
             .flush()
             .context("flushing escape_fullscreen_or_modal")
@@ -1575,10 +2126,10 @@ impl ShellBridge {
     /// Home (version 2): the field's Home button reaches the same reveal as a bare Super
     /// tap and the compositor's Ctrl+Alt+H / Super+D fallbacks.
     pub fn reveal_home(&self, reveal: RevealHome) -> Result<()> {
-        if self.manager.version() < 2 {
-            bail!("the compositor speaks templar_shell_v1 version 1, which has no reveal_home");
+        if self.protocol_version() < 2 {
+            bail!("the v2 compositor feature version is 1, which has no reveal_home");
         }
-        self.manager.reveal_home(wire_reveal(reveal));
+        self.shell_manager()?.reveal_home(wire_reveal(reveal));
         self.connection.flush().context("flushing reveal_home")
     }
 
@@ -1586,45 +2137,34 @@ impl ShellBridge {
     /// the sole geometry authority; this only names the preset and lets the baseline semantics
     /// live in `templar_window::WindowService::arrange_windows`.
     pub fn arrange_windows(&self, preset: templar_window::ArrangementPreset) -> Result<()> {
-        if self.manager.version() < 3 {
-            bail!("the compositor speaks templar_shell_v1 < 3, which has no arrange_windows");
+        if self.protocol_version() < 3 {
+            bail!(
+                "the compositor speaks templar_shell_v2 feature version < 3, which has no arrange_windows"
+            );
         }
-        self.manager.arrange_windows(wire_preset(preset));
+        self.shell_manager()?.arrange_windows(wire_preset(preset));
         self.connection.flush().context("flushing arrange_windows")
     }
 
     /// Return every surviving window exactly to the retained pre-arrangement baseline
     /// (version 3).
     pub fn restore_arrangement(&self) -> Result<()> {
-        if self.manager.version() < 3 {
-            bail!("the compositor speaks templar_shell_v1 < 3, which has no restore_arrangement");
+        if self.protocol_version() < 3 {
+            bail!(
+                "the compositor speaks templar_shell_v2 feature version < 3, which has no restore_arrangement"
+            );
         }
-        self.manager.restore_arrangement();
+        self.shell_manager()?.restore_arrangement();
         self.connection
             .flush()
             .context("flushing restore_arrangement")
     }
 
-    /// Tell the compositor how long the session may be idle before the screen turns off
-    /// (version 4). `seconds` of 0 is never.
-    ///
-    /// The value is `org.templaros.Power1`'s `screen_off_after` for the current power source. The
-    /// shell is the relay and nothing more: the policy is sessiond's, and the enforcement is the
-    /// compositor's, because the compositor is the only process that can see the seat go quiet.
-    pub fn set_idle_timeout(&self, seconds: u32) -> Result<()> {
-        if self.manager.version() < 4 {
-            bail!("the compositor speaks templar_shell_v1 < 4, which has no set_idle_timeout");
-        }
-        self.manager.set_idle_timeout(seconds);
-        self.connection.flush().context("flushing set_idle_timeout")
-    }
-
     /// Configure the bottom-centre gesture gate (version 9). `enabled` false is the classic bar
     /// and its peek; `exceptions` are canonical app ids under whose windows the gate never arms.
     ///
-    /// Like [`Self::set_idle_timeout`], the shell is only the relay: the setting is sessiond's,
-    /// and recognition is the compositor's because it is the only process that always sees the
-    /// pointer.
+    /// The shell relays the stored gate; recognition stays in the compositor, which is the only
+    /// process that always sees the pointer.
     pub fn set_gesture_gate(
         &self,
         enabled: bool,
@@ -1633,10 +2173,12 @@ impl ShellBridge {
         learning: bool,
         exceptions: &[String],
     ) -> Result<()> {
-        if self.manager.version() < GESTURE_SINCE {
-            bail!("the compositor speaks templar_shell_v1 < 9, which has no set_gesture_gate");
+        if self.protocol_version() < GESTURE_SINCE {
+            bail!(
+                "the compositor speaks templar_shell_v2 feature version < 9, which has no set_gesture_gate"
+            );
         }
-        self.manager.set_gesture_gate(
+        self.shell_manager()?.set_gesture_gate(
             u32::from(enabled),
             width,
             height,
@@ -1649,17 +2191,19 @@ impl ShellBridge {
     /// Dismiss the open rail (version 9). The compositor answers with `rail` naming no side;
     /// the shell does not wait for it before tidying its own surface.
     pub fn close_rail(&self) -> Result<()> {
-        if self.manager.version() < GESTURE_SINCE {
-            bail!("the compositor speaks templar_shell_v1 < 9, which has no close_rail");
+        if self.protocol_version() < GESTURE_SINCE {
+            bail!(
+                "the compositor speaks templar_shell_v2 feature version < 9, which has no close_rail"
+            );
         }
-        self.manager.close_rail();
+        self.shell_manager()?.close_rail();
         self.connection.flush().context("flushing close_rail")
     }
 
     /// Whether the compositor has gesture rails at all. An older one has no gate, so a shell set
     /// to gesture mode against it keeps the classic bar rather than hiding it for good.
     pub fn gestures_available(&self) -> bool {
-        self.manager.version() >= GESTURE_SINCE
+        self.protocol_version() >= GESTURE_SINCE
     }
 
     /// The rail the compositor last said is open: which opening, its output and side. `None` is
@@ -1689,10 +2233,12 @@ impl ShellBridge {
     /// compositor's — it has to keep toggling an existing terminal with this process dead — so
     /// this is the one thing the shell has to tell it: *which* window that is.
     pub fn set_terminal(&self, app_id: &str) -> Result<()> {
-        if self.manager.version() < 5 {
-            bail!("the compositor speaks templar_shell_v1 < 5, which has no set_terminal");
+        if self.protocol_version() < 5 {
+            bail!(
+                "the compositor speaks templar_shell_v2 feature version < 5, which has no set_terminal"
+            );
         }
-        self.manager.set_terminal(app_id.to_owned());
+        self.shell_manager()?.set_terminal(app_id.to_owned());
         self.connection.flush().context("flushing set_terminal")
     }
 
@@ -1706,8 +2252,10 @@ impl ShellBridge {
     /// The compositor ignores a filter that selects nothing: an overview of no windows is a black
     /// screen, so there is nothing to enter.
     pub fn open_taskfield(&mut self, filter: &TaskFilter, label: &str) -> Result<()> {
-        if self.manager.version() < TASKFIELD_SINCE {
-            bail!("the compositor speaks templar_shell_v1 < 8, which has no open_taskfield");
+        if self.protocol_version() < TASKFIELD_SINCE {
+            bail!(
+                "the compositor speaks templar_shell_v2 feature version < 8, which has no open_taskfield"
+            );
         }
         let (wire, key) = wire_filter(filter, label);
         let windows: Vec<WindowId> = match filter {
@@ -1721,8 +2269,54 @@ impl ShellBridge {
             .flat_map(|id| u32::try_from(id.0).unwrap_or(0).to_ne_bytes())
             .collect();
         self.state.taskfield_windows = windows;
-        self.manager.open_taskfield(wire, key, bytes);
+        self.shell_manager()?.open_taskfield(wire, key, bytes);
         self.connection.flush().context("flushing open_taskfield")
+    }
+
+    /// Retire capture sessions for windows that left `demanded` (foreign-toplevel
+    /// identifiers): their in-flight frames are destroyed rather than awaited, their shm
+    /// pools go with them, and stale arrivals for them are dropped instead of filed.
+    pub fn retire_preview_demand(&mut self, demanded: &std::collections::HashSet<String>) {
+        self.state.previews.set_demand(Some(demanded.clone()));
+    }
+
+    /// Send the Home card wells' capture demand (`set_preview_demand`, version 14): the
+    /// windows with visible pixels, fenced by `generation`. Below version 14 the send is
+    /// skipped and the compositor admits as before, so previews survive the upgrade halfway.
+    pub fn send_preview_demand(&mut self, generation: u32, windows: &[WindowId]) -> Result<()> {
+        if self.protocol_version() < PREVIEW_DEMAND_SINCE {
+            return Ok(());
+        }
+        let bytes = crate::previews::encode_demand_ids(windows);
+        self.shell_manager()?.set_preview_demand(generation, bytes);
+        self.connection.flush().context("flushing preview demand")
+    }
+
+    /// Send the committed window tab policy (`set_tab_policy`, version 14). Below version
+    /// 14 the send is skipped and the compositor keeps its default policy.
+    pub fn send_tab_policy(&self, policy: &crate::settings::TabSettings) -> Result<()> {
+        if self.protocol_version() < TAB_POLICY_SINCE {
+            return Ok(());
+        }
+        let controls = if policy.controls_always {
+            templar_shell_manager_v2::TabControls::Always
+        } else {
+            templar_shell_manager_v2::TabControls::Hover
+        };
+        let title = if policy.title_always {
+            templar_shell_manager_v2::TabTitle::Always
+        } else {
+            templar_shell_manager_v2::TabTitle::Hover
+        };
+        self.shell_manager()?.set_tab_policy(
+            wire_tab_placement(policy.placement),
+            u32::from(policy.follow_pointer),
+            wire_tab_corner(policy.fixed_corner),
+            controls,
+            title,
+            wire_tab_corner(policy.default_corner),
+        );
+        self.connection.flush().context("flushing tab policy")
     }
 
     /// What the compositor last said the overview is showing.
@@ -1736,8 +2330,8 @@ impl ShellBridge {
     }
 
     pub fn set_reduced_motion(&self, enabled: bool) -> Result<()> {
-        if self.manager.version() >= 13 {
-            self.manager.set_reduced_motion(u32::from(enabled));
+        if self.protocol_version() >= 13 {
+            self.shell_manager()?.set_reduced_motion(u32::from(enabled));
             self.connection.flush().context("flushing reduced motion")?;
         }
         Ok(())
@@ -1782,6 +2376,10 @@ impl ShellBridge {
             .context("flushing a preview request")
     }
 
+    pub fn preview_pending(&self, identifier: &str) -> bool {
+        self.state.previews.pending(identifier)
+    }
+
     /// Previews that arrived since the last call, keyed by foreign-toplevel identifier.
     pub fn take_previews(&mut self) -> Vec<(String, pixelkit_raster::Bitmap)> {
         self.state.previews.take_ready()
@@ -1793,7 +2391,7 @@ impl ShellBridge {
 
     /// Whether the compositor offered the capture globals on this connection.
     pub fn previews_available(&self) -> bool {
-        self.state.previews.available()
+        self.protocol_version() >= PREVIEW_DEMAND_SINCE && self.state.previews.available()
     }
 
     /// Whether this connection can lock the session at all (`crate::session_lock`).
@@ -1809,6 +2407,10 @@ impl ShellBridge {
     /// Whether the compositor confirmed it, or finished it without granting it.
     pub fn lock_locked(&self) -> bool {
         self.state.session_lock.locked()
+    }
+
+    pub fn take_lock_confirmation(&mut self) -> bool {
+        self.state.session_lock.take_confirmation()
     }
 
     pub fn lock_finished(&self) -> bool {
@@ -1860,7 +2462,13 @@ impl ShellBridge {
         self.state
             .toplevels
             .iter()
-            .find(|(id, _)| synthetic_window_id(id) == window_id)
+            .find(|(id, tracked)| {
+                tracked
+                    .state
+                    .semantic_id
+                    .unwrap_or_else(|| synthetic_window_id(id))
+                    == window_id
+            })
             .and_then(|(_, tracked)| tracked.state.identifier.as_deref())
     }
 
@@ -1893,7 +2501,7 @@ impl ShellBridge {
     ///
     /// The window stays winit's: it keeps its xdg role, its configure handling and every pointer
     /// and keyboard event, and only the pixels come from here. That is deliberate rather than
-    /// convenient — `templar_shell_v1.set_layer_surface` only *tags* a surface with a layer and
+    /// convenient — `templar_shell_v2.set_layer_surface` only *tags* a surface with a layer and
     /// grants no role of its own, so a surface created on this connection instead of winit's
     /// would never map. The alternative was a compositor-side role, which is a much larger
     /// change for the same pixels.
@@ -1913,6 +2521,32 @@ impl ShellBridge {
         window: &winit::window::Window,
         colour: &[u32],
         coverage: &[u32],
+        shapes: &[(i32, i32, i32, i32)],
+        width: u32,
+        height: u32,
+    ) -> Result<PresentOutcome> {
+        self.present_pixels(window, colour, Some(coverage), shapes, width, height)
+    }
+
+    /// Present Home's premultiplied alpha in the same release-safe SHM pool as masked surfaces.
+    /// Coverage is already encoded in the pixels; input shapes remain independent of alpha.
+    pub fn present_premultiplied(
+        &mut self,
+        window: &winit::window::Window,
+        pixels: &[u32],
+        shapes: &[(i32, i32, i32, i32)],
+        width: u32,
+        height: u32,
+    ) -> Result<PresentOutcome> {
+        self.present_pixels(window, pixels, None, shapes, width, height)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn present_pixels(
+        &mut self,
+        window: &winit::window::Window,
+        colour: &[u32],
+        coverage: Option<&[u32]>,
         shapes: &[(i32, i32, i32, i32)],
         width: u32,
         height: u32,
@@ -1956,9 +2590,12 @@ impl ShellBridge {
             }
             None => return Ok(PresentOutcome::Deferred),
         };
-        let buffer = &pool[index];
+        let buffer = &mut pool[index];
+        match coverage {
+            Some(coverage) => buffer.write_masked(colour, coverage)?,
+            None => buffer.write_premultiplied(colour)?,
+        }
         buffer.mark_busy();
-        buffer.write_masked(colour, coverage)?;
         let wl_buffer = buffer.buffer.clone();
         surface.set_opaque_region(None);
         self.declare_input_region(&surface, &qh, shapes);
@@ -2025,7 +2662,7 @@ impl ShellBridge {
             .window_handle()
             .context("reading the window's window handle")?;
         let RawWindowHandle::Wayland(handle) = window_handle.as_raw() else {
-            bail!("templar_shell_v1 is a Wayland-only protocol, and this window is not on Wayland");
+            bail!("templar_shell_v2 is a Wayland-only protocol, and this window is not on Wayland");
         };
         // SAFETY: `handle.surface` is winit's own `wl_surface*` for `window`, valid for as long as
         // `window` is alive (the borrow of `window` above ties this call's lifetime to it).
@@ -2033,7 +2670,7 @@ impl ShellBridge {
         // (interface name, liveness flag); it registers nothing new (see the module doc).
         let object_id =
             unsafe { ObjectId::from_ptr(WlSurface::interface(), handle.surface.as_ptr().cast()) }
-                .context("wrapping the window's wl_surface for templar_shell_v1")?;
+                .context("wrapping the window's wl_surface for templar_shell_v2")?;
         WlSurface::from_id(&self.connection, object_id)
             .context("constructing a WlSurface proxy from the wrapped object id")
     }
@@ -2044,9 +2681,117 @@ mod tests {
     use super::*;
 
     #[test]
+    fn file_source_serves_without_dispatching_the_ui_queue() {
+        use std::{
+            ffi::CString,
+            sync::atomic::{AtomicUsize, Ordering},
+        };
+
+        struct UiQueue(Arc<AtomicUsize>);
+        impl ObjectData for UiQueue {
+            fn event(
+                self: Arc<Self>,
+                _: &WBackend,
+                _: Message<ObjectId, std::os::fd::OwnedFd>,
+            ) -> Option<Arc<dyn ObjectData>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                None
+            }
+            fn destroyed(&self, _: ObjectId) {}
+        }
+
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let connection = Connection::from_socket(socket).unwrap();
+        let dispatched = Arc::new(AtomicUsize::new(0));
+        let path = std::path::PathBuf::from("/tmp/native file.txt");
+        let clipboard = crate::clipboard::Clipboard::copy(vec![path.clone()]).unwrap();
+        let source = Arc::new(FileSourceData {
+            payload: Arc::new(ClipboardPayload::of(&clipboard)),
+            queued: Arc::new(UiQueue(Arc::clone(&dispatched))),
+        });
+        let (read, write) = std::io::pipe().unwrap();
+        source.clone().event(
+            &connection.backend(),
+            Message {
+                sender_id: ObjectId::null(),
+                opcode: 1,
+                args: [
+                    Argument::Str(Some(Box::new(CString::new("text/uri-list").unwrap()))),
+                    Argument::Fd(write.into()),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        );
+        assert_eq!(
+            crate::data_device::read_drop_transfer(read.into()).unwrap(),
+            vec![path]
+        );
+        assert_eq!(
+            dispatched.load(Ordering::SeqCst),
+            0,
+            "the reader must finish while the UI queue remains unpumped"
+        );
+
+        // A lifecycle event is still delivered through the ordinary state-owning queue.
+        source.event(
+            &connection.backend(),
+            Message {
+                sender_id: ObjectId::null(),
+                opcode: 2,
+                args: [].into_iter().collect(),
+            },
+        );
+        assert_eq!(dispatched.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn post_drop_choices_follow_real_protocol_action_and_source_support() {
+        use wl_data_device_manager::DndAction as Action;
+        let both = Some(Action::Copy | Action::Move | Action::Ask);
+        assert_eq!(legal_drop_actions(3, Some(Action::Ask), both), (true, true));
+        assert_eq!(
+            legal_drop_actions(3, Some(Action::Ask), Some(Action::Copy | Action::Ask)),
+            (true, false)
+        );
+        assert_eq!(
+            legal_drop_actions(3, Some(Action::Copy), both),
+            (true, false)
+        );
+        assert_eq!(
+            legal_drop_actions(3, Some(Action::Move), both),
+            (false, true)
+        );
+        assert_eq!(
+            legal_drop_actions(3, Some(Action::empty()), both),
+            (false, false)
+        );
+        assert_eq!(legal_drop_actions(3, None, both), (false, false));
+        assert_eq!(
+            legal_drop_actions(2, Some(Action::Move), both),
+            (true, false)
+        );
+    }
+
+    #[test]
     fn every_layer_round_trips_through_the_client_wire_encoding() {
         for layer in Layer::ALL {
             assert_eq!(layer_from_wire(wire_layer(layer)), layer);
+        }
+    }
+
+    #[test]
+    fn tab_policy_crosses_the_client_wire_encoding_with_the_xml_values() {
+        use crate::settings::{TabCorner, TabPlacement};
+        assert_eq!(wire_tab_placement(TabPlacement::SameCorner) as u32, 0);
+        assert_eq!(wire_tab_placement(TabPlacement::OppositeCorners) as u32, 1);
+        for (corner, value) in [
+            (TabCorner::TopLeft, 0),
+            (TabCorner::TopRight, 1),
+            (TabCorner::BottomLeft, 2),
+            (TabCorner::BottomRight, 3),
+        ] {
+            assert_eq!(wire_tab_corner(corner) as u32, value);
         }
     }
 
@@ -2077,6 +2822,38 @@ mod tests {
         let mut state = ToplevelState::default();
         state.apply(templar_shell_toplevel_v1::Event::MruRank { rank: 3 });
         assert_eq!(state.snapshot(WindowId(1)).mru_rank, 3);
+    }
+
+    #[test]
+    fn a_tab_count_event_reaches_the_snapshot_and_unknown_stays_unknown() {
+        let mut state = ToplevelState::default();
+        assert_eq!(state.snapshot(WindowId(1)).tab_count, None);
+        state.apply(templar_shell_toplevel_v1::Event::TabCount {
+            count: 3,
+            generation: 2,
+            provenance: "kitty".to_owned(),
+        });
+        assert_eq!(
+            state.snapshot(WindowId(1)).tab_count,
+            Some(TabCount {
+                count: 3,
+                generation: 2,
+                provenance: "kitty".to_owned(),
+            })
+        );
+        // -1 is the wire's unknown; 0 and empty provenance are never badges either.
+        for (count, provenance) in [(-1, "kitty"), (0, "kitty"), (2, "")] {
+            state.apply(templar_shell_toplevel_v1::Event::TabCount {
+                count,
+                generation: 3,
+                provenance: provenance.to_owned(),
+            });
+            assert_eq!(
+                state.snapshot(WindowId(1)).tab_count,
+                None,
+                "count {count} / provenance {provenance:?} must not badge"
+            );
+        }
     }
 
     #[test]

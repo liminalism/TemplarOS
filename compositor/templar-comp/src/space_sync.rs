@@ -1,6 +1,6 @@
 //! Mirrors `templar_window::WindowService` state into Smithay's `Space` (rendering/hit-testing only)
 //! and pushes it out to everything downstream: the governor, the sanitized shell snapshot, and our
-//! own `templar_shell_v1`/`ext_foreign_toplevel_list_v1` protocol objects. `WindowService` is always
+//! own `templar_shell_v2`/`ext_foreign_toplevel_list_v1` protocol objects. `WindowService` is always
 //! the input to this module, never the output — nothing here feeds back into it.
 //!
 //! [`sync_after_change`] is meant to run after any `WindowService` call that can change geometry,
@@ -83,9 +83,9 @@ fn pointer_scene_changed(
 /// Never called while Smithay is dispatching to the pointer: it runs from the event loop's idle
 /// list ([`sync_after_change`] queues it), because every `PointerHandle` call locks the pointer's
 /// `std` mutex — the very mutex a grab's `button`/`motion` runs under — and a second lock on the
-/// same thread never returns. A drag or resize still in progress when it runs is left alone: a
-/// grab owns the pointer for its whole duration, and re-entering focus resolution underneath it
-/// is exactly what a grab exists to prevent. Not `note_activity` either — nothing happened; the
+/// same thread never returns. A move/resize remains untouched: its grab owns geometry.
+/// Native file DnD is the narrow exception, because revealing Home must deliver Enter to
+/// its new destination without releasing the source grab. Not `note_activity` either —
 /// screen must not wake for this.
 fn refresh_pointer_focus<B: Backend + 'static>(
     state: &mut TemplarCompState<B>,
@@ -94,7 +94,7 @@ fn refresh_pointer_focus<B: Backend + 'static>(
     let Some(pointer) = state.seat.get_pointer() else {
         return;
     };
-    if pointer.is_grabbed() {
+    if state.session_lock.locked || (pointer.is_grabbed() && !state.native_file_drag_active) {
         return;
     }
     let location = pointer.current_location();
@@ -136,10 +136,11 @@ pub fn element_for_window<B: Backend + 'static>(
         .cloned()
 }
 
-/// Where `window_id`'s surface goes and how big it is: `WindowService::client_area` — under the
-/// band for a framed client window, the whole geometry for a shell surface. Every `map_element`
-/// and every size configure in the compositor goes through this, so the frame is subtracted in
-/// exactly one place. A window the service does not know is mapped at its geometry as given.
+/// Where `window_id`'s surface goes and how big it is: `WindowService::client_area` — the
+/// geometry, whole, for client windows and shell surfaces alike. Every `map_element` and every
+/// size configure in the compositor goes through this, so the client rectangle is derived in
+/// exactly one place and a pure tab relocation configures nothing at all. A window the service
+/// does not know is mapped at its geometry as given.
 pub fn client_area<B: Backend + 'static>(state: &TemplarCompState<B>, window_id: WindowId) -> Rect {
     state
         .window_service
@@ -221,7 +222,13 @@ pub fn on_window_destroyed<B: Backend + 'static>(
 ) {
     let record = state.window_service.window(window_id).cloned();
     state.window_service.on_toplevel_destroyed(window_id);
+    if state.name_tab_menu.open.is_some_and(|menu| menu.window_id == window_id) {
+        state.name_tab_menu.dismiss();
+    }
     state.motion.forget_window(window_id);
+    // Demand-gating: a destroyed window keeps no demand, no pacing and no queued frames —
+    // its capture in flight retires through the protocol's failure lifecycle, unrendered.
+    state.screencopy.forget_window(window_id);
     if state.previous_focus == Some(window_id) {
         // `Super+G` must never name a window that is gone; the next activation refills this.
         state.previous_focus = None;
@@ -236,8 +243,11 @@ pub fn on_window_destroyed<B: Backend + 'static>(
             .any(|window| window.peer_pid == record.peer_pid);
         if !pid_still_live {
             state.identity_cache.forget(record.peer_pid);
+            if record.peer_pid != 0 {
+                state.governor.forget_process(record.peer_pid);
+            }
         }
-        if let Some(instance_id) = record.identity.instance_id {
+        if record.peer_pid == 0 && let Some(instance_id) = record.identity.instance_id {
             let instance_still_live = state
                 .window_service
                 .windows()
@@ -290,6 +300,14 @@ fn log_home_visibility<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
 /// window that is in it is on screen. The governor is told `visible = mapped && !shelved`, but
 /// deliberately ignores a Home reveal: a momentary view must not suspend every application.
 pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
+    if state.name_tab_menu.open.is_some_and(|menu| {
+        !state.window_service.is_visible(menu.window_id)
+            || !matches!(state.window_service.presentation(), templar_window::Presentation::Normal)
+            || !state.window_service.outputs().iter()
+                .any(|output| output.logical.intersection_area(menu.panel) > 0)
+    }) {
+        state.name_tab_menu.dismiss();
+    }
     // Reconcile existence before order. A toplevel may be temporarily unmapped while retaining
     // its semantic record, and a broken/missing layer assignment must never leave an old Space
     // element visible even though stacking_order cannot name it.
@@ -343,22 +361,29 @@ pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) 
         }
     }
 
+    prune_capture_demand(state);
+
     log_home_visibility(state);
     start_shelf_motions(state);
 
+    for (pid, (foreground, visible)) in aggregated_process_states(state) {
+        state.governor.set_process_state(pid, foreground, visible);
+    }
     for (instance_id, (foreground, visible)) in aggregated_instance_states(state) {
         state
             .governor
             .set_instance_state(instance_id, foreground, visible);
     }
 
+    crate::tab_metadata::publish(state);
+
     // `publish` hands the snapshot to the broadcaster's background task and returns immediately;
-    // the actual `templar_shell_v1` encoding happens back on this thread, but later — decoupled from
+    // the actual `templar_shell_v2` encoding happens back on this thread, but later — decoupled from
     // this call site — when `src/shell_sink.rs`'s calloop channel wakes up
     // (`src/shell_sink.rs`'s module doc explains why encoding can't happen on the background
-    // task itself). This is what COMPOSITOR.md means by "never encode/send `templar_shell_v1`
+    // task itself). This is what COMPOSITOR.md means by "never encode/send `templar_shell_v2`
     // events synchronously from the same call site that touched `WindowService`".
-    let snapshot = templar_comp_integration::snapshot(&state.window_service);
+    let snapshot = templar_comp_integration::snapshot(&state.window_service, &state.tab_metadata.counts);
     state.shell_broadcaster.publish(snapshot);
 
     // Last, and only if something under the pointer actually moved: the pointer's own view of the
@@ -376,6 +401,25 @@ pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) 
             state.last_pointer_scene = after;
         });
     }
+}
+
+/// Demand-gating hook: capture demand and queued frames never outlive the window they
+/// name. A resync runs after every `WindowService` change, so demand for a window the
+/// service no longer knows (close, identity loss) is dropped here and its queued frames
+/// retire unrendered — the pre-render check would catch them anyway, but failing them now
+/// frees the queue without waiting for the next render pass. Live windows are untouched,
+/// including parked ones: a parked window's card still shows its last submitted content.
+fn prune_capture_demand<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
+    if state.screencopy.pending.is_empty() && state.screencopy.demand.is_none() {
+        return;
+    }
+    let live: std::collections::HashSet<WindowId> = state
+        .window_service
+        .windows()
+        .map(|record| record.id)
+        .collect();
+    state.screencopy.retain_demand(|id| live.contains(&id));
+    state.screencopy.prune_pending(|id| live.contains(&id));
 }
 
 /// Start a park or unpark motion for every client window whose shelf state changed since the
@@ -467,13 +511,30 @@ fn start_shelf_motions<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
     }
 }
 
+/// Real peer credentials, not app_id claims, drive general application/workload resource state.
+fn aggregated_process_states<B: Backend + 'static>(
+    state: &TemplarCompState<B>,
+) -> std::collections::HashMap<u32, (bool, bool)> {
+    aggregate_process_states(state.window_service.windows().map(|record| (record.peer_pid, record.activated, record.mapped && !record.shelved)))
+}
+fn aggregate_process_states(windows: impl Iterator<Item = (u32, bool, bool)>) -> std::collections::HashMap<u32, (bool, bool)> {
+    let mut by_pid = std::collections::HashMap::new();
+    for (pid, foreground, visible) in windows.filter(|(pid, _, _)| *pid != 0) {
+        let entry = by_pid.entry(pid).or_insert((false, false));
+        entry.0 |= foreground;
+        entry.1 |= visible;
+    }
+    by_pid
+}
+
+
 /// One governor record per instance: OR of `activated` and of `mapped && !shelved` across every
 /// sibling window. Publishing per `WindowRecord` let HashMap iteration pick a shelved sibling
 /// to overwrite the active one.
 fn aggregated_instance_states<B: Backend + 'static>(
     state: &TemplarCompState<B>,
 ) -> std::collections::HashMap<templar_types::InstanceId, (bool, bool)> {
-    aggregate_instance_states(state.window_service.windows().filter_map(|record| {
+    aggregate_instance_states(state.window_service.windows().filter(|record| record.peer_pid == 0).filter_map(|record| {
         record.identity.instance_id.map(|instance_id| {
             (
                 instance_id,
@@ -498,7 +559,7 @@ fn aggregate_instance_states(
 
 #[cfg(test)]
 mod tests {
-    use super::{aggregate_instance_states, pointer_scene_changed};
+    use super::{aggregate_instance_states, aggregate_process_states, pointer_scene_changed};
     use templar_window::{Point, Rect, WindowId};
 
     fn at(x: i32, y: i32) -> Point {
@@ -596,6 +657,18 @@ mod tests {
             let aggregated = aggregate_instance_states(order.into_iter());
             assert_eq!(aggregated.len(), 1);
             assert_eq!(aggregated[&instance], (true, true));
+        }
+    }
+    #[test]
+    fn workload_peer_pid_state_ors_all_windows_and_excludes_anonymous_fallback() {
+        for rows in [
+            [(234, true, false), (234, false, true), (567, false, false), (0, true, true)],
+            [(0, true, true), (567, false, false), (234, false, true), (234, true, false)],
+        ] {
+            let states = aggregate_process_states(rows.into_iter());
+            assert_eq!(states.len(), 2);
+            assert_eq!(states[&234], (true, true));
+            assert_eq!(states[&567], (false, false));
         }
     }
 }

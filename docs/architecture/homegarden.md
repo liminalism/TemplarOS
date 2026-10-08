@@ -1,59 +1,42 @@
 # Homegarden (`HomeGarden1`)
 
-Homegarden presents current work as well as remembered Places. Every open or minimized window
-has a same-instance card on Home's field, placed in free cells around the centre and gathered
-by folder; the task switcher's popup remains the fast route and Alt-Tab keeps its existing
-ordering. Directories remain **Places** because
-you opened them, launched a terminal or editor into them, opened files under them, or came back
-to them; they grow with activity and recede only through the existing garden policy. That policy
-is `@templaros.decision.homegarden-activity-grown-places`; its design history is `docs/garden/`.
+Homegarden presents remembered projects and their current work. A project container owns its
+live/parked window slots, sessions, recent files and application actions. Uncontained windows
+share one **Loose** tray. The independent Desktop dock presents the real Desktop directory,
+not machine statistics. Alt-Tab retains the compositor's existing ordering.
 
-Every visual variable has one job: **shape = mode, material = identity, colour = state,
-size = relevance, position = memory.** Only size and presence are automatic. Position is the
-user's.
+Projects grow from genuine activity and recede through Garden time. Their positions remain
+stable; Keep protects retention, while an explicit resize owns geometry. Current authority is
+`legeos.decision.homegarden-activity-grown-places/3`; the September documents in `docs/garden/`
+are historical rationale, not permission to defer the October 7 owner PDF.
 
 ## Current work
 
-The shell merges the compositor's event-driven window snapshot into transient session entries
-and draws each as a card on the same grid as the persistent tiles, in cells none of them
-occupies, reusing the existing preview painter and window actions. There is no dedicated row:
-the arrangement (`shell/templar-shell/src/work_layout.rs`, pure and unit-tested) is
+The Homegarden and HDMI owner plan is tracked in AKR. The current secondary-output
+qualification boundary and safe next steps are recorded in
+[`hdmi-validation-handoff.md`](hdmi-validation-handoff.md).
 
-- **Folder-clustered.** A window's folder is its exact brokered terminal working directory,
-  otherwise its explicit Place association (an instance the garden recorded under a Place),
-  otherwise the folder its application most recently worked in according to `Files.Recents1` —
-  a directory entry itself, otherwise the file's parent. Windows sharing a folder share one faint
-  plate labelled once; unfiled windows have no plate. Window titles are never read for this.
-  CWD and recency affect presentation only: Place context actions stay garden-only.
-- **Centred.** Clusters are ordered by their most recently used window. A card goes to the free
-  position nearest its cluster's existing cards, its remembered normalized folder centroid, or
-  the field's centre for a new cluster, keeping a one-cell gap from other clusters where possible.
-  Cards prefer a shared row baseline, without losing otherwise usable free cells.
-- **Stable.** A card keeps its cells for as long as its window exists, its folder is unchanged
-  and no persistent tile is put on top of it. Activation, recency, parking and restoring move
-  nothing: a parked window's card stays exactly where it was, so a window minimizes to its
-  own area. The arrangement is recomputed only when the windows, their folders, the persistent
-  tiles' cells, the grid or the zoomed project change. Grid/project changes use persisted soft
-  folder hints rather than imposing old absolute coordinates on a different grid.
-- **Bounded.** Cards prefer 3×2 cells and fall back to 2×1 only when nothing larger fits.
-  Windows that fit nowhere are counted on one "+N windows · Show all" card, which takes the
-  cells of the least recent card placed in that pass and opens the compositor's window overview
-  (`window.show-all`). With no free cells at all there is no overflow card.
+The shell merges the compositor's event-driven window snapshot into transient session entries.
+`work_layout.rs` allocates contained project slots and one bounded Loose area rather than
+free-standing folder clusters. Verified instance/project context determines containment;
+window titles do not establish identity or project authority.
 
-Kinds are classified by the application catalogue's categories (`TerminalEmulator`,
-`FileManager`, and `Graphics` with `Viewer`, `Photography` or `RasterGraphics` for images) and
-the selected provider roles—not by guessing from window titles or app ids.
+- **Contained.** A visible project's Now strip holds its available window slots. Windows that
+  cannot fit there remain reachable through Loose/overflow rather than disappearing.
+- **Stable.** Activation, parking and restoring do not rearrange the persistent project field.
+  A window minimizes toward its own current contained slot, or the explicit overflow target.
+- **Single release.** A click activates the exact open window or restores the exact parked
+  window. It does not wait for a double-click classification. Crossing the lift threshold
+  starts a drag instead; Escape cancels it.
+- **Explicit linking.** Dropping a window onto a project requests a broker-validated instance
+  association. Presentation does not grant application rights or create compositor groups.
+- **Bounded.** Overflow opens the compositor's all-window overview. Loose reserves its title
+  before packing cards, including at narrow widths.
 
-Every live window uses an application icon, activity stripe while running and dimming while parked,
-including its preview. Names appear on hover or keyboard focus, without repeated kind/state words.
-Preview wells letterbox rather than stretching client pixels. The bottom bar, both rails and the
-shell-drawn Alt-Tab switcher use the same marks; bar groups stack up to three member icons.
-
-An open card activates its exact window; a parked card restores and activates that same instance.
-The window menu retains minimize, close and other existing window actions. Closing removes
-only the transient session entry: Places, recent files/folders and pinned objects remain under
-their existing owners. A terminal without a file association does not manufacture a recent file.
-Presentation grouping never creates compositor window groups or changes MRU.
+Window cards retain application icons, title, Park and letterboxed previews. Text-only Now
+slots are one title row; a status label is drawn only when another full line fits. Disabling
+previews leaves actionable text, not an empty project. Closing a window removes its transient
+entry, not the project's history, files or retained sessions.
 
 The compositor learns where each card is, so a window visibly minimizes into it. After every
 Home frame the shell sends each window's card rectangle — or the "+N windows" card for a window
@@ -68,17 +51,14 @@ The existing `shell.home-field.reduced-motion` preference suppresses these trans
 reveal as well as Home zoom/throw effects. Park/restore follows a smooth geometric size curve;
 the client image keeps its own aspect inside the moving rectangle.
 
-The persistent grid always has the whole field, so first-open/last-close transitions do not
-move or resize the user's saved objects, and work cards never edit the field document. Work
-cards do not participate in persistent-field drag, resize or shelf restoration.
-The separate `$XDG_STATE_HOME/templar-shell/work-positions.json` (fallback
-`~/.local/state/templar-shell/`) stores only normalized per-folder centroids. It contains no window
-ids or field tiles, survives session/output/project changes and cannot reserve occupied cells.
+Window cards do not become persistent field objects. The field remains the owner of project
+geometry, while the garden owns verified links and retained session data. Neither transient
+window counts nor Desktop directory changes manufacture project growth.
 
-`templar-shell --render-home-work /tmp/home-work` exercises the placement, activation,
-restoration, parking and activation stability, the overflow card and closure with a
-deterministic window snapshot and writes normal, narrow and HiDPI frames without a display or
-session services.
+`templar-shell --render-home-work PREFIX` exercises containment, Loose/overflow, activation,
+parking, capture gating and project templates/tabs with deterministic fixture data. Its 27
+normal/narrow/HiDPI and project-state images are renderer evidence, not genuine process/session
+or hardware qualification.
 `templar-shell --render-switcher /tmp/switcher` draws frozen compositor-order fixtures, selected
 overflow rows, icons and refreshed preview frames at normal, fractional and HiDPI scales.
 The compositor retains Alt-Tab ordering, keyboard handling and release/escape commit; the shell's
@@ -133,19 +113,26 @@ the month left of it, not at its lifetime total.
 | `created-or-renamed` | 1.5 | reserved for `Files.Operations1` |
 | `file-saved` | 0.8 | reserved for first-party saves |
 
-The Bash prompt hook sends `HomeGarden1.Observe(terminal-entered, cwd, ..., terminal)` on each
-directory transition. Sessiond resolves the D-Bus sender's PID through the broker registry's
-verified cgroup identity; the hook's CLI child shares the terminal's managed instance. It never
-accepts an instance string supplied by an application. A verified transition moves only that
-instance out of its previous context and stores its **exact cwd** in the ledger's optional
-`working_directories` map (UUID string → absolute path), independent of context attribution.
-`HomeGarden1.WorkingDirectories` exposes that map, including HOME/cache/target directories that
-grow no Place. Activity weight still accrues only to the attributed project/place root.
-`ContextChanged(instance_id, path)` tells the shell to refetch the cwd map and `Contexts`; Home
-uses the exact directory for work clustering without altering the Place's root or persistent tiles.
-Unverified callers can contribute activity but cannot attach or move a window instance. The
-prompt hook caches a directory only after the observation succeeds, so a service-start race is
-retried on the next prompt. No polling process or OSC parser is necessary.
+Interactive shell hooks send `HomeGarden1.Observe(terminal-entered, cwd, ..., terminal)` on
+directory transitions. The ordinary path resolves the D-Bus sender through the broker's current
+registered cgroup identity; applications never supply an authoritative instance identifier.
+A verified transition updates that instance's exact cwd in `working_directories`, independently
+of project-root attribution. `WorkingDirectories` includes HOME/cache/target directories that
+grow no Place; `ContextChanged(instance_id, path)` tells Home to refresh that display context.
+
+Some real terminals, including Kitty, move their shell into a separate systemd scope.
+HomeGarden alone can associate these descendants for display: it pins same-UID ancestry with
+pidfds, rechecks PID/start time/parentage, stops at other managed applications, and requires the
+D-Bus sender's `ProcessFD` for descendant observations. Missing credentials fail closed.
+Traversal and evidence reads are bounded and occur at tending/observation, not through a
+resident process poller. This path updates existing containment/cwd/session presentation;
+it does not add strong activity, grow a Place, override explicit adoption, or extend canonical
+AppIdentity, provider, permission or launch authority. An actual Kitty child-scope probe retained
+its Home session while `ResolveWindow` returned unknown and provider `Declare` returned
+`Access denied`.
+
+Unverified observations cannot attach or move a window instance. Hooks cache a directory only
+after observation succeeds, allowing a service-start race to retry at the next prompt.
 
 Activity under hidden directories, `target/`, `build/`, `node_modules/`, caches and the
 machine's own trees is dropped before attribution (`shell.home-garden.ignore`).
@@ -159,8 +146,9 @@ descendants); else the highest ancestor with a workspace marker (`.git`, `Cargo.
 directory; else that mount point or user directory; else the directory itself. **The nearest real
 repository wins over all of those above it** — a `.git` directory with a `HEAD`, a worktree's
 `.git` file, `.hg`, `.jj`, `.svn` — including an existing context above the repository, so a
-stray `.git` in a projects folder cannot swallow the repositories beneath it. `$HOME` is never a
-Place; the walk stops beneath it and is capped at eight ancestors. Only `stat`-class reads.
+stray `.git` in a projects folder cannot swallow the repositories beneath it. `/`, `$HOME` and
+ancestors of `$HOME` are not Places. The walk is bounded; child Places are not duplicated in a
+parent's default body. Path transport preserves native bytes rather than guessing from titles.
 
 ## Stages
 
@@ -181,32 +169,27 @@ the Small rung draws), and a Dominant is twelve times its area with its form dra
 Folder class floor is 2×1 so a line is a shape a folder may have; nothing else about the class
 moved, and `GROWTH_ROOM` follows the top stage so a first landing still leaves room to reach it.
 
-One step per tending moment: a place recedes visibly, never vanishes. Pinned never recedes and
-is never removed by recession, but may grow; **kept** is pinned and frozen at its size; hidden
-never grows, and its tile leaves Home at once. A folder the user placed or resized by hand is
-kept without asking: the tender only prunes what it grew.
+One step per tending moment: a place recedes visibly rather than vanishing. Pin/Keep protect
+retention but do not freeze an automatically sized project. Explicit user resizing sets size
+provenance and prevents automatic resizing. Hidden places leave Home without erasing their
+retained records.
 
-## Forms
+## Templates
 
-Shape is the *mode of use*, and the ledger settles it. Each context carries a `form` — `plain`,
-`branch`, `shelf` or `folio` — derived at a tending moment from the activity tree it has already
-earned: directories worked *through* are branch evidence (weighted by depth, and half again when
-a Terminal or CodeEditor role has been seen there), file leaves are shelf or folio evidence
-according to their extension. Tree nodes age like their place and gain at most 12 per session
-each; the tree is five deep and 96 nodes, served over the bus aged to now. A form must clear a
-floor of 2 and lead the next form by half
-again, and it must have led for **two sessions** before the drawing changes — a place that
-changed shape every time a photo was opened under it would be noise, not identity.
+Project presentation infers Coding, Video, Images and Documents from catalogue categories and
+genuine context evidence. Neutral applications do not vote for a specialized template.
+Hysteresis prevents transient evidence from repeatedly switching a project's body; the manual
+Show As override takes precedence.
 
-Extension, not MIME: `Observe(kind, path, app_id, role)` is a shipped signature and there is no
-media or reader `ProviderRole` to ask either, so a file's name is the whole of the evidence.
-`created-or-renamed` and `file-saved` are still unemitted. Good enough to tell a photo directory
-from a manuscript one; anything finer waits for a signal that exists.
+The default body is not a directory tree. Sessions, Files and Apps remain available as tabs;
+Files lists the actual project directory on demand. Video, Images and Documents use real
+recent-file/preview data. Missing data stays missing rather than becoming sample content.
+Legacy activity-tree/form data is not the current default Home presentation.
 
 | Verb | Record | Tile |
 |---|---|---|
 | `garden.pin` | `pinned` | never removed by recession; may still grow |
-| `garden.keep` | `pinned`, `user_span = current` | frozen in size and place |
+| `garden.keep` | retention protection | automatic geometry remains eligible for growth |
 | `garden.unpin` | neither | tended freely again |
 | `garden.hide` | `hidden`, unpinned | removed from every Home now (undoable); the record stays |
 | `garden.forget` | dropped | removed from every Home now (undoable); activity may regrow it |
@@ -215,9 +198,8 @@ from a manuscript one; anything finer waits for a signal that exists.
 
 1. Tending happens only at tending moments: session start, Home reveal, `garden.tend`.
 2. It emits `Place`, `Resize`, `Remove`. Never `Move`.
-3. A `Place` lands at the remembered landing if free, else the nearest free cell to it, else
-   the nearest free cell to the home corner — the corner as a 4×3 would sit in it, so a Trace
-   has room to become Expanded in place. Nothing is displaced; a full field gets nothing.
+3. A `Place` uses its remembered landing when free, otherwise a stable path-seeded candidate
+   with bounded free-space search. Nothing is displaced; a full field gets nothing.
 4. A `Resize` is accepted only when `reflow::find_resize` satisfies it without any tile the
    tender does not own giving up span (garden-owned, unpinned, not user-sized) **and without any
    neighbour's cell changing**; when the requested span would shift a neighbour, each axis alone
@@ -228,29 +210,34 @@ from a manuscript one; anything finer waits for a signal that exists.
 6. Every op carries a reason (`grew templaros to 4x3: 14 opens, 3 launches, 4 sessions`); the
    batch is one `History1` event and one `HomeField1.Undo` step.
 
-## The Place tile
+## The project body and sessions
 
-Same object as any folder tile. The name is the tile's own chrome; the body is one state line
-and then the **form** the place has earned, drawn in the style `shell.home-garden.theme` chooses
-(`shell/templar-shell/src/surface/place_styles/`). A theme maps each form — and, optionally, a
-plain place large enough to browse — to a structure laid out by `templar_treemap::garden` and a
-material: `mineral` (the default: ink branches, a strip of books, a pile of sheets), `orchard`
-(grown trees, clustered circles), `cushion` (shaded squarified treemaps), `stone` (dry-stone
-Voronoi cells), `radial` (sunburst rings, icicle strata). The used-structure tree is cut to about
-one node per 2500 logical px² of body, two to five levels deep, weakest leaves first; nodes keep
-their position as weights drift because the layout orders siblings by path, never by weight.
-Colours come from the palette's own ground (low chroma, tone by depth and weight); the place's
-`material_seed` becomes the grain, never a hue; the accent marks only arrivals (a rim) and the
-pointer. The body is rasterized once into a bitmap per tile, keyed by root, tree, size, scale and
-theme, and blitted until the key changes; names are drawn live over it and open exactly as a
-folder's rows do. A plain place the theme leaves plain falls back to the ordinary folder listing
-once it is large enough to browse. **Small** is the state line alone; the form starts at
-**Wide**; **Full** is the folder window. `templar-shell --garden-gallery DIR` draws every theme
-over a fixed set of places, headless, for review.
+Small projects show their name and actionable state. Larger projects add contained Now slots
+and template/session content, with Sessions, Files and Apps tabs. Active projects have the
+strongest light surface, resting projects recede, and fading projects reduce to actionable
+text. Color indicates attention such as failure or waiting, not an arbitrary application hue.
 
-There is no roles row: `place.open-terminal`, `place.open-files` and `place.open-editor` are
-rows of the Place context menu, which reaches the same providers by the same route. Drawn into
-the body they made every place look like a collage of the applications used to manipulate it.
+Session rows expose Focus/Restore for a live bound window and Resume for an ended session.
+Resume is a brokered launch with the project's real working directory; it does not replay an
+arbitrary recorded command. Plain shells and supported agent adapters have explicit resume
+contracts. Foreground-process collection happens at tending/activation, not in a resident
+process poller.
+
+Supported Bash, fish and zsh hooks keep bounded private journals with sanitized command labels,
+exit and pipeline status. Leading-space commands are omitted; full command text requires
+explicit opt-in. Bash uses the command-read boundary rather than mistaking compound prompt
+callbacks for commands, including with Kitty shell integration. Agent hooks consume declared
+payloads rather than private agent stores. Editor folder hooks and process-directory/startup
+evidence require current verified launch identity or the bounded display-only terminal
+association above before attaching a window instance.
+
+The Neovim folder hook is packaged separately. Code/VS Code workspace integration is
+deferred indefinitely by the owner as of October 7, 2026; its experimental extension
+sources are retained but excluded from both Debian packaging paths. No Code runtime
+acceptance is claimed.
+
+Place context actions and the Apps tab reach the selected providers through the same broker.
+Unknown identity remains advisory and cannot borrow another application's launch authority.
 
 ## Blooms
 
@@ -269,6 +256,48 @@ prove, so the cursor moves to the head and that moment shows nothing.
 
 The same read carries a rename: a move whose source is a context root brings the place to its
 new name with its score, buckets and material seed intact.
+
+## Native Home host and Desktop dock
+
+Home uses the shared PixelKit input, focus, semantic graph, native IME caret and retained clipboard
+worker. Its custom-painted controls declare their actual bounds/actions rather than a parallel widget
+tree. Files and group rename dialogs are input-first: Tab/Shift-Tab visit the field, accept and cancel,
+Enter activates the focused control, and Escape cancels. Their modal semantic roots exclude Home's
+background; replacing a layout or loading a new scope retires old reader targets.
+
+Home's custom role styles are logical on construction and become physical once through
+`Ui::text_style` before measurement and drawing; tracked spacing remains in ems. The fonts in
+`Ui::theme` are already physical and are not scaled again. Native Tab traversal registers the
+actual tiles before their input handlers, so a tile keeps its existing arrows/activation/move/resize
+behavior while nested controls own their own keyboard input. Escape cannot re-focus the search
+while its pending key is trying to leave it.
+
+The Desktop dock follows the configured Desktop directory through filed's change feed and
+retains its own ordered placement and geometry. It supports native file previews, opening,
+cross-client file drag/drop and filed's journalled copy/move/collision/undo operations.
+Its contents are independent of garden activity. The old machine-facts Files tile is not the
+current Home surface.
+
+An outgoing file drag retains its immutable URI payload on the Wayland source. Transport
+dispatch starts its bounded writer directly, so a foreign application's synchronous read
+does not wait for Home to finish painting. Source lifecycle events still use the bridge's
+UI queue; pointer serial and origin-surface checks still authorize the drag.
+
+The dock's ordered native listing remains separate from generic folder refreshes. Index-change
+notifications refresh ordinary folders while the dock follows its own watcher; an in-flight
+generic folder response cannot replace the dock's order or hide its watcher error. An exact
+resolved Desktop index root needs no optional volume device metadata to cover its own directory.
+Coverage inherited from an ancestor still requires matching device evidence or an explicit
+cross-mount policy, as well as a monitoring policy that materializes the directory's children.
+
+Native paths remain byte-preserving through URI/drop and broker transports. A failed or stale
+file-service operation is reported rather than replaced with invented directory contents.
+See [accessibility](accessibility.md) for shared reader, clipboard, IME and font boundaries.
+
+Owned October 7 rendering exercised 27 Home cases, including all project templates and the
+corrected compact text-only strip. The managed desktop separately demonstrated single-click
+window activation and verified compositor identity delivery. Full session, dock and physical
+output acceptance remains separately evidenced; synthetic render data is not substituted for it.
 
 ## What is deliberately not here yet
 

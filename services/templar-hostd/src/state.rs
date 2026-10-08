@@ -41,8 +41,8 @@ pub struct HostdState {
     pub sys_root: PathBuf,
     /// Root for dpkg/apt-sources inspection (`/` on a live system).
     pub apt_root: PathBuf,
-    /// Where declarative config (`gpu-mode`, `version-lock.toml`) lives (`/etc/templaros/hardware`).
-    pub etc_dir: PathBuf,
+    /// Persistent GPU policy, separate from deployment-paired driver version metadata.
+    pub hardware_state_dir: PathBuf,
     /// hostd's own `RuntimeDirectory` (`/run/templaros` in production) — the only place the
     /// `Session1` report markers `templar-boot-health` reads are ever written.
     pub run_dir: PathBuf,
@@ -126,12 +126,11 @@ pub struct HostdConfig {
     pub caller_identity: Arc<dyn CallerIdentity>,
     pub journal_dir: PathBuf,
     pub source_root: PathBuf,
-    pub deployments_dir: PathBuf,
-    pub esp_root: PathBuf,
+    pub deployment_layout: crate::layout::DeploymentLayout,
     pub deployments_path: PathBuf,
     pub sys_root: PathBuf,
     pub apt_root: PathBuf,
-    pub etc_dir: PathBuf,
+    pub hardware_state_dir: PathBuf,
     pub run_dir: PathBuf,
     pub cmdline_path: PathBuf,
 }
@@ -145,8 +144,7 @@ impl HostdState {
             config.boot.clone(),
             config.clock,
             config.source_root,
-            config.deployments_dir,
-            config.esp_root,
+            config.deployment_layout,
         )?;
         let deployments = deploy::load_registry(&config.deployments_path)?;
         Ok(Self {
@@ -160,7 +158,7 @@ impl HostdState {
             deployments_path: config.deployments_path,
             sys_root: config.sys_root,
             apt_root: config.apt_root,
-            etc_dir: config.etc_dir,
+            hardware_state_dir: config.hardware_state_dir,
             run_dir: config.run_dir,
             cmdline_path: config.cmdline_path,
         })
@@ -182,7 +180,7 @@ impl HostdState {
     }
 
     fn version_lock_path(&self) -> PathBuf {
-        self.etc_dir.join("version-lock.toml")
+        self.apt_root.join("etc/templaros/hardware/version-lock.toml")
     }
 
     // -- Hardware -----------------------------------------------------------------------------
@@ -193,11 +191,11 @@ impl HostdState {
 
     pub fn set_gpu_mode(&self, mode: GpuMode) -> Result<()> {
         let profile = self.graphics_profile()?;
-        hardware::set_gpu_mode(mode, &profile, &self.etc_dir)
+        hardware::set_gpu_mode(mode, &profile, &self.hardware_state_dir)
     }
 
     pub fn gpu_mode(&self) -> Result<Option<GpuMode>> {
-        hardware::read_gpu_mode(&self.etc_dir)
+        hardware::read_gpu_mode(&self.hardware_state_dir)
     }
 
     // -- Drivers --------------------------------------------------------------------------------
@@ -221,20 +219,9 @@ impl HostdState {
     /// Accept the currently-installed NVIDIA LRM/userspace versions as the new locked baseline —
     /// the declarative, hostd-owned alternative to hand-editing a pin file.
     pub fn repair_driver_lock(&self) -> Result<VersionLock> {
-        let packages =
-            templar_hwdetect::dpkg::scan_status(&self.apt_root.join("var/lib/dpkg/status"));
-        let nvidia_lrm = templar_hwdetect::dpkg::find_installed(&packages, "linux-modules-nvidia-")
-            .first()
-            .map(|p| p.version.clone());
-        let nvidia_userspace = templar_hwdetect::dpkg::find_installed(&packages, "nvidia-driver-")
-            .first()
-            .map(|p| p.version.clone());
-        let lock = VersionLock {
-            kernel: None,
-            nvidia_lrm,
-            nvidia_userspace,
-        };
-        drivers::write_version_lock(&self.version_lock_path(), &lock)?;
+        let lock = drivers::derive_lock(&self.apt_root)?;
+        drivers::write_version_lock(&self.version_lock_path(), &lock)
+            .context("driver baseline is deployment-paired System metadata; read-only roots require a hostd candidate update")?;
         Ok(lock)
     }
 
@@ -248,15 +235,27 @@ impl HostdState {
     }
 
     pub fn storage_enforce(&self, mount_point: &Path) -> Result<Vec<TrimReport>> {
+        let _maintenance = self.engine.maintenance_guard();
         let usage = storage::query(mount_point)?;
         let old_deployments = self.trimmable_deployments();
-        storage::enforce(
-            mount_point,
-            self.commands.clone(),
-            self.snapshotter.clone(),
-            old_deployments,
-            usage,
-        )
+        let outcome = storage::enforce(
+            mount_point, self.commands.clone(), self.snapshotter.clone(),
+            &old_deployments, usage, self.engine.root_read_only(),
+        );
+        // Even a partially completed trim must not leave nonexistent account roots
+        // in the registry. Filesystem inspection errors are not treated as deletion.
+        let removed: Vec<_> = old_deployments.iter()
+            .map(|(path, _)| Ok((path, !Path::new(path).try_exists()?)))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        let mut registry = self.deployments.lock().expect("poisoned");
+        let before = registry.deployments.len();
+        registry.deployments.retain(|deployment| {
+            self.engine.mounted_deployment(&deployment.subvolume).ok().is_none_or(|path| {
+                !removed.iter().any(|(removed, missing)| *missing && Path::new(removed) == path)
+            })
+        });
+        if registry.deployments.len() != before { self.save_registry(&registry)?; }
+        outcome
     }
 
     /// `(subvolume path, estimated bytes)` for every deployment the trim order is allowed to
@@ -267,11 +266,13 @@ impl HostdState {
         let booted = self.booted_deployment_id();
         let registry = self.deployments.lock().expect("poisoned");
         let mut protected: Vec<&str> = Vec::new();
+        let candidate = self.engine.candidate_deployment().map(|deployment| deployment.id);
         for id in [
             booted.as_deref(),
             registry.known_good.as_deref(),
             registry.current.as_deref(),
             registry.previous.as_deref(),
+            candidate.as_deref(),
         ]
         .into_iter()
         .flatten()
@@ -289,10 +290,10 @@ impl HostdState {
         trimmable
             .into_iter()
             .filter_map(|id| registry.find(id))
-            .map(|deployment| {
-                let subvolume = deployment.subvolume.clone();
-                let size = storage::estimate_size(Path::new(&subvolume));
-                (subvolume, size)
+            .filter_map(|deployment| {
+                let mounted = self.engine.mounted_deployment(&deployment.subvolume).ok()?;
+                let size = storage::estimate_size(&mounted);
+                Some((mounted.display().to_string(), size))
             })
             .collect()
     }
@@ -371,6 +372,21 @@ impl HostdState {
     /// Every failure is reported rather than propagated: this runs before the daemon serves
     /// anything, and a bookkeeping problem must not stop hostd from starting.
     pub fn reconcile_boot(&self) -> BootReconciliation {
+        let booted = self.booted_deployment_id();
+        // Loader-owned counters do not expose a staged_candidate. The durable transaction
+        // and the running kernel identity still establish whether its candidate really booted.
+        if let Some(txn) = self.engine.current()
+            && matches!(txn.phase, Phase::AwaitingReboot | Phase::Trial)
+            && let Some(candidate) = txn.candidate_deployment
+            && booted.as_deref() == Some(candidate.as_str())
+        {
+            if txn.phase == Phase::AwaitingReboot
+                && let Err(error) = self.engine.record_trial_boot()
+            {
+                return BootReconciliation::Unreadable(error.to_string());
+            }
+            return BootReconciliation::BootedTheCandidate { candidate };
+        }
         let staged = match self.boot.staged_candidate() {
             Ok(Some(staged)) => staged,
             Ok(None) => return BootReconciliation::NoCandidate,
@@ -378,7 +394,7 @@ impl HostdState {
         };
         let (candidate, tries) = staged;
 
-        let Some(booted) = self.booted_deployment_id() else {
+        let Some(booted) = booted else {
             // Without knowing what booted, decrementing would be a guess — and the guess is
             // wrong in exactly the common case, the trial boot itself, where it would burn an
             // attempt on a candidate that is running fine.
@@ -420,6 +436,7 @@ impl HostdState {
 
     /// Make the known-good deployment the default again and close the transaction.
     fn abandon_candidate(&self, candidate: &str) -> Result<String> {
+        let _maintenance = self.engine.maintenance_guard();
         let known_good = {
             let registry = self.deployments.lock().expect("poisoned");
             registry
@@ -427,6 +444,7 @@ impl HostdState {
                 .cloned()
                 .context("no known-good deployment to return to")?
         };
+        self.engine.check_boot_target(&self.engine.mounted_deployment(&known_good.subvolume)?)?;
         self.boot.rollback(&known_good)?;
         if let Some(txn) = self.engine.current()
             && txn.phase == Phase::Trial
@@ -482,10 +500,11 @@ impl HostdState {
     }
 
     pub fn stage_deployment(&self, id: &str, tries: u8) -> Result<()> {
+        let _maintenance = self.engine.maintenance_guard();
         let registry = self.deployments.lock().expect("poisoned");
         let candidate = registry.find(id).context("unknown deployment")?;
+        self.engine.check_boot_target(&self.engine.mounted_deployment(&candidate.subvolume)?)?;
         self.boot.stage_candidate(candidate, tries)?;
-        self.engine.record_trial_boot().ok();
         Ok(())
     }
 
@@ -494,24 +513,29 @@ impl HostdState {
     /// current and known-good, with whatever was current before it kept as `previous` — the
     /// pairing ADR-0003 requires, plus the identities nothing else on the machine remembers.
     pub fn mark_good(&self) -> Result<()> {
+        let _maintenance = self.engine.maintenance_guard();
+        if let Some(previous) = self.deployments.lock().expect("poisoned").known_good_deployment() {
+            self.engine.check_boot_target(&self.engine.mounted_deployment(&previous.subvolume)?)?;
+        }
         self.boot.mark_good()?;
         if let Some(txn) = self.engine.current()
             && txn.phase == Phase::Trial
+            && let Some(deployment) = self.engine.candidate_deployment()
         {
-            self.engine.promote()?;
-            if let Some(deployment) = self.engine.candidate_deployment() {
-                let previous = self.engine.current().and_then(|t| t.previous_deployment);
-                let mut registry = self.deployments.lock().expect("poisoned");
-                registry.promote(deployment);
-                // The transaction recorded what it displaced when it was planned, back when the
-                // machine was healthy; prefer that over what the registry happened to hold.
-                if let Some(previous) = previous
-                    && registry.current.as_deref() != Some(previous.as_str())
-                {
-                    registry.previous = Some(previous);
-                }
-                self.save_registry(&registry)?;
+            let previous = self.engine.current().and_then(|t| t.previous_deployment);
+            let mut registry = self.deployments.lock().expect("poisoned");
+            registry.promote(deployment);
+            // The transaction recorded what it displaced when it was planned, back when the
+            // machine was healthy; prefer that over what the registry happened to hold.
+            if let Some(previous) = previous
+                && registry.current.as_deref() != Some(previous.as_str())
+            {
+                registry.previous = Some(previous);
             }
+            self.save_registry(&registry)?;
+            // Publish registry membership before closing the recoverable Trial journal.
+            // A crash in between repeats the idempotent registry promotion.
+            self.engine.promote()?;
         }
         Ok(())
     }
@@ -520,10 +544,12 @@ impl HostdState {
     /// [`Phase::Trial`], the transaction is marked rolled back to match, and the registry records
     /// that the machine is on `id` again.
     pub fn rollback(&self, id: &str) -> Result<()> {
+        let _maintenance = self.engine.maintenance_guard();
         let previous = {
             let registry = self.deployments.lock().expect("poisoned");
             registry.find(id).cloned().context("unknown deployment")?
         };
+        self.engine.check_boot_target(&self.engine.mounted_deployment(&previous.subvolume)?)?;
         self.boot.rollback(&previous)?;
         if let Some(txn) = self.engine.current()
             && txn.phase == Phase::Trial
@@ -579,6 +605,7 @@ mod tests {
             boot: Arc::new(SystemdBoot {
                 commands: commands.clone(),
                 esp_root: dir.join("esp"),
+                sysroot: dir.join("root"),
             }),
             commands,
             clock: Arc::new(FixedClock(UNIX_EPOCH + Duration::from_secs(1_786_960_800))),
@@ -586,12 +613,11 @@ mod tests {
             caller_identity: Arc::new(crate::session_report::FixedCallerIdentity::allow()),
             journal_dir: dir.join("journal"),
             source_root: dir.join("root"),
-            deployments_dir: dir.join("deployments"),
-            esp_root: dir.join("esp"),
+            deployment_layout: crate::layout::DeploymentLayout::fixture(dir.join("deployments"), dir.join("esp")),
             deployments_path: dir.join("deployments.json"),
             sys_root: dir.join("sys"),
             apt_root: dir.join("root"),
-            etc_dir: dir.join("etc/templaros/hardware"),
+            hardware_state_dir: dir.join("var/lib/templaros/hardware"),
             run_dir: dir.join("run/templaros"),
             cmdline_path: dir.join("proc/cmdline"),
         }
@@ -623,6 +649,7 @@ mod tests {
             kernel: None,
             nvidia_modules: None,
             known_good,
+            read_only: true,
         }
     }
 
@@ -765,6 +792,7 @@ mod tests {
             nvidia_userspace: Some("nvidia-driver-580-open".into()),
             firmware: vec![],
             other_packages: vec![],
+            archive: None,
         }
     }
 
@@ -772,6 +800,8 @@ mod tests {
         std::fs::create_dir_all(dir.join("root/boot")).unwrap();
         std::fs::write(dir.join("root/boot/vmlinuz-x"), b"k").unwrap();
         std::fs::write(dir.join("root/boot/initrd.img-x"), b"i").unwrap();
+        std::fs::create_dir_all(dir.join("root/var/lib/dpkg")).unwrap();
+        std::fs::write(dir.join("root/var/lib/dpkg/status"), "").unwrap();
     }
 
     #[test]
@@ -792,7 +822,18 @@ mod tests {
             Phase::AwaitingReboot
         );
 
-        state.stage_deployment_for_test(&id);
+        write_cmdline(dir, "ro templaros.deployment=base1");
+        assert_eq!(state.reconcile_boot(), BootReconciliation::NoCandidate);
+        assert_eq!(state.current_transaction().unwrap().phase, Phase::AwaitingReboot);
+        drop(state);
+        let state = HostdState::new(config(dir)).unwrap();
+        write_cmdline(dir, &format!("ro templaros.deployment={id}"));
+        assert_eq!(state.reconcile_boot(), BootReconciliation::BootedTheCandidate { candidate: id.clone() });
+        assert_eq!(state.current_transaction().unwrap().phase, Phase::Trial);
+        // Restarting hostd on the same boot must not advance the trial twice.
+        let state = HostdState::new(config(dir)).unwrap();
+        assert_eq!(state.reconcile_boot(), BootReconciliation::BootedTheCandidate { candidate: id.clone() });
+        assert_eq!(state.current_transaction().unwrap().phase, Phase::Trial);
         state.mark_good().unwrap();
 
         let txn = state.current_transaction().unwrap();
@@ -814,6 +855,31 @@ mod tests {
     }
 
     #[test]
+    fn trial_repeats_registry_publication_before_terminal_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        with_bootable_root(dir);
+        let state = HostdState::new(config(dir)).unwrap();
+        let id = state.plan_update(changes()).unwrap();
+        state.drive_pipeline();
+        write_cmdline(dir, &format!("ro templaros.deployment={id}"));
+        assert_eq!(state.reconcile_boot(), BootReconciliation::BootedTheCandidate { candidate: id.clone() });
+        {
+            let mut registry = state.deployments.lock().unwrap();
+            registry.promote(state.engine.candidate_deployment().unwrap());
+            state.save_registry(&registry).unwrap();
+        }
+        assert_eq!(state.current_transaction().unwrap().phase, Phase::Trial);
+        state.mark_good().unwrap();
+        assert_eq!(state.current_transaction().unwrap().phase, Phase::Promoted);
+        let registry = state.deployment_registry();
+        assert_eq!(registry.deployments.len(), 1);
+        assert_eq!(registry.current.as_deref(), Some(id.as_str()));
+        assert_eq!(registry.known_good.as_deref(), Some(id.as_str()));
+        assert_eq!(registry.previous, None);
+    }
+
+    #[test]
     fn rollback_rolls_back_the_matching_transaction() {
         let dir = tempfile::tempdir().unwrap();
         let dir = dir.path();
@@ -821,7 +887,8 @@ mod tests {
         let state = HostdState::new(config(dir)).unwrap();
         let id = state.plan_update(changes()).unwrap();
         state.drive_pipeline();
-        state.stage_deployment_for_test(&id);
+        write_cmdline(dir, &format!("ro templaros.deployment={id}"));
+        assert_eq!(state.reconcile_boot(), BootReconciliation::BootedTheCandidate { candidate: id.clone() });
 
         // The candidate must exist in the registry to be rolled back to; register it as this
         // deployment's own previous state would have been.
@@ -871,10 +938,4 @@ mod tests {
         assert!(dir.join("run/templaros/session-healthy").exists());
     }
 
-    // Test-only helpers.
-    impl HostdState {
-        fn stage_deployment_for_test(&self, _id: &str) {
-            self.engine.record_trial_boot().unwrap();
-        }
-    }
 }

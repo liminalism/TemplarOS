@@ -28,7 +28,7 @@ use templar_file_index::{
     ScanScope, StaleReason, WatchStatus,
     coalesce::{CoalesceConfig, Coalescer, SystemClock},
     reconcile::{self, Trigger},
-    watch::{EventSource, InotifySource, RepairRequest, SourceWaker, WatchBudget, WatchOwner},
+    watch::{EventSource, InotifySource, RepairRequest, WatchBudget, WatchOwner},
 };
 
 use crate::{
@@ -53,8 +53,7 @@ pub struct WatcherRoots {
 #[derive(Debug)]
 pub struct WatcherHandle {
     stop: Arc<AtomicBool>,
-    waker: Option<SourceWaker>,
-    commands: std::sync::mpsc::Sender<Command>,
+    control: WatcherControl,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -68,9 +67,7 @@ impl WatcherHandle {
     /// so in production this runs from `Drop` or not at all.)
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(waker) = &self.waker {
-            waker.wake();
-        }
+        self.control.wake();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -79,7 +76,7 @@ impl WatcherHandle {
     /// The non-blocking handle a D-Bus method uses to report a consumer.
     #[must_use]
     pub fn control(&self) -> WatcherControl {
-        WatcherControl::new(self.commands.clone(), self.waker.clone())
+        self.control.clone()
     }
 }
 
@@ -143,8 +140,7 @@ pub fn spawn_with_source<S: EventSource + 'static>(
         .expect("spawning the watcher thread");
     WatcherHandle {
         stop,
-        waker,
-        commands,
+        control: WatcherControl::new(commands, waker),
         thread: Some(thread),
     }
 }
@@ -234,6 +230,10 @@ impl<S: EventSource> WatchLoop<S> {
     pub fn start(&mut self, roots: &WatcherRoots) {
         for status in &roots.serve {
             self.track(status);
+            if !self.index.root_policy(status.root).is_ok_and(|policy| policy.monitoring) {
+                let _ = self.index.mark_stale(status.root, &StaleReason::Unwatched);
+                continue;
+            }
             // Armed now, so changes from this moment on are seen; everything before this moment
             // is what the repair pass is for.
             self.arm_only(status);
@@ -241,6 +241,10 @@ impl<S: EventSource> WatchLoop<S> {
         }
         for status in &roots.reconcile {
             self.track(status);
+            if !self.index.root_policy(status.root).is_ok_and(|policy| policy.monitoring) {
+                let _ = self.index.mark_stale(status.root, &StaleReason::Unwatched);
+                continue;
+            }
             self.arm_only(status);
             self.enqueue_repair(status.root, ScanScope::Root, Trigger::Requested);
         }
@@ -259,7 +263,8 @@ impl<S: EventSource> WatchLoop<S> {
             .root_policy(status.root)
             .unwrap_or_else(|_| templar_file_index::RootPolicy::default_home());
         self.owner
-            .track_root(status.root, &status.path.to_path(), policy);
+            .track_root(status.root, &status.path.to_path(), policy.clone());
+        if !policy.monitoring { self.owner.forget_root(status.root); }
     }
 
     fn arm_only(&mut self, status: &RootStatus) {
@@ -399,6 +404,26 @@ impl<S: EventSource> WatchLoop<S> {
                     arm |= self.observer.lease(&client, now) == Some(Transition::Arm);
                 }
                 Command::Release(client) => self.observer.release(&client, now),
+                Command::Observe(client, token, alive) => {
+                    if alive.load(Ordering::SeqCst) {
+                        arm |= self.observer.observe(&client, token, now) == Some(Transition::Arm);
+                    }
+                }
+                Command::Unobserve(client, token) => self.observer.unobserve(&client, token, now),
+                Command::Reconcile(root, trigger) => {
+                    if let Ok(status) = self.index.root_status(root) {
+                        self.owner.forget_root(root);
+                        self.track(&status);
+                        self.enqueue_repair(root, ScanScope::Root, trigger);
+                        self.published = None;
+                    }
+                }
+                Command::ForgetRoot(root) => {
+                    self.owner.forget_root(root);
+                    self.repairs.retain(|(queued, _, _)| *queued != root);
+                    self.coalescer.take_for_root(root, MutationSource::Watcher);
+                    self.published = None;
+                }
             }
         }
         self.commands = Some(commands);
@@ -541,9 +566,32 @@ impl<S: EventSource> WatchLoop<S> {
         let Ok(policy) = self.index.root_policy(root) else {
             return;
         };
+        if !policy.monitoring {
+            let options = ScanOptions {
+                budget: self.index.config().scan_budget,
+                scope: scope.clone(),
+                ..ScanOptions::reconcile(policy)
+            };
+            match self.index.scan_root(root, options) {
+                Ok(outcome) if outcome.complete => {
+                    let _ = self.index.mark_stale(root, &StaleReason::Unwatched);
+                }
+                Ok(_) => {} // Preserve a real budget/permission failure, not a friendlier reason.
+                Err(error) => tracing::warn!(root = root.0, %error, "unmonitored root repair failed"),
+            }
+            return;
+        }
         let mut options = ScanOptions::reconcile(policy);
+        options.budget = self.index.config().scan_budget;
+        let whole_root = scope == ScanScope::Root;
         options.scope = scope.clone();
-        let refused_before = self.owner.status(0).watches_refused;
+        let baseline_probe = if whole_root {
+            self.delta.as_ref().and_then(|delta| {
+                let status = self.index.root_status(root).ok()?;
+                let mounts = std::fs::read_to_string("/proc/self/mounts").ok()?;
+                delta.begin_reconcile(&self.index, &status, &mounts)
+            })
+        } else { None };
         match reconcile::reconcile(&self.index, &mut self.owner, root, scope, trigger, options) {
             Ok((outcome, report)) => {
                 tracing::info!(
@@ -555,7 +603,12 @@ impl<S: EventSource> WatchLoop<S> {
                     state = outcome.state.as_str(),
                     "reconciled"
                 );
-                self.account_for_refused_watches(root, outcome.state, refused_before);
+                if let Some(probe) = baseline_probe
+                    && let Some(delta) = &self.delta
+                    && let Ok(status) = self.index.root_status(root)
+                {
+                    delta.complete_reconcile(&self.index, probe, &status);
+                }
             }
             Err(error) => tracing::warn!(root = root.0, %error, "reconciliation failed"),
         }
@@ -567,16 +620,20 @@ impl<S: EventSource> WatchLoop<S> {
     /// Everything that can go wrong here is a `false` and a reconcile, which is what this branch
     /// did before the backend existed; the recursive path is never removed, only skipped.
     fn catch_up(&mut self, root: RootId) -> bool {
+        let Ok(mounts) = std::fs::read_to_string("/proc/self/mounts") else {
+            return false;
+        };
+        self.catch_up_with_mounts(root, &mounts)
+    }
+
+    pub(crate) fn catch_up_with_mounts(&mut self, root: RootId, mounts: &str) -> bool {
         let Some(delta) = self.delta.as_ref() else {
             return false;
         };
         let Ok(status) = self.index.root_status(root) else {
             return false;
         };
-        let Ok(mounts) = std::fs::read_to_string("/proc/self/mounts") else {
-            return false;
-        };
-        let Some(caught_up) = delta.try_catch_up(&self.index, &status, &mounts) else {
+        let Some(caught_up) = delta.try_catch_up(&self.index, &status, mounts) else {
             return false;
         };
 
@@ -596,10 +653,14 @@ impl<S: EventSource> WatchLoop<S> {
         }
 
         let mutations = caught_up.batch.mutations.len();
+        if let Err(error) = delta.prepare_apply(&caught_up) {
+            tracing::warn!(root = root.0, %error, "could not fence delta apply; reconciling");
+            return false;
+        }
         if self.index.begin_catch_up(root).is_err() {
             return false;
         }
-        let applied = match self.index.apply(caught_up.batch.clone()) {
+        let applied = match self.index.apply_atomic(&caught_up.batch) {
             Ok(applied) => applied,
             Err(error) => {
                 // The batch is all-or-nothing, so a failure here leaves the previous generation
@@ -609,7 +670,24 @@ impl<S: EventSource> WatchLoop<S> {
                 return false;
             }
         };
-        delta.committed(&caught_up);
+        // A dormant tree has no recursive watches, and a directory rename makes old path maps
+        // wrong. Rebuild coverage before publishing Current or advancing the checkpoint pointer.
+        let Ok(policy) = self.index.root_policy(root) else { return false };
+        self.owner.forget_root(root);
+        self.owner.track_root(root, &status.path.to_path(), policy);
+        match self.owner.arm_tree(root, &status.path.to_path(), &mut |_| Ok(())) {
+            Ok(coverage) if coverage.complete => {}
+            Ok(coverage) => {
+                let _ = self.index.mark_stale(root, &StaleReason::WatcherExhausted {
+                    armed: coverage.dirs_armed, refused: coverage.dirs_refused,
+                });
+                return false;
+            }
+            Err(error) => {
+                tracing::warn!(root = root.0, %error, "could not rearm delta watch coverage");
+                return false;
+            }
+        }
 
         // `finish_catch_up` reaches `current` only if the last commit covered the whole root. A
         // delta cannot repair an incomplete generation — it describes a difference, not a tree —
@@ -617,6 +695,10 @@ impl<S: EventSource> WatchLoop<S> {
         let Ok(status) = self.index.finish_catch_up(root) else {
             return false;
         };
+        if let Err(error) = delta.committed(&caught_up, &status) {
+            tracing::warn!(root = root.0, %error, "could not publish delta checkpoint; reconciling");
+            return false;
+        }
 
         tracing::info!(
             root = root.0,
@@ -630,47 +712,6 @@ impl<S: EventSource> WatchLoop<S> {
         status.state == templar_file_index::RootState::Current
     }
 
-    /// A pass that ran out of watches did not see the whole tree, whatever it committed.
-    ///
-    /// `ScanSession::commit` (`generation.rs:292`) derives completeness from the entry budget,
-    /// permission denials and cancellation. A refused watch produces neither: `reconcile`'s
-    /// `note_unreadable(session, false)` only bumps `unreadable_dirs`, which that test does not
-    /// read — so a root whose arm pass hit the budget commits `Current` over subtrees nothing is
-    /// watching. On this machine that is not a corner: 189,089 home directories against a 125,037
-    /// budget means it is the outcome of *every* home pass.
-    ///
-    /// The honest report is the point of the whole crate, so the host makes it here rather than
-    /// waiting for the core to be corrected. Fixing it at source means folding `unreadable_dirs`
-    /// into that completeness test, which changes tombstone collection for every caller and so
-    /// belongs with whoever owns `generation.rs`.
-    fn account_for_refused_watches(
-        &mut self,
-        root: RootId,
-        state: templar_file_index::RootState,
-        refused_before: u64,
-    ) {
-        if state != templar_file_index::RootState::Current {
-            return;
-        }
-        let refused = self
-            .owner
-            .status(0)
-            .watches_refused
-            .saturating_sub(refused_before);
-        if refused == 0 {
-            return;
-        }
-        let reason = StaleReason::WatcherExhausted {
-            armed: self.owner.watches_armed(),
-            refused,
-        };
-        tracing::warn!(
-            root = root.0,
-            refused,
-            "the watch budget ran out during a pass; the root is not current"
-        );
-        let _ = self.index.mark_stale(root, &reason);
-    }
 
     /// Write the watcher's self-report — but only when it says something new.
     ///
@@ -684,7 +725,9 @@ impl<S: EventSource> WatchLoop<S> {
             return;
         }
         for root in self.index.roots().unwrap_or_default() {
-            let _ = self.index.set_watch_status(root.root, &status);
+            let monitoring = self.index.root_policy(root.root).is_ok_and(|policy| policy.monitoring);
+            let disabled = WatchStatus { backend: "disabled".to_owned(), ..WatchStatus::default() };
+            let _ = self.index.set_watch_status(root.root, if monitoring { &status } else { &disabled });
         }
         self.published = Some(status);
     }
@@ -693,6 +736,11 @@ impl<S: EventSource> WatchLoop<S> {
     #[must_use]
     pub fn index(&self) -> &Index {
         &self.index
+    }
+
+    #[cfg(test)]
+    pub(crate) fn watches_armed(&self) -> u64 {
+        self.owner.watches_armed()
     }
 }
 
@@ -917,6 +965,7 @@ mod tests {
             reserve_percent: 0,
             progress_interval: std::time::Duration::from_millis(0),
             index_sink: Some(OperationSink::shared(index.clone())),
+            journal: None,
         };
         execute::run(&mut operation, &config, &Cancel::new(), |_| {}).unwrap();
 

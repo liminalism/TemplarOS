@@ -11,12 +11,13 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use std::{collections::HashMap, time::Instant};
-use templar_types::{AppId, InstanceId};
+use templar_types::{ResourceId, ResourceIdentity, ResourceMetadata};
+use std::sync::Arc;
 
 /// A tracked application instance, private to the sampling loop.
 #[derive(Clone, Debug)]
 pub struct ManagedInstance {
-    pub app_id: AppId,
+    pub metadata: Arc<ResourceMetadata>,
     pub cgroup: Cgroup,
     /// Original policy before temporary pressure overrides. Application units are launched with
     /// no static `MemoryHigh=` (`templar-appd`'s launcher), so "restore" always means "max" today —
@@ -40,9 +41,10 @@ pub struct ManagedInstance {
 }
 
 impl ManagedInstance {
-    pub fn new(app_id: AppId, cgroup: Cgroup, now: Instant) -> Self {
+    pub fn new(identity: ResourceIdentity, cgroup: Cgroup, now: Instant) -> Self {
+        let metadata = Arc::new(ResourceMetadata { identity, control_group: cgroup.control_group_path() });
         Self {
-            app_id,
+            metadata,
             cgroup,
             configured_memory_high: None,
             active_override: None,
@@ -74,7 +76,7 @@ impl ManagedInstance {
 /// `ManagedInstance::active_override` being `None`. That guard, not the stage check, is what
 /// keeps observe-only from writing to any cgroup at all.
 pub fn apply_action(
-    instances: &mut HashMap<InstanceId, ManagedInstance>,
+    instances: &mut HashMap<ResourceId, ManagedInstance>,
     action: &Action,
     stage: Stage,
 ) -> Result<bool> {
@@ -138,8 +140,8 @@ pub fn apply_action(
 }
 
 fn instance(
-    instances: &HashMap<InstanceId, ManagedInstance>,
-    id: InstanceId,
+    instances: &HashMap<ResourceId, ManagedInstance>,
+    id: ResourceId,
 ) -> Result<&ManagedInstance> {
     instances
         .get(&id)
@@ -147,8 +149,8 @@ fn instance(
 }
 
 fn instance_mut(
-    instances: &mut HashMap<InstanceId, ManagedInstance>,
-    id: InstanceId,
+    instances: &mut HashMap<ResourceId, ManagedInstance>,
+    id: ResourceId,
 ) -> Result<&mut ManagedInstance> {
     instances
         .get_mut(&id)
@@ -174,13 +176,13 @@ mod tests {
         Cgroup::from_directory(dir)
     }
 
-    fn app_id() -> AppId {
-        "org.templaros.Test".parse().unwrap()
+    fn app_id() -> ResourceIdentity {
+        ResourceIdentity::Application { app_id: "org.templaros.Test".parse().unwrap() }
     }
 
     #[test]
     fn actions_below_the_stage_are_not_performed() {
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         let cgroup = cgroup_fixture("below");
         let dir = cgroup.directory().to_path_buf();
         let mut instances = HashMap::new();
@@ -202,7 +204,7 @@ mod tests {
 
     #[test]
     fn actions_at_or_above_the_stage_write_the_cgroup() {
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         let cgroup = cgroup_fixture("above");
         let dir = cgroup.directory().to_path_buf();
         let mut instances = HashMap::new();
@@ -228,7 +230,7 @@ mod tests {
 
     #[test]
     fn restore_dynamic_limits_writes_when_an_override_is_active() {
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         let cgroup = cgroup_fixture("restore");
         let dir = cgroup.directory().to_path_buf();
         let mut managed = ManagedInstance::new(app_id(), cgroup, Instant::now());
@@ -259,7 +261,7 @@ mod tests {
     /// `MemoryHigh=` nothing but the application's own unit ever set.
     #[test]
     fn restore_dynamic_limits_is_a_noop_without_an_active_override() {
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         let cgroup = cgroup_fixture("restore-noop");
         let dir = cgroup.directory().to_path_buf();
         let before = fs::read_to_string(dir.join("memory.high")).unwrap();
@@ -289,7 +291,7 @@ mod tests {
         let result = apply_action(
             &mut instances,
             &Action::KillCgroup {
-                instance_id: InstanceId::new(),
+                instance_id: ResourceId::new(),
                 reason: "test".into(),
             },
             Stage::Terminate,

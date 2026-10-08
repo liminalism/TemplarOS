@@ -19,13 +19,15 @@ use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
-use templar_types::InstanceId;
+use templar_types::ResourceId;
 
 /// One instance's contribution to a [`TraceRecord`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InstanceTrace {
-    pub instance_id: InstanceId,
+    pub instance_id: ResourceId,
     pub app_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<std::sync::Arc<templar_types::ResourceMetadata>>,
     pub memory_current_bytes: u64,
     pub memory_growth_bytes_per_second: i64,
     pub full_psi_avg10: f64,
@@ -55,7 +57,7 @@ pub struct InstanceTrace {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActionTrace {
     pub kind: String,
-    pub instance_id: InstanceId,
+    pub instance_id: ResourceId,
     pub applied: bool,
     pub reason: String,
 }
@@ -76,7 +78,7 @@ pub struct TraceRecord {
     pub global_memory_psi: Psi,
     pub global_io_psi: Psi,
     pub instances: Vec<InstanceTrace>,
-    pub victim: Option<InstanceId>,
+    pub victim: Option<ResourceId>,
     pub actions: Vec<ActionTrace>,
     /// Why the loop was awake for this tick: the kernel's pressure trigger fired, the idle
     /// heartbeat came round, or there is no trigger on this kernel and the loop is sampling on
@@ -288,8 +290,9 @@ mod tests {
         let mut record = sample_record(PressureLevel::Severe);
         record.instances = (0..count)
             .map(|index| InstanceTrace {
-                instance_id: InstanceId::new(),
+                instance_id: ResourceId::new(),
                 app_id: format!("org.templaros.Application{index}"),
+                metadata: None,
                 memory_current_bytes: GIB,
                 memory_growth_bytes_per_second: 0,
                 full_psi_avg10: 0.5,
@@ -407,7 +410,7 @@ mod tests {
         };
         record.actions.push(ActionTrace {
             kind: "kill-cgroup".into(),
-            instance_id: InstanceId::new(),
+            instance_id: ResourceId::new(),
             applied: false,
             reason: "above observe-only stage".into(),
         });

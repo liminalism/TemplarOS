@@ -21,7 +21,7 @@ use zbus::{
     Connection,
     zvariant::{OwnedObjectPath, OwnedValue, Value},
 };
-use zbus_systemd::systemd1::{ManagerProxy, ServiceProxy};
+use zbus_systemd::systemd1::{ManagerProxy, ServiceProxy, UnitProxy};
 
 use crate::identity::InstanceRecord;
 
@@ -68,8 +68,8 @@ pub fn session_environment() -> Vec<String> {
 }
 
 /// Build the `StartTransientUnit` property list for one launch. Never runs `Exec=` (or anything
-/// else) through a shell: `ExecStart` is `(executable, argv, ignore_failure)` with the resolved
-/// executable as argv\[0\] and the caller's arguments appended verbatim.
+/// else) through a shell: `ExecStartEx` is `(executable, argv, flags)` with the resolved
+/// executable as argv\[0\] and `no-env-expand` preserving every already-expanded argument.
 ///
 /// `session_environment` is [`session_environment()`] in the daemon and an explicit list in tests.
 pub fn transient_unit_properties(
@@ -79,7 +79,23 @@ pub fn transient_unit_properties(
     activation_token: Option<&str>,
     session_environment: &[String],
 ) -> Vec<(String, OwnedValue)> {
-    let executable = manifest.executable.to_string_lossy().into_owned();
+    transient_unit_properties_in_directory(manifest, instance_id,
+        manifest.executable.to_str().expect("native executable requires broker adapter"), arguments,
+        activation_token, session_environment, None)
+}
+
+/// Pure property builder with the actual broker command (including the native argv adapter) and
+/// optional Place working directory. The original manifest still supplies managed identity.
+pub fn transient_unit_properties_in_directory(
+    manifest: &AppManifest,
+    instance_id: InstanceId,
+    executable: &str,
+    arguments: &[String],
+    activation_token: Option<&str>,
+    session_environment: &[String],
+    directory: Option<&str>,
+) -> Vec<(String, OwnedValue)> {
+    let executable = executable.to_owned();
     let mut argv = vec![executable.clone()];
     argv.extend(arguments.iter().cloned());
 
@@ -92,7 +108,8 @@ pub fn transient_unit_properties(
         environment.push(format!("XDG_ACTIVATION_TOKEN={token}"));
     }
 
-    vec![
+    let mut properties = Vec::with_capacity(10 + usize::from(directory.is_some()));
+    properties.extend([
         ("Type".to_owned(), owned("exec".to_owned())),
         ("Slice".to_owned(), owned("app.slice".to_owned())),
         ("MemoryAccounting".to_owned(), owned(true)),
@@ -107,10 +124,14 @@ pub fn transient_unit_properties(
         ("StandardError".to_owned(), owned("journal".to_owned())),
         ("Environment".to_owned(), owned(environment)),
         (
-            "ExecStart".to_owned(),
-            owned(vec![(executable, argv, false)]),
+            "ExecStartEx".to_owned(),
+            owned(vec![(executable, argv, vec!["no-env-expand".to_owned()])]),
         ),
-    ]
+    ]);
+    if let Some(directory) = directory {
+        properties.push(("WorkingDirectory".to_owned(), owned(directory.to_owned())));
+    }
+    properties
 }
 
 /// Start `manifest` as a transient unit and wait for its `ControlGroup` to appear. Systemd
@@ -124,16 +145,32 @@ pub async fn start_transient_unit(
     arguments: &[String],
     activation_token: Option<&str>,
 ) -> Result<InstanceRecord> {
+    start_transient_unit_in_directory(connection, manifest, instance_id,
+        manifest.executable.to_str().context("native executable requires broker adapter")?,
+        arguments, activation_token, None).await
+}
+
+pub async fn start_transient_unit_in_directory(
+    connection: &Connection,
+    manifest: &AppManifest,
+    instance_id: InstanceId,
+    executable: &str,
+    arguments: &[String],
+    activation_token: Option<&str>,
+    directory: Option<&std::path::Path>,
+) -> Result<InstanceRecord> {
     let unit_name = unit::unit_name(&manifest.id, instance_id);
     let manager = ManagerProxy::new(connection)
         .await
         .context("connecting to org.freedesktop.systemd1.Manager")?;
-    let properties = transient_unit_properties(
+    let properties = transient_unit_properties_in_directory(
         manifest,
         instance_id,
+        executable,
         arguments,
         activation_token,
         &session_environment(),
+        directory.map(|directory| directory.to_str().context("launch directory must be UTF-8")).transpose()?,
     );
     manager
         .start_transient_unit(unit_name.clone(), "fail".to_owned(), properties, Vec::new())
@@ -149,14 +186,8 @@ pub async fn start_transient_unit(
     })
 }
 
-/// Poll for the unit's `ControlGroup` property once `GetUnit` has confirmed the unit
-/// `StartTransientUnit` just created actually exists. Systemd sets `ControlGroup` as part of
-/// creating the unit, before the first process starts, so this is normally immediate; a handful
-/// of short retries is a safety margin, not the primary mechanism. If the property still is not
-/// populated once that budget is spent, that is a polling problem, not a launch failure — the
-/// unit is confirmed to exist and is running — so a derived guess is returned instead of failing
-/// the whole launch (identity still resolves correctly through `unit::parse_cgroup_path`'s
-/// self-describing match either way).
+/// Poll briefly for the actual ControlGroup after the manager confirms the created unit.
+/// An unavailable property cannot authorize a guessed path, even when start succeeded.
 async fn wait_for_control_group(connection: &Connection, unit_name: &str) -> Result<PathBuf> {
     let manager = ManagerProxy::new(connection).await?;
     let unit_path = manager
@@ -180,13 +211,7 @@ async fn wait_for_control_group(connection: &Connection, unit_name: &str) -> Res
             _ => {}
         }
     }
-    tracing::warn!(
-        unit_name,
-        "systemd did not expose a ControlGroup within the retry budget; registering with a \
-         derived path (the unit is running — identity still resolves through its \
-         self-describing name)"
-    );
-    Ok(PathBuf::from(format!("app.slice/{unit_name}")))
+    anyhow::bail!("systemd accepted {unit_name} but did not expose its actual ControlGroup")
 }
 
 /// Whether `org.freedesktop.systemd1` answers on `connection` (used to pick the launch backend
@@ -231,9 +256,14 @@ pub async fn list_live_units(connection: &Connection) -> Result<Vec<LiveUnit>> {
         let Some((app_id, instance_id)) = unit::parse_unit_name(&name) else {
             continue; // not one of ours despite matching the glob (shouldn't happen).
         };
-        let control_group = service_control_group(connection, &unit_path)
-            .await
-            .unwrap_or_default();
+        let control_group = match service_control_group(connection, &unit_path).await {
+            Ok(group) if !group.as_os_str().is_empty() => group,
+            Ok(_) => continue,
+            Err(error) => {
+                tracing::warn!(unit = %name, %error, "live unit has no trustworthy ControlGroup");
+                continue;
+            }
+        };
         live.push(LiveUnit {
             app_id,
             instance_id,
@@ -254,6 +284,106 @@ async fn service_control_group(
         .build()
         .await?;
     Ok(PathBuf::from(service.control_group().await?))
+}
+
+/// One `app-templaros-*` unit systemd currently knows about, with the outcome the
+/// launch-failure watchdog needs: the high-level state, the result, and the main
+/// process's waitid reading plus its start/exit timestamps. Ground truth for telling
+/// "failed to start" from "ran and quit" without asking the application, which by
+/// definition cannot answer any more.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppUnitState {
+    pub app_id: AppId,
+    pub instance_id: InstanceId,
+    pub unit_name: String,
+    /// `ActiveState`: `active`, `failed`, `inactive`, …
+    pub active_state: String,
+    /// `Result`: `success`, `exit-code`, `signal`, `core-dump`, `oom-kill`, …
+    pub result: String,
+    /// `ExecMainCode` / `ExecMainStatus`: the waitid code and the exit status or
+    /// signal number. 0/0 when the process never ran.
+    pub exec_code: i32,
+    pub exec_status: i32,
+    /// `ExecMainPID`, retained after the process exits: the journal key for the
+    /// application's own output. 0 when nothing ever ran.
+    pub exec_main_pid: u32,
+    /// `ExecMainStartTimestamp` / `ExecMainExitTimestamp`, microseconds since the epoch.
+    pub exec_start_us: u64,
+    pub exec_exit_us: u64,
+    /// `InactiveEnterTimestamp`, microseconds since the epoch: when the unit last went
+    /// quiet, so a failure from before this watcher started reads as stale news.
+    pub inactive_enter_us: u64,
+}
+
+/// Ask systemd for every loaded `app-templaros-*` unit and how it ended. The
+/// `ListUnitsByPatterns` tuple already carries the active state, so only units that
+/// are *not* running pay for the extra property reads — a healthy session costs one
+/// D-Bus call per sweep.
+pub async fn list_app_unit_states(connection: &Connection) -> Result<Vec<AppUnitState>> {
+    let manager = ManagerProxy::new(connection).await?;
+    let units = manager
+        .list_units_by_patterns(Vec::new(), vec![format!("{}*", unit::UNIT_PREFIX)])
+        .await
+        .context("ListUnitsByPatterns")?;
+
+    let mut states = Vec::with_capacity(units.len());
+    for (
+        name,
+        _description,
+        _load,
+        active_state,
+        _sub,
+        _following,
+        unit_path,
+        _job_id,
+        _job_type,
+        _job_path,
+    ) in units
+    {
+        let Some((app_id, instance_id)) = unit::parse_unit_name(&name) else {
+            continue; // not one of ours despite matching the glob (shouldn't happen).
+        };
+        if active_state == "active" || active_state == "reloading" {
+            continue; // Running: nothing for the watchdog to say about it.
+        }
+        let service = ServiceProxy::builder(connection)
+            .path(unit_path.clone())
+            .context("service unit path")?
+            .destination("org.freedesktop.systemd1")
+            .context("systemd1 destination")?
+            .build()
+            .await
+            .context("building org.freedesktop.systemd1.Service proxy")?;
+        // `InactiveEnterTimestamp` is a Unit property, not a Service one.
+        let unit_proxy = UnitProxy::builder(connection)
+            .path(unit_path.clone())
+            .context("service unit path")?
+            .destination("org.freedesktop.systemd1")
+            .context("systemd1 destination")?
+            .build()
+            .await
+            .context("building org.freedesktop.systemd1.Unit proxy")?;
+        states.push(AppUnitState {
+            app_id,
+            instance_id,
+            unit_name: name,
+            active_state,
+            result: service.result().await.unwrap_or_default(),
+            exec_code: service.exec_main_code().await.unwrap_or_default(),
+            exec_status: service.exec_main_status().await.unwrap_or_default(),
+            exec_main_pid: service.exec_main_pid().await.unwrap_or_default(),
+            exec_start_us: service
+                .exec_main_start_timestamp()
+                .await
+                .unwrap_or_default(),
+            exec_exit_us: service.exec_main_exit_timestamp().await.unwrap_or_default(),
+            inactive_enter_us: unit_proxy
+                .inactive_enter_timestamp()
+                .await
+                .unwrap_or_default(),
+        });
+    }
+    Ok(states)
 }
 
 /// What to do with the in-memory/persisted registry given what systemd reports live right now.
@@ -300,6 +430,7 @@ mod tests {
             keywords: BTreeSet::new(),
             no_display: false,
             provenance: None,
+            provides: Vec::new(),
         }
     }
 
@@ -324,12 +455,54 @@ mod tests {
     }
 
     #[test]
+    fn project_launch_sets_service_cwd_without_inventing_application_arguments() {
+        let properties = transient_unit_properties_in_directory(
+            &manifest(), InstanceId::new(), "/usr/bin/templar-viewer", &[], None, &[], Some("/home/test/video-project"),
+        );
+        let directory = properties.iter().find(|(name, _)| name == "WorkingDirectory").unwrap();
+        assert_eq!(String::try_from(directory.1.clone()).unwrap(), "/home/test/video-project");
+        let exec = properties.iter().find(|(name, _)| name == "ExecStartEx").unwrap();
+        let exec: Vec<(String, Vec<String>, Vec<String>)> = exec.1.clone().try_into().unwrap();
+        assert_eq!(exec[0].1, ["/usr/bin/templar-viewer"]);
+        let unit = properties.iter().find(|(name, _)| name == "Slice").unwrap();
+        assert_eq!(String::try_from(unit.1.clone()).unwrap(), "app.slice");
+    }
+
+    #[test]
+    fn native_adapter_command_preserves_original_app_identity_and_real_cwd() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt as _};
+        let manifest = manifest();
+        let instance = InstanceId::new();
+        let native_arguments = vec![OsString::from("--reader"), OsString::from_vec(b"/tmp/name-\xff.pdf".to_vec())];
+        let payload = crate::native_exec::encode(&manifest.executable, &native_arguments, None).unwrap();
+        let properties = transient_unit_properties_in_directory(
+            &manifest, instance, crate::native_exec::ADAPTER_PATH, &[payload],
+            None, &[], Some("/home/test/project"),
+        );
+        let property = |name: &str| properties.iter().find(|(key, _)| key == name).unwrap().1.clone();
+        let exec: Vec<(String, Vec<String>, Vec<String>)> = property("ExecStartEx").try_into().unwrap();
+        assert_eq!(exec[0].2, ["no-env-expand"]);
+        assert_eq!(exec[0].0, crate::native_exec::ADAPTER_PATH);
+        assert_eq!(exec[0].1[0], crate::native_exec::ADAPTER_PATH);
+        assert_eq!(exec[0].1.len(), 2);
+        let decoded = crate::native_exec::decode(&exec[0].1[1]).unwrap();
+        assert_eq!(decoded.executable, manifest.executable);
+        assert_eq!(decoded.arguments, native_arguments);
+        assert!(decoded.directory.is_none());
+        let environment: Vec<String> = property("Environment").try_into().unwrap();
+        assert!(environment.contains(&format!("{}={}", env::APP_ID, manifest.id)));
+        assert!(environment.contains(&format!("{}={instance}", env::INSTANCE_ID)));
+        assert_eq!(String::try_from(property("WorkingDirectory")).unwrap(), "/home/test/project");
+        assert_eq!(String::try_from(property("Slice")).unwrap(), "app.slice");
+    }
+
+    #[test]
     fn transient_unit_properties_never_go_through_a_shell() {
         let instance_id = InstanceId::new();
         let properties = transient_unit_properties(
             &manifest(),
             instance_id,
-            &["/tmp/report.pdf".to_owned()],
+            &["/tmp/${HOME}-$VAR-$$.pdf".to_owned(), "--fixed=${HOME}:$VAR:$$".to_owned()],
             Some("activation-token"),
             &["WAYLAND_DISPLAY=wayland-0".to_owned()],
         );
@@ -365,19 +538,20 @@ mod tests {
             "journal"
         );
 
-        let exec_start = by_name("ExecStart").unwrap();
-        let entries = Vec::<(String, Vec<String>, bool)>::try_from(exec_start).unwrap();
-        // Exactly one (path, argv, ignore_failure) entry — the resolved executable as argv[0],
-        // the caller's argument appended verbatim, never a shell wrapper.
+        assert!(by_name("ExecStart").is_none());
+        let exec_start = by_name("ExecStartEx").unwrap();
+        let entries = Vec::<(String, Vec<String>, Vec<String>)>::try_from(exec_start).unwrap();
+        // Exactly one literal (path, argv, flags) entry, never a shell wrapper.
         assert_eq!(
             entries,
             vec![(
                 "/usr/bin/templar-viewer".to_owned(),
                 vec![
                     "/usr/bin/templar-viewer".to_owned(),
-                    "/tmp/report.pdf".to_owned()
+                    "/tmp/${HOME}-$VAR-$$.pdf".to_owned(),
+                    "--fixed=${HOME}:$VAR:$$".to_owned(),
                 ],
-                false,
+                vec!["no-env-expand".to_owned()],
             )]
         );
     }

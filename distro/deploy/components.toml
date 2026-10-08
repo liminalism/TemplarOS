@@ -48,6 +48,13 @@ version = 1
 
 [[component]]
 name = "sessiond"
+tier = "system"
+owner = "sessiond"
+writes = ["%h/.local/state/templaros/session.db*", "%h/.config/templaros", "%h/.local/share/applications", "%h/.config/mimeapps.list", "%t/templaros/build"]
+exceptions = [
+    { path = "%h/.local/state/templaros", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Existing shared StateDirectory container; the declaration is not per-file sandbox enforcement" },
+    { path = "%t/templaros/build", decision = "@legeos.decision.build-set-id-is-the-version-authority/2", reason = "Shared diagnostic stamp directory; each component writes its own stamp" },
+]
 crate = "templar-sessiond"
 package = "templaros-sessiond"
 stamp = "templar-sessiond"
@@ -56,26 +63,35 @@ scope = "user"
 activation = "manual"
 depends_on = []
 summary = "session policy daemon — identity, launching, associations, history, settings"
-authority = "session policy: identity, launching, associations, providers, history, notifications, settings, projects, power, location — one state database, one crash unit (ADR-0001)"
+authority = "session policy: identity, launching, associations, providers, history, notifications, settings, wallpaper, projects, power, location — one state database, one crash unit (ADR-0001)"
 lifetime = "session-bound"
 consumer_interfaces = [
     "org.templaros.AppIdentity1", "org.templaros.Launcher1", "org.templaros.Associations1",
     "org.templaros.Providers1", "org.templaros.History1", "org.templaros.Notifications1",
     "org.templaros.Settings1", "org.templaros.Projects1", "org.templaros.Lifecycle1",
+    "org.templaros.Wallpaper1",
 ]
 recovery = "clients reconnect to the bus name and re-read; every interface answers a full current state, so there is no history to replay and nothing to resnapshot"
-deadlines = "a launch is acknowledged before the process is spawned; a settings write is durable before it returns"
+deadlines = "a launch is acknowledged before the process is spawned; a settings write is durable before it returns; best-effort session/compositor host health reports have a 5s deadline and never gate background services"
 timer_exceptions = [
     { site = "main.rs:644", interval = "500ms x30", reason = "backoff waiting for the compositor's Wayland socket to accept a connection; there is no event for a socket that does not exist yet, and the loop gives up after 15s rather than waiting forever" },
     { site = "main.rs:663", interval = "WatchdogSec/2", reason = "the service manager's watchdog ping is a timer by definition — systemd kills the unit if it stops arriving" },
     { site = "apis/notifications.rs:128", interval = "until expires_ms", reason = "a notification's expiry is a temporal condition: the thing being waited for is the passage of time itself" },
     { site = "background/crash_ingest.rs:162", interval = "configured", reason = "reconciliation against systemd-coredump's journal, which offers no subscription; bounded and idempotent" },
     { site = "background/notification_provider.rs:78", interval = "configured", reason = "reconciles which provider should hold org.freedesktop.Notifications; a settings change has no signal a background task can await today" },
+    { site = "apis/wallpaper.rs", interval = "2..30s exponential only while owner unavailable", reason = "Reconnect the authenticated compositor subscriptions after owner loss; no periodic wallpaper polling or activity wake" },
 ]
 
 
 [[component]]
 name = "resourced"
+tier = "system"
+owner = "resourced"
+writes = ["%h/.local/state/templaros/resources", "/sys/fs/cgroup", "%t/templaros/build"]
+exceptions = [
+    { path = "%h/.local/state/templaros", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Existing shared StateDirectory container; resource files retain a distinct owner" },
+    { path = "%t/templaros/build", decision = "@legeos.decision.build-set-id-is-the-version-authority/2", reason = "Shared diagnostic stamps, not user Work" },
+]
 crate = "templar-resourced"
 package = "templaros-resourced"
 stamp = "templar-resourced"
@@ -96,6 +112,18 @@ timer_exceptions = [
 
 [[component]]
 name = "filed"
+tier = "system"
+owner = "filed"
+writes = ["%h/.local/state/templaros/session.db*", "%h/.cache/templaros", "%h/.config/gtk-3.0/bookmarks*", "%h/.gtk-bookmarks", "%h/**", "/data/**", "%t/templaros/build"]
+exceptions = [
+    { path = "%h/.local/state/templaros", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Existing shared StateDirectory container" },
+    { path = "%h/.local/state/templaros/session.db*", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Existing shared session database: filed owns only its file-service tables, not all session policy" },
+    { path = "%h/**", tier = "work", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Explicit user-requested Work operations; this never grants another daemon's StateDirectory" },
+    { path = "%h/.config/gtk-3.0/bookmarks*", tier = "state", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Additive bookmark export through the file-service authority" },
+    { path = "%h/.gtk-bookmarks", tier = "state", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Additive legacy bookmark export through the file-service authority" },
+    { path = "%t/templaros/build", decision = "@legeos.decision.build-set-id-is-the-version-authority/2", reason = "Shared diagnostic stamp container" },
+    { path = "/data/**", tier = "work", decision = "@legeos.decision.independent-storage-roles/2", reason = "Explicit user-requested file operations on independently preserved Work" },
+]
 crate = "templar-filed"
 package = "templaros-filed"
 stamp = "templar-filed"
@@ -119,10 +147,18 @@ timer_exceptions = [
 
 [[component]]
 name = "hostd"
+tier = "system"
+owner = "hostd"
+writes = ["/usr", "/etc", "/boot", "/boot/efi", "/var/lib/dpkg", "/var/lib/apt", "/var/cache/apt", "/var/lib/templaros/hostd", "/var/lib/templaros/hardware", "/var/lib/templaros/account-maintenance", "/var/lib/templaros/deployments", "/run/templaros", "/.snapshots", "%h/.snapshots"]
+exceptions = [
+    { path = "/etc/shadow", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Authenticated self-password updates encrypted root-paired shadow under private recoverable maintenance; live user root stays read-only" },
+    { path = "/etc/templaros/hardware/version-lock.toml", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Authenticated explicit driver-lock repair is a root-paired System exception on writable roots only; RO repair refuses until candidate repair is available" },
+]
 crate = "templar-hostd"
 package = "templaros-hostd"
 stamp = "templar-hostd"
 unit = "templar-hostd.service"
+additional_units = ["templar-account-recovery.service"]
 scope = "system"
 activation = "restart"
 depends_on = []
@@ -143,6 +179,10 @@ timer_exceptions = [
 
 [[component]]
 name = "boot-health"
+tier = "system"
+owner = "boot-health"
+writes = []
+exceptions = []
 crate = "templar-boot-health"
 package = "templaros-boot-health"
 unit = "templar-boot-health.service"
@@ -160,6 +200,10 @@ timer_exceptions = []
 
 [[component]]
 name = "session"
+tier = "system"
+owner = "session"
+writes = ["%t/templaros"]
+exceptions = []
 crate = "templar-session"
 package = "templaros-session"
 scope = "none"
@@ -169,6 +213,10 @@ summary = "session entry and the user units themselves"
 
 [[component]]
 name = "comp"
+tier = "system"
+owner = "comp"
+writes = ["%t/templaros/compositor-display.json", "%t/templaros/build"]
+exceptions = [{ path = "%t/templaros/build", decision = "@legeos.decision.build-set-id-is-the-version-authority/2", reason = "Shared per-component diagnostic stamp container" }]
 crate = "templar-comp"
 package = "templaros-comp"
 stamp = "templar-comp"
@@ -179,7 +227,7 @@ depends_on = []
 summary = "compositor — Restart=no by design, so a new one means a new session"
 authority = "surface composition, input routing and z-order (compositor/COMPOSITOR.md); templar-window is the sole visibility authority"
 lifetime = "session-bound"
-consumer_interfaces = ["templar_shell_v1"]
+consumer_interfaces = ["templar_shell_v2"]
 recovery = "none: Restart=no by design. A crash disconnects every client, so there is nothing to restart into — the compositor-drawn recovery band and a fresh session are the recovery path."
 deadlines = "one frame; the render thread takes no lock a service can hold"
 timer_exceptions = [
@@ -189,6 +237,10 @@ timer_exceptions = [
 
 [[component]]
 name = "greeter"
+tier = "system"
+owner = "greeter"
+writes = []
+exceptions = []
 crate = "templar-greeter"
 package = "templaros-greeter"
 scope = "none"
@@ -198,6 +250,10 @@ summary = "login surface; started by greetd, outside this session"
 
 [[component]]
 name = "shell"
+tier = "system"
+owner = "shell"
+writes = ["%t/templaros/build"]
+exceptions = [{ path = "%t/templaros/build", decision = "@legeos.decision.build-set-id-is-the-version-authority/2", reason = "Shared per-component diagnostic stamp container" }]
 crate = "templar-shell"
 package = "templaros-shell"
 stamp = "templar-shell"
@@ -220,6 +276,10 @@ timer_exceptions = [
 
 [[component]]
 name = "settings"
+tier = "system"
+owner = "settings"
+writes = []
+exceptions = []
 crate = "templar-settings"
 package = "templaros-settings"
 scope = "none"
@@ -227,12 +287,29 @@ activation = "relaunch"
 depends_on = ["sessiond"]
 summary = "Settings application"
 
+[[component]]
+name = "displays"
+tier = "system"
+owner = "displays"
+writes = ["%h/.config/templar-displays"]
+exceptions = []
+crate = "templar-displays"
+package = "templaros-displays"
+scope = "none"
+activation = "relaunch"
+depends_on = []
+summary = "standalone X11 RandR display editor with an independent preview rollback helper"
+
 # Built and packaged, but no longer part of the desktop composition: pcmanfm-qt is the file
 # manager (docs/architecture/files.md). It stays a component because this matrix is the build
 # set — what `cargo xtask build-set` builds and what debian/control ships — not the image
 # seeds, which are `distro/seeds/selection.toml` and no longer name it.
 [[component]]
 name = "files"
+tier = "system"
+owner = "files"
+writes = []
+exceptions = []
 crate = "templar-files"
 package = "templar-files"
 scope = "none"
@@ -242,6 +319,10 @@ summary = "standalone file manager, out of the default composition"
 
 [[component]]
 name = "portal"
+tier = "system"
+owner = "portal"
+writes = ["%t/templaros/build"]
+exceptions = [{ path = "%t/templaros/build", decision = "@legeos.decision.build-set-id-is-the-version-authority/2", reason = "Shared per-component diagnostic stamp container" }]
 crate = "xdg-desktop-portal-templar"
 package = "templaros-portal"
 stamp = "xdg-desktop-portal-templar"
@@ -262,6 +343,10 @@ timer_exceptions = []
 
 [[component]]
 name = "cli"
+tier = "system"
+owner = "cli"
+writes = ["/var/lib/templaros/devrepo"]
+exceptions = []
 crate = "templar"
 package = "templaros-cli"
 scope = "none"

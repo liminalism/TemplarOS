@@ -249,6 +249,9 @@ pub fn draw(
             break;
         }
         let rect = Rect::new(inner.x, y, inner.w, row_height);
+        if ui.input.focus_requested(rect) {
+            state.highlighted = index;
+        }
         if draw_row(ui, rect, row, index == state.highlighted, icons) {
             outcome = commit(row);
         }
@@ -278,7 +281,7 @@ fn draw_panel(
     ui: &mut Ui<'_>,
     panel: Rect,
     rows: &[Row],
-    state: &OmniboxState,
+    state: &mut OmniboxState,
     files: FileState,
 ) -> OmniboxOutcome {
     // A hairline edge and no shadow: this is a sheet of the same surface, not a card floating
@@ -323,6 +326,9 @@ fn draw_panel(
     let mut y = body.y;
     for (index, row) in results.iter().skip(first).take(visible) {
         let rect = Rect::new(body.x, y, body.w, row_height);
+        if ui.input.focus_requested(rect) {
+            state.highlighted = *index;
+        }
         if draw_panel_row(ui, rect, row, *index == state.highlighted) {
             outcome = commit(row);
         }
@@ -344,6 +350,9 @@ fn draw_panel(
     }
 
     if let Some(index) = everywhere {
+        if ui.input.focus_requested(footer) {
+            state.highlighted = index;
+        }
         ui.painter.fill_rect(
             Rect::new(footer.x, footer.y, footer.w, ui.scale.hairline()),
             design::edge(),
@@ -359,7 +368,7 @@ fn draw_panel(
 fn draw_panel_header(ui: &mut Ui<'_>, header: Rect) {
     let (modified, rest) = header.split_right(ui.px(150).min(header.w / 4));
     let (size, name) = rest.split_right(ui.px(100).min(rest.w / 4));
-    let style = TextStyle::tracked(ui.theme.body.face, 10.0, 0.10);
+    let style = ui.text_style(TextStyle::tracked(ui.theme.body.face, 10.0, 0.10));
     for (rect, text, align) in [
         (
             Rect::new(name.x + ui.px(10), name.y, name.w, name.h),
@@ -393,6 +402,14 @@ fn draw_panel_header(ui: &mut Ui<'_>, header: Rect) {
 
 /// One panel row: the name and its folder on the left, the size and the time in their columns.
 fn draw_panel_row(ui: &mut Ui<'_>, rect: Rect, row: &Row, highlighted: bool) -> bool {
+    ui.semantic(
+        pixelkit_ui::semantics::Role::ListBoxOption,
+        &row.label,
+        rect,
+        highlighted || ui.input.focus_requested(rect),
+        Some(highlighted),
+        None,
+    );
     let hovered = ui.input.hovering(rect);
     if highlighted || hovered {
         highlight(ui, rect);
@@ -479,6 +496,14 @@ fn draw_row(
     highlighted: bool,
     icons: &HashMap<String, Bitmap>,
 ) -> bool {
+    ui.semantic(
+        pixelkit_ui::semantics::Role::ListBoxOption,
+        &row.label,
+        rect,
+        highlighted || ui.input.focus_requested(rect),
+        Some(highlighted),
+        None,
+    );
     if highlighted {
         highlight(ui, rect);
     }
@@ -501,7 +526,7 @@ fn draw_row(
         ui.label_styled(
             mark,
             kind_mark(&row.hit),
-            TextStyle::tracked(ui.theme.body.face, 9.0, 0.06),
+            ui.text_style(TextStyle::tracked(ui.theme.body.face, 9.0, 0.06)),
             design::text_faint(),
             Align::Centre,
         );

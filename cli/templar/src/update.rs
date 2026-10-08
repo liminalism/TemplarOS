@@ -156,6 +156,8 @@ pub struct ChangeSet {
     pub firmware: Vec<String>,
     #[serde(default)]
     pub other_packages: Vec<String>,
+    #[serde(default)]
+    pub archive: Option<String>,
 }
 
 impl ChangeSet {

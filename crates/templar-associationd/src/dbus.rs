@@ -9,7 +9,6 @@
 use crate::{
     detector::MimeDetector,
     engine::{AssociationEngine, ExtensionRule},
-    export,
     store::{self, ForgetScope},
 };
 use parking_lot::RwLock;
@@ -47,23 +46,32 @@ impl AssociationApi {
         catalog: Arc<dyn AppCatalog>,
         mimeapps_path: PathBuf,
     ) -> Self {
-        Self {
+        let api = Self {
             engine,
             detector,
             store,
             catalog,
             mimeapps_path,
-        }
+        };
+        api.regenerate_mimeapps();
+        api
+    }
+
+    /// Republish compatibility defaults after the installed catalogue/alias view changes.
+    /// Stored choices remain untouched, including choices whose copy is temporarily absent.
+    pub fn refresh_catalog(&self) {
+        self.regenerate_mimeapps();
     }
 
     /// Best-effort: a failure to regenerate `mimeapps.list` (e.g. a read-only home during
     /// recovery) must not fail the association change itself, which is already durably
     /// persisted in `templar-state`.
     fn regenerate_mimeapps(&self) {
-        let engine = self.engine.read();
-        if let Err(error) =
-            export::export_mimeapps(engine.database(), &*self.catalog, &self.mimeapps_path)
-        {
+        self.regenerate_mimeapps_from(&self.engine.read());
+    }
+
+    fn regenerate_mimeapps_from(&self, engine: &AssociationEngine) {
+        if let Err(error) = engine.export_mimeapps(&self.mimeapps_path) {
             tracing::warn!(%error, path = %self.mimeapps_path.display(), "failed to regenerate mimeapps.list");
         }
     }
@@ -96,6 +104,21 @@ impl AssociationApi {
         ))
     }
 
+    /// Detect and resolve a local file URI without losing native filename bytes. ResolveUri's
+    /// shipped scheme-handler semantics remain unchanged.
+    async fn resolve_file_uri_v1(
+        &self, uri: &str, project_id: &str,
+    ) -> fdo::Result<(String, String, String)> {
+        use std::os::unix::ffi::OsStrExt;
+        let path = templar_types::uri_list::decode_uri(uri)
+            .filter(|path| !path.as_os_str().as_bytes().contains(&0))
+            .ok_or_else(|| fdo::Error::InvalidArgs("Expected a local absolute file URI".into()))?;
+        let mime = self.detector.detect(&path).await.map_err(failed)?;
+        let decision = self.engine.read().resolve(&path, &mime, nonempty(project_id).as_deref());
+        Ok((decision.app_id.map(|id| id.to_string()).unwrap_or_default(),
+            decision.detected_mime, decision.reason.as_str().to_owned()))
+    }
+
     /// Returns `(canonical_app_id, detected_mime, reason)` for a URI scheme
     /// (`x-scheme-handler/<scheme>`); an empty app ID means "ask the user".
     async fn resolve_uri(
@@ -124,15 +147,16 @@ impl AssociationApi {
     ) -> fdo::Result<()> {
         let app_id = parse_app_id(app_id)?;
         let logical = self.catalog.logical_app_of(&app_id);
-        self.engine
-            .read()
-            .validate_mime_default(mime, &app_id)
-            .map_err(failed)?;
-        self.store
-            .transaction(|tx| store::set_mime_default_within(tx, mime, &app_id, logical.as_ref()))
-            .map_err(failed)?;
-        self.engine.write().apply_mime_default(mime, app_id);
-        self.regenerate_mimeapps();
+        {
+            let mut connection = self.store.lock();
+            let mut engine = self.engine.write();
+            engine.validate_mime_default(mime, &app_id).map_err(failed)?;
+            let transaction = connection.transaction().map_err(failed)?;
+            store::set_mime_default_within(&transaction, mime, &app_id, logical.as_ref()).map_err(failed)?;
+            transaction.commit().map_err(failed)?;
+            engine.apply_mime_default(mime, app_id);
+            self.regenerate_mimeapps_from(&engine);
+        }
         let _ = emitter.defaults_changed("mime", mime.to_owned()).await;
         Ok(())
     }
@@ -151,23 +175,17 @@ impl AssociationApi {
             app_id,
             override_specific_mime,
         };
-        self.engine
-            .read()
-            .validate_extension_default(&rule)
-            .map_err(failed)?;
-        self.store
-            .transaction(|tx| {
-                store::set_extension_default_within(tx, extension, &rule, logical.as_ref())
-            })
-            .map_err(failed)?;
-        let normalized = extension
-            .trim()
-            .trim_start_matches('.')
-            .to_ascii_lowercase();
-        self.engine
-            .write()
-            .apply_extension_default(normalized.clone(), rule);
-        self.regenerate_mimeapps();
+        let normalized = extension.trim().trim_start_matches('.').to_ascii_lowercase();
+        {
+            let mut connection = self.store.lock();
+            let mut engine = self.engine.write();
+            engine.validate_extension_default(&rule).map_err(failed)?;
+            let transaction = connection.transaction().map_err(failed)?;
+            store::set_extension_default_within(&transaction, &normalized, &rule, logical.as_ref()).map_err(failed)?;
+            transaction.commit().map_err(failed)?;
+            engine.apply_extension_default(normalized.clone(), rule);
+            self.regenerate_mimeapps_from(&engine);
+        }
         let _ = emitter.defaults_changed("extension", normalized).await;
         Ok(())
     }
@@ -187,25 +205,18 @@ impl AssociationApi {
         }
         let app_id = parse_app_id(app_id)?;
         let logical = self.catalog.logical_app_of(&app_id);
-        self.engine
-            .read()
-            .validate_project_mime_default(project_id, mime, &app_id)
-            .map_err(failed)?;
-        self.store
-            .transaction(|tx| {
-                store::set_project_mime_default_within(
-                    tx,
-                    project_id,
-                    mime,
-                    &app_id,
-                    logical.as_ref(),
-                )
-            })
-            .map_err(failed)?;
-        self.engine
-            .write()
-            .apply_project_mime_default(project_id, mime, app_id);
-        self.regenerate_mimeapps();
+        {
+            let mut connection = self.store.lock();
+            let mut engine = self.engine.write();
+            engine.validate_project_mime_default(project_id, mime, &app_id).map_err(failed)?;
+            let transaction = connection.transaction().map_err(failed)?;
+            store::set_project_mime_default_within(
+                &transaction, project_id, mime, &app_id, logical.as_ref(),
+            ).map_err(failed)?;
+            transaction.commit().map_err(failed)?;
+            engine.apply_project_mime_default(project_id, mime, app_id);
+            self.regenerate_mimeapps_from(&engine);
+        }
         let _ = emitter
             .defaults_changed("project-mime", format!("{project_id}:{mime}"))
             .await;
@@ -284,27 +295,25 @@ impl AssociationApi {
             key.to_owned()
         };
 
-        let removed = self
-            .store
-            .transaction(|tx| store::forget_within(tx, forget_scope, &key, project_id))
-            .map_err(failed)?;
-
-        if removed.is_some() {
-            {
-                let mut engine = self.engine.write();
+        let removed = {
+            let mut connection = self.store.lock();
+            let mut engine = self.engine.write();
+            let transaction = connection.transaction().map_err(failed)?;
+            let removed = store::forget_within(&transaction, forget_scope, &key, project_id).map_err(failed)?;
+            transaction.commit().map_err(failed)?;
+            if removed.is_some() {
                 match forget_scope {
-                    ForgetScope::Mime => {
-                        engine.forget_mime_default(&key);
-                    }
-                    ForgetScope::Extension => {
-                        engine.forget_extension_default(&key);
-                    }
+                    ForgetScope::Mime => { engine.forget_mime_default(&key); }
+                    ForgetScope::Extension => { engine.forget_extension_default(&key); }
                     ForgetScope::ProjectMime => {
                         engine.forget_project_mime_default(project_id.unwrap_or_default(), &key);
                     }
                 }
+                self.regenerate_mimeapps_from(&engine);
             }
-            self.regenerate_mimeapps();
+            removed
+        };
+        if removed.is_some() {
             let _ = emitter.defaults_changed(scope, key).await;
         }
         Ok(removed.is_some())
@@ -330,9 +339,8 @@ fn parse_app_id(app_id: &str) -> fdo::Result<AppId> {
         .map_err(|error: templar_types::AppIdError| fdo::Error::InvalidArgs(error.to_string()))
 }
 
-// Takes `anyhow::Error` by value so it can be passed directly as `.map_err(failed)`.
 #[allow(clippy::needless_pass_by_value)]
-fn failed(error: anyhow::Error) -> fdo::Error {
+fn failed(error: impl std::fmt::Display) -> fdo::Error {
     fdo::Error::Failed(error.to_string())
 }
 

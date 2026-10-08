@@ -23,7 +23,7 @@ pub enum Layer {
     SystemModal = 2,
     /// Launcher, switcher and transient shell overlays.
     ShellOverlay = 3,
-    /// Notifications.
+    /// Toasts admitted by the shell: above fullscreen work, below presentation and secure UI.
     Notification = 4,
     /// Application always-on-top surfaces.
     AppOnTop = 5,
@@ -46,8 +46,8 @@ impl Layer {
         Self::Recovery,
         Self::SystemModal,
         Self::Presentation,
-        Self::ShellOverlay,
         Self::Notification,
+        Self::ShellOverlay,
         Self::AppOnTop,
         Self::Normal,
         Self::HomeSurface,
@@ -114,7 +114,7 @@ impl fmt::Display for Layer {
 pub enum ClientKind {
     /// Any ordinary Wayland client.
     Application,
-    /// The one client the compositor launched as the shell, bound to `templar_shell_v1`.
+    /// The one client the compositor launched as the shell, bound to `templar_shell_v2`.
     TrustedShell,
     /// The compositor core itself (lock screen, recovery overlay, fallback switcher).
     CompositorCore,

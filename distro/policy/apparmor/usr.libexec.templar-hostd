@@ -18,6 +18,9 @@ include <tunables/global>
   /var/lib/templaros/hostd/** rwk,
   /run/templaros/ rw,
   /run/templaros/** rw,
+  # DisplayRecovery1 resolves authenticated compositor PID, start time and installed inode.
+  /proc/[0-9]*/{stat,cgroup,exe} r,
+  /usr/bin/templar-comp r,
 
   # File-index checkpoints: read-only @home snapshots under @snapshots (installer/provision.sh
   # mounts it at /.snapshots) and the send streams taken between them. Root-only by mode; a
@@ -25,9 +28,11 @@ include <tunables/global>
   /.snapshots/ rw,
   /.snapshots/** rw,
 
-  # Declarative config this daemon owns (gpu-mode, version-lock.toml) — nothing else writes here.
+  # GPU mode persists; the authenticated RW-only driver lock remains deployment-paired.
+  /var/lib/templaros/hardware/ rw,
+  /var/lib/templaros/hardware/** rwk,
   /etc/templaros/hardware/ rw,
-  /etc/templaros/hardware/** rwk,
+  /etc/templaros/hardware/version-lock.toml{,.tmp} rwk,
 
   # Hardware detection (templar-hwdetect) and driver-authority/support-violation reads.
   /sys/bus/pci/devices/** r,
@@ -63,6 +68,15 @@ include <tunables/global>
   /var/log/journal/** r,
 
   /usr/share/templaros/** r,
+  /etc/templaros/install.toml r,
+  /etc/passwd r,
+  /etc/shadow r,
+  /etc/group r,
+  /etc/gshadow r,
+  # The maintenance helper uses only a private mount namespace and a sealed fd;
+  # it validates all root identities and writes a recoverable root-only intent.
+  /usr/bin/unshare PUx,
+  /usr/bin/findmnt PUx,
 
   # Child processes hostd drives directly (rule 4: real CommandRunner only, never in-process apt).
   /usr/bin/systemd-run PUx,

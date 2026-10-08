@@ -154,6 +154,17 @@ pub fn reconcile<S: EventSource>(
         let mut walk = Walk {
             index,
             root,
+            root_path: &status.path,
+            root_device: status.path.as_path().symlink_metadata().ok()
+                .map(|metadata| std::os::unix::fs::MetadataExt::dev(&metadata)),
+            // A watcher Touch can record a directory's newest timestamps even though dropped
+            // events left its children incomplete. Timestamp equality proves membership only
+            // when the prior namespace was trustworthy, never across unknown event history.
+            trust_membership: status.complete
+                && (status.state == RootState::Current
+                    || status.reason.as_deref() == Some("policy-changed"))
+                && !matches!(trigger, Trigger::Downtime | Trigger::Overflow
+                    | Trigger::Exhausted { .. } | Trigger::RenameAmbiguous | Trigger::MountReturned),
             trigger,
             report: &mut report,
         };
@@ -180,7 +191,10 @@ pub fn reconcile<S: EventSource>(
 struct Walk<'a> {
     index: &'a Index,
     root: RootId,
+    root_path: &'a NativePath,
+    root_device: Option<u64>,
     trigger: &'a Trigger,
+    trust_membership: bool,
     report: &'a mut ReconcileReport,
 }
 
@@ -212,10 +226,18 @@ impl Walk<'_> {
         session: &mut crate::ScanSession,
         start: &Path,
     ) -> Result<(), IndexError> {
-        let mut queue: Vec<PathBuf> = vec![start.to_path_buf()];
-        while let Some(dir) = queue.pop() {
-            let children = self.visit_directory(owner, session, &dir)?;
-            queue.extend(children);
+        let mut queue = vec![(start.to_path_buf(), 0u32)];
+        while let Some((dir, depth)) = queue.pop() {
+            if session.stopped() { self.report.complete = false; break; }
+            let children = self.visit_directory(owner, session, &dir, depth)?;
+            if session.options().budget.max_entries.is_some_and(|max|
+                self.report.entries_observed.saturating_add((queue.len() + children.len()) as u64) > max)
+            {
+                session.set_limited(crate::BudgetKind::Entries);
+                self.report.complete = false;
+                break;
+            }
+            queue.extend(children.into_iter().map(|path| (path, depth + 1)));
         }
         Ok(())
     }
@@ -234,37 +256,79 @@ impl Walk<'_> {
         owner: &mut WatchOwner<S>,
         session: &mut crate::ScanSession,
         dir: &Path,
+        depth: u32,
     ) -> Result<Vec<PathBuf>, IndexError> {
         self.report.dirs_walked += 1;
         let native = NativePath::from_path(dir);
 
-        if !owner.arm_directory(self.root, dir) {
-            // Unwatched from here down. The rows are still refreshed, but the pass cannot claim
-            // to be complete, because nothing will tell us about the next change here: an
-            // unwatched subtree that reports `current` is the exact lie C5 §4 forbids.
-            let armed = owner.watches_armed();
-            self.note_unwatched(session, armed);
+        match owner.arm_directory(self.root, dir) {
+            crate::watch::ArmResult::Gone if &native == self.root_path => {
+                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "indexed root disappeared").into());
+            }
+            crate::watch::ArmResult::Gone => return Ok(Vec::new()),
+            crate::watch::ArmResult::Boundary => {
+                if let Ok(metadata) = dir.symlink_metadata() {
+                    session.observe(ScannedEntry {
+                        path: native, parent: dir.parent().map(NativePath::from_path),
+                        meta: EntryMeta::from_symlink_metadata(dir, &metadata),
+                    })?;
+                    self.report.entries_observed += 1;
+                }
+                return Ok(Vec::new());
+            }
+            crate::watch::ArmResult::Refused => {
+                let armed = owner.watches_armed();
+                self.note_unwatched(session, armed);
+            }
+            crate::watch::ArmResult::Armed | crate::watch::ArmResult::AlreadyArmed => {}
         }
 
         let on_disk = match dir.symlink_metadata() {
             Ok(metadata) => EntryMeta::from_symlink_metadata(dir, &metadata),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && &native != self.root_path => return Ok(Vec::new()),
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
                 self.note_unreadable(session, true);
                 return Ok(Vec::new());
             }
             Err(error) => return Err(IndexError::Io(error)),
         };
+        if !session.options().policy.cross_mount && &native != self.root_path
+            && self.root_device.is_some_and(|root_device| on_disk.object_key.is_some_and(|key| key.dev != root_device))
+        {
+            session.observe(ScannedEntry { path: native, parent: dir.parent().map(NativePath::from_path), meta: on_disk })?;
+            self.report.entries_observed += 1;
+            return Ok(Vec::new());
+        }
 
         if !Self::descends_into(session, &native) {
-            // Stored, and the walk ends here. The directory's own row is still observed, so a
-            // consumer knows it exists; its contents wait for an explicit expansion.
+            let coverage = session.coverage_for(&native, EntryKind::Directory);
             session.observe(ScannedEntry {
-                path: native,
-                parent: dir.parent().map(NativePath::from_path),
-                meta: on_disk,
+                path: native.clone(), parent: dir.parent().map(NativePath::from_path), meta: on_disk,
             })?;
             self.report.entries_observed += 1;
+            if coverage == Some(Coverage::Opaque) && !session.stopped() {
+                let cached = self.index.opaque_aggregate(self.root, &native)?;
+                if cached.is_none_or(|aggregate| aggregate.stale || !aggregate.readable)
+                    || self.trigger.verify_child_metadata()
+                {
+                    let totals = crate::aggregate::sum_subtree(dir, &session.options().policy);
+                    session.stage_aggregate(native, totals);
+                }
+            }
+            return Ok(Vec::new());
+        }
+        if session.options().budget.max_depth.is_some_and(|max| depth >= max) {
+            session.observe(ScannedEntry { path: native, parent: dir.parent().map(NativePath::from_path), meta: on_disk })?;
+            self.report.entries_observed += 1;
+            match std::fs::read_dir(dir) {
+                Ok(mut reader) => {
+                    if reader.next().is_some() {
+                        session.set_limited(crate::BudgetKind::Depth);
+                        self.report.complete = false;
+                    }
+                }
+                Err(error) => self.note_unreadable(session, error.kind() == std::io::ErrorKind::PermissionDenied),
+            }
             return Ok(Vec::new());
         }
 
@@ -273,13 +337,23 @@ impl Walk<'_> {
             return Ok(children);
         }
 
+        self.read_directory(session, dir, &native, on_disk)
+    }
+
+    fn read_directory(
+        &mut self,
+        session: &mut crate::ScanSession,
+        dir: &Path,
+        native: &NativePath,
+        on_disk: EntryMeta,
+    ) -> Result<Vec<PathBuf>, IndexError> {
         let reader = match std::fs::read_dir(dir) {
             Ok(reader) => reader,
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
                 self.note_unreadable(session, true);
                 return Ok(Vec::new());
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && native != self.root_path => return Ok(Vec::new()),
             Err(error) => return Err(IndexError::Io(error)),
         };
 
@@ -292,6 +366,7 @@ impl Walk<'_> {
 
         let mut subdirectories = Vec::new();
         for entry in reader {
+            if session.stopped() { self.report.complete = false; break; }
             let Ok(entry) = entry else {
                 self.note_unreadable(session, false);
                 continue;
@@ -307,6 +382,13 @@ impl Walk<'_> {
             }
             if meta.kind == EntryKind::Directory {
                 subdirectories.push(path);
+                if session.options().budget.max_entries.is_some_and(|max|
+                    self.report.entries_observed.saturating_add(subdirectories.len() as u64) > max)
+                {
+                    session.set_limited(crate::BudgetKind::Entries);
+                    self.report.complete = false;
+                    break;
+                }
                 // The directory row itself is observed when the walk reaches it, so that its
                 // timestamps are the ones its own visit read.
                 continue;
@@ -334,6 +416,9 @@ impl Walk<'_> {
         dir: &NativePath,
         on_disk: &EntryMeta,
     ) -> Result<Option<Vec<PathBuf>>, IndexError> {
+        if !self.trust_membership {
+            return Ok(None);
+        }
         let Some(row) = self.index.entry(self.root, dir)? else {
             return Ok(None);
         };
@@ -343,45 +428,44 @@ impl Walk<'_> {
 
         session.observe(ScannedEntry {
             path: dir.clone(),
-            parent: None,
+            parent: dir.parent(),
             meta: on_disk.clone(),
         })?;
         self.report.entries_observed += 1;
 
         let verify = self.trigger.verify_child_metadata();
         let mut subdirectories = Vec::new();
-        for child in self.index.children(self.root, dir)? {
-            let path = child.path.to_path();
-            // Coverage is re-derived from the policy for every child even here, where the stat is
-            // skipped: a policy change is the one thing a pass like this exists to apply, and the
-            // stored tier is precisely what it changed. `observe` does the deriving, so a child
-            // the new policy writes no row for simply stops being observed and is collected.
+        let mut trustworthy = true;
+        let report = &mut *self.report;
+        self.index.visit_children(self.root, dir, |child| {
+            if session.stopped() { report.complete = false; return Ok(false); }
             if child.meta.kind == EntryKind::Directory {
-                subdirectories.push(path);
-                continue;
+                subdirectories.push(child.path.into_path());
+                if session.options().budget.max_entries.is_some_and(|max|
+                    report.entries_observed.saturating_add(subdirectories.len() as u64) > max)
+                {
+                    session.set_limited(crate::BudgetKind::Entries);
+                    report.complete = false;
+                    return Ok(false);
+                }
+                return Ok(true);
             }
             let meta = if verify {
-                match path.symlink_metadata() {
-                    Ok(metadata) => EntryMeta::from_symlink_metadata(&path, &metadata),
-                    // Membership said it is there and it is not: the proof was wrong, so stop
-                    // trusting this directory and read it properly.
-                    Err(_) => return Ok(None),
+                if let Ok(metadata) = child.path.as_path().symlink_metadata() {
+                    EntryMeta::from_symlink_metadata(child.path.as_path(), &metadata)
+                } else {
+                    trustworthy = false;
+                    return Ok(false);
                 }
             } else {
-                // The row's metadata is being re-committed without being re-read. That is the
-                // whole saving of a namespace-only pass, and it is also exactly the fact the
-                // index used to have no way to state.
                 session.note_unverified_metadata();
-                child.meta.clone()
+                child.meta
             };
-            session.observe(ScannedEntry {
-                path: child.path.clone(),
-                parent: Some(dir.clone()),
-                meta,
-            })?;
-            self.report.entries_observed += 1;
-        }
-        Ok(Some(subdirectories))
+            session.observe(ScannedEntry { path: child.path, parent: Some(dir.clone()), meta })?;
+            report.entries_observed += 1;
+            Ok(true)
+        })?;
+        Ok(trustworthy.then_some(subdirectories))
     }
 }
 

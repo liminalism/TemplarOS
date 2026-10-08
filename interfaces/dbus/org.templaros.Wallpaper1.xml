@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Settings1 shell.wallpaper.enabled and shell.wallpaper.config are authoritative.
+     All method results and Changed carry a complete WallpaperStatus JSON snapshot.
+     accepted is import acknowledgement; presented is successful-frame evidence, not
+     desired configuration. Source identities are arrays of lossless Unix bytes.
+     No pixels travel on D-Bus. Rotation never counts as user activity. -->
+<node name="/org/templaros/Wallpaper">
+  <interface name="org.templaros.Wallpaper1">
+    <method name="Inspect"><arg name="json" type="s" direction="out"/></method>
+    <method name="Next"><arg name="json" type="s" direction="out"/></method>
+    <method name="Previous"><arg name="json" type="s" direction="out"/></method>
+    <method name="Pause"><arg name="json" type="s" direction="out"/></method>
+    <method name="Resume"><arg name="json" type="s" direction="out"/></method>
+    <method name="Refresh"><arg name="json" type="s" direction="out"/></method>
+    <signal name="Changed"><arg name="json" type="s"/></signal>
+  </interface>
+</node>

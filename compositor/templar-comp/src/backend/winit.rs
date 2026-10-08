@@ -28,13 +28,30 @@ use templar_comp_integration::{
 
 const OUTPUT_NAME: &str = "winit";
 
-/// Backend data for the winit path: nothing beyond a seat name, since everything else lives on
-/// `TemplarCompState` and is shared with `src/backend/udev.rs`.
-pub struct WinitBackendData;
+/// Virtual output inventory belongs to the backend, so Home's exclusive-zone topology
+/// recomputation cannot erase it. Only the explicit nested fixture opts into this inventory.
+#[derive(Default)]
+pub struct WinitBackendData {
+    fixture_output: Option<Output>,
+}
 
 impl Backend for WinitBackendData {
     fn seat_name(&self) -> String {
         OUTPUT_NAME.to_owned()
+    }
+
+    // Host pointer coordinates already name displayed canvas pixels. Flipped180
+    // below corrects GLES framebuffer orientation, not the input device axes.
+    fn absolute_input_transform(&self, _output: &Output) -> Transform {
+        Transform::Normal
+    }
+
+    fn display_inventory(&self) -> Vec<templar_types::display::Display> {
+        self.fixture_output
+            .as_ref()
+            .and_then(fixture_display)
+            .into_iter()
+            .collect()
     }
 
     /// Idle blanking nested (`src/idle.rs`): there is no CRTC here to put into DPMS off, so the
@@ -72,7 +89,8 @@ pub fn run(
         .enable_all()
         .build()?;
     let handle = runtime.handle().clone();
-    let identity_cache = DbusIdentityCache::spawn(&handle);
+    let identity_cache =
+        DbusIdentityCache::spawn(&handle, crate::identity_sink::install(&event_loop.handle()));
     let governor = GovernorNotifier::spawn(&handle);
     let idle_notifier = IdleNotifier::spawn(&handle);
     let shell_sink = crate::shell_sink::install(&event_loop.handle());
@@ -88,7 +106,7 @@ pub fn run(
     tracing::info!(socket = %socket_name, "wayland socket ready — set WAYLAND_DISPLAY to this to connect a client");
 
     let mut state = State::new(
-        WinitBackendData,
+        WinitBackendData::default(),
         OUTPUT_NAME,
         &dh,
         event_loop.handle(),
@@ -133,7 +151,22 @@ pub fn run(
     );
     output.set_preferred(mode);
     state.space.map_output(&output, (0, 0));
+    if test_input_socket.is_some() {
+        state.backend_data.fixture_output = Some(output.clone());
+    }
     crate::backend::recompute_outputs(&mut state);
+    let _fixture_control = test_input_socket
+        .map(|path| {
+            let parent = path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("test input socket needs a private parent"))?;
+            crate::compositor_control::install_fixture(
+                &mut state,
+                &handle,
+                &parent.join("templar-wallpaper-fixture-control.sock"),
+            )
+        })
+        .transpose()?;
 
     let _test_input = test_input_socket
         .map(|path| crate::test_input::install(&event_loop.handle(), path))
@@ -167,6 +200,7 @@ pub fn run(
                     // would keep `graphics` mutably borrowed into the `submit` call below — sidestep
                     // that by only asking "did anything change", then submitting full-output damage
                     // (matching `smallvil`'s winit backend, which does the same for the same reason).
+                    let mut wallpaper_frame = None;
                     let rendered = match graphics.bind() {
                         Ok((renderer, mut framebuffer)) => {
                             // The same shared scene builder the udev backend uses, so the two
@@ -184,13 +218,16 @@ pub fn run(
                             } else {
                                 crate::scene::collect(
                                     &mut state.chrome,
+                                    &mut state.wallpaper,
                                     &state.windows,
                                     &crate::chrome::ChromeInputs {
                                         space: &state.space,
                                         window_service: &state.window_service,
+                                        tab_counts: &state.tab_metadata.counts,
                                         recovery_protocol: &state.recovery_protocol,
                                         session_lock: &state.session_lock,
                                         switcher: state.switcher.as_ref(),
+                                        name_tab_menu: &state.name_tab_menu,
                                         drop_target: state.drop_target,
                                         gesture_gate: &state.gesture_gate,
                                         motions: &state.motion,
@@ -217,9 +254,11 @@ pub fn run(
                                 &mut state.screencopy,
                                 &state.windows,
                                 &state.clock,
+                                state.start_time.elapsed(),
                                 renderer,
                                 &output_for_loop,
                                 &elements,
+                                true,
                             );
                             match damage_tracker.render_output(
                                 renderer,
@@ -228,15 +267,28 @@ pub fn run(
                                 &elements,
                                 clear,
                             ) {
-                                Ok(result) => result.damage.is_some(),
+                                Ok(result) => {
+                                    if !state.session_lock.locked && !state.idle.blanked() {
+                                        wallpaper_frame = state
+                                            .wallpaper
+                                            .frame_token(&output_for_loop.name(), &result.states);
+                                    }
+                                    result.damage.is_some()
+                                }
                                 Err(error) => {
                                     tracing::warn!(%error, "render_output failed");
+                                    state
+                                        .wallpaper
+                                        .frame_failed(&output_for_loop.name(), &error);
                                     false
                                 }
                             }
                         }
                         Err(error) => {
                             tracing::warn!(%error, "failed to bind winit framebuffer");
+                            state
+                                .wallpaper
+                                .frame_failed(&output_for_loop.name(), &error);
                             false
                         }
                     };
@@ -247,6 +299,9 @@ pub fn run(
                             Ok(()) => true,
                             Err(error) => {
                                 tracing::warn!(%error, "failed to submit winit frame");
+                                state
+                                    .wallpaper
+                                    .frame_failed(&output_for_loop.name(), &error);
                                 false
                             }
                         }
@@ -254,6 +309,14 @@ pub fn run(
                         false
                     };
                     if presented {
+                        // Nested coverage is host submission; native DRM uses actual vblank.
+                        let generation = state.session_lock.frame_generation();
+                        state
+                            .session_lock
+                            .frame_presented(&output_for_loop, generation);
+                        state
+                            .wallpaper
+                            .frame_presented(&output_for_loop.name(), wallpaper_frame);
                         crate::notify_ready_once(&mut ready_notified);
                     }
 
@@ -292,6 +355,60 @@ pub fn run(
     // not a stall.
     drop(watchdog);
     Ok(session_command.map_or(0, |command| command.shut_down()))
+}
+
+/// Reports the actual nested canvas, never physical KMS configuration or readback.
+fn fixture_display(output: &Output) -> Option<templar_types::display::Display> {
+    use templar_types::{
+        display::{
+            Display, DisplayId, DisplayMode, Insets, OutputConfiguration, PhysicalState, Rotation,
+        },
+        settings::Capability,
+    };
+    let mode = output.current_mode()?;
+    let unavailable = Capability::Unavailable {
+        reason: "Nested virtual canvas has no physical KMS/configuration authority".into(),
+    };
+    let id = DisplayId(output.name());
+    let mode_id = format!("virtual:{}x{}@{}", mode.size.w, mode.size.h, mode.refresh);
+    Some(Display {
+        id: id.clone(),
+        gpu: "nested-gles".into(),
+        connector: output.name(),
+        make: "TemplarOS".into(),
+        model: "Nested GLES canvas".into(),
+        serial: None,
+        edid_sha256: None,
+        connected: true,
+        internal: false,
+        modes: vec![DisplayMode {
+            id: mode_id.clone(),
+            width: mode.size.w as u32,
+            height: mode.size.h as u32,
+            refresh_millihz: mode.refresh as u32,
+            preferred: true,
+            interlaced: false,
+        }],
+        current: OutputConfiguration {
+            id,
+            enabled: true,
+            mode: Some(mode_id),
+            scale: output.current_scale().fractional_scale(),
+            rotation: Rotation::Normal,
+            x: 0,
+            y: 0,
+            mirror_of: None,
+            primary: true,
+            insets: Insets::default(),
+        },
+        physical: PhysicalState::Unavailable {
+            reason: "Nested frame presentation is host submission, not physical KMS".into(),
+        },
+        persistence: unavailable.clone(),
+        configure: unavailable.clone(),
+        hardware_underscan: unavailable.clone(),
+        composition_inset: unavailable,
+    })
 }
 
 /// Show `status` on the host window, so the compositor's own cursors (the resize perimeter, most

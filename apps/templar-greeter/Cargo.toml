@@ -35,8 +35,12 @@ tracing-subscriber = { workspace = true }
 # the one place this crate's usage differs from the shell's.
 pixelkit-raster = { workspace = true }
 pixelkit-text = { workspace = true }
-pixelkit-ui = { workspace = true }
+pixelkit-ui = { workspace = true, features = ["accessibility"] }
 pixelkit-shell = { workspace = true }
+pixelkit-windowing = { workspace = true }
+templar-types = { workspace = true }
+templar-ui = { workspace = true }
+accesskit_winit = { version = "0.34", default-features = false, features = ["rwh_06", "accesskit_unix", "async-io"] }
 
 # Pinned to the same "0.30" line pixelkit's own Cargo.toml and templar-shell's manifest use, so Cargo
 # resolves one compiled winit rather than two. Unlike templar-shell, this crate never reaches for

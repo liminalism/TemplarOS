@@ -31,7 +31,9 @@ use templar_types::{AppCatalog, ProviderCapability, ProviderRole, dbus::session 
 mod apis;
 mod background;
 mod checkpoint;
+mod command;
 mod reconcile;
+mod session_collector;
 
 /// TemplarOS session daemon.
 #[derive(Debug, Parser)]
@@ -56,6 +58,10 @@ struct Cli {
     #[arg(long)]
     state_db: Option<PathBuf>,
 
+    /// Explicit isolated nested compositor fixture; never used by the installed session.
+    #[arg(long, requires = "no_default_discovery")]
+    wallpaper_control_socket: Option<PathBuf>,
+
     /// Do not claim the bus name; load everything, print a summary and exit.
     #[arg(long)]
     dry_run: bool,
@@ -73,17 +79,62 @@ fn mimeapps_export_path() -> PathBuf {
         .join("applications/mimeapps.list")
 }
 
-/// Read locations for an existing `mimeapps.list`, in the order the mimeapps spec prefers.
+/// Read the complete XDG preference chain, highest precedence first.
 fn mimeapps_read_locations() -> Vec<PathBuf> {
+    mimeapps_locations(
+        xdg_home("XDG_CONFIG_HOME", ".config"),
+        xdg_home("XDG_DATA_HOME", ".local/share"),
+        &std::env::var_os("XDG_CONFIG_DIRS").unwrap_or_else(|| "/etc/xdg".into()),
+        &std::env::var_os("XDG_DATA_DIRS").unwrap_or_else(|| "/usr/local/share:/usr/share".into()),
+        &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
+    )
+}
+
+fn mimeapps_locations(
+    config_home: Option<PathBuf>,
+    data_home: Option<PathBuf>,
+    config_dirs: &std::ffi::OsStr,
+    data_dirs: &std::ffi::OsStr,
+    desktop: &str,
+) -> Vec<PathBuf> {
+    let desktops: Vec<_> = desktop
+        .split(':')
+        .filter(|name| !name.is_empty() && !name.contains('/'))
+        .map(str::to_ascii_lowercase)
+        .collect();
     let mut candidates = Vec::new();
-    if let Some(config_home) = xdg_home("XDG_CONFIG_HOME", ".config") {
-        candidates.push(config_home.join("mimeapps.list"));
+    let config_roots = config_home
+        .into_iter()
+        .chain(std::env::split_paths(config_dirs));
+    let data_roots = data_home
+        .into_iter()
+        .chain(std::env::split_paths(data_dirs));
+    for directory in config_roots
+        .chain(data_roots.map(|root| root.join("applications")))
+        .filter(|directory| directory.is_absolute())
+    {
+        for name in &desktops {
+            candidates.push(directory.join(format!("{name}-mimeapps.list")));
+        }
+        candidates.push(directory.join("mimeapps.list"));
     }
-    if let Some(data_home) = xdg_home("XDG_DATA_HOME", ".local/share") {
-        candidates.push(data_home.join("applications/mimeapps.list"));
-    }
-    candidates.push(PathBuf::from("/etc/xdg/mimeapps.list"));
     candidates
+}
+
+fn read_mimeapps_defaults(
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut defaults = std::collections::BTreeMap::new();
+    for path in paths {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            for (mime, application) in
+                templar_associationd::import::parse_default_applications(&text)
+            {
+                defaults.entry(mime).or_insert(application);
+            }
+        }
+    }
+    defaults
 }
 
 /// Import an existing `mimeapps.list` once, then never again (`docs/architecture/associations.md`).
@@ -96,20 +147,56 @@ fn import_mimeapps_once(store: &Store, catalog: &Arc<dyn AppCatalog>) {
             return;
         }
     }
-    let resolved = mimeapps_read_locations()
-        .into_iter()
-        .find_map(|path| std::fs::read_to_string(&path).ok().map(|text| (path, text)))
-        .map(|(path, text)| {
-            let defaults = templar_associationd::import::parse_default_applications(&text);
-            let resolved = templar_associationd::import::resolve_against_catalog(&defaults, catalog.as_ref());
-            tracing::info!(path = %path.display(), count = resolved.len(), "importing mimeapps.list");
-            resolved
-        })
-        .unwrap_or_default();
+    let defaults = read_mimeapps_defaults(mimeapps_read_locations());
+    let resolved =
+        templar_associationd::import::resolve_against_catalog(&defaults, catalog.as_ref());
+    tracing::info!(count = resolved.len(), "importing XDG mimeapps defaults");
     if let Err(error) = store
         .transaction(|tx| templar_associationd::store::mark_mimeapps_imported_within(tx, &resolved))
     {
         tracing::warn!(%error, "failed to record the mimeapps import");
+    }
+}
+
+/// Rewrite the PCManFM-Qt profile keys that cannot work on this machine — a terminal that is not
+/// on `PATH`, a fallback icon theme that is not installed — to TemplarOS's defaults, leaving every
+/// valid choice and every other byte alone, and give libfm-qt the `templar-terminal` group of its
+/// per-user terminal list (`templar_session_core::pcmanfm`). Best-effort: a file manager with
+/// blank icons is never a reason for the session not to start.
+fn repair_pcmanfm_settings() {
+    use templar_session_core::pcmanfm;
+    if let Some(data_home) = xdg_home("XDG_DATA_HOME", ".local/share") {
+        let list = pcmanfm::terminals_list_path(&data_home);
+        match pcmanfm::ensure_terminal_entry(&list) {
+            Ok(true) => {
+                tracing::info!(path = %list.display(), "added templar-terminal to libfm-qt's terminal list")
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(error = %format!("{error:#}"), path = %list.display(), "could not add templar-terminal to libfm-qt's terminal list")
+            }
+        }
+    }
+    let Some(config_home) = xdg_home("XDG_CONFIG_HOME", ".config") else {
+        return;
+    };
+    let path = pcmanfm::settings_path(&config_home);
+    match pcmanfm::repair_file(&path, &pcmanfm::Host::from_env(), None) {
+        Ok(pcmanfm::Outcome::Repaired { repairs }) => {
+            for repair in repairs {
+                tracing::info!(
+                    path = %path.display(),
+                    key = repair.key,
+                    before = ?repair.before,
+                    after = %repair.after,
+                    "repaired a PCManFM-Qt setting that could not work here"
+                );
+            }
+        }
+        Ok(pcmanfm::Outcome::NoProfile | pcmanfm::Outcome::Unchanged) => {}
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), path = %path.display(), "could not repair PCManFM-Qt settings");
+        }
     }
 }
 
@@ -138,68 +225,6 @@ fn ensure_sessiond_provider_declaration(store: &Store, providers: &Arc<RwLock<Pr
     providers.write().declare(app_id, capability);
 }
 
-/// Declare the roles installed applications fill by what they *are* rather than by claiming them
-/// (`templar_session_core::providers::derived_capabilities`).
-///
-/// **Not persisted, deliberately.** The declarations table exists so a claim an application made
-/// — `X-TemplarOS-Provides=`, or `Providers1.Declare` — survives a restart. A derived declaration
-/// has nothing to survive: it is read off the installed set, and the installed set is read on
-/// every start. Writing it down would only create a way for the two to disagree, and they would:
-/// nothing removes a row when the application it names is uninstalled, so a terminal that is no
-/// longer on the machine would go on being offered — and, being the distribution default, would
-/// go on *winning*.
-///
-/// Selections are a different matter and are stored: which terminal a person chose is a choice,
-/// and this only ever changes what the choice is made from.
-fn ensure_derived_provider_declarations(
-    catalog: &dyn AppCatalog,
-    providers: &Arc<RwLock<ProviderRegistry>>,
-) {
-    let mut declared = 0usize;
-    for manifest in catalog.manifests() {
-        for capability in templar_session_core::providers::derived_capabilities(&manifest) {
-            providers.write().declare(manifest.id.clone(), capability);
-            declared += 1;
-        }
-    }
-    if declared > 0 {
-        tracing::info!(count = declared, "derived provider declarations");
-    }
-}
-
-/// Declare the roles installed applications claim in their own metadata
-/// (`templar_session_core::providers::claimed_capabilities`).
-///
-/// The half of startup `ensure_derived_provider_declarations` does not cover: derived roles are
-/// read off what an entry says for other reasons, while these are applications asking outright —
-/// today that is `X-TemplarOS-Provides=` on a desktop entry. This pass was missing entirely: a
-/// claim was parsed at import, recorded on the manifest's provenance, and then never read again,
-/// so no declaration ever reached the registry and the role resolved to `NoProvider` however
-/// correctly the application was installed. (`Providers1.Declare` is the only other path in, and
-/// a desktop application never calls it — which is why nm-tray-2 stayed invisible to Settings
-/// and left the network chip dimmed through two install attempts.)
-///
-/// Memory-only, for the same reason derived declarations are: the installed set is re-read on
-/// every start, so persisting would only create rows an uninstall leaves behind — and a removed
-/// application going on winning a role is exactly the failure the declarations table must not
-/// have. The desktop watcher re-runs this after every rescan for the same reason startup runs it
-/// after the import.
-fn ensure_claimed_provider_declarations(
-    catalog: &dyn AppCatalog,
-    providers: &Arc<RwLock<ProviderRegistry>>,
-) {
-    let mut declared = 0usize;
-    for manifest in catalog.manifests() {
-        for capability in templar_session_core::providers::claimed_capabilities(&manifest) {
-            providers.write().declare(manifest.id.clone(), capability);
-            declared += 1;
-        }
-    }
-    if declared > 0 {
-        tracing::info!(count = declared, "claimed provider declarations");
-    }
-}
-
 /// Everything the daemon needs, loaded and cross-linked once. Kept as one struct so `main`
 /// reads as a short sequence of named steps instead of two dozen `let` bindings.
 struct Services {
@@ -217,6 +242,8 @@ struct Services {
     detector: Arc<dyn MimeDetector>,
     providers: Arc<RwLock<ProviderRegistry>>,
     schema: Arc<RwLock<SettingsSchema>>,
+    /// Anonymous exact-shuffle spools share the already-writable state directory.
+    wallpaper_spool_directory: PathBuf,
     settings_values: Arc<RwLock<SettingsValues>>,
     history: Arc<SqliteHistory>,
     open_projects: Arc<RwLock<BTreeSet<String>>>,
@@ -227,12 +254,8 @@ struct Services {
     /// the channel is the record. Anything in this daemon that has to count session time rather
     /// than wall-clock time subscribes here and pays no round trip for it.
     session_edges: apis::lifecycle::SessionEdges,
-    /// Every successful launch, as `(resolved variant, arguments)`. Fed by `Launcher1`'s observer.
-    launches: tokio::sync::broadcast::Sender<(
-        templar_types::AppId,
-        Vec<String>,
-        templar_types::InstanceId,
-    )>,
+    /// One typed successful launch record, including actual broker working directory.
+    launches: tokio::sync::broadcast::Sender<templar_appd::dbus::LaunchEvent>,
 }
 
 /// The `.desktop` directories the import scans: the operator's `--application-dir`
@@ -328,8 +351,7 @@ fn load_services(cli: &Cli) -> Result<Services> {
         templar_session_core::providers::load(&store).context("loading provider registry")?,
     ));
     ensure_sessiond_provider_declaration(&store, &providers);
-    ensure_derived_provider_declarations(catalog.as_ref(), &providers);
-    ensure_claimed_provider_declarations(catalog.as_ref(), &providers);
+    providers.write().declare_installed(catalog.as_ref());
     let schema = Arc::new(RwLock::new(baseline_schema()));
     let settings_values = Arc::new(RwLock::new(
         templar_session_core::settings::load_values(&store).context("loading settings values")?,
@@ -338,6 +360,11 @@ fn load_services(cli: &Cli) -> Result<Services> {
 
     Ok(Services {
         store,
+        wallpaper_spool_directory: db_path
+            .parent()
+            .filter(|directory| !directory.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_owned(),
         registry,
         native_count,
         imported_count,
@@ -406,13 +433,40 @@ async fn serve_launch_and_association_interfaces(
         .at(
             names::LAUNCHER_PATH,
             LauncherApi::new(services.registry.clone(), backend, connection.clone()).with_observer(
-                Box::new(move |app_id, arguments, instance| {
-                    let _ = launches.send((app_id.clone(), arguments.to_vec(), instance));
+                Box::new(move |event| {
+                    let _ = launches.send(event);
                 }),
             ),
         )
         .await
         .context("serving Launcher1")?;
+    object_server
+        .at(
+            "/org/templaros/Session/Workloads",
+            templar_appd::workload::WorkloadsApi::new(
+                services.registry.clone(),
+                connection.clone(),
+                connection.clone(),
+                services.store.clone(),
+            )
+            .await?,
+        )
+        .await
+        .context("serving Workloads1")?;
+    object_server
+        .at(
+            apis::network::PATH,
+            apis::network::NetworkApi::new(connection.clone()).await,
+        )
+        .await
+        .context("serving Network1")?;
+    object_server
+        .at(
+            apis::bluetooth::PATH,
+            apis::bluetooth::BluetoothApi::new(connection.clone()).await,
+        )
+        .await
+        .context("serving Bluetooth1")?;
     object_server
         .at(
             names::ASSOCIATIONS_PATH,
@@ -466,12 +520,13 @@ async fn serve_launch_and_association_interfaces(
 async fn serve_hardware_status_interfaces(
     connection: &zbus::Connection,
     system_connection: Option<zbus::Connection>,
+    store: Store,
 ) -> Result<()> {
     let object_server = connection.object_server();
     object_server
         .at(
             names::AUDIO_PATH,
-            apis::audio::AudioApi::new(std::sync::Arc::new(apis::audio::WpctlAudio)),
+            apis::audio::AudioApi::new(Arc::new(apis::audio::WpctlAudio), store),
         )
         .await
         .context("serving Audio1")?;
@@ -534,8 +589,30 @@ async fn serve_policy_interfaces(
     system_connection: Option<zbus::Connection>,
     services: &Services,
     backend: LaunchBackend,
+    sleep_ready: tokio::sync::watch::Receiver<bool>,
+    wallpaper_control: Option<templar_client::compositor_control::CompositorControl>,
 ) -> Result<apis::homegarden::HomeGardenApi> {
     let object_server = connection.object_server();
+    let appearance = apis::appearance::AppearanceEffects::new(
+        services.schema.clone(),
+        services.settings_values.clone(),
+        xdg_home("XDG_CONFIG_HOME", ".config"),
+    );
+    if let Err(error) = appearance.reconcile(appearance.lock().await).await {
+        tracing::warn!(%error, "loaded stored appearance; supported toolkit configuration incomplete");
+    }
+    let wallpaper = apis::wallpaper::WallpaperHost::new(
+        services.store.clone(),
+        services.schema.clone(),
+        services.settings_values.clone(),
+        wallpaper_control,
+        services.wallpaper_spool_directory.clone(),
+    );
+    object_server
+        .at(names::WALLPAPER_PATH, wallpaper.clone())
+        .await
+        .context("serving Wallpaper1")?;
+    wallpaper.spawn_sources(connection.clone(), &services.session_edges);
     // Homegarden: the ledger behind Home's grown places. Built and subscribed to the session
     // edges and the launch channel here, before `Started` is sent (see `main`), so the Garden
     // Clock sees the session begin — and before HomeField1 and Projects1, which hand it the
@@ -559,6 +636,9 @@ async fn serve_policy_interfaces(
                 services.engine.clone(),
                 services.settings_values.clone(),
                 services.providers.clone(),
+                mimeapps_export_path(),
+                appearance.clone(),
+                wallpaper.clone(),
             ),
         )
         .await
@@ -570,6 +650,8 @@ async fn serve_policy_interfaces(
                 services.schema.clone(),
                 services.settings_values.clone(),
                 services.store.clone(),
+                appearance.clone(),
+                wallpaper.clone(),
             ),
         )
         .await
@@ -605,14 +687,51 @@ async fn serve_policy_interfaces(
         .at(names::HOME_GARDEN_PATH, garden.clone())
         .await
         .context("serving HomeGarden1")?;
+    let input = apis::input::InputApi::new(services.store.clone())?;
+    services
+        .settings_values
+        .write()
+        .reset("input.touchpad.tap-to-click");
+    object_server
+        .at(apis::input::PATH, input)
+        .await
+        .context("serving Input1")?;
+    object_server
+        .at(
+            apis::tab_counts::PATH,
+            apis::tab_counts::TabCountsApi::new(connection.clone()),
+        )
+        .await
+        .context("serving TabCounts1")?;
+    object_server
+        .at(
+            apis::displays::PATH,
+            apis::displays::DisplaysApi::new(services.store.clone())?,
+        )
+        .await
+        .context("serving Displays1")?;
+    apis::input::spawn_watch(connection.clone());
+    apis::displays::spawn_watch(connection.clone());
     object_server
         .at(
             names::POWER_PATH,
-            apis::power::PowerApi::new(services.store.clone()),
+            apis::power::PowerApi::new(
+                services.store.clone(),
+                connection.clone(),
+                system_connection.clone(),
+                services.session_edges.clone(),
+                sleep_ready,
+            )
+            .await,
         )
         .await
         .context("serving Power1")?;
-    serve_hardware_status_interfaces(connection, system_connection.clone()).await?;
+    serve_hardware_status_interfaces(
+        connection,
+        system_connection.clone(),
+        services.store.clone(),
+    )
+    .await?;
     object_server
         .at(
             names::NOTIFICATIONS_PATH,
@@ -641,9 +760,19 @@ async fn serve_interfaces(
     system_connection: Option<zbus::Connection>,
     services: &Services,
     backend: LaunchBackend,
+    sleep_ready: tokio::sync::watch::Receiver<bool>,
+    wallpaper_control: Option<templar_client::compositor_control::CompositorControl>,
 ) -> Result<apis::homegarden::HomeGardenApi> {
     serve_launch_and_association_interfaces(connection, services, backend).await?;
-    serve_policy_interfaces(connection, system_connection, services, backend).await
+    serve_policy_interfaces(
+        connection,
+        system_connection,
+        services,
+        backend,
+        sleep_ready,
+        wallpaper_control,
+    )
+    .await
 }
 
 /// Tell `templar-hostd` the session came up, so `templar-boot-health` can tell "the session never
@@ -661,7 +790,21 @@ async fn serve_interfaces(
 ///
 /// Entirely best-effort. A desktop that refused to start because a boot-health marker could not
 /// be written would be a far worse failure than the one this exists to catch.
+const HEALTH_REPORT_TIMEOUT: Duration = Duration::from_secs(5);
+
 async fn report_session_healthy(system_connection: Option<&zbus::Connection>) {
+    if tokio::time::timeout(
+        HEALTH_REPORT_TIMEOUT,
+        report_session_healthy_once(system_connection),
+    )
+    .await
+    .is_err()
+    {
+        tracing::warn!("templar-hostd session health report timed out; session remains available");
+    }
+}
+
+async fn report_session_healthy_once(system_connection: Option<&zbus::Connection>) {
     let Some(connection) = system_connection else {
         tracing::warn!("no system bus; session health not reported to templar-hostd");
         return;
@@ -722,21 +865,29 @@ fn spawn_compositor_active_report(system_connection: Option<zbus::Connection>) {
             .await
             .unwrap_or(false);
             if accepted {
-                match templar_client::proxies::HostSessionProxy::new(&connection).await {
-                    Ok(proxy) => match proxy.report_compositor_active().await {
-                        Ok(()) => tracing::info!(
-                            socket = %socket_path.display(),
-                            "reported compositor readiness to templar-hostd"
-                        ),
+                let report = async {
+                    match templar_client::proxies::HostSessionProxy::new(&connection).await {
+                        Ok(proxy) => match proxy.report_compositor_active().await {
+                            Ok(()) => tracing::info!(
+                                socket = %socket_path.display(),
+                                "reported compositor readiness to templar-hostd"
+                            ),
+                            Err(error) => tracing::warn!(
+                                %error,
+                                "templar-hostd would not record compositor readiness"
+                            ),
+                        },
                         Err(error) => tracing::warn!(
                             %error,
-                            "templar-hostd would not record compositor readiness"
+                            "templar-hostd unreachable; compositor readiness not reported"
                         ),
-                    },
-                    Err(error) => tracing::warn!(
-                        %error,
-                        "templar-hostd unreachable; compositor readiness not reported"
-                    ),
+                    }
+                };
+                if tokio::time::timeout(HEALTH_REPORT_TIMEOUT, report)
+                    .await
+                    .is_err()
+                {
+                    tracing::warn!("templar-hostd compositor readiness report timed out");
                 }
                 return;
             }
@@ -793,8 +944,15 @@ fn spawn_background_tasks(
     ));
     tokio::spawn(background::crash_ingest::run(
         services.store.clone(),
-        history_notifier,
+        history_notifier.clone(),
         Duration::from_secs(30),
+    ));
+    tokio::spawn(background::launch_watch::run(
+        connection.clone(),
+        services.registry.clone(),
+        services.history.clone(),
+        history_notifier,
+        Duration::from_secs(10),
     ));
     tokio::spawn(background::notification_provider::run(
         connection.clone(),
@@ -816,10 +974,13 @@ fn spawn_background_tasks(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    use std::io::IsTerminal as _;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
+        // No ANSI under the journal: journald stores coloured MESSAGE fields as byte arrays.
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
     let cli = Cli::parse();
     let mut services = load_services(&cli)?;
@@ -827,6 +988,13 @@ async fn main() -> Result<()> {
     if cli.dry_run {
         print_dry_run_summary(&services);
         return Ok(());
+    }
+
+    // Before the bus name is claimed, so before `Launcher1` can start PCManFM-Qt and before it
+    // could read a profile still naming xterm and oxygen. Hermetic test runs leave the host's
+    // configuration alone.
+    if !cli.no_default_discovery {
+        repair_pcmanfm_settings();
     }
 
     // Say which build is running, and which generation of the state schema it speaks — the
@@ -846,8 +1014,10 @@ async fn main() -> Result<()> {
         .context("connecting to the session bus")?;
     // The null transport was only ever a stand-in for `--dry-run`/tests, where this line never
     // runs; the live daemon always relays checkpoints for real.
-    services.checkpoint_transport =
-        Arc::new(checkpoint::DbusCheckpointTransport::new(connection.clone()));
+    services.checkpoint_transport = Arc::new(checkpoint::DbusCheckpointTransport::new(
+        connection.clone(),
+        services.registry.clone(),
+    ));
     // Best-effort: `Location1` retries lazily (see `apis::location`), so a system bus that is
     // briefly unreachable at session startup must not take the rest of the daemon down with it.
     let system_connection = match zbus::connection::Builder::system() {
@@ -869,8 +1039,24 @@ async fn main() -> Result<()> {
     reconcile::reconcile_instances(&connection, &services.registry, &services.store).await;
     let host_connection = system_connection.clone();
     // One match rule on logind, so an hour asleep is not counted as an hour of session time.
-    apis::lifecycle::spawn_sleep_watch(system_connection.clone(), services.session_edges.clone());
-    let garden = serve_interfaces(&connection, system_connection, &services, backend).await?;
+    let sleep_watch = apis::lifecycle::spawn_sleep_watch(
+        system_connection.clone(),
+        services.session_edges.clone(),
+    );
+    let wallpaper_control = cli
+        .wallpaper_control_socket
+        .as_deref()
+        .map(apis::wallpaper::fixture_control)
+        .transpose()?;
+    let garden = serve_interfaces(
+        &connection,
+        system_connection,
+        &services,
+        backend,
+        sleep_watch.readiness(),
+        wallpaper_control,
+    )
+    .await?;
     // Subscribed before anything is sent, so no edge — `Started` included — is emitted into an
     // empty channel and lost.
     apis::lifecycle::spawn_signal_relay(connection.clone(), &services.session_edges);
@@ -889,13 +1075,18 @@ async fn main() -> Result<()> {
         .request_name(names::BUS_NAME)
         .await
         .context("claiming org.templaros.Session")?;
+    apis::audio::spawn_watch(connection.clone());
     tracing::info!(name = names::BUS_NAME, "templar-sessiond ready");
 
     // Readiness and the health report are the same fact told to two different supervisors: the
     // policy is loaded and the bus name is claimed. systemd learns it through sd_notify; hostd
     // learns it so a trial boot can fail on a session that never came up.
     start_systemd_notify();
-    report_session_healthy(host_connection.as_ref()).await;
+    // Best-effort host reporting must not gate catalogue watches or session edges.
+    let health_connection = host_connection.clone();
+    tokio::spawn(async move {
+        report_session_healthy(health_connection.as_ref()).await;
+    });
     spawn_compositor_active_report(host_connection);
     spawn_background_tasks(&connection, &services, backend, history_notifier);
 
@@ -913,74 +1104,17 @@ async fn main() -> Result<()> {
         _ = terminate.recv() => {}
         _ = tokio::signal::ctrl_c() => {}
     }
+    if let Ok(wallpaper) = connection
+        .object_server()
+        .interface::<_, apis::wallpaper::WallpaperHost>(names::WALLPAPER_PATH)
+        .await
+    {
+        wallpaper.get().await.shutdown().await;
+    }
     tracing::info!("stopping: writing the Homegarden ledger");
     let flushing = garden.clone();
     let _ = tokio::task::spawn_blocking(move || flushing.flush()).await;
     Ok(())
-}
-
-#[cfg(test)]
-mod claimed_provider_tests {
-    use super::{ProviderRegistry, Registry, ensure_claimed_provider_declarations};
-    use parking_lot::RwLock;
-    use std::sync::Arc;
-    use templar_types::{
-        AppAliases, AppManifest, AppOriginKind, AppProvenance, ProviderRole, ResourceClass,
-    };
-
-    /// The installed nm-tray-2 entry as the import leaves it: a manifest whose provenance
-    /// carries the `X-TemplarOS-Provides=` claim, at the trust its directory implies.
-    fn tray(id: &str, origin: AppOriginKind) -> AppManifest {
-        let mut provenance = AppProvenance::from_origin(origin);
-        provenance
-            .provider_claims
-            .insert("network-status-ui".to_owned());
-        AppManifest {
-            id: id.parse().unwrap(),
-            display_name: "nm-tray-alt".to_owned(),
-            primary_desktop_file_id: "nm-tray2.desktop".to_owned(),
-            executable: std::path::PathBuf::from("/usr/local/bin/nm-tray"),
-            aliases: AppAliases::default(),
-            mime_types: std::collections::BTreeSet::default(),
-            resource_class: ResourceClass::Normal,
-            supports_checkpoint: false,
-            icon: None,
-            categories: std::collections::BTreeSet::default(),
-            keywords: std::collections::BTreeSet::default(),
-            no_display: false,
-            provenance: Some(provenance),
-        }
-    }
-
-    #[test]
-    fn a_trusted_desktop_claim_resolves_its_role() {
-        let registry = Registry::default();
-        registry.insert_manifest(tray(
-            "desktop-import.nm-tray2.desktop",
-            AppOriginKind::DistroPackage,
-        ));
-        let providers = Arc::new(RwLock::new(ProviderRegistry::default()));
-        ensure_claimed_provider_declarations(&registry, &providers);
-        assert_eq!(
-            providers.read().provider(ProviderRole::NetworkStatusUi),
-            Some("desktop-import.nm-tray2.desktop".parse().unwrap())
-        );
-    }
-
-    #[test]
-    fn an_untrusted_claim_leaves_the_role_empty() {
-        let registry = Registry::default();
-        registry.insert_manifest(tray(
-            "desktop-import.nm-tray2.desktop",
-            AppOriginKind::UserDesktopEntry,
-        ));
-        let providers = Arc::new(RwLock::new(ProviderRegistry::default()));
-        ensure_claimed_provider_declarations(&registry, &providers);
-        assert_eq!(
-            providers.read().provider(ProviderRole::NetworkStatusUi),
-            None
-        );
-    }
 }
 
 #[cfg(test)]
@@ -1003,5 +1137,117 @@ mod readiness_tests {
             Some(PathBuf::from("/tmp/nested-wayland"))
         );
         assert_eq!(resolve_wayland_socket(OsStr::new("wayland-0"), None), None);
+    }
+
+    #[tokio::test]
+    async fn unresponsive_host_health_report_has_a_deadline() {
+        use std::io::BufRead as _;
+        use std::process::{Command, Stdio};
+        use std::sync::Arc;
+
+        struct OwnedBus(std::process::Child);
+        impl Drop for OwnedBus {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        struct UnresponsiveHost(Arc<tokio::sync::Notify>);
+        #[zbus::interface(name = "org.templaros.Host.Session1")]
+        impl UnresponsiveHost {
+            async fn report_session_healthy(&self) {
+                self.0.notify_one();
+                std::future::pending::<()>().await;
+            }
+        }
+
+        let mut bus = OwnedBus(
+            Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--print-address=1"])
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("owned test bus"),
+        );
+        let mut address = String::new();
+        std::io::BufReader::new(bus.0.stdout.take().unwrap())
+            .read_line(&mut address)
+            .unwrap();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let _host = zbus::connection::Builder::address(address.trim())
+            .unwrap()
+            .serve_at("/org/templaros/Host", UnresponsiveHost(entered.clone()))
+            .unwrap()
+            .name("org.templaros.Host")
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let client = zbus::connection::Builder::address(address.trim())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let report = super::report_session_healthy(Some(&client));
+        tokio::time::timeout(
+            super::HEALTH_REPORT_TIMEOUT + std::time::Duration::from_secs(2),
+            report,
+        )
+        .await
+        .expect("best-effort health report must return despite an unresponsive host");
+        tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+            .await
+            .expect("production proxy actually reached the owned host method");
+    }
+}
+
+#[cfg(test)]
+mod mimeapps_tests {
+    use super::{mimeapps_locations, read_mimeapps_defaults};
+    use std::{ffi::OsStr, path::PathBuf};
+
+    #[test]
+    fn vendor_directories_and_desktop_preferences_follow_xdg_precedence() {
+        let paths = mimeapps_locations(
+            Some(PathBuf::from("/owned/config")),
+            Some(PathBuf::from("/owned/data")),
+            OsStr::new("/owned/vendor:/second/vendor"),
+            OsStr::new("/owned/share:/usr/share"),
+            "TemplarOS:LXQt",
+        );
+        assert_eq!(
+            paths[0],
+            PathBuf::from("/owned/config/templaros-mimeapps.list")
+        );
+        assert_eq!(paths[1], PathBuf::from("/owned/config/lxqt-mimeapps.list"));
+        assert_eq!(paths[2], PathBuf::from("/owned/config/mimeapps.list"));
+        assert_eq!(paths[5], PathBuf::from("/owned/vendor/mimeapps.list"));
+        assert_eq!(
+            paths[11],
+            PathBuf::from("/owned/data/applications/mimeapps.list")
+        );
+        assert_eq!(
+            paths[17],
+            PathBuf::from("/usr/share/applications/mimeapps.list")
+        );
+        assert!(!paths.contains(&PathBuf::from("/etc/xdg/mimeapps.list")));
+    }
+
+    #[test]
+    fn user_overrides_preserved_and_missing_defaults_inherit_vendor_policy() {
+        let root = tempfile::tempdir().unwrap();
+        let user = root.path().join("user.list");
+        let vendor = root.path().join("vendor.list");
+        std::fs::write(
+            &user,
+            "[Default Applications]\nimage/png=user-viewer.desktop;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &vendor,
+            "[Default Applications]\nimage/png=vendor-viewer.desktop;\ninode/directory=pcmanfm-qt.desktop;\n",
+        ).unwrap();
+        let defaults = read_mimeapps_defaults([user, vendor]);
+        assert_eq!(defaults["image/png"], "user-viewer.desktop");
+        assert_eq!(defaults["inode/directory"], "pcmanfm-qt.desktop");
     }
 }

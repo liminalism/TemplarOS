@@ -1,0 +1,46 @@
+# TemplarOS system default applications.
+#
+# Installed to /etc/xdg/mimeapps.list. On first run, templar-sessiond imports
+# the first mimeapps.list it finds (~/.config/mimeapps.list, then
+# ~/.local/share/applications/mimeapps.list, then this file) into the typed
+# association database — once, then the broker owns the database and this
+# file is never read again for that user. A user's later choices (Settings,
+# Open With) override everything here without touching this file.
+#
+# The image rows mirror what liminalview's default Linux build decodes.
+# Regenerate the list with:
+#   liminalview --print-formats | python3 -c \
+#     "import json,sys; print(sorted({m for r in json.load(sys.stdin) for m in r['mime_types']}))"
+# and keep AVIF/macOS-only rows out: this seeds Linux, where the default
+# build decodes neither AVIF (opt-in dav1d feature) nor ImageIO-only formats
+# (PSD, ICNS, camera RAW). Every row must name a .desktop file installed on
+# the image, or the import drops the row rather than guessing.
+
+[Default Applications]
+inode/directory=pcmanfm-qt.desktop;
+image/bmp=org.liminalview.LiminalView.desktop;
+image/gif=org.liminalview.LiminalView.desktop;
+image/heic=org.liminalview.LiminalView.desktop;
+image/heif=org.liminalview.LiminalView.desktop;
+image/jp2=org.liminalview.LiminalView.desktop;
+image/jpeg=org.liminalview.LiminalView.desktop;
+image/jpx=org.liminalview.LiminalView.desktop;
+image/jxl=org.liminalview.LiminalView.desktop;
+image/png=org.liminalview.LiminalView.desktop;
+image/qoi=org.liminalview.LiminalView.desktop;
+image/svg+xml=org.liminalview.LiminalView.desktop;
+image/svg+xml-compressed=org.liminalview.LiminalView.desktop;
+image/tiff=org.liminalview.LiminalView.desktop;
+image/vnd.microsoft.icon=org.liminalview.LiminalView.desktop;
+image/webp=org.liminalview.LiminalView.desktop;
+image/x-bpg=org.liminalview.LiminalView.desktop;
+image/x-dds=org.liminalview.LiminalView.desktop;
+image/x-exr=org.liminalview.LiminalView.desktop;
+image/x-farbfeld=org.liminalview.LiminalView.desktop;
+image/x-hdr=org.liminalview.LiminalView.desktop;
+image/x-jp2-codestream=org.liminalview.LiminalView.desktop;
+image/x-portable-anymap=org.liminalview.LiminalView.desktop;
+image/x-portable-bitmap=org.liminalview.LiminalView.desktop;
+image/x-portable-graymap=org.liminalview.LiminalView.desktop;
+image/x-portable-pixmap=org.liminalview.LiminalView.desktop;
+image/x-tga=org.liminalview.LiminalView.desktop;

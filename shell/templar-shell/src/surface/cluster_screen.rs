@@ -4,7 +4,7 @@
 //! It used to be the right-hand end of the bar. That became wrong twice over when the bar turned
 //! into a centred island of open windows: what the machine is doing is not what the switcher is
 //! for, and centring it put a clock and a login menu in the middle of the screen. So it is its own
-//! surface, anchored to the *end* of the bottom edge (`templar-shell-v1.xml`'s `set_edge_alignment`),
+//! surface, anchored to the *end* of the bottom edge (`templar-shell-v2.xml`'s `set_edge_alignment`),
 //! and the island is open windows and nothing else.
 //!
 //! **It is absent in fullscreen**, entirely — no hint, no peek, no surface. A fullscreen window is
@@ -38,6 +38,8 @@
 use pixelkit_raster::Rect;
 use pixelkit_text::Align;
 use pixelkit_ui::Ui;
+
+use super::glyphs::{self, Glyph};
 
 use crate::surface::bar_screen::{BAR_HEIGHT, BarAction, CHIP_GAP, CHIP_H, CHIP_PAD, chip};
 use crate::surface::calendar::{self, Calendar};
@@ -847,7 +849,11 @@ impl ClusterScreen {
                 design::edge_strong(),
                 Elevation::Lifted,
             );
-            calendar.draw(ui, geometry, data.local_now);
+            if calendar.draw(ui, geometry, data.local_now) {
+                actions.push(BarAction::Field(FieldAction::RunAction(
+                    "clock.open-settings",
+                )));
+            }
         }
 
         // The account popover first, for the same reason the row is early: it floats over what is
@@ -959,7 +965,13 @@ impl ClusterScreen {
                 design::TAG_FILL
             },
         );
-        symbolic(ui, layout.settings, Symbol::Settings, design::TAG_INK);
+        glyphs::draw(
+            &mut ui.painter,
+            ui.kernel,
+            layout.settings,
+            Glyph::Settings,
+            design::TAG_INK,
+        );
         if settings_live && ui.input.take_click(layout.settings) {
             actions.push(BarAction::Field(FieldAction::RunAction("settings.open")));
         }
@@ -979,10 +991,11 @@ impl ClusterScreen {
                 design::TAG_FILL
             },
         );
-        symbolic(
-            ui,
+        glyphs::draw(
+            &mut ui.painter,
+            ui.kernel,
             layout.network,
-            Symbol::Network,
+            Glyph::Network,
             if data.network_control_available {
                 design::TAG_INK
             } else {
@@ -1037,7 +1050,13 @@ impl ClusterScreen {
                 design::TAG_FILL
             },
         );
-        symbolic(ui, layout.account, Symbol::Account, design::TAG_INK);
+        glyphs::draw(
+            &mut ui.painter,
+            ui.kernel,
+            layout.account,
+            Glyph::Account,
+            design::TAG_INK,
+        );
         if account_live && ui.input.take_click(layout.account) {
             self.calendar = None;
             self.account_open = !self.account_open;
@@ -1435,63 +1454,5 @@ mod tests {
         rail.click(account);
         assert!(rail.screen.account_open());
         assert!(!rail.screen.calendar_open());
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Symbol {
-    Settings,
-    Network,
-    Account,
-}
-
-/// Small symbolic controls drawn geometrically; no theme or missing Unicode glyph dependency.
-fn symbolic(ui: &mut Ui<'_>, cell: Rect, symbol: Symbol, ink: u32) {
-    let side = ui.px(24).min(cell.w).min(cell.h);
-    let rect = Rect::new(
-        cell.x + (cell.w - side) / 2,
-        cell.y + (cell.h - side) / 2,
-        side,
-        side,
-    );
-    let unit = (side / 6).max(1);
-    match symbol {
-        Symbol::Settings => {
-            ui.painter.stroke_rect(rect.inset(unit), unit, ink);
-            for (x, y) in [(2, 0), (2, 5), (0, 2), (5, 2)] {
-                ui.painter.fill_rect(
-                    Rect::new(rect.x + x * unit, rect.y + y * unit, 2 * unit, unit),
-                    ink,
-                );
-            }
-            ui.painter
-                .fill_rounded_rect(rect.inset(2 * unit), unit, ink);
-        }
-        Symbol::Network => {
-            for row in 0..3 {
-                ui.painter.fill_rounded_rect(
-                    Rect::new(
-                        rect.x + row * unit,
-                        rect.y + row * 2 * unit,
-                        side - row * 2 * unit,
-                        unit,
-                    ),
-                    unit / 2,
-                    ink,
-                );
-            }
-        }
-        Symbol::Account => {
-            ui.painter.fill_rounded_rect(
-                Rect::new(rect.x + 2 * unit, rect.y, 2 * unit, 2 * unit),
-                unit,
-                ink,
-            );
-            ui.painter.fill_rounded_rect(
-                Rect::new(rect.x + unit, rect.y + 3 * unit, 4 * unit, 3 * unit),
-                unit,
-                ink,
-            );
-        }
     }
 }

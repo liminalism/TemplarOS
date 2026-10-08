@@ -175,7 +175,7 @@ fn percent_of(raw: u64, max_raw: u64) -> u32 {
 /// A percentage to raw units, never below one raw step: on a four-step backlight even
 /// [`MINIMUM_PERCENT`] would round to zero and black the screen, which is exactly what that floor
 /// exists to prevent.
-fn raw_of(percent: u32, max_raw: u64) -> u64 {
+pub(crate) fn raw_of(percent: u32, max_raw: u64) -> u64 {
     let percent = u64::from(percent.clamp(MINIMUM_PERCENT, 100));
     ((max_raw * percent + 50) / 100).max(1).min(max_raw)
 }

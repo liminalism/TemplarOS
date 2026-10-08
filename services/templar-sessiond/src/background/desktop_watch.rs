@@ -9,12 +9,11 @@
 //! same `AppIdentity1.ApplicationsChanged` signal the autostart path uses.
 //!
 //! Polling, not watching: sessiond has no file-watching dependency, and a 15-second stat-only
-//! snapshot of a handful of directories costs nothing. Additions and content edits take effect;
-//! deletions do not (the import path only ever adds — a removed file's manifest needs a prune
-//! the registry does not have yet, so removals still wait for a restart).
+//! snapshot of a handful of directories costs no content reads. Additions, edits and removals
+//! refresh catalogue and provider choices without losing explicit selections.
 
 use parking_lot::RwLock;
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, os::unix::fs::MetadataExt as _, path::PathBuf, sync::Arc, time::Duration};
 use templar_appd::{Registry, desktop_entry::ExecResolver};
 use templar_session_core::providers::ProviderRegistry;
 use templar_state::Store;
@@ -38,14 +37,19 @@ pub async fn run(
     dirs: Vec<PathBuf>,
     providers: Arc<RwLock<ProviderRegistry>>,
 ) {
-    let mut before = snapshot_dirs(&dirs);
+    let mut before = None;
     loop {
         tokio::time::sleep(POLL_INTERVAL).await;
-        let after = snapshot_dirs(&dirs);
-        if after == before {
+        let after = match snapshot_dirs(&dirs) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                tracing::warn!(%error, "desktop-entry snapshot failed");
+                continue;
+            }
+        };
+        if before.as_ref() == Some(&after) {
             continue;
         }
-        before = after;
         let task_registry = registry.clone();
         let task_store = store.clone();
         let task_resolver = resolver.clone();
@@ -59,20 +63,33 @@ pub async fn run(
                 task_resolver.as_ref(),
             )?;
             let grouped = super::desktop_import::regroup_and_persist(&task_registry, &task_store)?;
-            if imported > 0 {
-                crate::ensure_claimed_provider_declarations(
-                    task_registry.as_ref(),
-                    &task_providers,
-                );
-            }
-            Ok::<_, anyhow::Error>((imported, grouped))
+            let changed_roles = {
+                let connection = task_store.lock();
+                let mut current = task_providers.write();
+                let mut refreshed = templar_session_core::providers::load_within(&connection)?;
+                refreshed.declare_installed(task_registry.as_ref());
+                let changed: Vec<_> = templar_types::ProviderRole::ALL.iter().copied()
+                    .filter(|role| current.provider(*role) != refreshed.provider(*role)).collect();
+                *current = refreshed;
+                changed
+            };
+            Ok::<_, anyhow::Error>((imported, grouped, changed_roles))
         })
         .await;
         match changed {
-            Ok(Ok((imported, grouped))) => {
+            Ok(Ok((imported, grouped, changed_roles))) => {
+                before = Some(after);
                 tracing::info!(imported, grouped, "desktop-entry rescan applied");
                 if imported > 0 {
-                    super::autostart::announce_applications_changed(&connection).await;
+                    announce_applications_changed(&connection).await;
+                }
+                for role in changed_roles {
+                    if let Err(error) = connection.emit_signal(
+                        None::<&str>, templar_types::dbus::session::PROVIDERS_PATH,
+                        "org.templaros.Providers1", "Changed", &(role.as_str(),),
+                    ).await {
+                        tracing::warn!(%error, "catalogue refresh provider notification failed");
+                    }
                 }
             }
             Ok(Err(error)) => {
@@ -85,110 +102,64 @@ pub async fn run(
     }
 }
 
-/// What the watched directories hold right now: each `.desktop` file's path to its content
-/// mtime. Additions, removals and content edits all move the map; anything that is not a
-/// `.desktop` file is invisible to it. Missing or unreadable directories simply contribute
-/// nothing, so a directory that appears later — a snap export tree that did not exist at
-/// login — still registers as a change.
-fn snapshot_dirs(dirs: &[PathBuf]) -> BTreeMap<String, i64> {
-    fn mtime_ms(path: &std::path::Path) -> Option<i64> {
-        std::fs::metadata(path)
-            .ok()?
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .map(|duration| duration.as_millis() as i64)
-    }
+#[derive(Debug, Eq, PartialEq)]
+struct DesktopStamp {
+    device: u64,
+    inode: u64,
+    len: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
 
+/// Native paths and nanosecond stat identity; unreadable data never becomes a successful epoch.
+fn snapshot_dirs(dirs: &[PathBuf]) -> anyhow::Result<BTreeMap<PathBuf, DesktopStamp>> {
     let mut snapshot = BTreeMap::new();
     for dir in dirs {
-        let Ok(read_dir) = std::fs::read_dir(dir) else {
-            continue;
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
         };
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("desktop") {
-                continue;
-            }
-            if let Some(file_mtime) = mtime_ms(&path) {
-                snapshot.insert(format!("file:{}", path.display()), file_mtime);
-            }
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension() != Some(std::ffi::OsStr::new("desktop")) { continue; }
+            let metadata = match std::fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            snapshot.insert(path, DesktopStamp {
+                device: metadata.dev(), inode: metadata.ino(), len: metadata.len(),
+                modified: (metadata.mtime(), metadata.mtime_nsec()),
+                changed: (metadata.ctime(), metadata.ctime_nsec()),
+            });
         }
     }
-    snapshot
+    Ok(snapshot)
+}
+
+/// Emit `AppIdentity1.ApplicationsChanged`. Best-effort: a listener that misses it re-reads on its
+/// next natural refresh, and failing to announce a change must never abort autostart.
+pub(crate) async fn announce_applications_changed(connection: &zbus::Connection) {
+    if let Ok(associations) = connection.object_server()
+        .interface::<_, templar_associationd::dbus::AssociationApi>(templar_types::dbus::session::ASSOCIATIONS_PATH).await {
+        associations.get().await.refresh_catalog();
+    }
+    let emitter = match zbus::object_server::SignalEmitter::new(
+        connection,
+        templar_types::dbus::session::APP_IDENTITY_PATH,
+    ) {
+        Ok(emitter) => emitter,
+        Err(error) => {
+            tracing::debug!(%error, "could not address AppIdentity1 to announce a change");
+            return;
+        }
+    };
+    if let Err(error) = templar_appd::dbus::IdentityApi::applications_changed(&emitter).await {
+        tracing::debug!(%error, "announcing ApplicationsChanged failed");
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn write_desktop(dir: &std::path::Path, name: &str, exec: &str) {
-        std::fs::write(
-            dir.join(name),
-            format!("[Desktop Entry]\nType=Application\nName={name}\nExec={exec}\n"),
-        )
-        .expect("fixture .desktop file writes");
-    }
-
-    #[test]
-    fn an_unchanged_tree_snapshots_identical() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_desktop(dir.path(), "a.desktop", "/usr/bin/a");
-        let dirs = vec![dir.path().to_path_buf()];
-        assert_eq!(snapshot_dirs(&dirs), snapshot_dirs(&dirs));
-    }
-
-    #[test]
-    fn a_new_desktop_file_changes_the_snapshot() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let dirs = vec![dir.path().to_path_buf()];
-        let before = snapshot_dirs(&dirs);
-        write_desktop(dir.path(), "new.desktop", "/usr/bin/new");
-        assert_ne!(before, snapshot_dirs(&dirs));
-    }
-
-    #[test]
-    fn an_edited_desktop_file_changes_the_snapshot() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_desktop(dir.path(), "a.desktop", "/usr/bin/a");
-        let dirs = vec![dir.path().to_path_buf()];
-        let before = snapshot_dirs(&dirs);
-        // A rewrite moves the file's mtime; the sleep keeps the test honest on filesystems
-        // with coarse timestamp granularity.
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        write_desktop(dir.path(), "a.desktop", "/usr/bin/b");
-        assert_ne!(before, snapshot_dirs(&dirs));
-    }
-
-    #[test]
-    fn a_removed_desktop_file_changes_the_snapshot() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_desktop(dir.path(), "a.desktop", "/usr/bin/a");
-        let dirs = vec![dir.path().to_path_buf()];
-        let before = snapshot_dirs(&dirs);
-        std::fs::remove_file(dir.path().join("a.desktop")).expect("fixture removes");
-        assert_ne!(before, snapshot_dirs(&dirs));
-    }
-
-    #[test]
-    fn non_desktop_files_are_invisible_to_the_snapshot() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let dirs = vec![dir.path().to_path_buf()];
-        let before = snapshot_dirs(&dirs);
-        std::fs::write(dir.path().join("notes.txt"), "not an application").expect("fixture writes");
-        assert_eq!(before, snapshot_dirs(&dirs));
-    }
-
-    #[test]
-    fn a_missing_directory_contributes_nothing_until_it_exists() {
-        let outer = tempfile::tempdir().expect("tempdir");
-        let missing = outer.path().join("not-yet-there");
-        let dirs = vec![missing.clone()];
-        let before = snapshot_dirs(&dirs);
-        assert!(before.is_empty());
-        std::fs::create_dir(&missing).expect("fixture creates dir");
-        write_desktop(&missing, "late.desktop", "/usr/bin/late");
-        assert_ne!(before, snapshot_dirs(&dirs));
-    }
-}
+#[path = "desktop_watch_native_tests.rs"]
+mod native_tests;

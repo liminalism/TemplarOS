@@ -569,6 +569,17 @@
     "title": "Event-driven and polling services design notes"
   },
   {
+    "added_at": "2026-10-06",
+    "availability": "full",
+    "byte_len": 48990,
+    "content_hash": "sha256:541a809a37c9ca1c7c5059aa38c471822fa0336fc93753dccad643086f3a5ad7",
+    "id": "low-memory-background-switcher-20260911",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/low-memory-background-switcher-20260911--541a809a.md",
+    "title": "Low-Memory Linux Background Switcher: Design and Evaluation (citation-normalized)"
+  },
+  {
     "added_at": "2026-10-02",
     "availability": "full",
     "byte_len": 10175,
@@ -579,6 +590,18 @@
     "path": "sources/external/nitrux-ownership-tiers-advice-20261001--dce76a77.md",
     "scope": "distro/**",
     "title": "Nitrux as an architectural reference — ownership tiers advice, 2026-10-01 (abridged)"
+  },
+  {
+    "added_at": "2026-10-07",
+    "availability": "full",
+    "byte_len": 863052,
+    "content_hash": "sha256:4945069ccc67617e22f54f26ec51e31f4b60fbd5849b8405aaa613bd6d3e405b",
+    "id": "owner-homegarden-hdmi-pdf-20261007",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/owner-homegarden-hdmi-pdf-20261007--4945069c.md",
+    "scope": "shell/templar-shell/**",
+    "title": "Owner Homegarden layout and HDMI review, 18 pages, 2026-10-07"
   },
   {
     "added_at": "2026-08-17",
@@ -613,5 +636,49 @@
     "path": "sources/external/task-system-taskfield-island-peek-20260909--ee84cf64.md",
     "scope": "crates/templar-window/**",
     "title": "The Task System — one window model, four scales, and Taskfield (planning document, 2026-09-09, with the reviewer's place-versus-view appendix)"
+  },
+  {
+    "added_at": "2026-10-06",
+    "availability": "full",
+    "byte_len": 146394,
+    "content_hash": "sha256:7b931e593c4584a6ceea84bc74903f6666bb8e4422c1eaf7ec87dec593ee5af9",
+    "id": "wallpaper-report-export-20260911",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/wallpaper-report-export-20260911--7b931e59.md",
+    "title": "Original September 11 wallpaper report JSON export"
+  },
+  {
+    "added_at": "2026-10-06",
+    "availability": "full",
+    "byte_len": 8546,
+    "content_hash": "sha256:1dbc02c572b538deeb20e968e041ec4204d0dc2612689e8d2da0368b58fe3024",
+    "id": "wudp-conceptual-header-20261006",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/wudp-conceptual-header-20261006--1dbc02c5.md",
+    "title": "Recovered conceptual WuDP wrapper: wudbquantizer.h from red backup"
+  },
+  {
+    "added_at": "2026-10-06",
+    "availability": "full",
+    "byte_len": 30283,
+    "content_hash": "sha256:2a1cdfbd63a90ef6a9a2a6b5e237d784a703722197e5bb6d48ef3ca2dd5fe191",
+    "id": "wudp-implementation-20261006",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/wudp-implementation-20261006--2a1cdfbd.md",
+    "title": "Recovered WuDP implementation: WUDB.cpp from red backup"
+  },
+  {
+    "added_at": "2026-10-06",
+    "availability": "full",
+    "byte_len": 1754,
+    "content_hash": "sha256:e1cf903d543ca450e6f3fbae1144591d5c06a4a103778a97ef5b849a049d73bb",
+    "id": "wudp-interface-20261006",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/wudp-interface-20261006--e1cf903d.md",
+    "title": "Recovered WuDP interface: wudb.h from red backup"
   }
 ]

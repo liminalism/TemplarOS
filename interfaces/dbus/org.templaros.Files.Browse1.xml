@@ -12,6 +12,21 @@
       <arg name="sources_json" type="s" direction="out"/>
     </method>
 
+    <!-- Actual XDG_DESKTOP_DIR, canonical native-byte base64. Empty means disabled (HOME).
+         Resolving this authority never creates the directory or a garden Place. -->
+    <method name="DesktopDirectoryV1">
+      <arg name="directory_b64" type="s" direction="out"/>
+    </method>
+    <!-- Native immediate DirectoryListing: directory_b64, entries, truncated, limit.
+         Entry: path_b64, name (display only), kind, is_symlink, hidden, size_bytes,
+         mtime_ms, nullable dev and ino. Limit remains bounded at 500. -->
+    <method name="ListDirectoryNativeV1">
+      <arg name="directory_b64" type="s" direction="in"/>
+      <arg name="show_hidden" type="b" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="listing_json" type="s" direction="out"/>
+    </method>
+
     <!-- DirectoryListing JSON contains directory, optional parent, entries, truncated and limit.
          Each entry contains path, name, kind (directory|file|other), is_symlink, hidden,
          size_bytes and mtime_ms. `limit` is clamped by the service to 500. -->
@@ -20,6 +35,13 @@
     <method name="SetBookmark">
       <arg name="path" type="s" direction="in"/>
       <arg name="bookmarked" type="b" direction="in"/>
+    </method>
+    <!-- Explicit additive GTK/libfm-qt export. Existing bytes and labels survive; duplicate
+         URIs are not appended or adopted. ExportResult JSON: path, added, already_present,
+         optional backup, ownership. Intervening edits fail with conflict/retry, not replacement.
+         SetBookmark changes only Templar places and never implicitly exports. -->
+    <method name="ExportBookmarks">
+      <arg name="result_json" type="s" direction="out"/>
     </method>
     <method name="ListDirectory">
       <arg name="directory" type="s" direction="in"/>

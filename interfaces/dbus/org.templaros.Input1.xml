@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Only the compositor's owning libinput thread performs effects. JSON carries actual device
+     capabilities/defaults/readback and owner-epoch/generation fences, never desired fake state.
+     Stable-device preferences are committed only after matching native readback. Reset restores
+     genuine native defaults and clears durable/runtime overrides. Temporary IDs never persist.
+     The retired global tap preference migrates once into a finite observed stable-device set;
+     consumed tombstones keep Reset and later new hardware from resurrecting that global policy. -->
+<node name="/org/templaros/Session/Input">
+  <interface name="org.templaros.Input1">
+    <method name="Observe"><arg name="observation_json" type="s" direction="out"/></method>
+    <method name="Configure"><arg name="expected" type="s" direction="in"/><arg name="id" type="s" direction="in"/><arg name="configuration" type="s" direction="in"/><arg name="observation_json" type="s" direction="out"/></method>
+    <method name="Reset"><arg name="expected" type="s" direction="in"/><arg name="id" type="s" direction="in"/><arg name="observation_json" type="s" direction="out"/></method>
+    <signal name="Changed"/>
+  </interface>
+</node>

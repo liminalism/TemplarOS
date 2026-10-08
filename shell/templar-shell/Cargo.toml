@@ -32,6 +32,7 @@ templar-client = { workspace = true }
 templar-window = { workspace = true }
 templar-field = { workspace = true }
 templar-treemap = { workspace = true }
+templar-file-index = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
@@ -56,20 +57,23 @@ png = { workspace = true }
 # dependency for now).
 pixelkit-raster = { workspace = true }
 pixelkit-text = { workspace = true }
-pixelkit-ui = { workspace = true }
+pixelkit-ui = { workspace = true, features = ["accessibility"] }
 pixelkit-shell = { workspace = true }
+templar-ui = { workspace = true }
+pixelkit-windowing = { workspace = true }
 
 # `pixelkit-shell` opens windows through winit, but its own `PixelApp`/`run_app` never hands the
 # caller the winit `Window` (see src/surface/window.rs's module doc) — reaching the compositor's
-# private `templar_shell_v1` protocol needs the window's raw Wayland surface, so this crate drives its
+# private `templar_shell_v2` protocol needs the window's raw Wayland surface, so this crate drives its
 # own `winit::application::ApplicationHandler` directly, reusing pixelkit-shell's lower-level,
 # independently-public pieces (`SoftbufferPresenter`, `Input`, `Scale`, the key/mouse enums)
 # instead of `run_app`. Pinned to the same "0.30" line pixelkit's own Cargo.toml uses, so Cargo
 # resolves one compiled winit rather than two.
 winit = "0.30"
+accesskit_winit = { version = "0.34", default-features = false, features = ["rwh_06", "accesskit_unix", "async-io"] }
 
 # Directly needed to reach into the wl_display winit already opened on the compositor's private
-# trusted-shell socket (src/wayland_bridge.rs) and speak `templar_shell_v1` on it — winit exposes only
+# trusted-shell socket (src/wayland_bridge.rs) and speak `templar_shell_v2` on it — winit exposes only
 # a raw pointer (`raw_window_handle`/`platform::wayland`), never a `wayland_client::Connection`, so
 # this crate rebuilds one over winit's own foreign `wl_display` via
 # `wayland_backend::sys::client::Backend::from_foreign_display` (the sanctioned entry point for a

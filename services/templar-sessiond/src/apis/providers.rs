@@ -225,12 +225,15 @@ impl ProvidersApi {
     ) -> fdo::Result<()> {
         let role_enum = role_by_name(role)?;
         let app_id = parse_app_id(app_id)?;
-        self.store
-            .transaction(|tx| {
-                providers::apply_selection_within(tx, role_enum, Some(&app_id), "providers1-select")
-            })
-            .map_err(failed)?;
-        self.registry.write().select(role_enum, app_id);
+        {
+            let mut connection = self.store.lock();
+            let mut registry = self.registry.write();
+            let tx = connection.transaction().map_err(failed)?;
+            providers::apply_selection_within(&tx, role_enum, Some(&app_id), "providers1-select")
+                .map_err(failed)?;
+            tx.commit().map_err(failed)?;
+            registry.select(role_enum, app_id);
+        }
         let _ = emitter.changed(role.to_owned()).await;
         Ok(())
     }
@@ -242,12 +245,15 @@ impl ProvidersApi {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
         let role_enum = role_by_name(role)?;
-        self.store
-            .transaction(|tx| {
-                providers::apply_selection_within(tx, role_enum, None, "providers1-deselect")
-            })
-            .map_err(failed)?;
-        self.registry.write().deselect(role_enum);
+        {
+            let mut connection = self.store.lock();
+            let mut registry = self.registry.write();
+            let tx = connection.transaction().map_err(failed)?;
+            providers::apply_selection_within(&tx, role_enum, None, "providers1-deselect")
+                .map_err(failed)?;
+            tx.commit().map_err(failed)?;
+            registry.deselect(role_enum);
+        }
         let _ = emitter.changed(role.to_owned()).await;
         Ok(())
     }
@@ -354,6 +360,7 @@ mod tests {
             keywords: BTreeSet::default(),
             no_display: false,
             provenance: Some(AppProvenance::from_origin(origin)),
+            provides: Vec::new(),
         }
     }
 

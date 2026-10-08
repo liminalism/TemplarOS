@@ -8,6 +8,8 @@ case "$1" in
         if [ -f /etc/bash.bashrc ]; then
             sed -i '/^# >>> templaros garden hook >>>$/,/^# <<< templaros garden hook <<<$/d' \
                 /etc/bash.bashrc || :
+            sed -i '/^# >>> templaros completion hook >>>$/,/^# <<< templaros completion hook <<<$/d' \
+                /etc/bash.bashrc || :
         fi
         ;;
 esac

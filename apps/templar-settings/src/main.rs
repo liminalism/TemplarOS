@@ -11,17 +11,27 @@
 
 mod associations;
 mod background;
+mod bluetooth;
+mod displays;
+mod datetime;
 mod garden;
 mod hardware;
+mod files;
 mod history;
+mod input;
 mod names;
+mod network;
+mod notifications;
+mod power;
 mod providers;
 mod resources;
 mod surface;
+mod sound;
 mod system;
+mod wallpaper;
 
 use clap::Parser;
-use templar_types::ProviderRole;
+use templar_types::{ProviderRole, SettingsPage};
 
 /// TemplarOS Settings.
 #[derive(Debug, Parser)]
@@ -31,10 +41,9 @@ struct Cli {
     #[arg(long)]
     print: bool,
 
-    /// Open a specific page: `system`, `providers`, `associations`, `background`, `resources`,
-    /// `history`, `hardware`. Omit to list the available pages instead of connecting to anything.
+    /// Open a canonical Settings page. Omit for System, or to list pages with --print.
     #[arg(long)]
-    page: Option<String>,
+    page: Option<SettingsPage>,
 
     /// providers: show only this role (e.g. `file-chooser`).
     #[arg(long)]
@@ -61,23 +70,17 @@ struct Cli {
     undo: Option<String>,
 }
 
-const PAGES: &[&str] = &[
-    "appearance",
-    "system",
-    "providers",
-    "associations",
-    "background",
-    "resources",
-    "history",
-    "hardware",
-];
 
 fn main() {
-    tracing_subscriber::fmt().init();
+    use std::io::IsTerminal as _;
+    // No ANSI under the journal: journald stores coloured MESSAGE fields as byte arrays.
+    tracing_subscriber::fmt()
+        .with_ansi(std::io::stdout().is_terminal())
+        .init();
     let cli = Cli::parse();
 
     if !cli.print {
-        if let Err(error) = surface::run() {
+        if let Err(error) = surface::run(cli.page.unwrap_or(SettingsPage::System)) {
             eprintln!("templar-settings: {error:#}");
             std::process::exit(1);
         }
@@ -89,21 +92,73 @@ fn main() {
 }
 
 async fn print_page(cli: Cli) {
-    let Some(page) = cli.page.as_deref() else {
+    let Some(page) = cli.page else {
         println!(
             "templar-settings: pass --page <name> to view one. Pages: {}.",
-            PAGES.join(", ")
+            SettingsPage::ALL.map(SettingsPage::slug).join(", ")
         );
         return;
     };
 
     let output = match page {
-        "hardware" => hardware::render().await,
-        // Appearance has no read-only rendering of its own: `templar settings get/list` already
-        // prints these two typed keys, and a second spelling of the same two values would be a
-        // second thing to keep in step for no new information.
-        "appearance" => "Appearance: see `templar settings list shell.appearance`".to_owned(),
-        "system" | "providers" | "associations" | "background" | "resources" | "history" => {
+        SettingsPage::Hardware => hardware::render().await,
+        SettingsPage::Sound => sound::render().await,
+        SettingsPage::DateTime => datetime::print().await,
+        SettingsPage::Files => {
+            if let Err(error) = files::print().await { println!("Index unavailable — {error:#}"); }
+            return;
+        }
+        SettingsPage::Network => {
+            if let Err(error) = network::print().await { println!("Network unavailable — {error:#}"); }
+            return;
+        }
+        SettingsPage::Bluetooth => {
+            if let Err(error) = bluetooth::print().await { println!("Bluetooth unavailable — {error:#}"); }
+            return;
+        }
+        SettingsPage::Displays => {
+            if let Err(error) = displays::print().await { println!("Displays unavailable — {error:#}"); }
+            return;
+        }
+        SettingsPage::Input => {
+            if let Err(error) = input::print().await { println!("Input unavailable — {error:#}"); }
+            return;
+        }
+        SettingsPage::Appearance
+        | SettingsPage::HomeField
+        | SettingsPage::Homegarden
+        | SettingsPage::Rails
+        | SettingsPage::Windows => {
+            if page == SettingsPage::Appearance {
+                match wallpaper::print().await {
+                    Ok(status) => println!("{status}"),
+                    Err(error) => println!("Wallpaper unavailable — {error:#}"),
+                }
+            }
+            let prefix = match page {
+                SettingsPage::Appearance => "shell.appearance",
+                SettingsPage::HomeField => "shell.home-field",
+                SettingsPage::Homegarden => "shell.home-garden",
+                SettingsPage::Rails => "shell.rails",
+                SettingsPage::Windows => "windows.tabs",
+                _ => unreachable!(),
+            };
+            match zbus::Connection::session().await {
+                Ok(connection) => match templar_client::proxies::SettingsProxy::new(&connection).await {
+                    Ok(proxy) => match proxy.list().await {
+                        Ok(values) => values.into_iter()
+                            .filter(|(key, _)| key.starts_with(prefix))
+                            .map(|(key, value)| format!("{key} = {value}"))
+                            .collect::<Vec<_>>().join("\n"),
+                        Err(error) => format!("Settings unavailable: {error}"),
+                    },
+                    Err(error) => format!("Settings unavailable: {error}"),
+                },
+                Err(error) => format!("Session bus unavailable: {error}"),
+            }
+        }
+        SettingsPage::System | SettingsPage::Providers | SettingsPage::Associations |
+        SettingsPage::Background | SettingsPage::Resources | SettingsPage::History => {
             let connection = match zbus::Connection::session().await {
                 Ok(connection) => connection,
                 Err(error) => {
@@ -112,8 +167,15 @@ async fn print_page(cli: Cli) {
                 }
             };
             match page {
-                "system" => system::render(&connection).await,
-                "providers" => {
+                SettingsPage::System => {
+                    println!("{}", system::render(&connection).await);
+                    if let Err(error) = power::print().await { println!("Power policy unavailable — {error:#}"); }
+                    if let Err(error) = notifications::print().await {
+                        println!("Notifications policy unavailable — {error:#}");
+                    }
+                    return;
+                }
+                SettingsPage::Providers => {
                     let role = cli.role.as_deref().and_then(|name| {
                         ProviderRole::ALL
                             .into_iter()
@@ -121,12 +183,12 @@ async fn print_page(cli: Cli) {
                     });
                     providers::render(&connection, role).await
                 }
-                "associations" => {
+                SettingsPage::Associations => {
                     associations::render(&connection, cli.target.as_deref(), &cli.project).await
                 }
-                "background" => background::render(&connection).await,
-                "resources" => resources::render(&connection, cli.limit).await,
-                "history" => {
+                SettingsPage::Background => background::render(&connection).await,
+                SettingsPage::Resources => resources::render(&connection, cli.limit).await,
+                SettingsPage::History => {
                     history::render(
                         &connection,
                         cli.query.as_deref(),
@@ -137,13 +199,6 @@ async fn print_page(cli: Cli) {
                 }
                 _ => unreachable!("matched above"),
             }
-        }
-        other => {
-            println!(
-                "templar-settings: unknown page {other:?}. Pages: {}.",
-                PAGES.join(", ")
-            );
-            return;
         }
     };
     println!("{output}");

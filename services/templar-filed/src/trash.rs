@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use std::{
     fmt::Write as _,
     fs,
+    ffi::{OsStr, OsString},
+    io::Write as _,
+    os::unix::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
 };
 
@@ -112,8 +115,9 @@ pub fn all_trash_dirs(data_home: &Path, mount_points: &[PathBuf]) -> Vec<TrashDi
 /// `data_home` is `$XDG_DATA_HOME`. A path on the same device as the home trash uses it; on any
 /// other device the volume's own trash is used, so trashing is always a rename.
 pub fn trash_dir_for(path: &Path, data_home: &Path) -> Result<TrashDir> {
+    use std::os::unix::fs::MetadataExt;
     let home_trash = home_trash(data_home);
-    let (Some(path_device), Some(home_device)) = (device_of(path), device_of(data_home)) else {
+    let (Some(path_device), Some(home_device)) = (path.symlink_metadata().ok().map(|m| m.dev()), device_of(data_home)) else {
         return Ok(home_trash);
     };
     if path_device == home_device {
@@ -139,7 +143,13 @@ pub fn trash(path: &Path, trash: &TrashDir, now: &str) -> Result<TrashedItem> {
         bail!("{} does not exist", absolute.display());
     }
 
-    let name = free_name(&trash.files(), &trash.info(), &file_name(&absolute));
+    // Trash storage names are not file identity. Invalid-UTF-8 and long original names use
+    // an opaque bounded key; the lossless original name is retained in the .trashinfo Path.
+    let original_name = absolute.file_name().unwrap_or_else(|| OsStr::new("unnamed"));
+    let storage_name = original_name.to_str().filter(|name| name.len() <= 220)
+        .map(std::borrow::Cow::Borrowed)
+        .unwrap_or_else(|| std::borrow::Cow::Owned(format!("native-{}", uuid::Uuid::new_v4())));
+    let name = free_name(&trash.files(), &trash.info(), &storage_name);
     let trashed_path = trash.files().join(&name);
     let info_path = trash.info().join(format!("{name}.trashinfo"));
 
@@ -152,11 +162,14 @@ pub fn trash(path: &Path, trash: &TrashDir, now: &str) -> Result<TrashedItem> {
     };
     let info = format!(
         "[Trash Info]\nPath={}\nDeletionDate={now}\n",
-        percent_encode(&recorded.to_string_lossy())
+        percent_encode(recorded.as_os_str())
     );
-    fs::write(&info_path, info).with_context(|| format!("writing {}", info_path.display()))?;
+    let mut record = fs::OpenOptions::new().write(true).create_new(true).open(&info_path)
+        .with_context(|| format!("creating {}", info_path.display()))?;
+    record.write_all(info.as_bytes()).with_context(|| format!("writing {}", info_path.display()))?;
+    record.sync_all().with_context(|| format!("flushing {}", info_path.display()))?;
 
-    if let Err(error) = fs::rename(&absolute, &trashed_path) {
+    if let Err(error) = crate::native_fs::rename_no_replace(&absolute, &trashed_path) {
         let _ = fs::remove_file(&info_path);
         return Err(error).with_context(|| {
             format!(
@@ -185,7 +198,7 @@ pub fn read_info(trashed_path: &Path, trash: &TrashDir) -> Result<TrashedItem> {
     let mut deletion_date = String::new();
     for line in text.lines() {
         if let Some(value) = line.strip_prefix("Path=") {
-            original = Some(PathBuf::from(percent_decode(value)));
+            original = Some(PathBuf::from(percent_decode(value)?));
         } else if let Some(value) = line.strip_prefix("DeletionDate=") {
             value.clone_into(&mut deletion_date);
         }
@@ -216,7 +229,7 @@ pub fn restore(trashed_path: &Path, trash: &TrashDir) -> Result<PathBuf> {
     if let Some(parent) = item.original_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("recreating {}", parent.display()))?;
     }
-    fs::rename(&item.trashed_path, &item.original_path).with_context(|| {
+    crate::native_fs::rename_no_replace(&item.trashed_path, &item.original_path).with_context(|| {
         format!(
             "restoring {} to {}",
             item.trashed_path.display(),
@@ -249,12 +262,16 @@ pub fn list(trash: &TrashDir) -> Result<Vec<TrashedItem>> {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TrashEntry {
     pub name: String,
+    #[serde(with = "templar_types::native_path")]
     pub trashed_path: PathBuf,
+    #[serde(with = "templar_types::native_path")]
     pub info_path: PathBuf,
+    #[serde(with = "templar_types::native_path")]
     pub original_path: PathBuf,
     /// Local time, `YYYY-MM-DDThh:mm:ss`, as the specification requires.
     pub deletion_date: String,
     /// The trash directory holding this entry: the home trash, or a volume's.
+    #[serde(with = "templar_types::native_path")]
     pub trash_root: PathBuf,
     pub is_directory: bool,
     pub size_bytes: u64,
@@ -401,8 +418,9 @@ fn free_name(files: &Path, info: &Path, name: &str) -> String {
 
 /// The mount point that holds `path`: walk up until the device number changes.
 pub fn top_dir_of(path: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
     let absolute = absolute(path);
-    let device = device_of(&absolute)?;
+    let device = absolute.symlink_metadata().ok()?.dev();
     let mut current = absolute.as_path();
     let mut best = current.to_path_buf();
     while let Some(parent) = current.parent() {
@@ -459,9 +477,9 @@ fn file_name(path: &Path) -> String {
 
 /// Percent-encode everything outside the specification's unreserved set, keeping `/` so a path
 /// stays readable.
-fn percent_encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
+fn percent_encode(value: &OsStr) -> String {
+    let mut out = String::with_capacity(value.as_bytes().len());
+    for &byte in value.as_bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'/') {
             out.push(byte as char);
         } else {
@@ -471,23 +489,24 @@ fn percent_encode(value: &str) -> String {
     out
 }
 
-fn percent_decode(value: &str) -> String {
+fn percent_decode(value: &str) -> Result<OsString> {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
-            if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                out.push(byte);
-                index += 3;
-                continue;
-            }
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() { bail!("incomplete percent escape in trash Path"); }
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).context("invalid percent escape in trash Path")?;
+            let byte = u8::from_str_radix(hex, 16).context("invalid percent escape in trash Path")?;
+            out.push(byte);
+            index += 3;
+            continue;
         }
         out.push(bytes[index]);
         index += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    if out.contains(&0) { bail!("trash Path contains NUL"); }
+    Ok(OsString::from_vec(out))
 }
 
 #[cfg(test)]
@@ -584,9 +603,9 @@ mod tests {
     #[test]
     fn percent_coding_round_trips() {
         for value in ["/a/b c", "/a/#anchor", "/a/100%", "/plain/path", "/ü/né"] {
-            assert_eq!(percent_decode(&percent_encode(value)), value);
+            assert_eq!(percent_decode(&percent_encode(OsStr::new(value))).unwrap(), OsStr::new(value));
         }
-        assert_eq!(percent_encode("/a b"), "/a%20b");
+        assert_eq!(percent_encode(OsStr::new("/a b")), "/a%20b");
     }
 
     #[test]

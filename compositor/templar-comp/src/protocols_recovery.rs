@@ -6,7 +6,7 @@
 //!
 //! There is no distinct "system" socket yet for `templar-sessiond` to connect as (only the trusted
 //! shell has a private socket today, `src/shell_socket.rs`), so this global is filtered the same
-//! way as `templar_shell_manager_v1` for now. That is a known simplification, not a design decision:
+//! way as `templar_shell_manager_v2` for now. That is a known simplification, not a design decision:
 //! the pressure overlay and the shell's own commands are conceptually different trust tiers (one
 //! is "the system", one is "the restartable shell process") that happen to share one socket
 //! because only one exists. Splitting them is follow-up work, not a correctness gap in what is

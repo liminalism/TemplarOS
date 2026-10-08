@@ -125,7 +125,15 @@ fn plan_place(
     span: Span,
     corner: HomeCorner,
 ) -> Option<Tended> {
-    let cell = free_landing(doc, span, view.landing, corner)?;
+    let seed = view.root.as_os_str().as_encoded_bytes().iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    let room = Span::new(span.cols.max(GROWTH_ROOM.cols), span.rows.max(GROWTH_ROOM.rows));
+    let seeded = Cell::new(
+        (seed % u64::from(doc.cols.saturating_sub(room.cols) + 1)) as u16,
+        ((seed >> 32) % u64::from(doc.rows.saturating_sub(room.rows) + 1)) as u16,
+    );
+    let cell = free_landing(doc, span, view.landing.or(Some(seeded)), corner)?;
     let tile = garden_tile(id, &view.root, span, doc.cols, doc.rows);
     Some(Tended {
         op: FieldOp::Place {
@@ -270,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_context_lands_at_the_home_corner_and_never_moves_anything() {
+    fn a_new_context_has_a_stable_path_seeded_landing_and_never_moves_anything() {
         let doc = FieldDocument::new("DP-1", 12, 8);
         let ops = tend(
             &doc,
@@ -282,9 +290,10 @@ mod tests {
         let FieldOp::Place { landing, .. } = &ops[0].op else {
             panic!("{:?}", ops[0].op)
         };
-        // Row 4, not 6: the corner is taken as a `GROWTH_ROOM` tile would sit in it, so the 2x2
-        // can become 6x4 in place, growing down and right into free cells.
-        assert_eq!(landing.cell, Cell::new(0, 4));
+        let again = tend(&doc, &[view("/home/dk/src/templaros", Some(Span::new(2, 2)))], HomeCorner::TopRight);
+        let FieldOp::Place { landing: other, .. } = &again[0].op else { panic!("not placed") };
+        assert_eq!(landing.cell, other.cell);
+        assert!(landing.cell.col <= 6 && landing.cell.row <= 4);
     }
 
     #[test]

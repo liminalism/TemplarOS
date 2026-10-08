@@ -35,3 +35,37 @@ mount; shut Windows down fully rather than overriding its filesystem safety chec
 
 `just predeploy-checklist` prints every outstanding manual acceptance check from active AKR heads,
 grouped by what to try in the new session. It does not deploy or terminate anything.
+
+## Terminal and editor session hooks
+
+The packaged Bash, zsh and fish hooks report prompt-directory changes and foreground
+completion events; they do not keep a polling process alive. Each shell gets a private,
+bounded 32-slot journal under its runtime directory. Exit status and every pipeline
+element's status are captured before other prompt hooks run. Only short command labels
+enter the session catalogue. `TEMPLAR_GARDEN_FULL_COMMANDS=1` opts into bounded command
+detail in that private journal, never into the HomeGarden D-Bus payload.
+
+Leading-space commands remain excluded from the journal. Bash also honors this when
+`HISTCONTROL` is unset or only ignores duplicates: it inspects the admitted raw history line
+without changing history settings. Disabled or unavailable history fails closed for recording.
+The hooks preserve the user's prompt chain and job control. Bash arms recording at its
+PS0 command-read boundary, not by guessing which DEBUG commands belong to a prompt:
+compound prompt hooks and Kitty's shell-integration internals do not create journal rows.
+The PS0 addition emits nothing and does not fork; existing PS0 content and DEBUG handlers
+remain chained. DEBUG capture/installation waits for the first prompt so that Bash has
+restored any caller trap hidden during `source`; only the completion prompt function
+inherits that handler, without enabling shell-wide functrace. Bash's DEBUG trap does not
+time a bare subshell group; do not interpret an absent journal entry as success.
+
+`tests/integration/garden-session-hooks.py --shell bash|zsh|fish` runs real interactive
+terminal readers in an owned PTY, with isolated home/config/runtime directories and
+without user startup files. It checks journal permissions, leading-space privacy and
+pipeline status. The Bash run also sources the installed Kitty Bash integration through
+its real ENV injection in an isolated startup environment, exercising scalar/array
+compound prompts, both hook load orders, PS0 preservation and inherited DEBUG/extdebug
+behavior. It checks empty prompt cycles, real command output, pipeline status, privacy
+and Kitty's actual prompt/command/CWD protocol marks. `--kitty-bash PATH` selects a
+different installed integration script; absence is reported rather than replaced by a
+copy or disabled integration. Its `templar` command recorder is only a hook boundary
+fixture; it does not certify broker identity, editor projection or real application
+Resume. Those require an isolated session with the real session daemon and user manager.

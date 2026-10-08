@@ -26,6 +26,102 @@ use std::{
 };
 use templar_build::{BuildSet, BuiltPackage, components::Matrix};
 
+/// External local applications selected in the image, not first-party daemons.
+#[derive(Debug, Eq, PartialEq)]
+struct LocalSource {
+    name: String,
+    package: String,
+    source: PathBuf,
+}
+
+fn selected_local_sources(root: &Path) -> Result<Vec<LocalSource>> {
+    let manifest: toml::Value = toml::from_str(&fs::read_to_string(
+        root.join("distro/forks/manifest.toml"),
+    )?)?;
+    let selection: toml::Value = toml::from_str(&fs::read_to_string(
+        root.join("distro/seeds/selection.toml"),
+    )?)?;
+    let selected: std::collections::BTreeSet<&str> = selection
+        .get("layer")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|layer| layer.get("package").and_then(toml::Value::as_array))
+        .flatten()
+        .filter_map(|package| package.get("name").and_then(toml::Value::as_str))
+        .collect();
+    let mut sources = Vec::new();
+    for (name, entry) in manifest
+        .as_table()
+        .context("fork manifest is not a table")?
+    {
+        if entry.get("source_kind").and_then(toml::Value::as_str) != Some("local") {
+            continue;
+        }
+        let package = entry
+            .get("package")
+            .and_then(toml::Value::as_str)
+            .with_context(|| format!("local source {name} has no package"))?;
+        if !selected.contains(package) {
+            continue;
+        }
+        let source = entry
+            .get("source")
+            .and_then(toml::Value::as_str)
+            .with_context(|| format!("local source {name} has no source directory"))?;
+        let archive_variable = format!(
+            "TEMPLAROS_SOURCE_ARCHIVE_{}",
+            name.replace('-', "_").to_ascii_uppercase()
+        );
+        sources.push(LocalSource {
+            name: name.clone(),
+            package: package.to_owned(),
+            source: std::env::var_os(&archive_variable)
+                .map_or_else(|| root.join(source), PathBuf::from),
+        });
+    }
+    sources.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(sources)
+}
+
+fn build_local_sources(
+    root: &Path,
+    deb_dir: &Path,
+    sources: &[LocalSource],
+    id: &str,
+) -> Result<Vec<BuiltPackage>> {
+    let mut packages = Vec::new();
+    for source in sources {
+        let status = Process::new(root.join("scripts/build-fork-deb.sh"))
+            .arg(&source.name)
+            .arg("--source")
+            .arg(&source.source)
+            .args(["--deb-version", id])
+            .current_dir(root)
+            .status()
+            .with_context(|| format!("building closed local source {}", source.name))?;
+        if !status.success() {
+            bail!("local source {} failed; nothing was published", source.name);
+        }
+        let file = newest_deb(deb_dir, &source.package, id).with_context(|| {
+            format!("local source {} produced no versioned package", source.name)
+        })?;
+        packages.push(BuiltPackage {
+            component: source.name.clone(),
+            package: source.package.clone(),
+            crate_name: source.name.clone(),
+            version: id.to_owned(),
+            size_bytes: fs::metadata(&file)?.len(),
+            file: file
+                .file_name()
+                .context("local package has no filename")?
+                .to_string_lossy()
+                .into_owned(),
+        });
+    }
+    Ok(packages)
+}
+
 pub struct Options {
     /// Print the plan and exit without building.
     pub dry_run: bool,
@@ -37,6 +133,51 @@ pub struct Options {
     pub closure_report: Option<PathBuf>,
 }
 
+/// An extracted closure has an exact content origin; its Git facts are observations only.
+fn source_identity(root: &Path) -> Result<(String, bool, Option<String>)> {
+    let provenance_path = root.join("../../source-provenance.json");
+    if provenance_path.is_file() {
+        let provenance: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&provenance_path)?)?;
+        let application = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("source application has no directory name")?;
+        if provenance["package"].as_str() != Some("templaros-workspace")
+            || provenance["application"].as_str() != Some(application)
+        {
+            bail!("source provenance does not identify this workspace");
+        }
+        let content = provenance["bundle_content_sha256"]
+            .as_str()
+            .context("source provenance has no bundle content SHA256")?;
+        if content.len() != 64 || !content.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("source provenance has an invalid bundle content SHA256");
+        }
+        let owner = provenance["source_roots"]
+            .as_array()
+            .and_then(|owners| {
+                owners
+                    .iter()
+                    .find(|owner| owner["path"].as_str() == Some(application))
+            })
+            .context("source provenance has no application source root")?;
+        let git_sha = owner["git_head"].as_str().unwrap_or_default().to_owned();
+        let dirty = owner["git_dirty"].as_bool().unwrap_or(false);
+        return Ok((git_sha, dirty, Some(content.to_owned())));
+    }
+    let git_root = git(root, &["rev-parse", "--show-toplevel"])
+        .context("workspace has neither Git identity nor closed-source provenance")?;
+    if fs::canonicalize(root)? != fs::canonicalize(git_root)? {
+        bail!("workspace must not inherit an enclosing checkout's Git identity");
+    }
+    let git_sha = git(root, &["rev-parse", "--short=7", "HEAD"])
+        .context("workspace has neither Git identity nor closed-source provenance")?;
+    let dirty = git(root, &["status", "--porcelain", "--untracked-files=no"])
+        .is_some_and(|status| !status.trim().is_empty());
+    Ok((git_sha, dirty, None))
+}
+
 /// The build-set id this checkout would produce right now, and the epoch inside it.
 ///
 /// Shared with `cargo xtask archive changelog`, which must derive the changelog head entry from
@@ -46,24 +187,19 @@ pub struct Options {
 /// If the workspace version cannot be read from `Cargo.toml`.
 pub fn current_id(root: &Path, epoch: Option<u64>) -> Result<(String, u64)> {
     let version = workspace_version(root)?;
-    let git_sha =
-        git(root, &["rev-parse", "--short=7", "HEAD"]).unwrap_or_else(|| "0000000".into());
-    let dirty = git(root, &["status", "--porcelain", "--untracked-files=no"])
-        .is_some_and(|status| !status.trim().is_empty());
+    let (git_sha, dirty, content) = source_identity(root)?;
     let epoch = epoch.unwrap_or_else(now_secs);
-    Ok((
-        templar_build::build_set_id(&version, epoch, &git_sha, dirty),
-        epoch,
-    ))
+    let id = content.map_or_else(
+        || templar_build::build_set_id(&version, epoch, &git_sha, dirty),
+        |hash| format!("{version}~dev{epoch}+s{hash}"),
+    );
+    Ok((id, epoch))
 }
 
 pub fn run(root: &Path, options: &Options) -> Result<()> {
     let matrix = Matrix::read(&root.join("distro/deploy/components.toml"))
         .context("reading the component matrix")?;
-    let git_sha =
-        git(root, &["rev-parse", "--short=7", "HEAD"]).unwrap_or_else(|| "0000000".into());
-    let dirty = git(root, &["status", "--porcelain", "--untracked-files=no"])
-        .is_some_and(|status| !status.trim().is_empty());
+    let (git_sha, dirty, content) = source_identity(root)?;
     let (id, epoch) = current_id(root, options.epoch)?;
 
     if options.print_id {
@@ -101,9 +237,15 @@ pub fn run(root: &Path, options: &Options) -> Result<()> {
         );
     }
     if dirty {
-        println!(
-            "  the working tree has uncommitted changes; the id says so, and so will every package"
-        );
+        if content.is_some() {
+            println!(
+                "  source provenance records dirty inputs; the id pins their complete closed content"
+            );
+        } else {
+            println!(
+                "  the working tree has uncommitted changes; the id says so, and so will every package"
+            );
+        }
     }
     println!("  {} package(s):", matrix.components.len());
     for component in &matrix.components {
@@ -120,6 +262,18 @@ pub fn run(root: &Path, options: &Options) -> Result<()> {
             dir.file_name().unwrap_or_default().to_string_lossy()
         );
     }
+    let local_sources = selected_local_sources(root)?;
+    println!(
+        "  {} selected local source package(s):",
+        local_sources.len()
+    );
+    for source in &local_sources {
+        println!(
+            "    scripts/build-fork-deb.sh {} --source {} --deb-version {id}",
+            source.name,
+            source.source.display()
+        );
+    }
     if options.dry_run {
         println!("dry run: nothing was built");
         return Ok(());
@@ -127,8 +281,16 @@ pub fn run(root: &Path, options: &Options) -> Result<()> {
 
     let deb_dir = root.join("target/debian");
     fs::create_dir_all(&deb_dir).context("creating target/debian")?;
+    if content.is_some() {
+        fs::copy(
+            root.join("../../source-provenance.json"),
+            deb_dir.join("source-provenance.json"),
+        )
+        .context("retaining exact closed-source provenance with the build set")?;
+    }
     let mut packages = build_packages(root, &deb_dir, &matrix, &id)?;
     packages.extend(build_metapackages(root, &deb_dir, &metapackages, &id)?);
+    packages.extend(build_local_sources(root, &deb_dir, &local_sources, &id)?);
     reject_mixed_set(&matrix, &packages, &id)?;
     reject_stale_build_scripts(root, &matrix, &id)?;
 
@@ -171,6 +333,43 @@ fn build_packages(
     matrix: &Matrix,
     id: &str,
 ) -> Result<Vec<BuiltPackage>> {
+    // The decoder is a temporary child, shipped inside sessiond's package, not another daemon.
+    // cargo-deb cannot build an asset from a different package by itself.
+    let decoder = Process::new("cargo")
+        .args([
+            "build",
+            "--release",
+            "-p",
+            "templar-wallpaper",
+            "--features",
+            "decode",
+            "--bin",
+            "templar-wallpaper-decode",
+        ])
+        .current_dir(root)
+        .env("TEMPLAROS_BUILD_SET_ID", id)
+        .status()
+        .context("building the session-owned wallpaper decoder")?;
+    if !decoder.success() {
+        bail!("wallpaper decoder build failed; nothing was published");
+    }
+    // Preserve native filename bytes across systemd's UTF-8 ExecStart boundary.
+    let native_exec = Process::new("cargo")
+        .args([
+            "build",
+            "--release",
+            "-p",
+            "templar-appd",
+            "--bin",
+            "templar-app-exec",
+        ])
+        .current_dir(root)
+        .env("TEMPLAROS_BUILD_SET_ID", id)
+        .status()
+        .context("building the session-owned native argv adapter")?;
+    if !native_exec.success() {
+        bail!("native argv adapter build failed; nothing was published");
+    }
     let mut packages = Vec::new();
     for component in &matrix.components {
         println!("== {} ({})", component.package, component.crate_name);
@@ -503,6 +702,55 @@ mod tests {
 
     fn repo() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    #[test]
+    fn extracted_source_identity_pins_content_with_the_requested_epoch() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("sources/LegeOS");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace.package]\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let hash = "ab".repeat(32);
+        let mut provenance = serde_json::json!({
+            "package": "templaros-workspace", "application": "LegeOS",
+            "bundle_content_sha256": hash,
+            "source_roots": [{"path": "LegeOS", "git_head": "deadbeef", "git_dirty": true}]
+        });
+        let path = temporary.path().join("source-provenance.json");
+        fs::write(&path, serde_json::to_vec(&provenance).unwrap()).unwrap();
+        let (id, epoch) = current_id(&root, Some(42)).unwrap();
+        assert_eq!(id, format!("0.1.0~dev42+s{hash}"));
+        assert_eq!(epoch, 42);
+        assert_eq!(
+            source_identity(&root).unwrap(),
+            ("deadbeef".to_owned(), true, Some(hash))
+        );
+        provenance["bundle_content_sha256"] = serde_json::json!("cd".repeat(32));
+        fs::write(&path, serde_json::to_vec(&provenance).unwrap()).unwrap();
+        assert_ne!(current_id(&root, Some(42)).unwrap().0, id);
+        provenance["bundle_content_sha256"] = serde_json::json!("not a hash");
+        fs::write(&path, serde_json::to_vec(&provenance).unwrap()).unwrap();
+        assert!(current_id(&root, Some(42)).is_err());
+    }
+
+    #[test]
+    fn selected_viewer_has_a_real_local_source_build() {
+        let sources = selected_local_sources(&repo()).unwrap();
+        let viewer = sources
+            .iter()
+            .find(|source| source.package == "liminalview")
+            .unwrap();
+        assert_eq!(viewer.name, "liminalview");
+        assert!(
+            repo()
+                .join("distro/forks/liminalview/debian/rules")
+                .is_file()
+        );
+        assert!(repo().join("scripts/build-local-source-deb.py").is_file());
     }
 
     #[test]

@@ -18,7 +18,7 @@ sudo installer/provision.sh --image /var/tmp/templaros.img --user dev --password
 # The reference laptop: one command from the live session (or the medium's last GRUB entry).
 # It finds the OS drive by its lubuntu_2504 label and never writes the drive labelled Second,
 # chooses between a fresh install, a rebuild of the TemplarOS pair and a resume by itself, and
-# does the plan/apply dance below with the password dk / templaros (change it with passwd).
+# does the plan/apply dance below with the initial developer password (change it with templar account password).
 sudo templaros-autoinstall
 # ...or, on a medium older than this script, straight from a checkout:
 sudo /path/to/LegeOS/distro/iso/live/autoinstall.sh
@@ -44,9 +44,11 @@ sudo TEMPLAROS_PROVISION_ALLOW_DEVICE=1 \
 ```
 
 The archive it installs from is `/templaros/devrepo` on the live medium and `/var/lib/templaros/devrepo`
-elsewhere (`--archive DIR` overrides). It is copied whole to the target's `/var/lib/templaros/devrepo`,
-so the installed system's `templar dev status` knows the set it came from and `templar dev rollback` has
-somewhere to go.
+elsewhere (`--archive DIR` overrides). It is copied to persistent target State so
+native hostd candidates can consume its signed public package inputs. The running
+System root's apt source/package database is not rewritten by native developer
+deploy: `templar dev deploy/install` queues a pinned candidate; use `templar update
+status`, reboot and boot health to establish staged/promoted/running identity.
 
 Ubuntu itself comes from the snapshot `distro/base.toml` pins (`snapshot_url`), not the moving
 archive: the set's metapackages pin the NVIDIA modules and userspace to the exact versions its
@@ -60,6 +62,34 @@ dpkg status, the target's exact sources and set pin, `apt-get install --simulate
 one line per cause — `templaros-dev-cuda needs nvidia-cuda-toolkit — no configured source has it` —
 instead of partitioning a disk it cannot finish. `--check-packages` asks the same question with no
 target and no root; `distro/iso/build.sh` runs it before building a medium.
+
+## Native System/State layout and read-only opt-in
+
+`@var` mounts at `/var/lib/templaros/state`, not `/var`. The owned layout helper
+prepares only declared persistent directory binds; dpkg/APT database/cache and
+machine/account files remain paired with `@` or the selected candidate. The
+provisioner's progress record is physically `@var/var/lib/templaros/provision/state`,
+accessible through the declared State bind once mounted. Bootstrap/candidate
+mount paths are distinct from relative boot identities.
+
+Writable is the default. Add `--read-only` to **both** reviewed plan and apply to
+opt into a sealed completed System root. The request fingerprint records that mode,
+the layout and the owned helper digest. Packages/accounts/State binds, UUID fstab,
+copied ESP kernel/initrd, paired baseline registry and GRUB environment are complete
+before sealing. In RO mode GRUB's mutable entries/environment live in the owned
+ESP namespace; no live-root apt/restart is the update mechanism.
+
+`templar account password` uses a sealed secret FD and real polkit self-auth/PAM
+maintenance to update compatible encrypted credentials across registered roots.
+The additive common-account gate and boot recovery preserve existing password and
+fingerprint rules. Pending/malformed recovery state blocks login; never delete its
+marker/journal to get around it. See
+[`ownership-tiers.md`](../docs/architecture/ownership-tiers.md) for protocol,
+state-reader compatibility and explicit unsupported migration refusals.
+
+This flag is operational, not a declaration that disposable-media or physical
+read-only boot/password/crash-recovery proof passed. Those checks are mandatory in
+[`CHECKLIST.md`](CHECKLIST.md) before adopting RO on a real machine.
 
 ## Stopping partway, and carrying on
 
@@ -84,6 +114,12 @@ of:
 
 A failed apply still unmounts everything it mounted, then says which step it stopped at, whether
 the target was modified, the recorded state, and the exact command that carries on.
+
+Legacy progress under a blanket-mounted `@var` is inspected for provenance, but
+`--resume` refuses it before target writes. Moving a live package database or
+guessing which database belongs to an existing root is not a safe migration.
+Use reviewed offline migration or a separately reviewed rebuild; neither is
+silently substituted for resume.
 
 The chroot steps get their own `/run` (a tmpfs, so nothing reaches `@`): Ubuntu's
 `/etc/resolv.conf` is a symlink into `/run/systemd/resolve/`, which a never-booted target does not
@@ -148,6 +184,12 @@ what `tests/integration/provision-qemu.sh` asserts against.
    `/EFI/templaros/<id>/`, its id is recorded as known-good, and `/boot/grub/templaros-entries.cfg` is
    written in the same shape hostd will rewrite it in.
 10. **Diagnostics**: `templar doctor --root <mount>` against the finished tree.
+
+The account-maintenance writer and login gate recognize the account State bind through
+`/proc/self/mountinfo`, including escaped mountpoint names. A same-filesystem bind is still
+a mountpoint even though `os.path.ismount` reports false. Missing binds remain a refusal;
+the owned native regression is `SecretAndRecoveryContract.test_actual_same_filesystem_bind_with_escaped_mountpoint`
+in `tests/integration/test-deployment-contract.py`.
 
 ## Afterwards
 

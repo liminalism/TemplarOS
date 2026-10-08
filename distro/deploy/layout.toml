@@ -41,8 +41,8 @@ size_min = "8G"
 label = "templaros-root"
 mount = "/"
 mount_options = "compress=zstd:1"
-# @deployments holds the read-only candidate snapshots the update engine stages
-# (services/templar-hostd/src/updates.rs). It is authoritative: the declaration follows the engine.
+# @deployments holds writable staging snapshots; an explicit RO installation
+# policy seals completed candidates after verification and owned ESP copies.
 subvolumes = ["/@", "/@home", "/@var", "/@snapshots", "/@deployments"]
 
 # --- An optional independent data role ---------------------------------------------------------
@@ -74,6 +74,9 @@ policy = "reuse"
 # --- Deployment identity ----------------------------------------------------------------------
 
 [deployment]
+# Mount @deployments directly here; mounted candidates are not boot identities.
+mount = "/var/lib/templaros/deployments"
+bootstrap_mount = "/var/lib/templaros/roots/bootstrap"
 # One path segment, safe as a btrfs subvolume name, a vfat directory name, a GRUB menu entry id
 # and a single kernel command-line word.
 id_pattern = '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
@@ -122,3 +125,472 @@ tries_counter = "hostd"
 entry_template = "/loader/entries/templaros-{id}.conf"
 # The loader decrements the `+tries` suffix itself; hostd counts nothing there.
 tries_counter = "loader"
+
+# Ownership is checked by xtask, not advertised as runtime sandbox enforcement.
+[ownership]
+version = 1
+external_owners = ["user", "application", "runtime-services", "installer", "network-manager", "bluez", "systemd", "journald", "flatpak", "snapd", "fprintd", "upower", "accounts", "polkit"]
+
+[[ownership.subvolume]]
+path = "/@"
+tier = "system"
+owner = "hostd"
+writes = ["/usr", "/etc", "/var/lib/dpkg", "/var/lib/apt", "/var/cache/apt"]
+exceptions = []
+[[ownership.subvolume]]
+path = "/@home"
+tier = "work"
+owner = "user"
+writes = ["/home"]
+exceptions = []
+[[ownership.subvolume]]
+path = "/@var"
+tier = "state"
+owner = "runtime-services"
+writes = ["/var/lib/templaros/state"]
+exceptions = []
+[[ownership.subvolume]]
+path = "/@snapshots"
+tier = "state"
+owner = "hostd"
+writes = ["/.snapshots"]
+exceptions = []
+[[ownership.subvolume]]
+path = "/@deployments"
+tier = "system"
+owner = "hostd"
+writes = ["/var/lib/templaros/deployments"]
+exceptions = []
+
+[[ownership.path]]
+path = "/"
+tier = "system"
+owner = "hostd"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "/home"
+tier = "work"
+owner = "user"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "/data"
+tier = "work"
+owner = "user"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h"
+tier = "work"
+owner = "user"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.config"
+tier = "state"
+owner = "application"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.local/share"
+tier = "state"
+owner = "application"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.local/state/templaros"
+tier = "state"
+owner = "sessiond"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.local/state/templaros/resources"
+tier = "state"
+owner = "resourced"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.config/templaros"
+tier = "state"
+owner = "sessiond"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.config/templar-displays"
+tier = "state"
+owner = "displays"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.config/mimeapps.list"
+tier = "state"
+owner = "sessiond"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.local/share/applications"
+tier = "state"
+owner = "sessiond"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.cache/templaros"
+tier = "state"
+owner = "filed"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.snapshots"
+tier = "state"
+owner = "hostd"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%t/templaros"
+tier = "state"
+owner = "session"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%t/templaros/compositor-display.json"
+tier = "state"
+owner = "comp"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%t/templaros/build"
+tier = "state"
+owner = "runtime-services"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "/run/templaros"
+tier = "state"
+owner = "hostd"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "/sys/fs/cgroup"
+tier = "state"
+owner = "resourced"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "/.snapshots"
+tier = "state"
+owner = "hostd"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "/var/lib/templaros/hostd"
+tier = "state"
+owner = "hostd"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "/var/lib/templaros/devrepo"
+tier = "state"
+owner = "cli"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "/var/lib/templaros/state"
+tier = "state"
+owner = "runtime-services"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "/var/lib/templaros/deployments"
+tier = "system"
+owner = "hostd"
+writes = []
+exceptions = []
+
+# These are deliberate, reviewed non-candidate package writers. Native updates
+# and native developer deploy are NOT an exception: they must use hostd.
+[[ownership.updater]]
+path = "services/templar-hostd/src/apt.rs"
+tier = "system"
+owner = "hostd"
+writes = ["/usr", "/etc", "/var/lib/dpkg", "/var/lib/apt", "/var/cache/apt"]
+exceptions = []
+[[ownership.updater]]
+path = "cli/templar/src/dev/install.rs"
+tier = "system"
+owner = "cli"
+writes = ["/"]
+exceptions = [{ path = "/", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Temporary non-TemplarOS developer overlay only; native installation queues a hostd candidate and never reaches live apt" }]
+[[ownership.updater]]
+path = "installer/provision.sh"
+tier = "system"
+owner = "installer"
+writes = ["/"]
+exceptions = [{ path = "/", decision = "@legeos.decision.independent-storage-roles/2", reason = "Reviewed offline target root bootstrap; --apply consumes an identity-checked plan, never running-root package update" }]
+[[ownership.updater]]
+path = "scripts/build-in-resolute.sh"
+tier = "system"
+owner = "installer"
+writes = ["/"]
+exceptions = [{ path = "/", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Disposable development chroot, not the installed operating system" }]
+[[ownership.updater]]
+path = "scripts/reinstall-templaros-desktop.sh"
+tier = "system"
+owner = "installer"
+writes = ["/"]
+exceptions = [{ path = "/", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Temporary Lubuntu overlay validation route; not native TemplarOS deployment" }]
+[[ownership.updater]]
+path = "scripts/freeze-evidence-setup.sh"
+tier = "system"
+owner = "installer"
+writes = ["/"]
+exceptions = [{ path = "/", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Legacy evidence policy setup on the development host; read-only native installs obtain these files in a hostd candidate" }]
+[[ownership.updater]]
+path = "scripts/update-templaros.sh"
+tier = "system"
+owner = "cli"
+writes = ["/var/lib/templaros/devrepo"]
+exceptions = []
+
+# @var is a private state store, NOT a blanket /var mount over package metadata.
+[state]
+store_mount = "/var/lib/templaros/state"
+subvolume = "@var"
+schema = 1
+
+[[state.path]]
+target = "/var/lib/templaros/hostd"
+source = "/var/lib/templaros/hostd"
+tier = "state"
+owner = "hostd"
+writes = ["/var/lib/templaros/hostd"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/templaros/account-maintenance"
+source = "/var/lib/templaros/account-maintenance"
+tier = "state"
+owner = "hostd"
+writes = ["/var/lib/templaros/account-maintenance"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/templaros/devrepo"
+source = "/var/lib/templaros/devrepo"
+tier = "state"
+owner = "cli"
+writes = ["/var/lib/templaros/devrepo"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/templaros/provision"
+source = "/var/lib/templaros/provision"
+tier = "state"
+owner = "installer"
+writes = ["/var/lib/templaros/provision"]
+exceptions = []
+[[state.path]]
+target = "/var/log"
+source = "/var/log"
+tier = "state"
+owner = "journald"
+writes = ["/var/log"]
+exceptions = []
+[[state.path]]
+target = "/var/tmp"
+source = "/var/tmp"
+tier = "state"
+owner = "application"
+writes = ["/var/tmp"]
+exceptions = []
+[[state.path]]
+target = "/var/spool"
+source = "/var/spool"
+tier = "state"
+owner = "runtime-services"
+writes = ["/var/spool"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/systemd"
+source = "/var/lib/systemd"
+tier = "state"
+owner = "systemd"
+writes = ["/var/lib/systemd"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/NetworkManager"
+source = "/var/lib/NetworkManager"
+tier = "state"
+owner = "network-manager"
+writes = ["/var/lib/NetworkManager"]
+exceptions = []
+[[state.path]]
+target = "/etc/NetworkManager/system-connections"
+source = "/etc/NetworkManager/system-connections"
+tier = "state"
+owner = "network-manager"
+writes = ["/etc/NetworkManager/system-connections"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/bluetooth"
+source = "/var/lib/bluetooth"
+tier = "state"
+owner = "bluez"
+writes = ["/var/lib/bluetooth"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/flatpak"
+source = "/var/lib/flatpak"
+tier = "state"
+owner = "flatpak"
+writes = ["/var/lib/flatpak"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/snapd"
+source = "/var/lib/snapd"
+tier = "state"
+owner = "snapd"
+writes = ["/var/lib/snapd"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/fprint"
+source = "/var/lib/fprint"
+tier = "state"
+owner = "fprintd"
+writes = ["/var/lib/fprint"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/upower"
+source = "/var/lib/upower"
+tier = "state"
+owner = "upower"
+writes = ["/var/lib/upower"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/AccountsService"
+source = "/var/lib/AccountsService"
+tier = "state"
+owner = "accounts"
+writes = ["/var/lib/AccountsService"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/polkit-1"
+source = "/var/lib/polkit-1"
+tier = "state"
+owner = "polkit"
+writes = ["/var/lib/polkit-1"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/templaros/hardware"
+source = "/var/lib/templaros/hardware"
+tier = "state"
+owner = "hostd"
+writes = ["/var/lib/templaros/hardware"]
+exceptions = []
+
+[[ownership.updater]]
+path = "installer/account-maintenance.py"
+tier = "system"
+owner = "hostd"
+writes = ["/etc/shadow", "/var/lib/templaros/hostd/accounts", "/var/lib/templaros/account-maintenance"]
+exceptions = [{ path = "/etc/shadow", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Authenticated self-password, encrypted root-paired recovery; narrow live System credential exception" }]
+[[ownership.updater]]
+path = "installer/deployment-layout.py"
+tier = "system"
+owner = "installer"
+writes = ["/"]
+exceptions = [{ path = "/", decision = "@legeos.decision.independent-storage-roles/2", reason = "Explicit offline target initialization; never remounts, selects boot defaults or moves user Work" }]
+[[ownership.updater]]
+path = "distro/image/mkosi.postinst"
+tier = "system"
+owner = "installer"
+writes = ["/"]
+exceptions = [{ path = "/", decision = "@legeos.decision.independent-storage-roles/2", reason = "Private image-build root only" }]
+[[ownership.updater]]
+path = "cli/templar/src/dev/repo.rs"
+tier = "system"
+owner = "cli"
+writes = ["/"]
+exceptions = [{ path = "/", decision = "@legeos.decision.three-ownership-tiers/2", reason = "Legacy non-TemplarOS install-source only; native archive sources/keys are written inside hostd candidates" }]
+
+[[ownership.path]]
+path = "%h/.config/gtk-3.0/bookmarks"
+tier = "state"
+owner = "application"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.gtk-bookmarks"
+tier = "state"
+owner = "application"
+writes = []
+exceptions = []
+
+[[ownership.updater]]
+path = "distro/image/finalize.sh"
+tier = "system"
+owner = "installer"
+writes = ["/"]
+exceptions = [{ path = "/", decision = "@legeos.decision.independent-storage-roles/2", reason = "Explicit unused regular disk image; exact owned loop/private mount namespace, refuses signatures before mutation, refreshes unsigned checksum" }]
+
+[[ownership.path]]
+path = "%h/.mozilla"
+tier = "state"
+owner = "application"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.waterfox"
+tier = "state"
+owner = "application"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.var/app"
+tier = "state"
+owner = "application"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.local/share/flatpak"
+tier = "state"
+owner = "flatpak"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.wine"
+tier = "state"
+owner = "application"
+writes = []
+exceptions = []
+[[ownership.path]]
+path = "%h/.local/share/Trash"
+tier = "state"
+owner = "filed"
+writes = []
+exceptions = []
+[[state.path]]
+target = "/var/lib/alsa"
+source = "/var/lib/alsa"
+tier = "state"
+owner = "runtime-services"
+writes = ["/var/lib/alsa"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/colord"
+source = "/var/lib/colord"
+tier = "state"
+owner = "runtime-services"
+writes = ["/var/lib/colord"]
+exceptions = []
+[[state.path]]
+target = "/var/lib/udisks2"
+source = "/var/lib/udisks2"
+tier = "state"
+owner = "runtime-services"
+writes = ["/var/lib/udisks2"]
+exceptions = []
+[[state.path]]
+target = "/var/cache/templaros"
+source = "/var/cache/templaros"
+tier = "state"
+owner = "runtime-services"
+writes = ["/var/cache/templaros"]
+exceptions = []

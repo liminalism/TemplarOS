@@ -13,16 +13,23 @@ use templar_window::{WindowId, geometry::Exclusive};
 
 /// Rebuild the whole output topology from `Space` (kept in sync with whatever the active backend
 /// currently has mapped — winit's one synthetic output, or udev's real connectors) plus every live
-/// exclusive-zone claim (`templar_shell_v1.set_exclusive_zone`), and feed it through
+/// exclusive-zone claim (`templar_shell_v2.set_exclusive_zone`), and feed it through
 /// `WindowService::on_outputs_changed` — the single entry point COMPOSITOR.md requires for every
 /// kind of topology change, so a dock claiming space and a monitor unplugging can never diverge
 /// into different code paths.
 pub fn recompute_outputs<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
+    recompute_outputs_with_event(state, true);
+}
+
+/// Worker transaction snapshots repair window geometry without invalidating their own
+/// pending preview; real hotplug still uses `recompute_outputs` with topology=true.
+pub(crate) fn recompute_outputs_with_event<B: Backend + 'static>(state: &mut TemplarCompState<B>, topology_event: bool) {
+    state.session_lock.outputs_changed(state.space.outputs(), state.backend_data.unknown_physical_outputs());
     let outputs: Vec<templar_window::Output> = state
         .space
         .outputs()
         .filter_map(|output| {
-            let logical = state.space.output_geometry(output)?;
+            let logical = crate::viewport::output_geometry(&state.space, output)?;
             let scale_milli = scale_to_milli(output.current_scale());
             let zones: Vec<Exclusive> = state
                 .shell_protocol
@@ -57,6 +64,7 @@ pub fn recompute_outputs<B: Backend + 'static>(state: &mut TemplarCompState<B>) 
     // until its tag strip is reachable — which for a surface holding its own zone it never is.
     crate::protocols_shell::reapply_surface_claims(state);
     crate::space_sync::sync_after_change(state);
+    crate::compositor_control::refresh_inventory(state, topology_event);
 }
 
 /// `WindowCommand::Close`'s effect: `xdg_toplevel.close` or the X11 delete protocol, whichever the

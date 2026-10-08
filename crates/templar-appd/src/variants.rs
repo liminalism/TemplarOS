@@ -571,6 +571,7 @@ mod tests {
             keywords: BTreeSet::new(),
             no_display: false,
             provenance: Some(AppProvenance::from_origin(origin)),
+            provides: Vec::new(),
         }
     }
 

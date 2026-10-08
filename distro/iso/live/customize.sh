@@ -63,6 +63,10 @@ from here.
 
 MOTD
 
+# base-files ships Ubuntu's /etc/issue, which is what the text-console getty shows. The live
+# medium says TemplarOS instead, from the same branding directory as os-release.
+cp "$(dirname "$0")/../../branding/issue" "$rootfs/etc/issue"
+
 # The sources mmdebstrap wrote name the build host's paths (copy://…); the live system gets the
 # ordinary Ubuntu archive. Its TemplarOS archive is the medium itself, which the provisioner finds at
 # /cdrom/templaros/devrepo — no apt source is needed for that.

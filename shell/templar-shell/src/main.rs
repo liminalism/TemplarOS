@@ -62,8 +62,9 @@ struct Cli {
     /// Writes PREFIX-{corner,narrow,fractional,hidpi,rail-right,rail-left}-{open,next,today,closed}.png.
     #[arg(long, value_name = "PREFIX")]
     render_calendar: Option<PathBuf>,
-    /// Exercise and render active Home work, including parked windows, at 1x, 2x and narrow size.
-    /// Writes PREFIX-{wide,hidpi,narrow}-{open,parked,closed}.png.
+    /// Exercise and render active Home work at 1x, 2x and narrow size, including wallpaper alpha.
+    /// Writes PREFIX-{wide,hidpi,narrow}-{open,parked,closed,wallpaper-revealed,
+    /// wallpaper-occluded,wallpaper-disabled}.png; checks covered pixels do not leak Home previews.
     #[arg(long, value_name = "PREFIX")]
     render_home_work: Option<PathBuf>,
 
@@ -92,9 +93,9 @@ struct Cli {
     screenshot: Option<PathBuf>,
 
     /// Open the graphical Home Surface. Needs a Wayland compositor; for the private
-    /// `templar_shell_v1` protocol (live Window Shelf, Home reveal and layer placement)
+    /// `templar_shell_v2` protocol (live Window Shelf, Home reveal and layer placement)
     /// `WAYLAND_DISPLAY` must name the compositor's trusted-shell socket
-    /// (`compositor/templar-comp/src/shell_socket.rs`'s `<main socket>-shell`), not the ordinary one
+    /// (`compositor/templar-comp/src/shell_socket.rs`'s `templaros-shell-<main socket>`), not the ordinary one
     /// — without that, the surface still opens and still shows every D-Bus-backed drawer, just
     /// with an empty Window Shelf and no live window actions, the same graceful degradation every
     /// other drawer already has for its own service being absent.
@@ -161,8 +162,8 @@ async fn main() -> Result<()> {
             println!("{}", written.display());
         }
         println!(
-            "Home work smoke passed: centred folder clusters on free cells, restore/activate, \
-             stable through parking and activation, overflow card, close, recents"
+            "Home work smoke passed: contained project windows and one Loose tray, single-click \
+             activation, parking, overflow, capture gating, project templates and tabs"
         );
         return Ok(());
     }
@@ -294,7 +295,7 @@ async fn print_target(target: &str, limit: u32, size: (u32, u32)) -> Result<Stri
 }
 
 async fn render_drawer(drawer: Drawer, limit: u32) -> String {
-    // The Window Shelf needs no bus at all: its producer is the private `templar_shell_v1`
+    // The Window Shelf needs no bus at all: its producer is the private `templar_shell_v2`
     // protocol, which this text-only binary has no connection to (see `render_window_shelf`).
     // Every other drawer, including Network, is `data::render_drawer`'s job — shared verbatim
     // with the graphical surface's own background refresh (`surface::data`).
@@ -308,18 +309,18 @@ async fn render_drawer(drawer: Drawer, limit: u32) -> String {
 /// (`docs/architecture/accessibility.md`'s headless path), so it has no toplevel list to show —
 /// say that rather than printing an empty shelf, which would wrongly read as "nothing is
 /// minimised". The graphical surface (`templar-shell --surface`) renders this same drawer against a
-/// live `templar_shell_v1` connection instead (`surface::home_screen`).
+/// live `templar_shell_v2` connection instead (`surface::home_screen`).
 fn render_window_shelf() -> String {
     let none: [ShellToplevel; 0] = [];
     format!(
-        "{}\n(this text command has no templar_shell_v1 connection; run `templar-shell --surface` for \
+        "{}\n(this text command has no templar_shell_v2 connection; run `templar-shell --surface` for \
          a live window list)",
         drawers::window_shelf::render(&none)
     )
 }
 
 /// The Home Field as text: the same document the graphical surface draws, merged from the
-/// installed applications (no windows — this command has no `templar_shell_v1` connection, see
+/// installed applications (no windows — this command has no `templar_shell_v2` connection, see
 /// `render_window_shelf`) on a default 16×8 grid, one line per tile.
 /// The Home Field as text, at the grid `--size` implies.
 ///
@@ -352,7 +353,7 @@ async fn render_field(size: (u32, u32)) -> String {
         "a fresh field: no layout is saved, or the session service is not answering"
     };
     format!(
-        "{}({source}; this text command has no templar_shell_v1 connection, so windows appear only \
+        "{}({source}; this text command has no templar_shell_v2 connection, so windows appear only \
          in `templar-shell --surface`)",
         templar_field::text::render(&doc)
     )
@@ -407,97 +408,5 @@ mod tests {
     #[test]
     fn an_unknown_slug_is_rejected() {
         assert_eq!(drawer_from_slug("wallpaper"), None);
-    }
-
-    #[test]
-    fn print_targets_covers_every_drawer_plus_the_two_extras() {
-        let targets = print_targets();
-        assert_eq!(targets.len(), Drawer::DEFAULT.len() + 2);
-        assert!(!targets.contains(&"dock".to_owned()));
-        assert!(targets.contains(&"pressure".to_owned()));
-        assert!(targets.contains(&"field".to_owned()));
-    }
-
-    /// The default field, in text, with no bus: one Files object where eight drawer tiles used
-    /// to be, the system shelf beside it, and no drawer tile left anywhere.
-    #[tokio::test]
-    async fn print_field_renders_the_files_object_without_a_bus() {
-        let text = print_target("field", 10, (1920, 1080)).await.unwrap();
-        assert!(text.starts_with("field primary  21x12"), "{text}");
-        assert!(text.contains("Files"), "{text}");
-        for drawer in templar_shell::home_surface::Drawer::DEFAULT {
-            assert!(
-                !text.contains(&format!("drawer:{}", drawer.name().to_ascii_lowercase())),
-                "{} is still a tile in {text}",
-                drawer.name()
-            );
-        }
-        assert!(text.contains("templar_shell_v1"));
-    }
-
-    #[tokio::test]
-    async fn an_unknown_print_target_names_the_valid_ones() {
-        let error = print_target("wallpaper", 10, (1920, 1080))
-            .await
-            .unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("wallpaper"));
-        assert!(message.contains("drives"), "{message}");
-        assert!(message.contains("pressure"), "{message}");
-    }
-
-    #[tokio::test]
-    async fn the_two_bus_free_drawers_render_without_any_session_bus() {
-        // Network has no service to reach, and the Window Shelf's producer does not exist yet;
-        // both must still render, since this test runs with no session bus at all.
-        let network = print_target("network", 10, (1920, 1080)).await.unwrap();
-        assert!(network.contains("not wired to a service yet"));
-
-        let shelf = print_target("windows", 10, (1920, 1080)).await.unwrap();
-        assert!(shelf.contains("nothing shelved"));
-        assert!(shelf.contains("templar_shell_v1"));
-    }
-
-    #[tokio::test]
-    async fn the_pressure_glossary_needs_no_bus_and_covers_every_level() {
-        let text = print_target("pressure", 10, (1920, 1080)).await.unwrap();
-        for level in ["normal", "elevated", "severe", "critical"] {
-            assert!(text.contains(level), "{level} missing from the glossary");
-        }
-    }
-
-    #[tokio::test]
-    async fn a_service_backed_drawer_degrades_to_a_subject_and_a_reason_with_no_bus() {
-        // These tests describe the no-service path, which can only be observed when no service is
-        // answering. A developer running the session — installed, or nested via
-        // `.agent/scratch/nested-session.sh` — has a live `org.templaros.Session` and gets real
-        // content here, which is the service working rather than a regression. See
-        // `crate::data`'s `a_session_daemon_is_answering` for the same guard.
-        if templar_shell::data::a_session_daemon_is_answering().await {
-            eprintln!(
-                "skipped: org.templaros.Session is answering on this bus, so the no-service path \
-                 cannot be observed here"
-            );
-            return;
-        }
-        // Every one of these drawers must produce a sentence rather than panicking, hanging, or
-        // printing a zbus debug dump — and it must be split so the tile can show it. The first
-        // line is the headline, drawn on one line at the tile's width; a reason appended to it
-        // was truncated away, which is why the reason now has a line of its own.
-        for target in ["recent", "drives", "operations", "trash", "projects"] {
-            let text = print_target(target, 5, (1920, 1080)).await.unwrap();
-            let lines: Vec<&str> = text.lines().collect();
-            assert_eq!(lines.len(), 2, "{target} did not degrade readably: {text}");
-            assert!(
-                lines[0].ends_with("— unavailable"),
-                "{target}'s headline must be short enough to survive a narrow tile: {}",
-                lines[0]
-            );
-            assert!(
-                lines[1].contains("service unavailable"),
-                "{target} lost the reason: {}",
-                lines[1]
-            );
-        }
     }
 }

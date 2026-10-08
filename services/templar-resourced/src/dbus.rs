@@ -8,7 +8,7 @@
 use crate::policy::Stage;
 use crate::state::SharedState;
 use std::sync::Arc;
-use templar_types::InstanceId;
+use templar_types::ResourceId;
 use zbus::fdo;
 
 /// `org.templaros.Resources1` at `/org/templaros/Resources`.
@@ -39,21 +39,52 @@ impl ResourcesApi {
     /// Full status as JSON (empty object before the first tick has run).
     async fn report(&self) -> String {
         match self.shared.report.read().as_ref() {
-            Some(report) => serde_json::to_string(report).unwrap_or_else(|_| "{}".to_owned()),
+            Some(report) => report.applications_json().unwrap_or_else(|_| "{}".to_owned()),
             None => "{}".to_owned(),
+        }
+    }
+
+    /// Full governor target set, including explicit work and observed Flatpak scopes.
+    async fn targets(&self) -> fdo::Result<String> {
+        match self.shared.report.read().as_ref() {
+            Some(report) => serde_json::to_string(report).map_err(|error| fdo::Error::Failed(error.to_string())),
+            None => Ok("{}".to_owned()),
+        }
+    }
+
+    /// Kernel PID membership, never an application ID claimed by a window.
+    async fn resolve_pid(&self, pid: u32) -> fdo::Result<String> {
+        let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+            .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        let group = text.lines().find_map(|line| line.strip_prefix("0::"))
+            .ok_or_else(|| fdo::Error::Failed("PID has no unified cgroup".into()))?;
+        let group = std::path::Path::new(group);
+        let report = self.shared.report.read();
+        Ok(report.as_ref().and_then(|report| report.instances.iter()
+            .filter(|target| group.starts_with(&target.metadata.control_group))
+            .max_by_key(|target| target.metadata.control_group.components().count()))
+            .map(|target| target.instance_id.to_string()).unwrap_or_default())
+    }
+
+    async fn explain_target(&self, resource_id: &str) -> fdo::Result<String> {
+        let id = ResourceId::parse(resource_id)
+            .ok_or_else(|| fdo::Error::InvalidArgs("invalid resource UUID".into()))?;
+        match self.shared.report.read().as_ref() {
+            Some(report) => serde_json::to_string(&report.explain(id)).map_err(|error| fdo::Error::Failed(error.to_string())),
+            None => serde_json::to_string(&NoReportYet::new(id, self.shared.stage())).map_err(|error| fdo::Error::Failed(error.to_string())),
         }
     }
 
     /// Why `instance_id` would (or would not) be chosen next, in words and in numbers.
     async fn explain_instance(&self, instance_id: &str) -> fdo::Result<String> {
-        let id = InstanceId::parse(instance_id).ok_or_else(|| {
+        let id = ResourceId::parse(instance_id).ok_or_else(|| {
             fdo::Error::InvalidArgs(format!("not a valid instance id: {instance_id}"))
         })?;
 
         let explanation = match self.shared.report.read().as_ref() {
             Some(report) => report.explain(id),
             None => {
-                return serde_json::to_string(&NoReportYet { instance_id: id })
+                return serde_json::to_string(&NoReportYet::new(id, self.shared.stage()))
                     .map_err(|error| fdo::Error::Failed(error.to_string()));
             }
         };
@@ -86,6 +117,7 @@ impl ResourcesApi {
         let entry = enrichment.entry(id).or_default();
         entry.foreground = foreground;
         entry.visible = visible;
+        entry.window_state_observed = true;
         Ok(())
     }
 
@@ -186,6 +218,10 @@ impl ResourcesApi {
         self.shared.traces.lock().recent(limit as usize).join("\n")
     }
 
+    /// The sampled target set changed; subscribe before reading Targets or resolving PIDs.
+    #[zbus(signal)]
+    pub async fn targets_changed(emitter: &zbus::object_server::SignalEmitter<'_>) -> zbus::Result<()>;
+
     /// Pressure level changed.
     #[zbus(signal)]
     pub async fn pressure_changed(
@@ -214,12 +250,25 @@ impl ResourcesApi {
     ) -> zbus::Result<()>;
 }
 
-fn parse_instance_id(text: &str) -> fdo::Result<InstanceId> {
-    InstanceId::parse(text)
+fn parse_instance_id(text: &str) -> fdo::Result<ResourceId> {
+    ResourceId::parse(text)
         .ok_or_else(|| fdo::Error::InvalidArgs(format!("not a valid instance id: {text}")))
 }
 
 #[derive(serde::Serialize)]
 struct NoReportYet {
-    instance_id: InstanceId,
+    instance_id: ResourceId,
+    known: bool,
+    level: &'static str,
+    stage: Stage,
+    candidate_count: usize,
+    would_be_selected: bool,
+    summary: &'static str,
+}
+
+impl NoReportYet {
+    fn new(instance_id: ResourceId, stage: Stage) -> Self {
+        Self { instance_id, known: false, level: "unknown", stage, candidate_count: 0,
+            would_be_selected: false, summary: "The governor has not completed a sampling tick yet." }
+    }
 }

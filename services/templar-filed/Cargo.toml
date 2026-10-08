@@ -17,7 +17,7 @@ templar-build = { workspace = true }
 templar-client = { workspace = true }
 templar-types = { workspace = true }
 templar-state = { workspace = true }
-templar-file-index = { workspace = true }
+templar-file-index = { workspace = true, features = ["store"] }
 anyhow = { workspace = true }
 bpg-decode = { workspace = true }
 clap = { workspace = true }
@@ -35,6 +35,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 zbus = { workspace = true }
+rustix = { version = "1.1", features = ["fs"] }
+
+[dev-dependencies]
+templar-treemap = { workspace = true }
 
 [lints]
 workspace = true

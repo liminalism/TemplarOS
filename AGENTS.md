@@ -31,6 +31,8 @@ expand a summary node.
 Subagents must not run OptMem. When spawning one, state: `You are a subagent.
 Don't run memo.`
 
+Subagents never run tests; parent does.
+
 # Agent protocol
 
 ## Project knowledge (AKR)
@@ -40,7 +42,8 @@ Durable project knowledge lives in `.akr/` as typed records, not in Markdown.
 
 **Before starting any task**
 1. If you know the exact planning key, call `knowledge.context` with that key and the
-   paths you expect to touch.
+   paths you expect to touch (shell: `akr context --goal <key>` — `--goal` is required;
+   a positional key fails with AKR-C003).
 2. Otherwise call `knowledge.start` with the task and paths. Read its session head, pick
    a live candidate (or an explicitly relevant proposal), then call `knowledge.context`
    with that exact key.

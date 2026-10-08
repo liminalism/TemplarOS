@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+case "$1" in
+    configure)
+        install -d -o root -g root -m 0755 /var/lib/templaros/account-maintenance
+        pam-auth-update --package --enable templaros-account-recovery
+        ;;
+esac
+#DEBHELPER#
+exit 0

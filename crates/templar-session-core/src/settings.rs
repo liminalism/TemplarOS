@@ -2,7 +2,7 @@
 //! every change is recorded in history. GUI, CLI and migrations all go through this schema.
 
 use anyhow::{Context, Result};
-use rusqlite::{Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use templar_state::Store;
@@ -47,6 +47,8 @@ pub enum SettingError {
     WrongType { key: String, expected: &'static str },
     #[error("setting `{key}` must be one of {choices:?}")]
     InvalidChoice { key: String, choices: Vec<String> },
+    #[error("setting `{key}` has invalid configuration: {reason}")]
+    InvalidConfiguration { key: String, reason: String },
     #[error("setting `{key}` must be within [{min:?}, {max:?}]")]
     OutOfRange {
         key: String,
@@ -72,6 +74,11 @@ impl SettingsSchema {
             .specs
             .get(key)
             .ok_or_else(|| SettingError::UnknownKey(key.to_owned()))?;
+        if key == WALLPAPER_CONFIG_KEY && let SettingValue::Str(json) = value {
+            parse_wallpaper_config(json).map_err(|error| SettingError::InvalidConfiguration {
+                key: key.to_owned(), reason: format!("{error:#}"),
+            })?;
+        }
         match (&spec.default, value) {
             (SettingValue::Bool(_), SettingValue::Bool(_))
             | (SettingValue::Float(_), SettingValue::Float(_))
@@ -144,6 +151,15 @@ pub fn baseline_schema() -> SettingsSchema {
         privileged: false,
     });
     schema.add(SettingSpec {
+        key: WALLPAPER_CONFIG_KEY.into(),
+        description: "Wallpaper source byte paths, rotation, geometry, texture/worker/transition budgets and per-output overrides as WallpaperConfig JSON".into(),
+        default: SettingValue::Str(serde_json::to_string(&templar_types::wallpaper::WallpaperConfig::default()).expect("wallpaper defaults serialize")),
+        choices: vec![],
+        min: None,
+        max: None,
+        privileged: false,
+    });
+    schema.add(SettingSpec {
         key: "shell.dock.grouping".into(),
         description: "How the dock groups windows".into(),
         default: SettingValue::Choice("by-application".into()),
@@ -160,7 +176,8 @@ pub fn baseline_schema() -> SettingsSchema {
     add_home_field_specs(&mut schema);
     add_home_garden_specs(&mut schema);
     add_rails_specs(&mut schema);
-    add_input_specs(&mut schema);
+    add_notification_specs(&mut schema);
+    add_window_tab_specs(&mut schema);
     schema.add(SettingSpec {
         key: "shell.launcher.recent-apps".into(),
         description: "Recently launched applications, newest first, shown under Home's search"
@@ -210,13 +227,12 @@ pub fn baseline_schema() -> SettingsSchema {
     schema
 }
 
-/// The shell's appearance keys (`shell.appearance.*`), read by `templar-shell` at startup.
+/// Shared appearance keys, observed live by owned surfaces.
 fn add_appearance_specs(schema: &mut SettingsSchema) {
     schema.add(SettingSpec {
         key: "shell.appearance.theme".into(),
-        description: "Light or dark shell colours. Applies at the next shell start, which is \
-                      about half a second (templar-shell restarts on its own; the compositor does \
-                      not need to)"
+        description: "Light or dark colours. Owned surfaces update live without changing focus, \
+                      text or Home card positions"
             .into(),
         default: SettingValue::Choice("light".into()),
         choices: vec!["light".into(), "dark".into()],
@@ -239,6 +255,18 @@ fn add_appearance_specs(schema: &mut SettingsSchema) {
             "amber".into(),
             "red".into(),
         ],
+        min: None,
+        max: None,
+        privileged: false,
+    });
+    schema.add(SettingSpec {
+        key: "shell.appearance.third-party".into(),
+        description: "Align supported GTK and Qt gtk3 fonts, icons, light/dark theme and GTK motion \
+                      for future launches. Turning this off restores Templar-owned keys without \
+                      overwriting external edits; existing application reload is not guaranteed"
+            .into(),
+        default: SettingValue::Bool(false),
+        choices: vec![],
         min: None,
         max: None,
         privileged: false,
@@ -270,7 +298,7 @@ fn add_home_field_specs(schema: &mut SettingsSchema) {
             "shell.home-field.previews",
             "Window previews on parked-session tiles: none, a snapshot on park, or live at the \
              preview rate",
-            SettingValue::Choice("static".into()),
+            SettingValue::Choice("live".into()),
             vec!["off".into(), "static".into(), "live".into()],
             None,
             None,
@@ -477,22 +505,127 @@ fn add_rails_specs(schema: &mut SettingsSchema) {
     }
 }
 
-/// Pointer and touchpad keys (`input.*`). Read by `templar-shell`, relayed to the
-/// compositor over `templar_shell_v1`, and applied to libinput devices there — the shell is
-/// only the relay, like the gesture gate.
-fn add_input_specs(schema: &mut SettingsSchema) {
-    schema.add(SettingSpec {
-        key: "input.touchpad.tap-to-click".into(),
-        description: "Tapping the touchpad counts as a click. libinput leaves this off unless \
-                      asked, so the default is on: a trackpad that only clicks on a full press \
-                      reads as broken hardware"
-            .into(),
-        default: SettingValue::Bool(true),
-        choices: vec![],
-        min: None,
-        max: None,
-        privileged: false,
-    });
+/// The terminal-completion notification policy (`shell.notifications.*`), read by
+/// `templar notify terminal-completed` (see `crate::notifications`). New terminals pick up
+/// hook-side prefilter values at startup; the completion route itself always reads live.
+fn add_notification_specs(schema: &mut SettingsSchema) {
+    for (key, description, default, choices, min, max) in [
+        (
+            crate::notifications::LONG_JOB_SECONDS_KEY,
+            "Notify when a foreground terminal command ran at least this many seconds. A \
+             reviewable default, not a measured optimum",
+            SettingValue::Int(10),
+            vec![],
+            Some(0),
+            Some(3_600),
+        ),
+        (
+            crate::notifications::NOTIFY_EVERY_JOB_KEY,
+            "Notify for every finished foreground job, however short. Canceled jobs still \
+             need their own switch",
+            SettingValue::Bool(false),
+            vec![],
+            None,
+            None,
+        ),
+        (
+            crate::notifications::NOTIFY_CANCELED_KEY,
+            "Notify for jobs canceled from the keyboard (Ctrl-C), not just finished ones",
+            SettingValue::Bool(false),
+            vec![],
+            None,
+            None,
+        ),
+        (
+            crate::notifications::SKIP_WHEN_FOCUSED_KEY,
+            "Stay silent when the terminal that ran the job still holds keyboard focus. \
+             Jobs whose focus is unknown still notify",
+            SettingValue::Bool(true),
+            vec![],
+            None,
+            None,
+        ),
+    ] {
+        schema.add(SettingSpec {
+            key: key.into(),
+            description: description.into(),
+            default,
+            choices,
+            min,
+            max,
+            privileged: false,
+        });
+    }
+}
+
+/// The corner-following window tab policy (`windows.tabs.*`), planning doc §3: one
+/// horizontal title tab plus three controls per window, following the nearest client
+/// corner. The compositor reads these through the shell's `TabSettings` and the
+/// `templar-shell-v2` `set_tab_policy` request; every reader parses the committed bytes
+/// through one function, so Set/Reset/undo/restart converge on the same policy.
+fn add_window_tab_specs(schema: &mut SettingsSchema) {
+    for (key, description, default, choices) in [
+        (
+            WINDOW_TABS_PLACEMENT_KEY,
+            "Where a window's title and controls sit: a right angle at the same corner, or \
+             the title at one end of its edge and the controls at the other",
+            SettingValue::Choice("same-corner".into()),
+            vec!["same-corner".to_owned(), "opposite-corners".to_owned()],
+        ),
+        (
+            WINDOW_TABS_FOLLOW_POINTER_KEY,
+            "Follow the nearest client corner as the pointer approaches from any side. \
+             Off keeps every window's tabs at the fixed corner",
+            SettingValue::Bool(true),
+            vec![],
+        ),
+        (
+            WINDOW_TABS_FIXED_CORNER_KEY,
+            "The corner tabs keep while follow-pointer is off: the predictable \
+             accessibility fallback",
+            SettingValue::Choice("top-right".into()),
+            vec![
+                "top-left".to_owned(),
+                "top-right".to_owned(),
+                "bottom-left".to_owned(),
+                "bottom-right".to_owned(),
+            ],
+        ),
+        (
+            WINDOW_TABS_CONTROLS_KEY,
+            "When the three controls draw: revealed on hover approach, or always",
+            SettingValue::Choice("hover".into()),
+            vec!["hover".to_owned(), "always".to_owned()],
+        ),
+        (
+            WINDOW_TABS_TITLE_KEY,
+            "When the title tab draws: always while its window is visible, or only with \
+             the hovered controls",
+            SettingValue::Choice("always".into()),
+            vec!["always".to_owned(), "hover".to_owned()],
+        ),
+        (
+            WINDOW_TABS_DEFAULT_CORNER_KEY,
+            "The corner a new window's tabs start at",
+            SettingValue::Choice("top-right".into()),
+            vec![
+                "top-left".to_owned(),
+                "top-right".to_owned(),
+                "bottom-left".to_owned(),
+                "bottom-right".to_owned(),
+            ],
+        ),
+    ] {
+        schema.add(SettingSpec {
+            key: key.into(),
+            description: description.into(),
+            default,
+            choices,
+            min: None,
+            max: None,
+            privileged: false,
+        });
+    }
 }
 
 /// Values that override the schema's defaults; absent keys fall back to `spec.default`.
@@ -528,11 +661,13 @@ impl SettingsValues {
         self.0.get(key)
     }
 
-    fn set(&mut self, key: &str, value: SettingValue) {
+    /// Publish a durable override only after its enclosing transaction commits.
+    pub fn set(&mut self, key: &str, value: SettingValue) {
         self.0.insert(key.to_owned(), value);
     }
 
-    fn reset(&mut self, key: &str) -> Option<SettingValue> {
+    /// Publish a durable reset only after its enclosing transaction commits.
+    pub fn reset(&mut self, key: &str) -> Option<SettingValue> {
         self.0.remove(key)
     }
 }
@@ -564,8 +699,8 @@ pub fn load_values(store: &Store) -> Result<SettingsValues> {
     Ok(SettingsValues(values))
 }
 
-/// Validate and apply one change: persists the new value, appends to the `settings_changes`
-/// audit trail (old/new JSON, for `History1.Undo`) and returns that audit row's ID.
+/// Validate and persist one change, without publishing it to the in-memory observation.
+/// The caller publishes `value` with [`SettingsValues::set`] only after the enclosing commit.
 ///
 /// The caller (the daemon's `Settings1.Set` handler) still owns appending the general history
 /// event and the `change_log` row in the *same* transaction — this function only knows about
@@ -573,13 +708,13 @@ pub fn load_values(store: &Store) -> Result<SettingsValues> {
 pub fn apply_within(
     tx: &Transaction<'_>,
     schema: &SettingsSchema,
-    values: &mut SettingsValues,
+    values: &SettingsValues,
     key: &str,
-    value: SettingValue,
+    value: &SettingValue,
     origin: &str,
 ) -> Result<(Option<String>, String, i64)> {
     schema
-        .validate(key, &value)
+        .validate(key, value)
         .map_err(|error| anyhow::anyhow!(error))?;
     let old_json = values
         .stored(key)
@@ -600,19 +735,18 @@ pub fn apply_within(
     )
     .context("recording settings_changes audit row")?;
 
-    values.set(key, value);
     Ok((old_json, new_json, tx.last_insert_rowid()))
 }
 
-/// Remove a stored override, returning to the schema default. Like [`apply_within`], leaves
-/// history/undo bookkeeping to the caller.
+/// Persist removal of an override without changing the observation. The caller publishes the
+/// reset with [`SettingsValues::reset`] only after the enclosing transaction commits.
 pub fn reset_within(
     tx: &Transaction<'_>,
-    values: &mut SettingsValues,
+    values: &SettingsValues,
     key: &str,
     origin: &str,
 ) -> Result<Option<String>> {
-    let Some(old) = values.reset(key) else {
+    let Some(old) = values.stored(key) else {
         return Ok(None);
     };
     let old_json = serde_json::to_string(&old).context("serializing reset setting value")?;
@@ -633,26 +767,69 @@ pub fn reset_within(
 /// override before the change being undone, so undoing it resets to the schema default.
 pub fn revert_within(
     tx: &Transaction<'_>,
-    values: &mut SettingsValues,
     key: &str,
     old_json: Option<&str>,
-) -> Result<()> {
+) -> Result<Option<SettingValue>> {
+    let previous: Option<String> = tx.query_row(
+        "SELECT value_json FROM settings_values WHERE key = ?1", [key], |row| row.get(0),
+    ).optional()?;
     if let Some(json) = old_json {
         let value: SettingValue =
             serde_json::from_str(json).context("parsing a settings change_log's stored value")?;
+        if key == WALLPAPER_CONFIG_KEY {
+            let SettingValue::Str(config) = &value else { anyhow::bail!("wallpaper history value is not a configuration string"); };
+            parse_wallpaper_config(config)?;
+        }
         tx.execute(
             "INSERT INTO settings_values (key, value_json, updated_ms) VALUES (?1, ?2, ?3)
              ON CONFLICT (key) DO UPDATE SET value_json = excluded.value_json, updated_ms = excluded.updated_ms",
             params![key, json, templar_state::now_ms()],
         )
         .context("restoring a settings_values row")?;
-        values.set(key, value);
+        tx.execute(
+            "INSERT INTO settings_changes (at_ms, key, old_json, new_json, origin) VALUES (?1, ?2, ?3, ?4, 'undo')",
+            params![templar_state::now_ms(), key, previous, json],
+        )?;
+        Ok(Some(value))
     } else {
         tx.execute("DELETE FROM settings_values WHERE key = ?1", params![key])
             .context("removing a settings_values row")?;
-        values.reset(key);
+        tx.execute(
+            "INSERT INTO settings_changes (at_ms, key, old_json, new_json, origin) VALUES (?1, ?2, ?3, 'null', 'undo')",
+            params![templar_state::now_ms(), key, previous],
+        )?;
+        Ok(None)
     }
-    Ok(())
+}
+
+pub const WALLPAPER_ENABLED_KEY: &str = "shell.wallpaper.enabled";
+pub const WALLPAPER_CONFIG_KEY: &str = "shell.wallpaper.config";
+
+/// Committed keys of the corner-following window tab policy (planning doc §3).
+pub const WINDOW_TABS_PLACEMENT_KEY: &str = "windows.tabs.placement";
+pub const WINDOW_TABS_FOLLOW_POINTER_KEY: &str = "windows.tabs.follow-pointer";
+pub const WINDOW_TABS_FIXED_CORNER_KEY: &str = "windows.tabs.fixed-corner";
+pub const WINDOW_TABS_CONTROLS_KEY: &str = "windows.tabs.controls";
+pub const WINDOW_TABS_TITLE_KEY: &str = "windows.tabs.title";
+pub const WINDOW_TABS_DEFAULT_CORNER_KEY: &str = "windows.tabs.default-corner";
+
+pub fn parse_wallpaper_config(json: &str) -> Result<templar_types::wallpaper::WallpaperConfig> {
+    anyhow::ensure!(json.len() <= 65_536, "wallpaper configuration exceeds 64 KiB");
+    let config = serde_json::from_str(json).context("parsing WallpaperConfig")?;
+    templar_wallpaper::config::validate(&config)?;
+    Ok(config)
+}
+
+/// Read only committed effective settings; actions never create a second policy authority.
+pub fn wallpaper_policy(schema: &SettingsSchema, values: &SettingsValues)
+    -> Result<(bool, templar_types::wallpaper::WallpaperConfig)> {
+    let Some(SettingValue::Bool(enabled)) = values.effective(schema, WALLPAPER_ENABLED_KEY) else {
+        anyhow::bail!("wallpaper enable setting is not a boolean");
+    };
+    let Some(SettingValue::Str(json)) = values.effective(schema, WALLPAPER_CONFIG_KEY) else {
+        anyhow::bail!("wallpaper configuration setting is not a string");
+    };
+    Ok((enabled, parse_wallpaper_config(&json)?))
 }
 
 #[cfg(test)]
@@ -695,31 +872,9 @@ mod tests {
         );
     }
 
-    /// The rails' keys are read by two processes (shell and compositor) that each fall back to
-    /// the default on a value they cannot use, so the schema is what keeps a stored value usable.
     #[test]
-    fn rails_keys_default_to_the_gesture_and_bound_the_gate() {
+    fn rails_schema_rejects_unknown_choices_and_out_of_bounds_gates() {
         let schema = baseline_schema();
-        let values = SettingsValues::default();
-        for (key, default) in [
-            ("shell.rails.mode", SettingValue::Choice("gesture".into())),
-            ("shell.rails.swap", SettingValue::Bool(false)),
-            (
-                "shell.rails.lanes",
-                SettingValue::Choice("contiguous".into()),
-            ),
-            ("shell.rails.gate-width", SettingValue::Int(240)),
-            ("shell.rails.gate-height", SettingValue::Int(96)),
-            ("shell.rails.learning", SettingValue::Bool(false)),
-            ("shell.rails.exceptions", SettingValue::StrList(Vec::new())),
-        ] {
-            assert_eq!(
-                values.effective(&schema, key),
-                Some(default.clone()),
-                "{key}"
-            );
-            assert_eq!(schema.validate(key, &default), Ok(()), "{key} default");
-        }
         assert_eq!(
             schema.validate("shell.rails.mode", &SettingValue::Choice("bar".into())),
             Ok(())
@@ -750,21 +905,6 @@ mod tests {
         ));
     }
 
-    /// Tap-to-click defaults on: libinput leaves it off unless asked, and a trackpad that only
-    /// clicks on a full press reads as broken hardware.
-    #[test]
-    fn tap_to_click_defaults_on() {
-        let schema = baseline_schema();
-        let values = SettingsValues::default();
-        assert_eq!(
-            values.effective(&schema, "input.touchpad.tap-to-click"),
-            Some(SettingValue::Bool(true))
-        );
-        assert_eq!(
-            schema.validate("input.touchpad.tap-to-click", &SettingValue::Bool(false)),
-            Ok(())
-        );
-    }
 
     #[test]
     fn apply_persists_validates_and_reset_returns_the_default() {
@@ -776,20 +916,20 @@ mod tests {
             Some(SettingValue::Choice("observe-only".into()))
         );
 
-        let (old, new, _id) = store
+        let (old, _new, _id) = store
             .transaction(|tx| {
                 apply_within(
                     tx,
                     &schema,
-                    &mut values,
+                    &values,
                     "resources.mode",
-                    SettingValue::Choice("enforce".into()),
+                    &SettingValue::Choice("enforce".into()),
                     "test",
                 )
             })
             .unwrap();
+        values.set("resources.mode", SettingValue::Choice("enforce".into()));
         assert_eq!(old, None);
-        assert_eq!(new, "{\"type\":\"choice\",\"value\":\"enforce\"}");
         assert_eq!(
             values.effective(&schema, "resources.mode"),
             Some(SettingValue::Choice("enforce".into()))
@@ -807,9 +947,9 @@ mod tests {
             apply_within(
                 tx,
                 &schema,
-                &mut values,
+                &values,
                 "resources.mode",
-                SettingValue::Choice("bogus".into()),
+                &SettingValue::Choice("bogus".into()),
                 "test",
             )
         });
@@ -821,8 +961,9 @@ mod tests {
         );
 
         store
-            .transaction(|tx| reset_within(tx, &mut values, "resources.mode", "test"))
+            .transaction(|tx| reset_within(tx, &values, "resources.mode", "test"))
             .unwrap();
+        values.reset("resources.mode");
         assert_eq!(
             values.effective(&schema, "resources.mode"),
             Some(SettingValue::Choice("observe-only".into())),
@@ -841,18 +982,23 @@ mod tests {
                 apply_within(
                     tx,
                     &schema,
-                    &mut values,
+                    &values,
                     "resources.mode",
-                    SettingValue::Choice("enforce".into()),
+                    &SettingValue::Choice("enforce".into()),
                     "test",
                 )
             })
             .unwrap();
+        values.set("resources.mode", SettingValue::Choice("enforce".into()));
         assert_eq!(old, None);
 
-        store
-            .transaction(|tx| revert_within(tx, &mut values, "resources.mode", old.as_deref()))
+        let restored = store
+            .transaction(|tx| revert_within(tx, "resources.mode", old.as_deref()))
             .unwrap();
+        match restored {
+            Some(value) => values.set("resources.mode", value),
+            None => { values.reset("resources.mode"); }
+        }
         assert_eq!(
             values.effective(&schema, "resources.mode"),
             Some(SettingValue::Choice("observe-only".into())),
@@ -864,5 +1010,164 @@ mod tests {
                 .stored("resources.mode")
                 .is_none()
         );
+    }
+    #[test]
+    fn notification_policy_keys_carry_the_proposed_defaults_and_bounds() {
+        let schema = baseline_schema();
+        for (key, default) in [
+            (
+                crate::notifications::LONG_JOB_SECONDS_KEY,
+                SettingValue::Int(10),
+            ),
+            (
+                crate::notifications::NOTIFY_EVERY_JOB_KEY,
+                SettingValue::Bool(false),
+            ),
+            (
+                crate::notifications::NOTIFY_CANCELED_KEY,
+                SettingValue::Bool(false),
+            ),
+            (
+                crate::notifications::SKIP_WHEN_FOCUSED_KEY,
+                SettingValue::Bool(true),
+            ),
+        ] {
+            let spec = schema
+                .specs
+                .get(key)
+                .unwrap_or_else(|| panic!("{key} is in the schema"));
+            assert_eq!(spec.default, default, "{key} default");
+            assert_eq!(schema.validate(key, &default), Ok(()));
+        }
+        assert_eq!(
+            schema.validate(
+                crate::notifications::LONG_JOB_SECONDS_KEY,
+                &SettingValue::Int(3_600)
+            ),
+            Ok(())
+        );
+        assert!(matches!(
+            schema.validate(
+                crate::notifications::LONG_JOB_SECONDS_KEY,
+                &SettingValue::Int(3_601)
+            ),
+            Err(SettingError::OutOfRange { .. })
+        ));
+        assert!(matches!(
+            schema.validate(
+                crate::notifications::NOTIFY_EVERY_JOB_KEY,
+                &SettingValue::Int(1)
+            ),
+            Err(SettingError::WrongType { .. })
+        ));
+    }
+
+    /// Child 4 (`settings-converge`, schema half): the six tab keys exist with the
+    /// proposed defaults, accept exactly their documented values, and reject the rest.
+    #[test]
+    fn window_tab_schema_carries_the_policy_with_proposed_defaults() {
+        let schema = baseline_schema();
+        for (key, default) in [
+            (WINDOW_TABS_PLACEMENT_KEY, SettingValue::Choice("same-corner".into())),
+            (WINDOW_TABS_FOLLOW_POINTER_KEY, SettingValue::Bool(true)),
+            (
+                WINDOW_TABS_FIXED_CORNER_KEY,
+                SettingValue::Choice("top-right".into()),
+            ),
+            (WINDOW_TABS_CONTROLS_KEY, SettingValue::Choice("hover".into())),
+            (WINDOW_TABS_TITLE_KEY, SettingValue::Choice("always".into())),
+            (
+                WINDOW_TABS_DEFAULT_CORNER_KEY,
+                SettingValue::Choice("top-right".into()),
+            ),
+        ] {
+            let spec = schema.specs.get(key).unwrap_or_else(|| panic!("{key} missing"));
+            assert_eq!(spec.default, default, "{key} default");
+            assert_eq!(schema.validate(key, &default), Ok(()));
+        }
+        assert_eq!(
+            schema.validate(
+                WINDOW_TABS_PLACEMENT_KEY,
+                &SettingValue::Choice("opposite-corners".into())
+            ),
+            Ok(())
+        );
+        for (key, bad) in [
+            (WINDOW_TABS_PLACEMENT_KEY, "diagonal"),
+            (WINDOW_TABS_FIXED_CORNER_KEY, "middle"),
+            (WINDOW_TABS_CONTROLS_KEY, "sometimes"),
+            (WINDOW_TABS_TITLE_KEY, "never"),
+            (WINDOW_TABS_DEFAULT_CORNER_KEY, "top-middle"),
+        ] {
+            assert!(
+                matches!(
+                    schema.validate(key, &SettingValue::Choice(bad.into())),
+                    Err(SettingError::InvalidChoice { .. })
+                ),
+                "{key} accepted {bad:?}"
+            );
+        }
+        assert!(matches!(
+            schema.validate(WINDOW_TABS_FOLLOW_POINTER_KEY, &SettingValue::Int(1)),
+            Err(SettingError::WrongType { .. })
+        ));
+    }
+
+    /// Set then Reset converges back to the schema defaults through `effective`, whatever
+    /// the overrides were: every reader of the committed bytes starts from the same place.
+    #[test]
+    fn window_tab_set_reset_converges_to_defaults() {
+        let schema = baseline_schema();
+        let mut values = SettingsValues::default();
+        for key in [
+            WINDOW_TABS_PLACEMENT_KEY,
+            WINDOW_TABS_FOLLOW_POINTER_KEY,
+            WINDOW_TABS_FIXED_CORNER_KEY,
+            WINDOW_TABS_CONTROLS_KEY,
+            WINDOW_TABS_TITLE_KEY,
+            WINDOW_TABS_DEFAULT_CORNER_KEY,
+        ] {
+            let default = schema.specs[key].default.clone();
+            assert_eq!(values.effective(&schema, key), Some(default));
+        }
+        values.set(
+            WINDOW_TABS_PLACEMENT_KEY,
+            SettingValue::Choice("opposite-corners".into()),
+        );
+        values.set(WINDOW_TABS_FOLLOW_POINTER_KEY, SettingValue::Bool(false));
+        assert_eq!(
+            values.effective(&schema, WINDOW_TABS_PLACEMENT_KEY),
+            Some(SettingValue::Choice("opposite-corners".into()))
+        );
+        assert_eq!(
+            values.effective(&schema, WINDOW_TABS_FOLLOW_POINTER_KEY),
+            Some(SettingValue::Bool(false))
+        );
+        values.reset(WINDOW_TABS_PLACEMENT_KEY);
+        values.reset(WINDOW_TABS_FOLLOW_POINTER_KEY);
+        assert_eq!(
+            values.effective(&schema, WINDOW_TABS_PLACEMENT_KEY),
+            Some(SettingValue::Choice("same-corner".into()))
+        );
+        assert_eq!(
+            values.effective(&schema, WINDOW_TABS_FOLLOW_POINTER_KEY),
+            Some(SettingValue::Bool(true))
+        );
+    }
+
+    #[test]
+    fn wallpaper_configuration_validates_json_bounds_and_lossless_paths() {
+        let schema = baseline_schema();
+        let mut config = templar_types::wallpaper::WallpaperConfig {
+            sources: vec![vec![b'/', b'a', 255, b'.', b'p', b'n', b'g']],
+            interval_seconds: Some(300), ..Default::default()
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert_eq!(parse_wallpaper_config(&json).unwrap(), config);
+        assert_eq!(schema.validate(WALLPAPER_CONFIG_KEY, &SettingValue::Str(json)), Ok(()));
+        config.interval_seconds = Some(299);
+        assert!(schema.validate(WALLPAPER_CONFIG_KEY, &SettingValue::Str(serde_json::to_string(&config).unwrap())).is_err());
+        assert!(schema.validate(WALLPAPER_CONFIG_KEY, &SettingValue::Str("{broken".into())).is_err());
+        assert!(schema.validate(WALLPAPER_CONFIG_KEY, &SettingValue::Bool(true)).is_err());
     }
 }

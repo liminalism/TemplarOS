@@ -207,9 +207,10 @@ pub fn scatter_label_band(tile: Rect, label_height: i32) -> (Rect, Rect) {
     )
 }
 
-/// The three control tags at the right end of every window's tag strip, in the left-to-right
-/// order they are drawn: park to the Home shelf, maximize/restore, close. Close is rightmost and
-/// the last to give way on a narrow strip, because it is the one a person looks for first.
+/// The three window controls — park to the Home shelf, maximize/restore, close — in
+/// canonical order. Where they sit comes from [`templar_window::WindowLayout`]: a vertical
+/// stack on the adjacent side (same-corner) or a horizontal row at the opposite end of the
+/// title's edge, Close nearest the anchor corner either way.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ControlTag {
     Park,
@@ -218,65 +219,66 @@ pub enum ControlTag {
 }
 
 impl ControlTag {
-    /// Every tag, in drawing order.
-    pub const ALL: [ControlTag; 3] = [Self::Park, Self::Maximize, Self::Close];
+    /// The compositor's tag for a layout control: same control, shared meaning.
+    pub const fn from_tab(control: templar_window::TabControl) -> Self {
+        match control {
+            templar_window::TabControl::Park => Self::Park,
+            templar_window::TabControl::Maximize => Self::Maximize,
+            templar_window::TabControl::Close => Self::Close,
+        }
+    }
 }
 
-/// Logical width of one control tag — a square of the strip's own height.
-pub const CONTROL_TAG_WIDTH: i32 = templar_window::geometry::TAG_HEIGHT;
-
-/// Room the name tag keeps at the left of a strip before control tags start giving way.
-const NAME_TAG_MIN_WIDTH: i32 = 64;
-/// The gap between the name tag and the control tags; a press there belongs to whatever is
-/// behind the window, because no pixels of this window are there.
-pub const TAG_GAP: i32 = 8;
-/// A name tag is a tag, not a bar: it stops here however wide the window is.
-pub const NAME_TAG_MAX_WIDTH: i32 = 240;
-
-/// The control tags that fit on `strip`, with their rectangles, packed against its right edge in
-/// [`ControlTag::ALL`] order. On a strip too narrow for all three the leftmost go first:
-/// [`MIN_RECOVERY_WIDTH`](templar_window::geometry::MIN_RECOVERY_WIDTH) is wide enough for Close
-/// alone plus a sliver of name, which is the least a recoverable window ever has.
-pub fn control_tags(strip: Rect) -> Vec<(ControlTag, Rect)> {
-    let band = strip;
-    let width = CONTROL_TAG_WIDTH.min(band.height.max(1)).max(1);
-    let room = (band.width - NAME_TAG_MIN_WIDTH).max(0);
-    let count = usize::try_from(room / width)
-        .unwrap_or(0)
-        .min(ControlTag::ALL.len());
-    let shown = &ControlTag::ALL[ControlTag::ALL.len() - count..];
-    shown
-        .iter()
-        .enumerate()
-        .map(|(index, button)| {
-            let from_right = i32::try_from(shown.len() - index).unwrap_or(1);
-            (
-                *button,
-                Rect::new(
-                    band.right() - from_right * width,
-                    band.y,
-                    width,
-                    band.height,
-                ),
-            )
-        })
-        .collect()
+/// The three controls with their rectangles, from the shared [`templar_window::WindowLayout`]:
+/// the same rectangles paint and hit-test both use, so the drawn control and the clickable
+/// area can never drift apart. A fixed array — three controls need no heap.
+pub fn tab_control_tags(
+    layout: &templar_window::WindowLayout,
+) -> [(ControlTag, Rect); 3] {
+    layout
+        .controls
+        .map(|(control, rect)| (ControlTag::from_tab(control), rect))
 }
 
-/// The name tag: the strip's left end, up to the first control tag less [`TAG_GAP`], capped at
-/// [`NAME_TAG_MAX_WIDTH`]. The grab-to-move and group-drop affordance, and where the title and the
-/// group stripe are painted.
-pub fn name_tag(strip: Rect) -> Rect {
-    let limit = control_tags(strip)
-        .first()
-        .map_or(strip.right(), |(_, rect)| rect.x - TAG_GAP);
-    let width = (limit - strip.x).clamp(1, NAME_TAG_MAX_WIDTH.min(strip.width.max(1)));
-    Rect::new(strip.x, strip.y, width, strip.height)
+/// Which chrome rectangles of a layout are currently drawn and clickable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TabVisibility {
+    /// The title tab: drawn while its window is visible, under the default policy.
+    pub title: bool,
+    /// The three controls: drawn only while revealed, under the hover policy.
+    pub controls: bool,
 }
 
-/// Logical width of the accent stripe a grouped window wears at the left of its name tag
-/// (planning doc §2 rule 7: "a stripe of the same colour in each member's band").
-pub const GROUP_STRIPE_WIDTH: i32 = 4;
+/// What a point on a window's tabs is asking for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TabHit {
+    /// The title tab: a move.
+    Title,
+    /// One of the controls.
+    Control(ControlTag),
+}
+
+/// Visible controls and the title use the shared, disjoint layout. Hidden chrome
+/// takes no input; paint uses the same visibility.
+pub fn tab_hit_at(
+    layout: &templar_window::WindowLayout,
+    visibility: TabVisibility,
+    point: templar_window::Point,
+) -> Option<TabHit> {
+    if visibility.controls
+        && let Some(control) = layout.control_at(point)
+    {
+        return Some(TabHit::Control(ControlTag::from_tab(control)));
+    }
+    if visibility.title && layout.title_at(point) {
+        return Some(TabHit::Title);
+    }
+    None
+}
+
+/// The group accent stripe width: one definition, owned by `templar-window` with the
+/// rest of group geometry, re-exported here for paint.
+pub use templar_window::GROUP_STRIPE_WIDTH;
 
 /// The four bars of a group outline of `thickness`, drawn **outside** `union` — top, bottom,
 /// left, right. Outside, because the union's edges are the members' own outer edges: an outline
@@ -300,15 +302,6 @@ pub fn outline_bars(union: Rect, thickness: i32) -> [Rect; 4] {
         Rect::new(union.x - thickness, union.y, thickness, union.height),
         Rect::new(union.right(), union.y, thickness, union.height),
     ]
-}
-
-/// The control tag containing `point`, if any — the same rectangles [`control_tags`] draws, so
-/// the drawn control and the clickable area cannot drift apart.
-pub fn control_tag_at(strip: Rect, point: templar_window::Point) -> Option<ControlTag> {
-    control_tags(strip)
-        .into_iter()
-        .find(|(_, rect)| rect_contains(*rect, point))
-        .map(|(button, _)| button)
 }
 
 /// Off-white and near-black chrome text can be drawn in — [`text_ink_for`] picks between exactly
@@ -468,64 +461,97 @@ mod tests {
         );
     }
 
+    /// Paint and hit share the layout: every drawn control answers its own centre, the
+    /// title answers its own, and gaps between them answer nothing — at every corner, under
+    /// both arrangements.
     #[test]
-    fn control_tags_pack_against_the_right_edge_close_last() {
-        let band = Rect::new(100, 50, 400, 32);
-        let buttons = control_tags(band);
-        assert_eq!(
-            buttons.iter().map(|(b, _)| *b).collect::<Vec<_>>(),
-            ControlTag::ALL.to_vec()
-        );
-        let (close, close_rect) = buttons[2];
-        assert_eq!(close, ControlTag::Close);
-        assert_eq!(close_rect.right(), band.right());
-        assert_eq!(close_rect.height, band.height);
-        for pair in buttons.windows(2) {
-            assert_eq!(pair[0].1.right(), pair[1].1.x, "buttons are contiguous");
-        }
-        // The title keeps everything left of the first button.
-        assert_eq!(buttons[0].1.x, band.right() - 3 * 32);
-        for (button, rect) in &buttons {
-            assert_eq!(control_tag_at(band, rect.center()), Some(*button));
-        }
-        assert_eq!(
-            control_tag_at(
-                band,
-                templar_window::Point {
-                    x: band.x + 10,
-                    y: band.y + 10
+    fn tab_hit_matches_the_drawn_rectangles_at_every_corner() {
+        use templar_window::{Corner, TabPlacement, WindowLayout};
+        let client = Rect::new(300, 300, 640, 480);
+        let output = Rect::new(0, 0, 1920, 1080);
+        let shown = TabVisibility {
+            title: true,
+            controls: true,
+        };
+        for corner in Corner::ALL {
+            for placement in [TabPlacement::SameCorner, TabPlacement::OppositeCorners] {
+                let layout = WindowLayout::new(client, corner, placement, output);
+                let tags = tab_control_tags(&layout);
+                assert_eq!(tags.len(), 3);
+                for (button, rect) in &tags {
+                    assert_eq!(
+                        tab_hit_at(&layout, shown, rect.center()),
+                        Some(TabHit::Control(*button)),
+                        "{button:?} at {corner:?}/{placement:?}"
+                    );
                 }
-            ),
-            None
+                assert_eq!(
+                    tab_hit_at(&layout, shown, layout.title.center()),
+                    Some(TabHit::Title)
+                );
+                // Well outside every tab.
+                assert_eq!(
+                    tab_hit_at(
+                        &layout,
+                        shown,
+                        templar_window::Point { x: -100, y: -100 }
+                    ),
+                    None
+                );
+            }
+        }
+    }
+
+    /// Hidden chrome takes no input: with controls unrevealed only the title answers, and
+    /// with the title hidden too nothing does — while the same points answer once revealed.
+    #[test]
+    fn hidden_tabs_take_no_input() {
+        use templar_window::{Corner, TabPlacement, WindowLayout};
+        let layout = WindowLayout::new(
+            Rect::new(300, 300, 640, 480),
+            Corner::TopRight,
+            TabPlacement::SameCorner,
+            Rect::new(0, 0, 1920, 1080),
         );
+        let hidden = TabVisibility {
+            title: true,
+            controls: false,
+        };
+        let (_, close_rect) = tab_control_tags(&layout)[0];
+        assert_eq!(tab_hit_at(&layout, hidden, close_rect.center()), None);
+        assert_eq!(
+            tab_hit_at(&layout, hidden, layout.title.center()),
+            Some(TabHit::Title)
+        );
+        let all_hidden = TabVisibility {
+            title: false,
+            controls: false,
+        };
+        assert_eq!(tab_hit_at(&layout, all_hidden, layout.title.center()), None);
+        assert_eq!(tab_hit_at(&layout, all_hidden, close_rect.center()), None);
     }
 
+    /// A tiny overlay keeps four disjoint, reachable targets, including title-drag.
     #[test]
-    fn a_narrow_strip_keeps_close_and_gives_up_the_rest() {
-        let band = Rect::new(0, 0, templar_window::geometry::MIN_RECOVERY_WIDTH, 32);
-        let buttons = control_tags(band);
-        assert_eq!(buttons.len(), 1);
-        assert_eq!(buttons[0].0, ControlTag::Close);
-        assert_eq!(control_tags(Rect::new(0, 0, 130, 32)).len(), 2);
-        assert!(control_tags(Rect::new(0, 0, 40, 32)).is_empty());
-        assert!(control_tags(Rect::new(0, 0, 0, 0)).is_empty());
-    }
-
-    /// The name tag is a tag: it stops short of the controls by the gap, and short of the strip's
-    /// width by its cap, so a wide window has a gap of bare frame between its two tags.
-    #[test]
-    fn the_name_tag_stops_short_of_the_controls_and_is_capped() {
-        let wide = Rect::new(0, 968, 1600, 32);
-        let name = name_tag(wide);
-        assert_eq!(name, Rect::new(0, 968, NAME_TAG_MAX_WIDTH, 32));
-        let first_control = control_tags(wide)[0].1;
-        assert!(name.right() + TAG_GAP <= first_control.x);
-        // A narrow window: the name tag runs up to the gap before Close and no further.
-        let narrow = Rect::new(0, 0, 200, 32);
-        let controls = control_tags(narrow);
-        assert_eq!(name_tag(narrow).right(), controls[0].1.x - TAG_GAP);
-        // No controls fit: the name tag is the whole strip.
-        assert_eq!(name_tag(Rect::new(0, 0, 40, 32)), Rect::new(0, 0, 40, 32));
+    fn tiny_overlay_keeps_title_and_all_controls_reachable() {
+        use templar_window::{Corner, TabPlacement, WindowLayout};
+        let tiny = Rect::new(500, 500, 60, 40);
+        let output = Rect::new(0, 0, 1920, 1080);
+        let shown = TabVisibility {
+            title: true,
+            controls: true,
+        };
+        for corner in Corner::ALL {
+            let layout = WindowLayout::new(tiny, corner, TabPlacement::SameCorner, output);
+            assert_eq!(tab_hit_at(&layout, shown, layout.title.center()), Some(TabHit::Title));
+            for (button, rect) in &tab_control_tags(&layout) {
+                assert_eq!(
+                    tab_hit_at(&layout, shown, rect.center()),
+                    Some(TabHit::Control(*button)),
+                    "{button:?} unreachable at {corner:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -593,42 +619,21 @@ mod tests {
     }
 
     #[test]
-    fn chosen_ink_clears_the_wcag_aa_threshold_for_every_chrome_background() {
-        // Every background chrome actually paints with must be legible: this is the test that
-        // proves the palette was chosen deliberately, not merely that the function has *a* rule.
-        // 4.5:1 is WCAG's AA threshold for normal-size text. Pulled from `chrome::paint`'s own
-        // constants (not re-typed hex) so this test cannot silently drift from the real palette.
-        use crate::chrome::paint::{
-            LOCK_SCREEN_COLOR, PRESSURE_OVERLAY_COLOR, RECOVERY_BAND_COLOR, RECOVERY_TAB_COLOR,
-            TASKFIELD_SCRIM_COLOR,
-        };
-        for background in [
-            RECOVERY_BAND_COLOR,
-            RECOVERY_TAB_COLOR,
-            PRESSURE_OVERLAY_COLOR,
-            TASKFIELD_SCRIM_COLOR,
-            LOCK_SCREEN_COLOR,
-        ] {
-            let ink = text_ink_for(background);
-            let ratio = contrast_ratio(background, ink);
-            assert!(
-                ratio >= 4.5,
-                "background {background:#08x} only reaches {ratio:.2}:1 contrast with {ink:#08x}"
-            );
-        }
-    }
-
-    #[test]
-    fn muted_ink_is_fainter_than_ordinary_ink_but_still_legible_on_the_switcher() {
-        use crate::chrome::paint::{SWITCHER_PANEL_COLOR, SWITCHER_SELECTED_COLOR};
-        for background in [SWITCHER_PANEL_COLOR, SWITCHER_SELECTED_COLOR] {
-            let full = contrast_ratio(background, text_ink_for(background));
-            let muted = contrast_ratio(background, muted_ink_for(background));
-            assert!(muted < full, "{background:#08x}: muted ink is not fainter");
-            assert!(
-                muted >= 3.0,
-                "{background:#08x}: muted ink only reaches {muted:.2}:1"
-            );
+    fn chrome_text_remains_legible_across_supported_themes_and_accents() {
+        use templar_types::appearance::{ACCENTS, Appearance};
+        for theme in ["light", "dark"] {
+            for accent in std::iter::once("default").chain(ACCENTS.iter().map(|(name, _)| *name)) {
+                let palette = Appearance::from_settings(theme, accent, false).palette;
+                for background in [palette.ground, palette.shell_fill, palette.shell_low,
+                    palette.system_shell, palette.accent, palette.accent_soft] {
+                    let ratio = contrast_ratio(background, text_ink_for(background));
+                    assert!(ratio >= 4.5, "{theme}/{accent}: normal text contrast {ratio:.2}:1");
+                }
+                for background in [palette.system_shell, palette.accent_soft] {
+                    let ratio = contrast_ratio(background, muted_ink_for(background));
+                    assert!(ratio >= 3.0, "{theme}/{accent}: parked switcher contrast {ratio:.2}:1");
+                }
+            }
         }
     }
 

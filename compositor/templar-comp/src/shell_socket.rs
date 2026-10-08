@@ -1,7 +1,7 @@
 //! The private, second `wl_display` socket only the trusted shell connects to. Whoever connects
 //! here — and only here — gets `ClientState { trusted_shell: true, .. }`
 //! (`crate::state::client_is_trusted_shell`), which is the sole source of `ClientKind::TrustedShell`
-//! and of `templar_shell_v1`'s global visibility (`src/protocols_shell.rs`). No request over any
+//! and of `templar_shell_v2`'s global visibility (`src/protocols_shell.rs`). No request over any
 //! protocol can grant trust; only accepting a connection on this socket can.
 //!
 //! Nothing spawns `templar-shell` from here: the socket is opened and its name logged, and

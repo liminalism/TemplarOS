@@ -7,7 +7,7 @@
 //! working notification server without any user action, while a third-party notification daemon
 //! can still declare a higher priority or be explicitly selected instead.
 
-use crate::apis::notifications::NotificationsApi;
+use crate::apis::notifications::{NotificationJournal, NotificationsApi, global_journal};
 use parking_lot::RwLock;
 use std::{str::FromStr, sync::Arc, time::Duration};
 use templar_appd::Registry;
@@ -36,6 +36,7 @@ pub async fn run(
     interval: Duration,
 ) {
     let sessiond_app_id = sessiond_app_id();
+    let journal: NotificationJournal = global_journal();
     let mut hosting = false;
     loop {
         let selected = providers
@@ -46,11 +47,13 @@ pub async fn run(
 
         if selected && !hosting {
             let api =
-                NotificationsApi::new(store.clone(), Arc::clone(&history), Arc::clone(&registry));
+                NotificationsApi::new(store.clone(), Arc::clone(&history), Arc::clone(&registry))
+                    .with_journal(journal.clone());
             match connection.object_server().at(NOTIFICATIONS_PATH, api).await {
                 Ok(_) => match connection.request_name(NOTIFICATIONS_NAME).await {
                     Ok(()) => {
                         hosting = true;
+                        journal.set_fdo_hosting(true);
                         tracing::info!("now hosting org.freedesktop.Notifications");
                     }
                     Err(error) => {
@@ -72,6 +75,7 @@ pub async fn run(
                 .remove::<NotificationsApi, _>(NOTIFICATIONS_PATH)
                 .await;
             hosting = false;
+            journal.set_fdo_hosting(false);
             tracing::info!("no longer hosting org.freedesktop.Notifications");
         }
 

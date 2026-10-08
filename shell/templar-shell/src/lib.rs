@@ -5,11 +5,9 @@
 //! reads — and none of it should need a process, a session bus or a compositor to exercise. The
 //! binary is argument parsing and dispatch over what lives here.
 //!
-//! No UI toolkit is linked. libcosmic is a large git dependency and the first real surface
-//! belongs to a later milestone; what this crate owns now is the part a toolkit would merely
-//! render. Where a producer genuinely does not exist yet — the compositor's private
-//! `templar_shell_v1` protocol has no client anywhere in this workspace — the consumer is built and
-//! tested against the real type, and says so rather than pretending.
+//! The graphical surface uses PixelKit and the compositor's authenticated private
+//! `templar_shell_v2` connection; text-only renderers retain service availability distinctions
+//! rather than treating an unavailable producer as an empty desktop.
 
 // Everything except `wayland_bridge` stays unsafe-free, as it always has (M1's `#![forbid]`
 // weakened to `#![deny]` only because `deny` — unlike `forbid` — can be locally lifted, which

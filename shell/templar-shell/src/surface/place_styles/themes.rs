@@ -14,7 +14,7 @@
 
 use templar_treemap::garden::LayoutKind;
 
-use crate::surface::design::{self, Palette};
+use templar_types::appearance::Palette;
 
 /// The theme a fresh session draws with, and the one every unknown name falls back to.
 pub const DEFAULT_THEME: &str = "mineral";
@@ -291,8 +291,8 @@ pub fn theme_named(name: &str) -> &'static Theme {
 /// the dark one a lighter one — the same relationship to the ground either way.
 #[must_use]
 pub fn ink(palette: &Palette, style: &Style, is_dir: bool) -> u32 {
-    let tone = design::mix(palette.ground, palette.text, 0.55);
-    design::mix(
+    let tone = templar_types::appearance::mix(palette.ground, palette.text, 0.55);
+    templar_types::appearance::mix(
         tone,
         if is_dir {
             style.dir_tint

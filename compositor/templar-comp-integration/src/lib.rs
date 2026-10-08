@@ -15,6 +15,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod activation;
 pub mod broadcaster;
 pub mod governor;
 pub mod identity;
@@ -32,10 +33,10 @@ pub use idle::IdleNotifier;
 pub mod protocol {
     use templar_window::Layer;
 
-    pub const SHELL_V1: &str = "templar_shell_v1";
+    pub const SHELL_V2: &str = "templar_shell_v2";
     pub const RECOVERY_V1: &str = "templar_recovery_v1";
 
-    /// `templar_shell_manager_v1.layer` / `templar_shell_toplevel_v1.layer`'s wire values are exactly
+    /// `templar_shell_manager_v2.layer` / `templar_shell_toplevel_v1.layer`'s wire values are exactly
     /// `Layer`'s `repr(u8)` discriminants — this is the one conversion point both directions
     /// should use instead of hand-rolling the mapping at each call site in the fork.
     pub fn layer_to_wire(layer: Layer) -> u32 {

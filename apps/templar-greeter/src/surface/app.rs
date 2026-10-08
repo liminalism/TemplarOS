@@ -70,6 +70,11 @@ enum AuthCommand {
 enum AuthUpdate {
     Flow { flow: LoginFlow, canceled: bool },
     Started(String),
+    Wake,
+    Accessibility(accesskit_winit::Event),
+}
+impl From<accesskit_winit::Event> for AuthUpdate {
+    fn from(event: accesskit_winit::Event) -> Self { Self::Accessibility(event) }
 }
 
 fn authentication_worker(
@@ -118,6 +123,11 @@ struct GreeterApp {
     kernel: RasterKernel,
     theme: Theme,
     screen: GreeterScreen,
+    proxy: EventLoopProxy<AuthUpdate>,
+    accessibility: Option<accesskit_winit::Adapter>,
+    semantics: pixelkit_ui::semantics::Semantics,
+    semantics_active: bool,
+    native_focused: bool,
     /// `None` until the window should close: `Some(0)` once a session started, `Some(_ != 0)` on
     /// any failure severe enough to give up (the window itself failing to open; the user closing
     /// it). Never set from an ordinary login failure — those stay on-screen, retryable, per
@@ -141,7 +151,8 @@ impl GreeterApp {
             screen.username.set_text(&username);
         }
         let (commands, receiver) = mpsc::channel();
-        std::thread::spawn(move || authentication_worker(client, receiver, &proxy));
+        let worker_proxy = proxy.clone();
+        std::thread::spawn(move || authentication_worker(client, receiver, &worker_proxy));
         GreeterApp {
             commands,
             flow: LoginFlow::idle(),
@@ -151,8 +162,13 @@ impl GreeterApp {
             window: None,
             text: pixelkit_text::TextCache::new(fonts::set()),
             kernel: RasterKernel::new(),
-            theme: Theme::default(),
+            theme: templar_ui::theme_for(&templar_types::appearance::LIGHT),
             screen,
+            proxy,
+            accessibility: None,
+            semantics: pixelkit_ui::semantics::Semantics::default(),
+            semantics_active: false,
+            native_focused: true,
             exit_code: None,
         }
     }
@@ -176,8 +192,9 @@ impl GreeterApp {
             sessions: &self.sessions,
         };
         let action = {
+            if self.semantics_active { self.semantics.begin_scoped("TemplarOS Login", 0); }
             let painter = Painter::new(&mut window.buffer);
-            let mut ui = Ui::new(
+            let ui = Ui::new(
                 painter,
                 &mut self.text,
                 &mut window.input,
@@ -185,6 +202,7 @@ impl GreeterApp {
                 scale,
                 &mut self.kernel,
             );
+            let mut ui = if self.semantics_active { ui.with_semantics(&mut self.semantics) } else { ui };
             let area = Rect::new(0, 0, width, height);
             let action = self.screen.draw(&mut ui, area, &data);
             // The session picker's open popup, if any, draws last — `Dropdown::draw`'s own
@@ -194,6 +212,21 @@ impl GreeterApp {
         };
         window.input.end_frame();
         window.present();
+        let caret = if self.pending || !self.native_focused { None } else {
+            match &self.flow {
+                LoginFlow::Idle { .. } => self.screen.username.caret_area(),
+                LoginFlow::Authenticating { prompt, .. } if prompt.needs_response => self.screen.response.caret_area(),
+                _ => None,
+            }
+        };
+        if let Some(area) = caret {
+            pixelkit_windowing::host::apply_ime(&window.window, Some(pixelkit_windowing::ImeCursorArea {
+                x: f64::from(area.x), y: f64::from(area.y), width: f64::from(area.w), height: f64::from(area.h),
+            }));
+        } else { window.window.set_ime_allowed(false); }
+        if self.semantics_active && let Some(adapter) = &mut self.accessibility {
+            adapter.update_if_active(|| self.semantics.update());
+        }
 
         let action = if matches!(action, GreeterAction::Cancel) {
             action
@@ -267,11 +300,110 @@ impl GreeterApp {
             })
             .is_ok();
     }
+
+    fn handle_input_event(&mut self, event: WindowEvent) {
+        let Some(window) = &mut self.window else {
+            return;
+        };
+        match event {
+            WindowEvent::Focused(focused) => {
+                self.native_focused = focused;
+                if !focused { window.input.blur(); self.semantics.invalidate(); }
+                window.request_redraw();
+            }
+            WindowEvent::ThemeChanged(theme) => {
+                self.theme = templar_ui::theme_for(&if theme == winit::window::Theme::Dark {
+                    templar_types::appearance::DARK
+                } else { templar_types::appearance::LIGHT });
+                window.request_redraw();
+            }
+            WindowEvent::Ime(ime) => {
+                if self.pending || !self.native_focused { return; }
+                match ime {
+                    winit::event::Ime::Preedit(text, _) => window.input.set_composition(&text),
+                    winit::event::Ime::Commit(text) => {
+                        window.input.set_composition("");
+                        for character in text.chars() { window.input.key(pixelkit_shell::KeyInput::Character(character)); }
+                    }
+                    winit::event::Ime::Disabled => window.input.set_composition(""),
+                    winit::event::Ime::Enabled => {}
+                }
+                window.request_redraw();
+            }
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                window.input.clear_accessible_text_edit();
+                self.semantics.invalidate();
+                if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                    window.scale = pixelkit_shell::Scale::new(scale_factor);
+                }
+                window.request_redraw();
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if !self.native_focused { return; }
+                if !key_pressed(event.state) {
+                    return;
+                }
+                let keys = translate_keys(&event.logical_key, event.text.as_deref());
+                if !keys.is_empty() {
+                    for key in keys {
+                        window.input.key(key);
+                    }
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                window.input.modifiers_changed(modifiers_of(modifiers));
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                window
+                    .input
+                    .cursor_moved(position.x as f32, position.y as f32);
+                window.request_redraw();
+            }
+            WindowEvent::CursorLeft { .. } => {
+                window.input.cursor_left();
+                window.request_redraw();
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if let Some(button) = translate_button(button) {
+                    window.input.mouse(button, state == ElementState::Pressed);
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = scroll_pixels(delta);
+                window.input.clear_accessible_text_edit();
+                self.semantics.invalidate();
+                window.input.scrolled(dx, dy);
+                window.request_redraw();
+            }
+            _ => {}
+        }
+    }
 }
 
 impl ApplicationHandler<AuthUpdate> for GreeterApp {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AuthUpdate) {
         match event {
+            AuthUpdate::Wake => { if let Some(window) = &self.window { window.request_redraw(); } }
+            AuthUpdate::Accessibility(event) => {
+                if self.window.as_ref().is_none_or(|window| window.window.id() != event.window_id) { return; }
+                match event.window_event {
+                    accesskit_winit::WindowEvent::InitialTreeRequested => {
+                        self.semantics_active = true;
+                        if let Some(adapter) = &mut self.accessibility { adapter.update_if_active(|| self.semantics.update()); }
+                    }
+                    accesskit_winit::WindowEvent::ActionRequested(request) => {
+                        if !self.pending && let Some(window) = &mut self.window { self.semantics.action(&mut window.input, request); }
+                    }
+                    accesskit_winit::WindowEvent::AccessibilityDeactivated => {
+                        self.semantics_active = false;
+                        if let Some(window) = &mut self.window { window.input.clear_accessible_text_edit(); }
+                        self.semantics.invalidate();
+                    }
+                }
+                if let Some(window) = &self.window { window.request_redraw(); }
+            }
             AuthUpdate::Started(username) => {
                 if let Err(error) =
                     crate::last_user::save(std::path::Path::new(crate::last_user::PATH), &username)
@@ -282,6 +414,8 @@ impl ApplicationHandler<AuthUpdate> for GreeterApp {
                 event_loop.exit();
             }
             AuthUpdate::Flow { flow, canceled } => {
+                self.semantics.invalidate();
+                if let Some(window) = &mut self.window { window.input.blur(); }
                 self.flow = flow;
                 if self.cancel_pending {
                     if canceled {
@@ -315,8 +449,17 @@ impl ApplicationHandler<AuthUpdate> for GreeterApp {
                 return;
             }
         };
+        self.accessibility = Some(accesskit_winit::Adapter::with_event_loop_proxy(
+            event_loop, &window, self.proxy.clone(),
+        ));
         self.window = match HostedWindow::new(window) {
-            Ok(hosted) => Some(hosted),
+            Ok(mut hosted) => {
+                let proxy = self.proxy.clone();
+                hosted.input.attach_clipboard(pixelkit_shell::clipboard::ClipboardWorker::new(move || {
+                    let _ = proxy.send_event(AuthUpdate::Wake);
+                }));
+                Some(hosted)
+            }
             Err(error) => {
                 tracing::error!(%error, "creating the greeter's presenter");
                 self.exit_code = Some(1);
@@ -341,6 +484,9 @@ impl ApplicationHandler<AuthUpdate> for GreeterApp {
             .is_some_and(|window| window.window.id() == window_id);
         if !is_ours {
             return;
+        }
+        if let (Some(adapter), Some(window)) = (&mut self.accessibility, &self.window) {
+            adapter.process_event(&window.window, &event);
         }
 
         match event {
@@ -367,54 +513,7 @@ impl ApplicationHandler<AuthUpdate> for GreeterApp {
             }
             return;
         }
-        let Some(window) = &mut self.window else {
-            return;
-        };
-        match event {
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
-                    window.scale = pixelkit_shell::Scale::new(scale_factor);
-                }
-                window.request_redraw();
-            }
-            WindowEvent::KeyboardInput { event, .. } => {
-                if !key_pressed(event.state) {
-                    return;
-                }
-                let keys = translate_keys(&event.logical_key, event.text.as_deref());
-                if !keys.is_empty() {
-                    for key in keys {
-                        window.input.key(key);
-                    }
-                    window.request_redraw();
-                }
-            }
-            WindowEvent::ModifiersChanged(modifiers) => {
-                window.input.modifiers_changed(modifiers_of(modifiers));
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                window
-                    .input
-                    .cursor_moved(position.x as f32, position.y as f32);
-                window.request_redraw();
-            }
-            WindowEvent::CursorLeft { .. } => {
-                window.input.cursor_left();
-                window.request_redraw();
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                if let Some(button) = translate_button(button) {
-                    window.input.mouse(button, state == ElementState::Pressed);
-                    window.request_redraw();
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let (dx, dy) = scroll_pixels(delta);
-                window.input.scrolled(dx, dy);
-                window.request_redraw();
-            }
-            _ => {}
-        }
+        self.handle_input_event(event);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {

@@ -10,12 +10,13 @@
 //! [`crate::browser::Browser`] — a model with no display in it, so this path is testable.
 //!
 //! [`NativeUi`] shows that model with Pixelkit; [`NoUiAvailable`] is the honest default when
-//! there is no compositor to show it on: nothing is fabricated and the call is `CANCELLED`.
+//! there is no compositor: the reply reports an infrastructure failure, not user cancellation.
 
 use crate::{
     browser::{FileFilter, FilterPattern},
     clients::RecentsClient,
     request::{owned_value, response, with_request},
+    host::{UiError, UiResult},
 };
 use async_trait::async_trait;
 use std::{
@@ -29,7 +30,7 @@ use templar_filed::{OperationType, Suggestion};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 /// What kind of dialog was requested, and the options specific to it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ChooserKind {
     Open { multiple: bool, directory: bool },
     Save { current_name: Option<String> },
@@ -37,11 +38,14 @@ pub enum ChooserKind {
 }
 
 /// Everything a [`FileChooserUi`] needs to actually show something.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChooserRequest {
     pub kind: ChooserKind,
     pub app_id: String,
     pub title: String,
+    pub activation_token: Option<String>,
+    pub parent: crate::parent::Parent,
+    #[serde(with = "crate::wire::path")]
     pub starting_directory: PathBuf,
     /// The caller's `filters`, in the order offered.
     pub filters: Vec<FileFilter>,
@@ -54,36 +58,47 @@ pub struct ChooserRequest {
 pub struct ChosenFiles {
     pub uris: Vec<String>,
     pub writable: bool,
+    /// The actual filter selected when the dialog was accepted.
+    pub current_filter: Option<FileFilter>,
 }
 
-/// The interactive part no toolkit exists to provide yet.
+/// Shared asynchronous interactive seam: cancellation and host failure are distinct.
 #[async_trait]
 pub trait FileChooserUi: Send + Sync + std::fmt::Debug {
-    async fn choose(&self, request: ChooserRequest) -> Option<ChosenFiles>;
+    async fn choose(&self, request: ChooserRequest) -> UiResult<ChosenFiles>;
 }
 
-/// Headless default: there is nothing to show, so nothing is chosen.
+/// Headless default reports infrastructure failure instead of fabricated cancellation.
 #[derive(Debug, Default)]
 pub struct NoUiAvailable;
 
 #[async_trait]
 impl FileChooserUi for NoUiAvailable {
-    async fn choose(&self, _request: ChooserRequest) -> Option<ChosenFiles> {
-        None
+    async fn choose(&self, _request: ChooserRequest) -> UiResult<ChosenFiles> {
+        Err(UiError("no graphical display available".into()))
     }
 }
 
 /// Pixelkit graphical chooser used by the live portal backend.
-#[derive(Debug, Default)]
-pub struct NativeUi;
+#[derive(Debug)]
+pub struct NativeUi(pub crate::host::Client);
 
 #[async_trait]
 impl FileChooserUi for NativeUi {
-    async fn choose(&self, request: ChooserRequest) -> Option<ChosenFiles> {
-        tokio::task::spawn_blocking(move || crate::dialog::files(request))
-            .await
-            .ok()
-            .flatten()
+    async fn choose(&self, request: ChooserRequest) -> UiResult<ChosenFiles> {
+        match self.0.request(crate::dialog::Spec::Files(request)).await? {
+            Some(crate::dialog::Answer::Files(selection)) => Ok(Some(ChosenFiles {
+                uris: selection.paths.into_iter()
+                    .map(|path| url::Url::from_file_path(path)
+                        .map(String::from)
+                        .map_err(|()| UiError("chosen path is not an absolute file path".into())))
+                    .collect::<Result<_, _>>()?,
+                writable: true,
+                current_filter: selection.current_filter,
+            })),
+            None => Ok(None),
+            _ => Err(UiError("unexpected graphical answer".into())),
+        }
     }
 }
 
@@ -117,6 +132,15 @@ fn resolve_starting_directory(
         .map(Path::to_path_buf)
         .or_else(|| suggested_directory(suggestion_json))
         .unwrap_or_else(|| home.to_path_buf())
+}
+
+/// Portal folder values are hints: browsers can return their last selected file.
+/// Open its containing directory rather than browse a file.
+async fn normalize_folder_hint(mut directory: PathBuf) -> PathBuf {
+    if matches!(tokio::fs::metadata(&directory).await, Ok(metadata) if metadata.is_file()) {
+        directory.pop();
+    }
+    directory
 }
 
 /// A null-terminated `ay` byte-array path option, as sent by `current_folder`/`current_file`.
@@ -164,9 +188,16 @@ fn filter_from_wire((name, patterns): WireFilter) -> FileFilter {
     }
 }
 
+fn filter_to_wire(filter: &FileFilter) -> WireFilter {
+    (filter.name.clone(), filter.patterns.iter().map(|pattern| match pattern {
+        FilterPattern::Glob(pattern) => (0, pattern.clone()),
+        FilterPattern::Mime(pattern) => (1, pattern.clone()),
+    }).collect())
+}
+
 /// The caller's `filters`, and which one starts selected.
 ///
-/// `current_filter` arrives as a whole filter rather than an index, so it is matched by name
+/// `current_filter` arrives as a whole filter rather than an index, so it is matched exactly
 /// against `filters` — and, when the caller sent one that is not in the list (which the spec
 /// allows), it is appended, because a filter the application asked for must be offered rather
 /// than silently dropped.
@@ -189,7 +220,7 @@ fn filters_from_options(options: &HashMap<String, OwnedValue>) -> (Vec<FileFilte
     };
     let at = filters
         .iter()
-        .position(|filter| filter.name == current.name);
+        .position(|filter| filter == &current);
     let index = at.unwrap_or_else(|| {
         filters.push(current);
         filters.len() - 1
@@ -218,6 +249,9 @@ fn reply(response_code: u32, chosen: Option<&ChosenFiles>) -> (u32, HashMap<Stri
     if let Some(chosen) = chosen {
         results.insert("uris".to_owned(), owned_value(chosen.uris.clone()));
         results.insert("writable".to_owned(), owned_value(chosen.writable));
+        if let Some(filter) = &chosen.current_filter {
+            results.insert("current_filter".to_owned(), owned_value(filter_to_wire(filter)));
+        }
     }
     (response_code, results)
 }
@@ -238,6 +272,7 @@ impl FileChooserApi {
         app_id: &str,
         title: &str,
         options: &HashMap<String, OwnedValue>,
+        parent: crate::parent::Parent,
     ) -> (u32, HashMap<String, OwnedValue>) {
         let operation = operation_type(&kind);
         let suggestion_json = self
@@ -255,21 +290,24 @@ impl FileChooserApi {
                     .and_then(|file| file.parent().map(Path::to_path_buf))
             });
         let home = std::env::var("HOME").map_or_else(|_| PathBuf::from("/"), PathBuf::from);
-        let starting_directory =
-            resolve_starting_directory(caller_folder.as_deref(), &suggestion_json, &home);
+        let starting_directory = normalize_folder_hint(
+            resolve_starting_directory(caller_folder.as_deref(), &suggestion_json, &home),
+        ).await;
         let (filters, current_filter) = filters_from_options(options);
 
         let request = ChooserRequest {
             kind,
             app_id: app_id.to_owned(),
             title: title.to_owned(),
+            activation_token: get_string(options, "activation_token"),
+            parent,
             starting_directory: starting_directory.clone(),
             filters,
             current_filter,
         };
 
         match self.ui.choose(request).await {
-            Some(chosen) => {
+            Ok(Some(chosen)) => {
                 if let Some(first) = chosen.uris.first()
                     && let Some(path) = templar_filed::actions::path_from_uri(first)
                     && let Some(directory) = path.parent()
@@ -281,20 +319,21 @@ impl FileChooserApi {
                 }
                 reply(response::SUCCESS, Some(&chosen))
             }
-            None => reply(response::CANCELLED, None),
+            Ok(None) => reply(response::CANCELLED, None),
+            Err(error) => crate::request::failed(error.0),
         }
     }
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.FileChooser")]
 impl FileChooserApi {
-    /// `parent_window` is part of the fixed spec signature on every method here; this backend
-    /// needs no window-parenting (no toolkit dialog exists yet — see `FileChooserUi`).
+    /// Each request carries its own bounded native parent descriptor.
     #[zbus(name = "OpenFile")]
     #[allow(unused_variables)]
     async fn open_file(
         &self,
         #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         handle: OwnedObjectPath,
         app_id: &str,
         parent_window: &str,
@@ -305,8 +344,8 @@ impl FileChooserApi {
             multiple: get_bool(&options, "multiple"),
             directory: get_bool(&options, "directory"),
         };
-        with_request(connection, &handle, || {
-            self.run(kind, app_id, title, &options)
+        with_request(connection, &handle, header.sender(), || {
+            self.run(kind, app_id, title, &options, crate::parent::Parent::parse(parent_window))
         })
         .await
     }
@@ -316,6 +355,7 @@ impl FileChooserApi {
     async fn save_file(
         &self,
         #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         handle: OwnedObjectPath,
         app_id: &str,
         parent_window: &str,
@@ -332,8 +372,8 @@ impl FileChooserApi {
                     })
             }),
         };
-        with_request(connection, &handle, || {
-            self.run(kind, app_id, title, &options)
+        with_request(connection, &handle, header.sender(), || {
+            self.run(kind, app_id, title, &options, crate::parent::Parent::parse(parent_window))
         })
         .await
     }
@@ -343,6 +383,7 @@ impl FileChooserApi {
     async fn save_files(
         &self,
         #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         handle: OwnedObjectPath,
         app_id: &str,
         parent_window: &str,
@@ -352,8 +393,8 @@ impl FileChooserApi {
         let kind = ChooserKind::SaveFiles {
             file_names: file_names_from_options(&options),
         };
-        with_request(connection, &handle, || {
-            self.run(kind, app_id, title, &options)
+        with_request(connection, &handle, header.sender(), || {
+            self.run(kind, app_id, title, &options, crate::parent::Parent::parse(parent_window))
         })
         .await
     }
@@ -362,6 +403,29 @@ impl FileChooserApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_previous_file_folder_hint_reopens_its_directory() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let directory = loop {
+            let path = std::env::temp_dir().join(format!(
+                "templar-folder-hint-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => break path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+                Err(error) => panic!("temporary folder: {error}"),
+            }
+        };
+        let file = directory.join("previous-λ.txt");
+        std::fs::write(&file, b"known").unwrap();
+        let from_file = normalize_folder_hint(file).await;
+        let from_directory = normalize_folder_hint(directory.clone()).await;
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(from_file, directory);
+        assert_eq!(from_directory, directory);
+    }
 
     #[test]
     fn a_callers_own_current_folder_beats_our_suggestion() {
@@ -441,64 +505,19 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct FixedChoice(Option<ChosenFiles>);
-
-    #[async_trait]
-    impl FileChooserUi for FixedChoice {
-        async fn choose(&self, _request: ChooserRequest) -> Option<ChosenFiles> {
-            self.0.clone()
-        }
-    }
-
     #[tokio::test]
-    async fn no_ui_available_answers_cancelled() {
+    async fn missing_display_is_infrastructure_failure() {
         let api = FileChooserApi {
             recents: Arc::new(FakeRecents::default()),
             ui: Arc::new(NoUiAvailable),
         };
-        let (code, results) = api
-            .run(
-                ChooserKind::Open {
-                    multiple: false,
-                    directory: false,
-                },
-                "org.templaros.Test",
-                "Open",
-                &HashMap::new(),
-            )
+        let (code, results) = api.run(ChooserKind::Open {
+            multiple: false,
+            directory: false,
+        }, "org.templaros.Test", "Open", &HashMap::new(), crate::parent::Parent::None)
             .await;
-        assert_eq!(code, response::CANCELLED);
-        assert!(results.is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_chosen_file_is_reported_and_its_directory_recorded() {
-        let recents = Arc::new(FakeRecents::default());
-        let api = FileChooserApi {
-            recents: recents.clone(),
-            ui: Arc::new(FixedChoice(Some(ChosenFiles {
-                uris: vec!["file:///home/u/report.pdf".to_owned()],
-                writable: true,
-            }))),
-        };
-        let (code, results) = api
-            .run(
-                ChooserKind::Open {
-                    multiple: false,
-                    directory: false,
-                },
-                "org.templaros.Test",
-                "Open",
-                &HashMap::new(),
-            )
-            .await;
-        assert_eq!(code, response::SUCCESS);
-        assert!(results.contains_key("uris"));
-        let recorded = recents.recorded.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0].0, "org.templaros.Test");
-        assert_eq!(recorded[0].2, "/home/u");
+        assert_eq!(code, response::OTHER);
+        assert!(results.contains_key("error"));
     }
 
     /// The options a browser actually sends when it asks for an upload: named filters, the one
@@ -523,7 +542,7 @@ mod tests {
 
         let (filters, current) = filters_from_options(&options);
         assert_eq!(filters.len(), 2);
-        assert_eq!(current, Some(0), "the caller's current filter, by name");
+        assert_eq!(current, Some(0), "the caller's exact current filter");
 
         let entry = |name: &str, kind| BrowseEntry {
             path: PathBuf::from("/home/u").join(name),
@@ -591,5 +610,46 @@ mod tests {
             owned_value(vec![first, b"two.txt".to_vec()]),
         );
         assert_eq!(file_names_from_options(&saving), ["one.txt", "two.txt"]);
+    }
+
+    #[test]
+    fn selected_format_round_trips_as_a_full_portal_filter() {
+        let selected = FileFilter {
+            name: "Complete page".into(),
+            patterns: vec![
+                FilterPattern::Glob("*.html".into()),
+                FilterPattern::Mime("text/html".into()),
+            ],
+        };
+        let chosen = ChosenFiles {
+            uris: vec!["file:///tmp/page.html".into()],
+            writable: true,
+            current_filter: Some(selected.clone()),
+        };
+        let (code, results) = reply(response::SUCCESS, Some(&chosen));
+        assert_eq!(code, response::SUCCESS);
+        let wire = WireFilter::try_from(results["current_filter"].clone()).unwrap();
+        assert_eq!(wire, ("Complete page".into(),
+            vec![(0, "*.html".into()), (1, "text/html".into())]));
+        assert_eq!(filter_from_wire(wire), selected);
+        assert_eq!(reply(response::CANCELLED, None), (response::CANCELLED, HashMap::new()));
+    }
+
+    #[test]
+    fn same_named_filters_do_not_change_the_requested_format() {
+        let first: WireFilter = ("Format".into(), vec![(0, "*.html".into())]);
+        let second: WireFilter = ("Format".into(), vec![(0, "*.txt".into())]);
+        let mut options = HashMap::new();
+        options.insert("filters".into(), owned_value(vec![first, second.clone()]));
+        options.insert("current_filter".into(), owned_value(second.clone()));
+        let (filters, index) = filters_from_options(&options);
+        assert_eq!(index, Some(1));
+        assert_eq!(filter_to_wire(&filters[index.unwrap()]), second);
+
+        let unlisted: WireFilter = ("Format".into(), vec![(1, "text/plain".into())]);
+        options.insert("current_filter".into(), owned_value(unlisted.clone()));
+        let (filters, index) = filters_from_options(&options);
+        assert_eq!(index, Some(2));
+        assert_eq!(filter_to_wire(&filters[index.unwrap()]), unlisted);
     }
 }

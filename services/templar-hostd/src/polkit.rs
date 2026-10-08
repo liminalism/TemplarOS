@@ -14,6 +14,9 @@ use zbus::zvariant::{Type, Value};
 pub trait PolkitAuthority: Send + Sync + std::fmt::Debug {
     /// `true` iff `sender` (a unique bus name, e.g. `:1.42`) is authorized for `action_id`.
     async fn check_authorization(&self, sender: &str, action_id: &str) -> Result<bool>;
+    async fn check_authorization_interactive(&self, sender: &str, action_id: &str) -> Result<bool> {
+        self.check_authorization(sender, action_id).await
+    }
 }
 
 /// Calls the real `org.freedesktop.PolicyKit1.Authority` over the system bus the daemon is
@@ -46,32 +49,30 @@ struct AuthorizationResult {
     details: HashMap<String, String>,
 }
 
+impl SystemPolkit {
+    async fn check(&self, sender: &str, action_id: &str, flags: u32) -> Result<bool> {
+        let mut details = HashMap::new();
+        details.insert("name", Value::from(sender));
+        let subject = Subject { kind: "system-bus-name", details };
+        let empty_details: HashMap<&str, &str> = HashMap::new();
+        let reply = self.connection.call_method(
+            Some("org.freedesktop.PolicyKit1"), "/org/freedesktop/PolicyKit1/Authority",
+            Some("org.freedesktop.PolicyKit1.Authority"), "CheckAuthorization",
+            &(subject, action_id, empty_details, flags, ""),
+        ).await.context("calling PolicyKit1.Authority.CheckAuthorization")?;
+        let result: AuthorizationResult = reply.body().deserialize()?;
+        Ok(result.is_authorized)
+    }
+}
+
 #[async_trait]
 impl PolkitAuthority for SystemPolkit {
     async fn check_authorization(&self, sender: &str, action_id: &str) -> Result<bool> {
-        let mut details = HashMap::new();
-        details.insert("name", Value::from(sender));
-        let subject = Subject {
-            kind: "system-bus-name",
-            details,
-        };
-        let empty_details: HashMap<&str, &str> = HashMap::new();
-        // AllowUserInteraction is deliberately not set (flags = 0): hostd is a headless system
-        // service and must never block waiting on an authentication agent it cannot see.
-        let flags: u32 = 0;
-        let reply = self
-            .connection
-            .call_method(
-                Some("org.freedesktop.PolicyKit1"),
-                "/org/freedesktop/PolicyKit1/Authority",
-                Some("org.freedesktop.PolicyKit1.Authority"),
-                "CheckAuthorization",
-                &(subject, action_id, empty_details, flags, ""),
-            )
-            .await
-            .context("calling PolicyKit1.Authority.CheckAuthorization")?;
-        let result: AuthorizationResult = reply.body().deserialize()?;
-        Ok(result.is_authorized)
+        // Ordinary headless operations retain their existing noninteractive contract.
+        self.check(sender, action_id, 0).await
+    }
+    async fn check_authorization_interactive(&self, sender: &str, action_id: &str) -> Result<bool> {
+        self.check(sender, action_id, 1).await
     }
 }
 

@@ -1,7 +1,11 @@
 # Wayland protocols (private)
 
-* `templar-shell-v1.xml` — commands only the trusted, compositor-launched shell may issue plus sanitized
-  toplevel data (canonical app id / instance id / verified). Listing itself uses upstream
+* `templar-shell-v2.xml` — commands only the trusted, compositor-launched shell may issue plus sanitized
+  toplevel data (canonical app id / instance id / verified).
+  The manager is `templar_shell_manager_v2`: clients of the retired v1 manager fail closed rather
+  than interpreting removed idle/touchpad request opcodes as other privileged commands.
+  Idle policy and per-device input configuration now use authenticated typed session control,
+  not the shell's Wayland manager. Listing itself uses upstream
   `ext-foreign-toplevel-list-v1`. Version 2 adds `reveal_home` / `home_revealed` (go home), and per
   toplevel the `ext_foreign_toplevel_handle_v1` `identifier` (the key a window preview is filed under),
   `geometry`, `maximized` and `set_maximized`. Both peers live in this repository and bind the lower of

@@ -1,0 +1,18 @@
+Source: liminalview
+Section: graphics
+Priority: optional
+Maintainer: TemplarOS contributors <dev@templaros.org>
+Build-Depends: debhelper-compat (= 13), cargo (>= 1.97), rustc (>= 1.97), python3, pkg-config
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+
+Package: liminalview
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends},
+         libxkbcommon0, libxkbcommon-x11-0,
+         libwayland-client0, libwayland-cursor0,
+         libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2
+Description: native PixelKit still-image viewer
+ LiminalView opens still images and browses their containing folder with the
+ arrow keys. This package builds the supplied native Linux application with
+ its default BPG, JPEG 2000, JPEG XL and SVG decoding features.

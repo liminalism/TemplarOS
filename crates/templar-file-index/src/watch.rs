@@ -23,6 +23,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    os::unix::fs::MetadataExt as _,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -253,6 +254,7 @@ struct WatchedRoot {
     id: RootId,
     path: PathBuf,
     policy: RootPolicy,
+    dev_id: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -322,6 +324,7 @@ impl<S: EventSource> WatchOwner<S> {
         self.roots.push(WatchedRoot {
             id: root,
             path: path.to_path_buf(),
+            dev_id: path.symlink_metadata().ok().map(|metadata| metadata.dev()),
             policy,
         });
     }
@@ -419,6 +422,16 @@ impl<S: EventSource> WatchOwner<S> {
     }
 
     fn arm_dir(&mut self, root: RootId, dir: &Path) -> ArmResult {
+        if let Some(tracked) = self.roots.iter().find(|tracked| tracked.id == root)
+            && !tracked.policy.cross_mount
+        {
+            match dir.symlink_metadata() {
+                Ok(metadata) if !metadata.is_dir()
+                    || tracked.dev_id.is_some_and(|device| device != metadata.dev()) => return ArmResult::Boundary,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return ArmResult::Gone,
+                _ => {}
+            }
+        }
         if self.by_path.contains_key(dir) {
             return ArmResult::AlreadyArmed;
         }
@@ -440,6 +453,7 @@ impl<S: EventSource> WatchOwner<S> {
                 self.armed = self.armed.saturating_add(1);
                 ArmResult::Armed
             }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => ArmResult::Gone,
             Err(error) => {
                 self.refused = self.refused.saturating_add(1);
                 self.last_error = Some(format!("{}: {error}", dir.display()));
@@ -453,10 +467,10 @@ impl<S: EventSource> WatchOwner<S> {
         &mut self.source
     }
 
-    /// Arm one directory. `false` means the budget or the kernel refused, which the caller must
-    /// carry into its own completeness.
-    pub fn arm_directory(&mut self, root: RootId, dir: &Path) -> bool {
-        !matches!(self.arm_dir(root, dir), ArmResult::Refused)
+    /// Arm one directory. A vanished child is not watch exhaustion: its watched parent carries
+    /// removal/recreation events. The caller must not scan an unarmed reincarnation of that path.
+    pub fn arm_directory(&mut self, root: RootId, dir: &Path) -> ArmResult {
+        self.arm_dir(root, dir)
     }
 
     /// Arm `dir` and everything under it, handing each indexable entry to `visit` **after** its
@@ -471,14 +485,11 @@ impl<S: EventSource> WatchOwner<S> {
         dir: &Path,
         visit: &mut dyn FnMut(ScannedEntry) -> Result<(), crate::IndexError>,
     ) -> Result<ArmOutcome, crate::IndexError> {
-        let policy = self
-            .roots
-            .iter()
-            .find(|tracked| tracked.id == root)
-            .map(|tracked| tracked.policy.clone())
-            .unwrap_or_default();
+        let (policy, base) = self.roots.iter().find(|tracked| tracked.id == root)
+            .map_or_else(|| (RootPolicy::default(), NativePath::from_path(dir)),
+                |tracked| (tracked.policy.clone(), NativePath::from_path(&tracked.path)));
         let mut outcome = ArmOutcome::default();
-        self.arm_recursive(root, dir, &policy, visit, &mut outcome)?;
+        self.arm_recursive(root, dir, &policy, &base, visit, &mut outcome)?;
         Ok(outcome)
     }
 
@@ -487,11 +498,20 @@ impl<S: EventSource> WatchOwner<S> {
         root: RootId,
         dir: &Path,
         policy: &RootPolicy,
+        base: &NativePath,
         visit: &mut dyn FnMut(ScannedEntry) -> Result<(), crate::IndexError>,
         outcome: &mut ArmOutcome,
     ) -> Result<(), crate::IndexError> {
         match self.arm_dir(root, dir) {
             ArmResult::Armed | ArmResult::AlreadyArmed => outcome.dirs_armed += 1,
+            ArmResult::Boundary => return Ok(()),
+            ArmResult::Gone => {
+                if self.roots.iter().any(|tracked| tracked.id == root && tracked.path == dir) {
+                    outcome.complete = false;
+                    outcome.unreadable_dirs += 1;
+                }
+                return Ok(());
+            }
             ArmResult::Refused => {
                 // The budget or the kernel said no. Everything below this directory is
                 // unwatched, and the index must say so rather than pretend.
@@ -508,7 +528,13 @@ impl<S: EventSource> WatchOwner<S> {
                 outcome.complete = false;
                 return Ok(());
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if self.roots.iter().any(|tracked| tracked.id == root && tracked.path == dir) {
+                    outcome.complete = false;
+                    outcome.unreadable_dirs += 1;
+                }
+                return Ok(());
+            }
             Err(error) => {
                 outcome.unreadable_dirs += 1;
                 outcome.complete = false;
@@ -531,25 +557,31 @@ impl<S: EventSource> WatchOwner<S> {
             };
             let meta = EntryMeta::from_symlink_metadata(&path, &metadata);
             let native = NativePath::from_path(&path);
-            let Some(coverage) = policy.stored_coverage(&native, meta.kind) else {
+            let Some(coverage) = policy.stored_coverage_within(base, &native, meta.kind) else {
                 continue;
             };
             visit(ScannedEntry {
                 path: native,
                 parent: Some(NativePath::from_path(dir)),
-                meta: meta.clone(),
+                meta,
             })?;
             outcome.entries += 1;
             // An `Opaque` build directory is armed and stored; nothing inside it is walked or
             // watched. That is what stops a `cargo build` from spending the watch budget on rows
             // no consumer asked for.
-            if meta.kind == EntryKind::Directory && coverage.materialises_children() {
+            if metadata.is_dir() && coverage.materialises_children() {
                 subdirectories.push(path);
+            } else if metadata.is_dir() && coverage == crate::Coverage::Opaque {
+                match self.arm_dir(root, &path) {
+                    ArmResult::Armed | ArmResult::AlreadyArmed => outcome.dirs_armed += 1,
+                    ArmResult::Refused => { outcome.dirs_refused += 1; outcome.complete = false; }
+                    ArmResult::Gone | ArmResult::Boundary => {}
+                }
             }
         }
 
         for child in subdirectories {
-            self.arm_recursive(root, &child, policy, visit, outcome)?;
+            self.arm_recursive(root, &child, policy, base, visit, outcome)?;
         }
         Ok(())
     }
@@ -791,7 +823,9 @@ impl<S: EventSource> WatchOwner<S> {
             entries.push(entry);
             Ok(())
         };
-        let armed = self.arm_recursive(root, path, policy, &mut visit, &mut outcome);
+        let Some(base) = self.roots.iter().find(|tracked| tracked.id == root)
+            .map(|tracked| NativePath::from_path(&tracked.path)) else { return; };
+        let armed = self.arm_recursive(root, path, policy, &base, &mut visit, &mut outcome);
 
         if over_budget || armed.is_err() || !outcome.complete {
             // Too big to absorb between two events, or partly unreadable. The subtree is real but
@@ -903,9 +937,13 @@ impl<S: EventSource> WatchOwner<S> {
     }
 }
 
-enum ArmResult {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ArmResult {
     Armed,
     AlreadyArmed,
+    Gone,
+    /// An excluded filesystem boundary (or a directory replaced by a non-directory).
+    Boundary,
     Refused,
 }
 
@@ -1375,6 +1413,29 @@ impl EventSource for FakeSource {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_disappearing_directory_is_not_a_permanent_watcher_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let tree = temp.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let root = RootId(1);
+        let mut owner = WatchOwner::new(InotifySource::open().unwrap(), WatchBudget { max_watches: 8 });
+        owner.track_root(root, &tree, RootPolicy::default_home());
+        assert_eq!(owner.arm_directory(root, &tree), ArmResult::Armed);
+        let gone = tree.join("rustc-temporary");
+        std::fs::create_dir(&gone).unwrap();
+        std::fs::remove_dir(&gone).unwrap();
+        assert_eq!(owner.arm_directory(root, &gone), ArmResult::Gone);
+        let status = owner.status(0);
+        assert_eq!(status.watches_armed, 1);
+        assert_eq!(status.watches_refused, 0);
+        assert_eq!(status.last_error, None);
+        // A reincarnation is armed before it can be enumerated; it is not claimed as watched.
+        std::fs::create_dir(&gone).unwrap();
+        assert_eq!(owner.arm_directory(root, &gone), ArmResult::Armed);
+        assert_eq!(owner.status(0).watches_armed, 2);
+    }
+
     /// The unbounded wait is only safe because something other than the kernel can end it.
     ///
     /// This is the one test that has to use the real backend: `FakeSource` never blocks, so it
@@ -1500,7 +1561,7 @@ mod tests {
         let root = RootId(1);
         let mut owner = WatchOwner::new(FakeSource::new(), WatchBudget { max_watches: 8 });
         owner.track_root(root, &tree, RootPolicy::default_home());
-        assert!(owner.arm_directory(root, &tree));
+        assert_eq!(owner.arm_directory(root, &tree), ArmResult::Armed);
         let watch = owner.source_mut().watch_for(&tree).expect("an armed watch");
 
         let clock = crate::coalesce::FakeClock::new(0);

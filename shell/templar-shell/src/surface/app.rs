@@ -3,12 +3,14 @@
 //! its content live. See `window.rs`'s module doc for why this crate drives winit
 //! itself rather than `pixelkit_shell::run_app`.
 
+use anyhow::Context;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use pixelkit_raster::{Painter, RasterKernel, Rect, WindowBuffer};
+use pixelkit_ui::toast::{ToastAction, ToastCard};
 use pixelkit_ui::{Theme, Ui};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -17,9 +19,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::{Fullscreen, Window, WindowId as WinitWindowId};
 
 use templar_client::proxies::{
-    FilesIndexProxy, FilesSearchProxy, LauncherProxy, LifecycleProxy, ProjectsProxy, SettingsProxy,
+    FilesIndexProxy, LauncherProxy, LifecycleProxy, ProjectsProxy, SettingsProxy,
 };
-use templar_field::{FieldDocument, FieldOp};
+use templar_field::{FieldDocument, FieldOp, TileKind};
 use templar_types::AppId;
 use templar_types::action;
 use templar_types::provider::ProviderRole;
@@ -32,11 +34,12 @@ use crate::files_surface::FilesLocation;
 use crate::home_surface::Drawer;
 use crate::icons::{self, SystemIconRoots};
 use crate::omnibox::Scope;
-use crate::settings::{self, HomeFieldSettings, PreviewMode, RailSettings};
+use crate::settings::{self, HomeFieldSettings, PreviewMode, RailSettings, TabSettings};
 use crate::surface::design;
 use crate::surface::field_screen::{FieldAction, FieldData, FieldScreen};
 use crate::surface::file_browser::{FileBrowserData, FileRequest, FileVerb};
 use crate::surface::fonts;
+use crate::surface::notification_popup;
 use crate::surface::rail::{RailReveal, RailSide, action_keeps_rail_open};
 use crate::surface::rail_session::RailSession;
 use crate::surface::window::{
@@ -44,13 +47,30 @@ use crate::surface::window::{
 };
 use crate::wayland_bridge::{PresentOutcome, ShellBridge};
 
-/// The one user event: something arrived off the event loop's own thread (a fetch, a search
-/// result) and a redraw should reconsider it. Carries nothing on purpose — see
-/// `pixelkit_shell::shell::Wake`'s own doc for the same reasoning; this crate does not reuse that
-/// type directly because building one needs a private field only `pixelkit_shell::run_app` can
-/// set (see `window.rs`'s module doc for the fuller account of what is and is not reachable there).
-#[derive(Debug, Clone, Copy)]
-pub struct Wake;
+/// Worker wakeups and native accessibility requests share the owned winit event loop.
+#[derive(Debug)]
+pub enum Wake {
+    Data,
+    Accessibility(accesskit_winit::Event),
+}
+
+impl From<accesskit_winit::Event> for Wake {
+    fn from(event: accesskit_winit::Event) -> Self {
+        Self::Accessibility(event)
+    }
+}
+
+/// A size preview retains its native scope, pixel size and observed freshness alongside the image.
+#[derive(Debug)]
+pub struct TreemapPreview {
+    pub path: PathBuf,
+    pub caption: String,
+    pub width: u32,
+    pub height: u32,
+    pub bitmap: Option<pixelkit_raster::Bitmap>,
+    pub status: String,
+    pub composition: Vec<(u32, f32)>,
+}
 
 enum DataUpdate {
     Drawers(Vec<(Drawer, crate::drawers::DrawerFeed)>),
@@ -65,20 +85,20 @@ enum DataUpdate {
     Widget(String, crate::surface::widgets::WidgetSnapshot),
     /// Charge, volume and backlight for the bar's machine cluster.
     Machine(crate::data::MachineReadings),
-    /// The notifications widget's structured rows, beside its generic snapshot: ids and action
-    /// keys the per-item dismiss and invoke controls act on.
-    NotificationRows(Vec<crate::surface::widgets::notifications::NotificationRow>),
+    /// One atomic journal model for both Home and the popup, including owner invalidation.
+    Notifications(crate::surface::notification_feed::NotificationUpdate),
     /// `HomeGarden1.Contexts` by root.
     Garden(HashMap<PathBuf, crate::garden::GardenPlace>),
     WorkingDirectories(HashMap<String, PathBuf>),
     HomeFieldSettings(HomeFieldSettings),
+    /// Wallpaper1's observed presented state, independent of desired enabled/configuration.
+    WallpaperApplied(Option<templar_types::wallpaper::WallpaperObservation>),
     /// `shell.rails.*`: gesture rails or the classic bar, and the gate the compositor watches.
     RailSettings(RailSettings),
     /// `shell.rails.lanes`: how the running-apps strip groups windows by kind of program.
     Lanes(crate::taskbar::LaneMode),
-    /// The session's screen-off delay in seconds, from `Power1` (0 = never). Relayed straight to
-    /// the compositor, which is the only process that can see the seat go idle.
-    IdleTimeout(u32),
+    /// `windows.tabs.*`: the committed window tab policy the compositor applies.
+    TabSettings(TabSettings),
     /// Who fills an exclusive `Providers1` role the shell acts on: the `terminal` the drop-down
     /// chord toggles, and the `file-search` the search panel's last row hands the query to.
     /// `None` is "nobody", which is a fact worth relaying — the compositor stops looking for a
@@ -117,15 +137,30 @@ enum DataUpdate {
         path: PathBuf,
         bitmap: Option<pixelkit_raster::Bitmap>,
     },
+    HomeThumbnail {
+        path: PathBuf,
+        bitmap: Option<pixelkit_raster::Bitmap>,
+    },
+    DesktopDirectory {
+        path: PathBuf,
+        listing: Result<super::desktop_dock::NativeListing, String>,
+    },
+    DockHandlers {
+        path: PathBuf,
+        handlers: Result<Vec<String>, String>,
+    },
+    NativeTransferFinished {
+        generation: u64,
+        success: bool,
+    },
     /// One application's icon, resolved and decoded off-thread. `None` when nothing was found —
     /// the attempt is already recorded, so the receiver simply has nothing to file.
     Icon(String, Option<pixelkit_raster::Bitmap>),
     /// The Files object's current directory as a treemap and a composition, rasterized
     /// off-thread.
     Treemap {
-        path: PathBuf,
-        bitmap: pixelkit_raster::Bitmap,
-        composition: Vec<(u32, f32)>,
+        epoch: u64,
+        preview: TreemapPreview,
     },
     /// Every five minutes: drop the cached treemap so the next frame asks for a fresh one.
     TreemapsStale,
@@ -141,7 +176,8 @@ enum DataUpdate {
     SearchResults {
         scope: Scope,
         query: String,
-        result: Result<Vec<BrowseEntry>, String>,
+        request_generation: u64,
+        result: Result<IndexedSearchResults, String>,
     },
     /// The copies of one logical application, resolved off the event loop.
     AppVariants(String, Vec<(String, String, String)>),
@@ -159,23 +195,17 @@ enum DataUpdate {
     FilesChanged,
 }
 
-/// Whether the field is behind something and its window previews should stop.
-///
-/// Nothing of the field is visible under a window at all — `FieldScreen::occlude_windows` paints
-/// flat ground over every window's rectangle — so with a fullscreen or maximized window in front
-/// of it there is nothing to capture *for*. This is the capture half of that rule: it saves the
-/// per-window shm round trip while the field cannot be seen. Revealing Home (bare Super) puts the
-/// field in front again and the previews come back, as does un-maximizing or parking the window.
-///
-/// The cache is kept, never cleared, so coming back shows the picture that was already there
-/// rather than a blank tile filling in a frame or two later.
-///
-/// A shelved window covers nothing: parking is how you get the field back.
-fn previews_covered(home_revealed: bool, toplevels: &[templar_window::ShellToplevel]) -> bool {
-    !home_revealed
-        && toplevels
-            .iter()
-            .any(templar_window::ShellToplevel::covers_screen)
+struct IndexedSearchResults {
+    session: templar_client::file_index::SearchSession,
+    entries: Vec<BrowseEntry>,
+    notice: String,
+}
+
+/// What one toast-host frame asked the service to do about one notification.
+/// Collected during the draw pass, performed after it.
+enum ToastUserAction {
+    Dismiss,
+    Invoke(String),
 }
 
 /// Whether a window fills the screen, so the switcher collapses to its hint and the machine
@@ -348,6 +378,24 @@ struct FileOperationUndo {
     at: Instant,
 }
 
+/// Desktop has its own ordered native watcher; generic index refreshes must
+/// neither discard that listing nor race it with an unordered folder fetch.
+fn invalidate_folder_listings(
+    listings: &mut HashMap<PathBuf, Result<DirectoryListing, String>>,
+    desktop: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut refresh = Vec::new();
+    listings.retain(|path, _| {
+        if desktop == Some(path.as_path()) {
+            true
+        } else {
+            refresh.push(path.clone());
+            false
+        }
+    });
+    refresh
+}
+
 /// How far one press of a level control moves it.
 ///
 /// The same five percentage points `templar status louder` uses, and deliberately the same number:
@@ -511,9 +559,6 @@ struct ShellApp {
     wake_proxy: EventLoopProxy<Wake>,
 
     bridge: Option<ShellBridge>,
-    /// The screen-off delay last relayed to the compositor, so an unchanged reading costs
-    /// nothing (`DataUpdate::IdleTimeout`). `None` until the first read lands.
-    idle_timeout: Option<u32>,
     /// Who fills each exclusive role the shell acts on, from `Providers1.Report`. A map rather
     /// than a field per role: "open this at the project root" is the same code for a terminal, a
     /// file manager and an editor, and the only difference between them is which role to resolve
@@ -581,6 +626,7 @@ struct ShellApp {
     drag_exported: bool,
     reduced_motion_sent: Option<bool>,
     field_settings: HomeFieldSettings,
+    wallpaper_applied: Option<templar_types::wallpaper::WallpaperObservation>,
     /// Recently launched applications, newest first. Loaded once from Settings1; launches
     /// update it in memory immediately so the strip does not wait on the round trip.
     recent: crate::recents::RecentApps,
@@ -592,6 +638,14 @@ struct ShellApp {
     projects: Vec<ProjectInfo>,
     /// Homegarden's places by root (`HomeGarden1.Contexts`), refreshed after every tending.
     garden: HashMap<PathBuf, crate::garden::GardenPlace>,
+    desktop_dock: Option<super::desktop_dock::DesktopDock>,
+    native_drop_target: Option<(PathBuf, bool)>,
+    native_drop_receiver: Option<std::sync::mpsc::Receiver<Result<Vec<PathBuf>, String>>>,
+    native_drop_move: bool,
+    native_drop_pending: bool,
+    native_drop_generation: u64,
+    native_drag_origin: Option<PathBuf>,
+    native_drop_item: Option<PathBuf>,
     /// Whether Home was revealed at the last frame: the false→true edge is a tending moment.
     home_was_revealed: bool,
     garden_tended_at_start: bool,
@@ -610,22 +664,26 @@ struct ShellApp {
     previews: HashMap<String, pixelkit_raster::Bitmap>,
     /// When each window's preview was last requested, for the rate policy.
     preview_requested: HashMap<templar_window::WindowId, Instant>,
+    preview_demand: crate::previews::DemandTracker,
+    preview_demand_sent: bool,
     /// Each widget's latest content, keyed by `TileKind::System`'s probe.
     widgets: HashMap<String, crate::surface::widgets::WidgetSnapshot>,
     /// What the machine is doing, for the bar's readings chip and its account popover.
     machine: crate::data::MachineReadings,
+    appearance: templar_client::appearance::AppearanceObserver,
     /// The Files object's current directory, its treemap and its composition. One directory,
     /// because there is one Files object.
-    treemap: Option<(PathBuf, pixelkit_raster::Bitmap)>,
-    composition: Vec<(u32, f32)>,
-    /// The directory with a scan in flight, so one request is outstanding at a time.
-    treemap_pending: Option<PathBuf>,
+    treemap: Option<TreemapPreview>,
+    /// Includes invalidation epoch: an old load cannot republish after a generation change.
+    treemap_pending: Option<(PathBuf, u32, u32, u64)>,
+    treemap_epoch: u64,
     /// When the last pointer drop happened, for the experiment's undo-within-5-s measure.
     last_drop_at: Option<Instant>,
     started: Instant,
 
     drawer_feeds: HashMap<Drawer, crate::drawers::DrawerFeed>,
-    search_results: Option<(Scope, String, Result<Vec<BrowseEntry>, String>)>,
+    search_results: Option<(Scope, String, Result<IndexedSearchResults, String>)>,
+    search_generation: u64,
     /// The question typed but not yet asked. A keystroke is not a search: the shell waits for
     /// the typing to stop before spending a round trip, and 180ms is about the gap between two
     /// keystrokes of ordinary typing.
@@ -637,15 +695,19 @@ struct ShellApp {
     file_thumbnails: std::collections::HashMap<PathBuf, pixelkit_raster::Bitmap>,
     file_thumbnails_generation: u64,
     file_thumbnails_pending: std::collections::HashSet<PathBuf>,
+    home_thumbnail_pending: HashSet<PathBuf>,
     notification_rows: Vec<crate::surface::widgets::notifications::NotificationRow>,
-    /// A toast waiting for the event loop (window creation needs `ActiveEventLoop`).
-    pending_toast: Option<crate::surface::widgets::notifications::NotificationRow>,
-    /// The live toast surface, its notification, and when it appeared.
-    toast: Option<(
-        HostedWindow,
-        crate::surface::widgets::notifications::NotificationRow,
-        Instant,
-    )>,
+    /// The bounded bottom-right toast stack: what shows, what waits, what retires when.
+    toast_stack: crate::surface::notification_popup::ToastStack,
+    /// The single Notification-layer host window. `None` when nothing is showing: no
+    /// surface lingers for a mode nobody is in, and lock/fullscreen drop it outright.
+    toast_host: Option<HostedWindow>,
+    /// The size the toast host was last asked for. The compositor never configures this
+    /// surface's extent, so the shell is the only thing that knows it.
+    toast_wanted: (i32, i32),
+    /// Output the toasts are stuck to until they leave. `None` until the first
+    /// presentation and after a full drain.
+    toast_output: Option<String>,
     /// The bottom bar (`crate::surface::bar_screen`): a `Layer::ShellOverlay` surface with a
     /// bottom exclusive zone, absent only while a window is fullscreen.
     bar: Option<HostedWindow>,
@@ -666,9 +728,13 @@ struct ShellApp {
     /// The application ids on the active lane (`taskbar::active_lane_apps`), refreshed whenever
     /// the catalogue is. Read from the catalogue, never measured from the windows.
     active_lane_apps: std::collections::HashSet<String>,
-    /// The gate last relayed to the compositor, so an unchanged reading costs nothing — the
-    /// `DataUpdate::IdleTimeout` rule. `None` until the first relay.
+    /// The gate last relayed to the compositor. Unchanged readings cost no protocol round trip;
+    /// `None` until the first relay.
     rail_gate_relayed: Option<RailSettings>,
+    /// `windows.tabs.*` as last read. Defaults until the first read lands.
+    tab_settings: TabSettings,
+    /// The tab policy last relayed to the compositor. `None` until the first relay.
+    tab_policy_relayed: Option<TabSettings>,
     /// The mode the bar and cluster surfaces were built for: `true` for gesture rails (edge
     /// start, persistent, 1×1 and transparent while closed), `false` for the classic bar. A
     /// change of mode rebuilds both, because their alignment is fixed at creation.
@@ -706,10 +772,6 @@ struct ShellApp {
     bridge_generation: u64,
     /// What Home last told the compositor about where each window parks.
     minimize_targets: MinimizeTargets,
-    /// The newest notification id a toast has been shown for, so re-fetches do not re-toast.
-    /// `None` until the first fetch: whatever was already active at startup is old news and
-    /// only sets the watermark.
-    last_toasted_id: Option<u32>,
     browser_pending: Option<(FilesLocation, bool)>,
     browser_error: Option<(FilesLocation, String)>,
     browser_status: Option<String>,
@@ -731,19 +793,25 @@ struct ShellApp {
 }
 
 impl ShellApp {
+    // A constructor of initial values, one line per field: splitting it would scatter the
+    // defaults it exists to keep in one place.
+    #[allow(clippy::too_many_lines)]
     fn new(
         runtime: tokio::runtime::Handle,
         data_tx: Sender<DataUpdate>,
         data_rx: Receiver<DataUpdate>,
         wake_proxy: EventLoopProxy<Wake>,
     ) -> ShellApp {
+        let appearance_wake = wake_proxy.clone();
+        let appearance = templar_client::appearance::AppearanceObserver::new(move || {
+            let _ = appearance_wake.send_event(Wake::Data);
+        });
         ShellApp {
             runtime,
             data_tx,
             data_rx,
             wake_proxy,
             bridge: None,
-            idle_timeout: None,
             providers: BTreeMap::new(),
             terminal_relayed: None,
             lock_screen: crate::surface::lock_screen::LockScreen::default(),
@@ -766,6 +834,7 @@ impl ShellApp {
             clipboard: None,
             drag_exported: false,
             field_settings: HomeFieldSettings::default(),
+            wallpaper_applied: None,
             reduced_motion_sent: None,
             recent: crate::recents::RecentApps::default(),
             field_requested: false,
@@ -773,6 +842,14 @@ impl ShellApp {
             apps_available: false,
             projects: Vec::new(),
             garden: HashMap::new(),
+            desktop_dock: None,
+            native_drop_target: None,
+            native_drop_receiver: None,
+            native_drop_move: false,
+            native_drag_origin: None,
+            native_drop_item: None,
+            native_drop_pending: false,
+            native_drop_generation: 0,
             home_was_revealed: false,
             garden_tended_at_start: false,
             app_variants: HashMap::new(),
@@ -781,24 +858,31 @@ impl ShellApp {
             folder_pending: HashSet::new(),
             previews: HashMap::new(),
             preview_requested: HashMap::new(),
+            preview_demand: crate::previews::DemandTracker::default(),
+            preview_demand_sent: false,
             widgets: HashMap::new(),
             machine: crate::data::MachineReadings::default(),
+            appearance,
             treemap: None,
-            composition: Vec::new(),
             treemap_pending: None,
+            treemap_epoch: 0,
             last_drop_at: None,
             started: Instant::now(),
             drawer_feeds: HashMap::new(),
             search_results: None,
+            search_generation: 0,
             search_pending: None,
             browser_sources: BrowserSources::default(),
             browser_listing: None,
             file_thumbnails: std::collections::HashMap::new(),
             file_thumbnails_generation: 0,
             file_thumbnails_pending: std::collections::HashSet::new(),
+            home_thumbnail_pending: HashSet::new(),
             notification_rows: Vec::new(),
-            pending_toast: None,
-            toast: None,
+            toast_stack: crate::surface::notification_popup::ToastStack::default(),
+            toast_host: None,
+            toast_wanted: (0, 0),
+            toast_output: None,
             bar: None,
             bar_screen: crate::surface::bar_screen::BarScreen::default(),
             bar_wanted: (0, 0),
@@ -811,6 +895,8 @@ impl ShellApp {
             lanes: crate::taskbar::LaneMode::default(),
             active_lane_apps: std::collections::HashSet::new(),
             rail_gate_relayed: None,
+            tab_settings: TabSettings::default(),
+            tab_policy_relayed: None,
             hosts_gesture: false,
             rail: None,
             rail_dismissed: None,
@@ -823,7 +909,6 @@ impl ShellApp {
             taskfield_mask: WindowBuffer::new(0, 0),
             bridge_generation: 0,
             minimize_targets: MinimizeTargets::default(),
-            last_toasted_id: None,
             browser_pending: None,
             browser_error: None,
             browser_status: None,
@@ -851,9 +936,8 @@ impl ShellApp {
                     crate::data::fetch_browser_sources(),
                     crate::data::fetch_apps(),
                 );
-                let (session_widget, notifications_widget, settings_widget, machine) = tokio::join!(
+                let (session_widget, settings_widget, machine) = tokio::join!(
                     crate::data::fetch_session_widget(),
-                    crate::data::fetch_notifications_widget(),
                     crate::data::fetch_settings_widget(),
                     crate::data::fetch_machine_readings(),
                 );
@@ -862,9 +946,6 @@ impl ShellApp {
                     return;
                 }
                 let _ = tx.send(DataUpdate::Apps(apps));
-                let _ = tx.send(DataUpdate::IdleTimeout(
-                    crate::data::fetch_idle_timeout().await,
-                ));
                 for role in SHELL_ROLES {
                     let _ = tx.send(DataUpdate::Provider {
                         role,
@@ -875,16 +956,10 @@ impl ShellApp {
                 let _ = tx.send(DataUpdate::HomeFieldSettings(field_settings));
                 let _ = tx.send(DataUpdate::BrowserSources(browser_sources));
                 let _ = tx.send(DataUpdate::Widget("session".to_owned(), session_widget));
-                let (notifications_snapshot, notification_rows) = notifications_widget;
-                let _ = tx.send(DataUpdate::Widget(
-                    "notifications".to_owned(),
-                    notifications_snapshot,
-                ));
-                let _ = tx.send(DataUpdate::NotificationRows(notification_rows));
                 let _ = tx.send(DataUpdate::Widget("settings".to_owned(), settings_widget));
                 let _ = tx.send(DataUpdate::TreemapsStale);
                 let _ = tx.send(DataUpdate::FilesChanged);
-                let _ = proxy.send_event(Wake);
+                let _ = proxy.send_event(Wake::Data);
             }
         });
     }
@@ -913,7 +988,7 @@ impl ShellApp {
             {
                 return;
             }
-            let _ = proxy.send_event(Wake);
+            let _ = proxy.send_event(Wake::Data);
             while changed.next().await.is_some() {
                 if tx
                     .send(DataUpdate::Apps(crate::data::fetch_apps().await))
@@ -921,7 +996,7 @@ impl ShellApp {
                 {
                     return;
                 }
-                let _ = proxy.send_event(Wake);
+                let _ = proxy.send_event(Wake::Data);
             }
         });
     }
@@ -941,6 +1016,12 @@ impl ShellApp {
             let Ok(mut changed) = garden.receive_context_changed().await else {
                 return;
             };
+            // Subscribe before the initial snapshot. A public placement can create a
+            // Place without any managed instance, so it emits no ContextChanged.
+            // External tending still publishes Tended when its field batch commits.
+            let Ok(mut tended) = garden.receive_tended().await else {
+                return;
+            };
             loop {
                 if tx
                     .send(DataUpdate::Garden(crate::garden::fetch_places().await))
@@ -949,7 +1030,7 @@ impl ShellApp {
                     return;
                 }
                 match garden.working_directories().await {
-                    Ok(json) => match serde_json::from_str(&json) {
+                    Ok(json) => match crate::garden::decode_working_directories(&json) {
                         Ok(cwds) => {
                             if tx.send(DataUpdate::WorkingDirectories(cwds)).is_err() {
                                 return;
@@ -961,9 +1042,38 @@ impl ShellApp {
                     },
                     Err(error) => tracing::warn!(%error, "fetching terminal working directories"),
                 }
-                let _ = wake.send_event(Wake);
-                if changed.next().await.is_none() {
+                let _ = wake.send_event(Wake::Data);
+                let published = tokio::select! {
+                    event = changed.next() => event.is_some(),
+                    event = tended.next() => event.is_some(),
+                };
+                if !published {
                     return;
+                }
+            }
+        });
+    }
+
+    fn spawn_desktop_watch(&self) {
+        let tx = self.data_tx.clone();
+        let wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            match super::desktop_dock::desktop_directory().await {
+                Ok(Some(path)) => {
+                    let observed = path.clone();
+                    super::desktop_dock::watch_directory(path, move |listing| {
+                        let _ = tx.send(DataUpdate::DesktopDirectory {
+                            path: observed.clone(),
+                            listing,
+                        });
+                        let _ = wake.send_event(Wake::Data);
+                    })
+                    .await;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = tx.send(DataUpdate::Notice(format!("Desktop unavailable: {error}")));
+                    let _ = wake.send_event(Wake::Data);
                 }
             }
         });
@@ -979,7 +1089,7 @@ impl ShellApp {
                 None => DataUpdate::FieldUnavailable,
             };
             let _ = tx.send(update);
-            let _ = proxy.send_event(Wake);
+            let _ = proxy.send_event(Wake::Data);
         });
     }
 
@@ -989,7 +1099,7 @@ impl ShellApp {
         self.runtime.spawn(async move {
             if let Some(doc) = crate::data::fetch_field(OUTPUT, cols, rows).await {
                 let _ = tx.send(DataUpdate::FieldRemote(doc));
-                let _ = proxy.send_event(Wake);
+                let _ = proxy.send_event(Wake::Data);
             }
         });
     }
@@ -1004,6 +1114,33 @@ impl ShellApp {
                     tracing::warn!(%error, op = op.label(), "taking a change made elsewhere");
                 }
             }
+        }
+        self.sync_desktop_order();
+    }
+
+    fn sync_desktop_order(&mut self) {
+        let Some(dock) = self.desktop_dock.as_mut() else {
+            return;
+        };
+        let Some(order) = self.field.tiles.iter().find_map(|tile| match &tile.kind {
+            TileKind::DesktopDock { path, order } if *path == dock.path => Some(order),
+            _ => None,
+        }) else {
+            return;
+        };
+        if dock.order() == *order {
+            return;
+        }
+        match dock
+            .apply_saved_order(order.clone())
+            .and_then(|_| dock.browse_listing())
+        {
+            Ok(listing) => {
+                self.folder_listings.insert(dock.path.clone(), Ok(listing));
+            }
+            Err(error) => self
+                .field_screen
+                .report(error.to_string(), self.started.elapsed().as_millis() as u64),
         }
     }
 
@@ -1040,7 +1177,7 @@ impl ShellApp {
                 if tx.send(DataUpdate::FieldChanged).is_err() {
                     return;
                 }
-                let _ = proxy_wake.send_event(Wake);
+                let _ = proxy_wake.send_event(Wake::Data);
             }
         });
     }
@@ -1058,7 +1195,7 @@ impl ShellApp {
         self.runtime.spawn(async move {
             if let Some(doc) = crate::data::undo_field(OUTPUT).await {
                 let _ = tx.send(DataUpdate::Field(doc));
-                let _ = proxy.send_event(Wake);
+                let _ = proxy.send_event(Wake::Data);
             }
         });
     }
@@ -1072,7 +1209,7 @@ impl ShellApp {
         self.runtime.spawn(async move {
             if let Some(doc) = crate::data::reset_field(OUTPUT, cols, rows).await {
                 let _ = tx.send(DataUpdate::Field(doc));
-                let _ = proxy.send_event(Wake);
+                let _ = proxy.send_event(Wake::Data);
             }
         });
     }
@@ -1085,8 +1222,7 @@ impl ShellApp {
     /// needs to know.
     ///
     /// Only on a change, and only over a live connection: the compositor keeps whatever it was
-    /// last told, so re-sending the same id would be a round trip for nothing — the same rule
-    /// `DataUpdate::IdleTimeout` follows.
+    /// last told, so re-sending the same id would be a round trip for nothing.
     fn note_provider(&mut self, role: &'static str, app_id: Option<String>) {
         let parsed = app_id.and_then(|id| match id.parse::<AppId>() {
             Ok(app_id) => Some(app_id),
@@ -1153,14 +1289,28 @@ impl ShellApp {
         true
     }
 
+    fn discard_search(&mut self) {
+        if let Some((_, _, Ok(mut batch))) = self.search_results.take() {
+            self.runtime.spawn(async move {
+                if let Err(error) = batch.session.close().await {
+                    tracing::debug!(%error, "closing replaced file search cursor");
+                }
+            });
+        }
+    }
+
     /// Note a question. It is asked once the typing has stopped, in [`Self::flush_search`].
     fn note_search(&mut self, scope: Scope, query: String) {
+        self.search_generation = self
+            .search_generation
+            .checked_add(1)
+            .expect("search generation exhausted");
+        self.discard_search();
         if matches!(scope, Scope::Location(_)) {
             query.trim().clone_into(&mut self.location_query);
         }
         if query.trim().is_empty() {
             self.search_pending = None;
-            self.search_results = None;
             return;
         }
         self.search_pending = Some((scope, query, Instant::now()));
@@ -1180,10 +1330,10 @@ impl ShellApp {
         };
         // Only a location asks the file service; the launcher on bare Home has its answer in
         // hand already (`DataUpdate::Apps`), and a file search never runs for it.
-        let roots: Vec<String> = match &scope {
+        let roots: Vec<PathBuf> = match &scope {
             Scope::Location(location) => location
                 .directory()
-                .map(|path| vec![path.display().to_string()])
+                .map(|path| vec![path.to_path_buf()])
                 .unwrap_or_default(),
             Scope::Applications => Vec::new(),
         };
@@ -1192,14 +1342,16 @@ impl ShellApp {
         }
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
+        let request_generation = self.search_generation;
         self.runtime.spawn(async move {
             let result = run_search(roots, &query).await;
             let _ = tx.send(DataUpdate::SearchResults {
                 scope,
                 query,
+                request_generation,
                 result,
             });
-            let _ = proxy.send_event(Wake);
+            let _ = proxy.send_event(Wake::Data);
         });
     }
 
@@ -1233,7 +1385,7 @@ impl ShellApp {
                     path,
                     bitmap,
                 });
-                let _ = proxy.send_event(Wake);
+                let _ = proxy.send_event(Wake::Data);
             });
         }
     }
@@ -1265,7 +1417,7 @@ impl ShellApp {
                 show_hidden,
                 result,
             });
-            let _ = proxy.send_event(Wake);
+            let _ = proxy.send_event(Wake::Data);
         });
     }
 
@@ -1284,7 +1436,7 @@ impl ShellApp {
                 crate::garden::observe("directory-opened", &path, "").await;
             }
             let _ = tx.send(DataUpdate::FolderListing { path, result });
-            let _ = proxy.send_event(Wake);
+            let _ = proxy.send_event(Wake::Data);
         });
     }
 
@@ -1297,7 +1449,9 @@ impl ShellApp {
         // `project.open-files` *is* this route's argument shape — the bare directory. Asking
         // [`tool_launch`] for it rather than writing it out a second time is what stops the Place
         // menu's row and a Folder tile from drifting apart, which is the whole of K3.
-        let root = path.to_string_lossy().into_owned();
+        let root = path
+            .to_str()
+            .map_or_else(|| templar_types::uri_list::encode_path(path), str::to_owned);
         if let Some((role, arguments)) = tool_launch("project.open-files", &root) {
             self.launch_provider(role, arguments);
         }
@@ -1329,13 +1483,37 @@ impl ShellApp {
         self.runtime.spawn(async move {
             let result = crate::data::open_file(&path).await;
             let _ = tx.send(DataUpdate::FileOpened { path, result });
-            let _ = proxy.send_event(Wake);
+            let _ = proxy.send_event(Wake::Data);
         });
     }
 
     #[allow(clippy::too_many_lines)]
     fn drain_updates(&mut self) {
+        match self.appearance.take_update() {
+            Some(Ok(appearance)) => {
+                self.field_settings.reduced_motion = appearance.reduced_motion;
+                if design::set_palette(appearance.palette) {
+                    self.invalidate_treemap();
+                    for hosted in [&self.home, &self.bar, &self.cluster, &self.taskfield]
+                        .into_iter()
+                        .flatten()
+                    {
+                        hosted.request_redraw();
+                    }
+                    if let Some(hosted) = &self.toast_host {
+                        hosted.request_redraw();
+                    }
+                }
+            }
+            Some(Err(error)) => {
+                tracing::warn!(%error, "appearance observation unavailable; retaining last palette");
+            }
+            None => {}
+        }
         while let Ok(update) = self.data_rx.try_recv() {
+            if let Some(home) = &mut self.home {
+                home.invalidate_semantics();
+            }
             match update {
                 // Both shapes of the same news: a reconciliation snapshot's whole set, and the
                 // one drawer a service's change signal refreshed on its own.
@@ -1385,7 +1563,7 @@ impl ShellApp {
                             self.runtime.spawn(async move {
                                 let variants = crate::data::fetch_variants(&logical).await;
                                 let _ = tx.send(DataUpdate::AppVariants(logical, variants));
-                                let _ = proxy.send_event(Wake);
+                                let _ = proxy.send_event(Wake::Data);
                             });
                         }
                     }
@@ -1411,6 +1589,7 @@ impl ShellApp {
                         cluster.request_redraw();
                     }
                 }
+                DataUpdate::WallpaperApplied(applied) => self.wallpaper_applied = applied,
                 DataUpdate::HomeFieldSettings(settings) => {
                     self.field_settings = settings;
                     self.field_screen.drag_cfg.throw_enabled =
@@ -1436,18 +1615,9 @@ impl ShellApp {
                         self.bar_screen.reset();
                     }
                 }
-                DataUpdate::IdleTimeout(seconds) => {
-                    // Only on a change, and only over a live connection: the compositor keeps
-                    // whatever it was last told, so re-sending the same number would be a
-                    // protocol round trip for nothing.
-                    if self.idle_timeout != Some(seconds) {
-                        self.idle_timeout = Some(seconds);
-                        if let Some(bridge) = &self.bridge
-                            && let Err(error) = bridge.set_idle_timeout(seconds)
-                        {
-                            tracing::warn!(%error, "relaying the screen-off delay to the compositor");
-                        }
-                    }
+                DataUpdate::TabSettings(settings) => {
+                    self.tab_settings = settings;
+                    self.relay_tab_policy();
                 }
                 DataUpdate::Provider { role, app_id } => self.note_provider(role, app_id),
                 DataUpdate::LockRequested => self.engage_lock(),
@@ -1464,25 +1634,41 @@ impl ShellApp {
                         self.recent = loaded;
                     }
                 }
-                DataUpdate::Treemap {
-                    path,
-                    bitmap,
-                    composition,
-                } => {
-                    if self.treemap_pending.as_deref() == Some(path.as_path()) {
+                DataUpdate::Treemap { epoch, preview } => {
+                    let requested = self.treemap_pending.as_ref().is_some_and(
+                        |(path, width, height, pending_epoch)| {
+                            path == &preview.path
+                                && *width == preview.width
+                                && *height == preview.height
+                                && *pending_epoch == epoch
+                        },
+                    );
+                    if requested {
                         self.treemap_pending = None;
                     }
-                    self.treemap = Some((path, bitmap));
-                    self.composition = composition;
+                    let current_path = self
+                        .field_screen
+                        .files
+                        .location()
+                        .directory()
+                        .or(self.home_dir.as_deref());
+                    if requested
+                        && epoch == self.treemap_epoch
+                        && current_path == Some(preview.path.as_path())
+                    {
+                        self.treemap = Some(preview);
+                    }
                 }
                 // A journalled operation finished. This is the one progress-and-error surface
                 // for everything the Home file surfaces do: one operation, one report.
                 DataUpdate::FileOperation { undo, notice } => {
+                    let undo_available = undo.is_some();
                     if let Some(undo) = undo {
                         self.last_file_operation = Some(undo);
                     }
                     let now_ms = self.started.elapsed().as_millis() as u64;
-                    self.field_screen.report(notice, now_ms);
+                    self.field_screen
+                        .report_operation(notice, undo_available, now_ms);
                 }
                 DataUpdate::Notice(text) => {
                     let now_ms = self.started.elapsed().as_millis() as u64;
@@ -1493,9 +1679,19 @@ impl ShellApp {
                         self.icon_hintless.remove(&key);
                         self.icons.insert(key, bitmap);
                     }
+                    if let Some(hosted) = &self.toast_host {
+                        hosted.request_redraw();
+                    }
                 }
                 DataUpdate::FolderListing { path, result } => {
                     self.folder_pending.remove(&path);
+                    if self
+                        .desktop_dock
+                        .as_ref()
+                        .is_some_and(|dock| dock.path == path)
+                    {
+                        continue;
+                    }
                     if let Err(error) = &result {
                         tracing::debug!(%error, path = %path.display(), "a folder window's listing failed");
                     }
@@ -1517,25 +1713,153 @@ impl ShellApp {
                         self.file_thumbnails.insert(path, bitmap);
                     }
                 }
-                DataUpdate::NotificationRows(rows) => {
-                    // Push, not poll-and-hope: the newest unseen notification becomes a toast
-                    // the next time the event loop hands us a handle to create its window. The
-                    // first fetch only sets the watermark — what was already active at startup
-                    // is the tile's business, not a fresh arrival.
-                    let newest = rows.iter().map(|row| row.id).max().unwrap_or(0);
-                    match self.last_toasted_id {
-                        None => self.last_toasted_id = Some(newest),
-                        Some(seen) if newest > seen => {
-                            self.last_toasted_id = Some(newest);
-                            self.pending_toast = rows.iter().find(|row| row.id == newest).cloned();
-                        }
-                        Some(_) => {}
+                DataUpdate::HomeThumbnail { path, bitmap } => {
+                    if self.field_settings.previews != PreviewMode::Off
+                        && self.field_screen.thumbnail_paths().contains(&path)
+                        && self.file_thumbnails.len() < 64
+                        && let Some(bitmap) = bitmap
+                    {
+                        self.home_thumbnail_pending.remove(&path);
+                        self.file_thumbnails.insert(path, bitmap);
                     }
-                    self.notification_rows = rows;
                 }
-                DataUpdate::TreemapsStale => self.treemap = None,
+                DataUpdate::DesktopDirectory { path, listing } => {
+                    if self
+                        .desktop_dock
+                        .as_ref()
+                        .is_none_or(|dock| dock.path != path)
+                    {
+                        let order = self
+                            .field
+                            .tiles
+                            .iter()
+                            .find_map(|tile| match &tile.kind {
+                                TileKind::DesktopDock {
+                                    path: existing,
+                                    order,
+                                } if *existing == path => Some(order.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        self.desktop_dock =
+                            Some(super::desktop_dock::DesktopDock::new(path.clone(), order));
+                    }
+                    match listing {
+                        Ok(listing) => {
+                            let ordered = self.desktop_dock.as_mut().map(|dock| {
+                                dock.apply_listing(listing)?;
+                                Ok::<_, anyhow::Error>((
+                                    dock.browse_listing()?,
+                                    dock.order(),
+                                    dock.path.clone(),
+                                ))
+                            });
+                            if let Some(result) = ordered {
+                                match result {
+                                    Ok((listing, order, root)) => {
+                                        self.folder_listings.insert(path, Ok(listing));
+                                        if let Some(id) = self.field.tiles.iter().find_map(|tile| {
+                                            match &tile.kind {
+                                                TileKind::DesktopDock { path, order: old }
+                                                    if *path == root && *old != order =>
+                                                {
+                                                    Some(tile.id)
+                                                }
+                                                _ => None,
+                                            }
+                                        }) {
+                                            self.perform(FieldAction::Apply(
+                                                FieldOp::DesktopDockOrder { id, order },
+                                            ));
+                                        }
+                                    }
+                                    Err(error) => self.field_screen.report(
+                                        error.to_string(),
+                                        self.started.elapsed().as_millis() as u64,
+                                    ),
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            self.folder_listings.insert(path, Err(error));
+                        }
+                    }
+                }
+                DataUpdate::DockHandlers { path, handlers } => match handlers {
+                    Ok(handlers) if !handlers.is_empty() => {
+                        self.field_screen.set_dock_handlers(path, handlers);
+                    }
+                    Ok(_) => self.field_screen.report(
+                        "No applications can open that file".to_owned(),
+                        self.started.elapsed().as_millis() as u64,
+                    ),
+                    Err(error) => self
+                        .field_screen
+                        .report(error, self.started.elapsed().as_millis() as u64),
+                },
+                DataUpdate::NativeTransferFinished {
+                    generation,
+                    success,
+                } => {
+                    if !self.native_drop_pending || generation != self.native_drop_generation {
+                        continue;
+                    }
+                    self.native_drop_pending = false;
+                    self.native_drop_target = None;
+                    self.native_drop_item = None;
+                    self.native_drag_origin = None;
+                    self.field_screen.set_native_drop_hover(None, false);
+                    if let Some(bridge) = self.bridge.as_mut()
+                        && let Err(error) = bridge.complete_native_drop(success)
+                    {
+                        tracing::warn!(%error, "completing native file drop");
+                    }
+                }
+                DataUpdate::Notifications(update) => {
+                    if let Some(quiet_through) = update.quiet_through {
+                        let baseline: Vec<_> = update
+                            .active
+                            .iter()
+                            .filter(|row| row.sequence <= quiet_through)
+                            .cloned()
+                            .collect();
+                        self.toast_stack.adopt_snapshot(&baseline);
+                        self.toast_host = None;
+                        self.toast_output = None;
+                        self.toast_wanted = (0, 0);
+                    }
+                    self.toast_stack.note_active(
+                        &update.active,
+                        Instant::now(),
+                        notification_popup::now_ms(),
+                    );
+                    // Consume locked arrivals without retaining a queue for unlock.
+                    if self.bridge.as_ref().is_some_and(ShellBridge::lock_engaged) {
+                        self.toast_stack.hide_all();
+                    }
+                    let rows = update
+                        .active
+                        .iter()
+                        .map(
+                            |row| crate::surface::widgets::notifications::NotificationRow {
+                                id: row.id,
+                                app: row.app_name.clone(),
+                                summary: row.summary.clone(),
+                                actions: row.actions.clone(),
+                            },
+                        )
+                        .collect();
+                    let (snapshot, rows) = crate::data::notification_widget(rows);
+                    self.notification_rows = rows;
+                    self.widgets.insert("notifications".to_owned(), snapshot);
+                    if let Some(hosted) = &self.toast_host {
+                        hosted.request_redraw();
+                    }
+                }
+                DataUpdate::TreemapsStale => self.invalidate_treemap(),
                 DataUpdate::Field(doc) => {
                     self.field = doc;
+                    self.sync_desktop_order();
                     self.field_synced = Some(true);
                     if !self.garden_tended_at_start {
                         // Session start is a tending moment too, and the field is only now
@@ -1559,8 +1883,21 @@ impl ShellApp {
                 DataUpdate::SearchResults {
                     scope,
                     query,
+                    request_generation,
                     result,
                 } => {
+                    if request_generation != self.search_generation
+                        || !self.field_screen.files_expanded
+                        || scope != Scope::Location(self.field_screen.files.location().clone())
+                    {
+                        if let Ok(mut batch) = result {
+                            self.runtime.spawn(async move {
+                                let _ = batch.session.close().await;
+                            });
+                        }
+                        continue;
+                    }
+                    self.discard_search();
                     self.search_results = Some((scope, query, result));
                 }
                 DataUpdate::BrowserSources(sources) => self.browser_sources = sources,
@@ -1599,8 +1936,15 @@ impl ShellApp {
                     });
                 }
                 DataUpdate::FilesChanged => {
-                    let paths: Vec<PathBuf> = self.folder_listings.keys().cloned().collect();
-                    self.folder_listings.clear();
+                    self.invalidate_treemap();
+                    if let Some((scope, query, _)) = &self.search_results {
+                        let (scope, query) = (scope.clone(), query.clone());
+                        self.note_search(scope, query);
+                    }
+                    let paths = invalidate_folder_listings(
+                        &mut self.folder_listings,
+                        self.desktop_dock.as_ref().map(|dock| dock.path.as_path()),
+                    );
                     for path in paths {
                         self.spawn_folder_browse(path, false);
                     }
@@ -1669,7 +2013,7 @@ impl ShellApp {
             // A miss is sent too: `icon_attempted` already recorded it, so the receiver has
             // nothing to do, but sending unconditionally keeps the two sides symmetric.
             let _ = tx.send(DataUpdate::Icon(key, bitmap));
-            let _ = proxy.send_event(Wake);
+            let _ = proxy.send_event(Wake::Data);
         });
     }
 
@@ -1687,7 +2031,7 @@ impl ShellApp {
         self.runtime.spawn_blocking(move || {
             let bitmap = icons::load_theme_icon(&name, &SystemIconRoots);
             let _ = tx.send(DataUpdate::Icon(key, bitmap));
-            let _ = proxy.send_event(Wake);
+            let _ = proxy.send_event(Wake::Data);
         });
     }
 
@@ -1785,111 +2129,145 @@ impl ShellApp {
         }
     }
 
-    /// The preview policy (`@templaros.decision.home-field-stable-bounded-semantic-grammar`): `Off`
-    /// asks for nothing; `Static` asks once per window, and again when it is parked; `Live`
-    /// asks at the preview rate for every session tile. Arrived previews are filed under the
-    /// tile's own identifier. The compositor's own floor of four frames a second per window
-    /// holds whatever this asks.
-    /// Capture the windows of the bar's open fan, at most twice a second each. The rate policy
-    /// is `preview_requested`, the same map Home's tiles use — a fan that is open is a deliberate
-    /// look, so it refreshes; a fan that is closed asks for nothing. Draining is
-    /// Home's (`drain_previews`), woken by `has_previews_ready`.
-    fn refresh_fan_previews(
-        &mut self,
-        toplevels: &[templar_window::ShellToplevel],
-        wants: &[templar_window::WindowId],
-    ) {
-        if wants.is_empty() {
-            return;
+    /// The Home-only visible preview policy: capture demand derives from the actual Home card
+    /// wells laid out this frame, not from the toplevel list. Only wells with visible pixels
+    /// are eligible — offscreen, overflow-only, zoom-hidden, fully occluded, locked and
+    /// output-disabled cards demand nothing, and their pacing entries are pruned so no preview
+    /// deadline survives for them either. The compositor checks the same demand at admission
+    /// and before render; a trusted-shell request alone proves no card visible.
+    ///
+    /// Demand comes from the same clipped, occlusion-checked picture wells painted
+    /// this frame, not whole cards or maximized windows on unrelated outputs.
+    fn visible_preview_windows(&self, bridge: &ShellBridge) -> HashSet<templar_window::WindowId> {
+        if bridge.lock_locked() || bridge.lock_engaged() || self.home.is_none() {
+            return HashSet::new();
         }
-        let Some(bridge) = &mut self.bridge else {
-            return;
-        };
-        if self.field_settings.previews == PreviewMode::Off || !bridge.previews_available() {
-            return;
-        }
-        let now = Instant::now();
-        for window in wants {
-            if !toplevels.iter().any(|t| t.window_id == *window) {
-                continue;
-            }
-            if self
-                .preview_requested
-                .get(window)
-                .is_some_and(|at| now.duration_since(*at) < Duration::from_millis(500))
-            {
-                continue;
-            }
-            let Some(identifier) = bridge.identifier_of(*window).map(str::to_owned) else {
-                continue;
-            };
-            match bridge.request_preview(&identifier) {
-                Ok(()) => {
-                    self.preview_requested.insert(*window, now);
-                }
-                Err(error) => tracing::debug!(%error, "row preview request skipped"),
-            }
-        }
+        self.field_screen
+            .work_wells()
+            .unwrap_or(&[])
+            .iter()
+            .map(|(window, _)| *window)
+            .collect()
     }
 
-    fn refresh_previews(&mut self, toplevels: &[templar_window::ShellToplevel], covered: bool) {
-        let Some(bridge) = &mut self.bridge else {
+    fn refresh_previews(&mut self, toplevels: &[templar_window::ShellToplevel]) {
+        let Some(bridge) = self.bridge.as_ref() else {
             return;
         };
-        if self.field_settings.previews == PreviewMode::Off || !bridge.previews_available() {
-            return;
+        let disabled =
+            self.field_settings.previews == PreviewMode::Off || !bridge.previews_available();
+        let private = bridge.lock_locked() || bridge.lock_engaged();
+        let visible = if disabled {
+            HashSet::new()
+        } else {
+            self.visible_preview_windows(bridge)
+        };
+        if private || disabled {
+            self.previews.clear();
         }
-        // Nothing on the field is being looked at, so nothing on it is captured. The cache is
-        // kept, not cleared: that is what makes coming back instant instead of a blank tile
-        // filling in a frame or two later.
-        if covered {
-            self.drain_previews(toplevels);
-            return;
-        }
-        let now = Instant::now();
-        let live_interval =
-            Duration::from_millis(1000 / u64::from(self.field_settings.preview_rate.max(1)));
-        for toplevel in toplevels {
-            let Some(identifier) = bridge.identifier_of(toplevel.window_id).map(str::to_owned)
-            else {
-                continue;
-            };
-            let key = field_model::session_identifier(toplevel, None);
-            let due = match self.field_settings.previews {
-                PreviewMode::Off => false,
-                PreviewMode::Static => {
-                    !self.previews.contains_key(&key)
-                        || (toplevel.shelved
-                            && self
-                                .preview_requested
-                                .get(&toplevel.window_id)
-                                .is_none_or(|at| now.duration_since(*at) > Duration::from_secs(2)))
+        let order: Vec<_> = visible.iter().copied().collect();
+        if self.preview_demand.set_visible(&order) || !self.preview_demand_sent {
+            self.preview_requested.clear();
+            let generation = self.preview_demand.generation();
+            if let Some(bridge) = self.bridge.as_mut() {
+                let demanded: std::collections::HashSet<String> = order
+                    .iter()
+                    .filter_map(|window| bridge.identifier_of(*window))
+                    .map(str::to_owned)
+                    .collect();
+                bridge.retire_preview_demand(&demanded);
+                if let Err(error) = bridge.send_preview_demand(generation, &order) {
+                    self.preview_demand_sent = false;
+                    tracing::debug!(%error, "preview demand send skipped");
+                } else {
+                    self.preview_demand_sent = true;
                 }
-                PreviewMode::Live => self
-                    .preview_requested
-                    .get(&toplevel.window_id)
-                    .is_none_or(|at| now.duration_since(*at) >= live_interval),
-            };
-            if !due {
-                continue;
-            }
-            // A parked window's snapshot is taken once per parking, not every two seconds: the
-            // timestamp moves only when the request went out.
-            if toplevel.shelved
-                && self.field_settings.previews == PreviewMode::Static
-                && self.previews.contains_key(&key)
-                && self.preview_requested.contains_key(&toplevel.window_id)
-            {
-                continue;
-            }
-            match bridge.request_preview(&identifier) {
-                Ok(()) => {
-                    self.preview_requested.insert(toplevel.window_id, now);
-                }
-                Err(error) => tracing::debug!(%error, "preview request skipped"),
             }
         }
         self.drain_previews(toplevels);
+
+        let now = Instant::now();
+        let pacing = match self.field_settings.previews {
+            PreviewMode::Off => crate::previews::DemandPacing::Off,
+            PreviewMode::Static => crate::previews::DemandPacing::Static,
+            PreviewMode::Live => crate::previews::DemandPacing::Live {
+                interval: Duration::from_millis(
+                    1000 / u64::from(self.field_settings.preview_rate.max(1)),
+                ),
+            },
+        };
+        let order = crate::previews::stalest_first(
+            &visible.iter().copied().collect::<Vec<_>>(),
+            &self.preview_requested,
+            now,
+        );
+        if let Some(bridge) = self.bridge.as_mut() {
+            for window in &order {
+                let Some(toplevel) = toplevels.iter().find(|t| t.window_id == *window) else {
+                    continue;
+                };
+                let Some(identifier) = bridge.identifier_of(*window).map(str::to_owned) else {
+                    continue;
+                };
+                let key = field_model::session_identifier(toplevel, None);
+                let last = self.preview_requested.get(window).copied();
+                let due = !bridge.preview_pending(&identifier)
+                    && crate::previews::capture_due(
+                        pacing,
+                        true,
+                        self.previews.contains_key(&key),
+                        last,
+                        now,
+                        false,
+                    )
+                    && (pacing != crate::previews::DemandPacing::Static || last.is_none());
+                if !due {
+                    continue;
+                }
+                match bridge.request_preview(&identifier) {
+                    Ok(()) => {
+                        self.preview_requested.insert(*window, now);
+                    }
+                    Err(error) => tracing::debug!(%error, "preview request skipped"),
+                }
+            }
+        }
+        // Undemanded windows keep no pacing entry: no preview deadline survives for them, Live
+        // re-fires on the first reveal even when the output is otherwise idle, and Static
+        // shows its retained last frame instead of re-capturing.
+        self.preview_requested.retain(|id, _| visible.contains(id));
+        let demanded_keys: std::collections::HashSet<String> = toplevels
+            .iter()
+            .filter(|toplevel| visible.contains(&toplevel.window_id))
+            .map(|toplevel| field_model::session_identifier(toplevel, None))
+            .collect();
+        crate::previews::evict_over_budget(
+            &mut self.previews,
+            &demanded_keys,
+            crate::previews::AGGREGATE_BUDGET_BYTES,
+        );
+    }
+
+    fn preview_deadline(&self) -> Option<Instant> {
+        if self.field_settings.previews != PreviewMode::Live {
+            return None;
+        }
+        let bridge = self.bridge.as_ref()?;
+        if bridge.lock_engaged() || bridge.lock_locked() {
+            return None;
+        }
+        let interval =
+            Duration::from_millis(1000 / u64::from(self.field_settings.preview_rate.clamp(1, 4)));
+        self.preview_requested
+            .iter()
+            .filter(|(window, _)| self.preview_demand.is_demanded(**window))
+            .filter(|(window, _)| {
+                bridge
+                    .identifier_of(**window)
+                    .is_some_and(|id| !bridge.preview_pending(id))
+            })
+            .map(|(_, at)| *at + interval)
+            .min()
     }
 
     /// File whatever the compositor has finished capturing and forget the windows that are gone.
@@ -1930,8 +2308,7 @@ impl ShellApp {
             self.spawn_tend();
         }
         self.home_was_revealed = home_revealed;
-        let previews_covered = previews_covered(home_revealed, &toplevels);
-        self.refresh_previews(&toplevels, previews_covered);
+        self.drain_previews(&toplevels);
         let Some(home) = &self.home else { return };
         let scale = home.scale;
         let logical = home
@@ -1952,6 +2329,21 @@ impl ShellApp {
         );
         self.flush_search();
 
+        // A search result is shown only while it still answers the question on screen: the same
+        // scope and the same query. The staleness guard is the one it always was, keyed on the
+        // scope now that a drawer is not a thing.
+        let scope = if self.field_screen.files_expanded {
+            Scope::Location(self.field_screen.files.location().clone())
+        } else {
+            Scope::Applications
+        };
+        if self
+            .search_results
+            .as_ref()
+            .is_some_and(|(owner, _, _)| *owner != scope)
+        {
+            self.discard_search();
+        }
         let Some(home) = &mut self.home else { return };
         if !home.prepare() {
             return;
@@ -1963,14 +2355,6 @@ impl ShellApp {
             home.buffer.width as i32,
             home.buffer.height as i32 - scale.px(bar_inset),
         );
-        // A search result is shown only while it still answers the question on screen: the same
-        // scope and the same query. The staleness guard is the one it always was, keyed on the
-        // scope now that a drawer is not a thing.
-        let scope = if self.field_screen.files_expanded {
-            Scope::Location(self.field_screen.files.location().clone())
-        } else {
-            Scope::Applications
-        };
         let active_search = self
             .search_results
             .as_ref()
@@ -1982,16 +2366,16 @@ impl ShellApp {
                 result
                     .as_ref()
                     .ok()
-                    .map(|entries| crate::omnibox::FileResults {
+                    .map(|batch| crate::omnibox::FileResults {
                         query,
-                        entries: entries.as_slice(),
+                        entries: batch.entries.as_slice(),
                     })
             })
             .filter(|_| active_search.is_some());
         let search_query = active_search.map(|(_, query, _)| query.as_str());
         let search_entries = active_search
             .and_then(|(_, _, result)| result.as_ref().ok())
-            .map(Vec::as_slice);
+            .map(|batch| batch.entries.as_slice());
         let search_error = active_search
             .and_then(|(_, _, result)| result.as_ref().err())
             .map(String::as_str);
@@ -2009,7 +2393,10 @@ impl ShellApp {
                 .browser_error
                 .as_ref()
                 .map(|(location, error)| (location, error.as_str())),
-            status: self.browser_status.as_deref(),
+            status: active_search
+                .and_then(|(_, _, result)| result.as_ref().ok())
+                .map(|batch| batch.notice.as_str())
+                .or(self.browser_status.as_deref()),
             search_query,
             search_entries,
             search_error,
@@ -2019,6 +2406,7 @@ impl ShellApp {
             home: self.home_dir.as_deref(),
         };
         let recents = self.recent.resolve(&self.apps);
+        self.field_screen.previews_on = self.field_settings.previews != PreviewMode::Off;
         let data = FieldData {
             notifications: &self.notification_rows,
             field: &self.field,
@@ -2027,11 +2415,13 @@ impl ShellApp {
             icons: &self.icons,
             previews: &self.previews,
             drawer_feeds: &self.drawer_feeds,
-            treemap: self.treemap.as_ref().map(|(_, bitmap)| bitmap),
-            composition: &self.composition,
+            treemap: self.treemap.as_ref(),
             browser: &browser_data,
             folder_listings: &self.folder_listings,
-            connected: self.bridge.is_some(),
+            connected: self
+                .bridge
+                .as_ref()
+                .is_some_and(ShellBridge::native_available),
             home_revealed,
             apps: &self.apps,
             apps_available: self.apps_available,
@@ -2046,8 +2436,37 @@ impl ShellApp {
             reduced_motion: self.field_settings.reduced_motion,
             now_ms: self.started.elapsed().as_millis() as u64,
         };
+        if self.field_screen.animating() {
+            home.invalidate_semantics();
+        }
+        home.begin_semantics("Home");
+        let modal = self.field_screen.modal_open();
+        if modal {
+            home.focus.clear();
+        } else if self.field_screen.search_focused
+            && home.focus.current().is_none()
+            && home.input.press_position().is_none()
+            && !home
+                .input
+                .keys()
+                .contains(&pixelkit_shell::KeyInput::Escape)
+            && !home.input.focus_requested(Rect::new(0, 0, width, height))
+        {
+            home.focus.set(0);
+        }
+        self.field_screen.controls_focused = home.focus.current().is_some();
+        self.field_screen.shared_focus = !modal;
+        self.field_screen.wallpaper_active = self
+            .bridge
+            .as_ref()
+            .is_some_and(ShellBridge::native_available)
+            && wallpaper_for_home(&home.window, self.wallpaper_applied.as_ref());
         let actions = {
-            let painter = Painter::new(&mut home.buffer);
+            let painter = if self.bridge.is_some() {
+                Painter::new_premultiplied(&mut home.buffer)
+            } else {
+                Painter::new(&mut home.buffer)
+            };
             let mut ui = Ui::new(
                 painter,
                 &mut self.text,
@@ -2055,24 +2474,60 @@ impl ShellApp {
                 self.theme,
                 scale,
                 &mut self.kernel,
-            );
+            )
+            .with_semantics(&mut home.semantics);
+            if !modal {
+                ui = ui.with_focus(&mut home.focus);
+            }
             let area = Rect::new(0, 0, width, height);
             self.field_screen.draw(&mut ui, area, &data)
         };
+        if !modal && self.field_screen.controls_focused {
+            self.field_screen.focus = None;
+        }
+        home.update_ime(self.field_screen.ime_caret());
+        home.publish_semantics();
         home.input.end_frame();
-        home.present();
+        if let Some(bridge) = &mut self.bridge {
+            // Transparent ground still takes selection/input everywhere, just as opaque Home did.
+            let size = home
+                .window
+                .inner_size()
+                .to_logical::<f64>(home.window.scale_factor());
+            let regions = [(0, 0, size.width.ceil() as i32, size.height.ceil() as i32)];
+            match bridge.present_premultiplied(
+                &home.window,
+                &home.buffer.pixels,
+                &regions,
+                home.buffer.width,
+                home.buffer.height,
+            ) {
+                Ok(PresentOutcome::Submitted) => home.pending = false,
+                Ok(PresentOutcome::Deferred) => home.pending = true,
+                Err(error) => {
+                    home.pending = false;
+                    tracing::error!(%error, "presenting Home's premultiplied frame");
+                }
+            }
+        } else {
+            // Non-Wayland keeps its existing opaque software path; native wallpaper is unavailable.
+            home.present();
+        }
         if let Some(bar) = &self.bar {
             bar.request_redraw();
         }
         // Before the actions: a press on a card that parks its window should find the card
         // already known to the compositor, so the window shrinks into it.
         self.send_minimize_targets(&toplevels);
+        self.refresh_previews(&toplevels);
         if let Some(positions) = self.field_screen.take_position_memory()
             && let Err(error) = positions.save()
         {
             tracing::warn!(%error, "saving soft work-card positions");
         }
 
+        self.home_thumbnail_pending
+            .retain(|path| self.field_screen.thumbnail_paths().contains(path));
         for action in actions {
             self.perform(action);
         }
@@ -2146,6 +2601,9 @@ impl ShellApp {
             // rather than back through the daemon's default-variant policy.
             FieldAction::LaunchVariant(app_id) => {
                 self.record_recent(&app_id);
+                let label = self.app_label(&app_id);
+                let tx = self.data_tx.clone();
+                let proxy_wake = self.wake_proxy.clone();
                 self.runtime.spawn(async move {
                     let Ok(connection) = crate::data::session().await else {
                         return;
@@ -2154,11 +2612,30 @@ impl ShellApp {
                         && let Err(error) = proxy.launch(&app_id.to_string(), Vec::new(), "").await
                     {
                         tracing::warn!(%error, %app_id, "launching a chosen copy failed");
+                        let _ = tx.send(DataUpdate::Notice(launch_failure_notice(&label, &error)));
+                        let _ = proxy_wake.send_event(Wake::Data);
                     }
                 });
             }
             FieldAction::Activate(window_id) | FieldAction::Restore(window_id) => {
                 self.bridge_call("activate", |bridge| bridge.activate(window_id));
+                if let Some(instance) = self
+                    .bridge
+                    .as_ref()
+                    .map(ShellBridge::toplevels)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|top| top.window_id == window_id)
+                    .and_then(|top| top.instance_id)
+                {
+                    let tx = self.data_tx.clone();
+                    let wake = self.wake_proxy.clone();
+                    self.runtime.spawn(async move {
+                        crate::garden::activate_instance(instance).await;
+                        let _ = tx.send(DataUpdate::Garden(crate::garden::fetch_places().await));
+                        let _ = wake.send_event(Wake::Data);
+                    });
+                }
             }
             FieldAction::Park(window_id) => {
                 self.bridge_call("shelve", |bridge| bridge.shelve(window_id));
@@ -2166,7 +2643,12 @@ impl ShellApp {
             FieldAction::BrowseLocation {
                 location,
                 show_hidden,
-            } => self.spawn_browse(location, show_hidden, true),
+            } => {
+                self.spawn_browse(location, show_hidden, true);
+                if let Some(home) = &self.home {
+                    home.request_redraw();
+                }
+            }
             FieldAction::BrowseFolder { path, visited } => self.spawn_folder_browse(path, visited),
             FieldAction::OpenFile(path) => self.spawn_open_file(path),
             FieldAction::OpenInFiles(path) => self.open_in_file_manager(&path),
@@ -2183,6 +2665,148 @@ impl ShellApp {
             FieldAction::SetBrightness(percent) => self.spawn_brightness_set(percent),
             FieldAction::Project { id, project_id } => self.perform_project(id, &project_id),
             FieldAction::Place { id, path } => self.perform_place(id, &path),
+            FieldAction::ResumeSession { path, session_id } => {
+                let tx = self.data_tx.clone();
+                let wake = self.wake_proxy.clone();
+                self.runtime.spawn(async move {
+                    let outcome = crate::garden::resume_session(&path, &session_id).await;
+                    if let Err(error) = outcome {
+                        let _ = tx.send(DataUpdate::Notice(error));
+                    }
+                    let _ = wake.send_event(Wake::Data);
+                });
+            }
+            FieldAction::HomeThumbnail(path) => {
+                if self.file_thumbnails.len() >= 64 {
+                    let obsolete = self
+                        .file_thumbnails
+                        .keys()
+                        .find(|path| !self.field_screen.thumbnail_paths().contains(*path))
+                        .cloned();
+                    if let Some(path) = obsolete {
+                        self.file_thumbnails.remove(&path);
+                    }
+                }
+                if self.field_settings.previews != PreviewMode::Off
+                    && !self.file_thumbnails.contains_key(&path)
+                    && self.file_thumbnails.len() + self.home_thumbnail_pending.len() < 64
+                    && self.field_screen.thumbnail_paths().contains(&path)
+                    && self.home_thumbnail_pending.insert(path.clone())
+                {
+                    let tx = self.data_tx.clone();
+                    let wake = self.wake_proxy.clone();
+                    self.runtime.spawn(async move {
+                        let bitmap = super::desktop_dock::preview(&path, 256)
+                            .await
+                            .ok()
+                            .and_then(|bytes| pixelkit_raster::png::decode(&bytes).ok());
+                        let _ = tx.send(DataUpdate::HomeThumbnail { path, bitmap });
+                        let _ = wake.send_event(Wake::Data);
+                    });
+                }
+            }
+            FieldAction::CancelNativeDrop => {
+                self.native_drop_pending = false;
+                self.native_drop_target = None;
+                self.native_drop_receiver = None;
+                self.native_drop_item = None;
+                self.native_drag_origin = None;
+                self.field_screen.set_native_drop_hover(None, false);
+                if let Some(bridge) = self.bridge.as_mut()
+                    && let Err(error) = bridge.complete_native_drop(false)
+                {
+                    tracing::warn!(%error, "cancelling native project drop");
+                }
+            }
+            FieldAction::DragFile(path) => {
+                if let Some(payload) = Clipboard::copy(vec![path.clone()])
+                    .map(|clipboard| crate::data_device::ClipboardPayload::of(&clipboard))
+                    && let Some(home) = self.home.as_ref()
+                    && let Some(bridge) = self.bridge.as_mut()
+                {
+                    match bridge.start_file_drag(&home.window, payload) {
+                        Ok(true) => {
+                            self.native_drag_origin = Some(path);
+                        }
+                        Ok(false) => self.field_screen.report(
+                            "The file drag has no active pointer press".to_owned(),
+                            self.started.elapsed().as_millis() as u64,
+                        ),
+                        Err(error) => self.field_screen.report(
+                            format!("Could not drag file: {error}"),
+                            self.started.elapsed().as_millis() as u64,
+                        ),
+                    }
+                }
+            }
+            FieldAction::DockOpen { path, app } => {
+                let tx = self.data_tx.clone();
+                let wake = self.wake_proxy.clone();
+                self.runtime.spawn(async move {
+                    if let Err(error) = super::desktop_dock::open(&path, "", app.as_deref()).await {
+                        let _ =
+                            tx.send(DataUpdate::Notice(format!("Could not open file: {error}")));
+                    }
+                    let _ = wake.send_event(Wake::Data);
+                });
+            }
+            FieldAction::DockReorder { path, index } => {
+                self.reorder_desktop_entry(&path, index);
+            }
+            FieldAction::DockOpenWith(path) => {
+                let tx = self.data_tx.clone();
+                let wake = self.wake_proxy.clone();
+                self.runtime.spawn(async move {
+                    let handlers = super::desktop_dock::open_with_handlers(&path, "")
+                        .await
+                        .map_err(|error| error.to_string());
+                    let _ = tx.send(DataUpdate::DockHandlers { path, handlers });
+                    let _ = wake.send_event(Wake::Data);
+                });
+            }
+            FieldAction::TransferFiles {
+                paths,
+                destination,
+                move_files,
+            } => {
+                if self.native_drop_pending {
+                    let choice = self
+                        .bridge
+                        .as_mut()
+                        .ok_or_else(|| "Native drop transport disappeared".to_owned())
+                        .and_then(|bridge| {
+                            bridge
+                                .choose_native_drop_action(move_files)
+                                .map_err(|error| error.to_string())
+                        });
+                    if let Err(error) = choice {
+                        self.perform(FieldAction::CancelNativeDrop);
+                        self.field_screen.report(
+                            format!("Could not select transfer: {error}"),
+                            self.started.elapsed().as_millis() as u64,
+                        );
+                        return;
+                    }
+                }
+                self.spawn_native_transfer(
+                    paths,
+                    destination,
+                    move_files,
+                    self.native_drop_pending
+                        .then_some(self.native_drop_generation),
+                );
+            }
+            FieldAction::LaunchProjectApp { path, app_id } => {
+                let tx = self.data_tx.clone();
+                let wake = self.wake_proxy.clone();
+                self.runtime.spawn(async move {
+                    if let Err(error) = crate::garden::launch_app_in_place(&path, &app_id).await {
+                        let _ = tx.send(DataUpdate::Notice(error));
+                    }
+                    let _ = tx.send(DataUpdate::Garden(crate::garden::fetch_places().await));
+                    let _ = wake.send_event(Wake::Data);
+                });
+            }
             FieldAction::RunWindowAction { id, window } => self.perform_on_window(id, window),
             // `window.group`, which is the one window verb naming two windows and so cannot go
             // through `perform_on_window`.
@@ -2207,6 +2831,7 @@ impl ShellApp {
                         self.spawn_project_create(project_id.clone(), project.title.clone());
                     }
                     self.field = next;
+                    self.sync_desktop_order();
                     self.field_screen
                         .confirm(&op, self.started.elapsed().as_millis() as u64);
                     if self.field_synced == Some(true) {
@@ -2395,11 +3020,25 @@ impl ShellApp {
                     let _ = tx.send(DataUpdate::Notice(error));
                 }
             }
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
     fn perform_place(&mut self, id: &'static str, path: &Path) {
+        if id == "place.open-terminal" {
+            if let Some(app_id) = self.providers.get(&ProviderRole::Terminal).cloned() {
+                self.perform(FieldAction::LaunchProjectApp {
+                    path: path.to_path_buf(),
+                    app_id,
+                });
+            } else {
+                self.field_screen.report(
+                    "No terminal is selected — choose one in Settings ▸ Providers".to_owned(),
+                    self.started.elapsed().as_millis() as u64,
+                );
+            }
+            return;
+        }
         if id == "place.show-windows" {
             // The ids, and the name to put over them. The compositor never learns what a place
             // is: this is the one route in the system that turns "this folder" into "these
@@ -2435,7 +3074,6 @@ impl ShellApp {
                 return;
             }
             let project_id: &'static str = match project_id {
-                "open-terminal" => "project.open-terminal",
                 "open-editor" => "project.open-editor",
                 _ => return,
             };
@@ -2457,14 +3095,14 @@ impl ShellApp {
                     // The record changed; the tile follows at the next tending moment, which is
                     // now: the person asked, and waiting for the next reveal would read as
                     // "nothing happened".
-                    let _ = crate::garden::tend(OUTPUT).await;
+                    // Geometry remains frozen until the next reveal; only contents update now.
                     let _ = tx.send(DataUpdate::Garden(crate::garden::fetch_places().await));
                 }
                 Err(error) => {
                     let _ = tx.send(DataUpdate::Notice(error));
                 }
             }
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
@@ -2478,7 +3116,7 @@ impl ShellApp {
                 tracing::debug!(%error, "tending skipped");
             }
             let _ = tx.send(DataUpdate::Garden(crate::garden::fetch_places().await));
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
@@ -2499,7 +3137,7 @@ impl ShellApp {
             .await;
             if let Err(error) = result {
                 let _ = tx.send(DataUpdate::Notice(format!("{id} failed — {error:#}")));
-                let _ = proxy_wake.send_event(Wake);
+                let _ = proxy_wake.send_event(Wake::Data);
             }
         });
     }
@@ -2528,29 +3166,32 @@ impl ShellApp {
         });
     }
 
-    /// Loads a directory's contents (the live index when a service answers; a bounded direct
-    /// scan otherwise), lays it out and rasterizes it at the tile's size, off the event loop. One
-    /// load in flight at a time.
+    fn invalidate_treemap(&mut self) {
+        self.treemap = None;
+        self.treemap_epoch = self.treemap_epoch.wrapping_add(1);
+    }
+
+    /// Load once off the event loop; only absent/incompatible Index1 permits a bounded scan.
     fn spawn_treemap(&mut self, path: PathBuf, width: u32, height: u32) {
-        if self.treemap_pending.is_some() {
+        if let Some((pending_path, pending_width, pending_height, pending_epoch)) =
+            &self.treemap_pending
+        {
+            if *pending_epoch == self.treemap_epoch
+                && (pending_path != &path || *pending_width != width || *pending_height != height)
+            {
+                // Coalesce replacements behind the outstanding load, but retire its paint now.
+                self.invalidate_treemap();
+            }
             return;
         }
-        self.treemap_pending = Some(path.clone());
+        let epoch = self.treemap_epoch;
+        self.treemap_pending = Some((path.clone(), width, height, epoch));
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
         self.runtime.spawn(async move {
-            let entries = load_treemap_entries(&path).await;
-            let rasterized =
-                tokio::task::spawn_blocking(move || rasterize_entries(&entries, width, height))
-                    .await;
-            if let Ok((bitmap, composition)) = rasterized {
-                let _ = tx.send(DataUpdate::Treemap {
-                    path,
-                    bitmap,
-                    composition,
-                });
-                let _ = proxy.send_event(Wake);
-            }
+            let preview = load_treemap_preview(path, width, height).await;
+            let _ = tx.send(DataUpdate::Treemap { epoch, preview });
+            let _ = proxy.send_event(Wake::Data);
         });
     }
 
@@ -2587,6 +3228,7 @@ impl ShellApp {
         match id {
             "network.open-control" => self.spawn_network_control(),
             "clock.open-calendar" => self.open_calendar(),
+            "clock.open-settings" => self.open_datetime_settings(),
             // Two view-state actions: they change what the field's own search bar is doing, so
             // there is no service behind them — but they are still declared, still reachable by
             // pointer, and still routed through this one place like everything else.
@@ -2677,8 +3319,8 @@ impl ShellApp {
                 self.bridge_call("show_all_windows", ShellBridge::show_all_windows);
             }
             // The window-group verbs. Every one is sent to a window and applies to its whole
-            // group; the compositor owns membership, so the Home tile only catches up on the next
-            // refresh. Against a compositor older than `templar_shell_v1` version 5 the bridge
+            // group; the compositor owns membership, so Home catches up on the next refresh.
+            // The bridge checks the negotiated `templar_shell_v2` feature version and
             // refuses these and says so, rather than sending a request that would end the
             // connection the whole shell is drawn on.
             "window.ungroup" => {
@@ -2715,7 +3357,7 @@ impl ShellApp {
             let report = |text: String| {
                 tracing::error!(action = %id, "{text}");
                 let _ = tx.send(DataUpdate::Notice(text));
-                let _ = proxy_wake.send_event(Wake);
+                let _ = proxy_wake.send_event(Wake::Data);
             };
             let connection = match crate::data::session().await {
                 Ok(connection) => connection,
@@ -2782,24 +3424,38 @@ impl ShellApp {
         }
     }
 
-    /// Open the network control: the application that fills the `network-status-ui` role, with
-    /// `--popup`.
-    ///
-    /// The role, never a file called `nm-tray`. Stock `nm-tray` is packaged by Ubuntu, declares no
-    /// `X-TemplarOS-Provides`, ignores `--popup` and only ever draws a tray icon — and this desktop
-    /// has no tray, so resolving it by name produced a chip that launched something invisible.
-    /// `templaros-nm-tray` (`distro/forks/nm-tray-2/`) is the build that answers `--popup` and
-    /// declares the role; until it is installed the role is empty and the chip is drawn dimmed.
+    /// Launch the selected network provider variant, not a different copy in its logical group.
+    /// `--popup` is the provider's supported menu entry point, including session-bus forwarding.
     fn spawn_network_control(&self) {
-        let Some(app_id) = self.providers.get(&ProviderRole::NetworkStatusUi).cloned() else {
-            tracing::warn!(
-                "no application fills the network-status-ui role — install templaros-nm-tray \
-                 (distro/forks/nm-tray-2); stock nm-tray declares no X-TemplarOS-Provides and \
-                 ignores --popup, and this desktop has no tray for it to draw into"
-            );
-            return;
-        };
-        self.spawn_launch_with_args(app_id, vec!["--popup".to_owned()]);
+        let app_id = self.providers.get(&ProviderRole::NetworkStatusUi).cloned();
+        let tx = self.data_tx.clone();
+        let wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            let result: anyhow::Result<()> = async {
+                let app_id = app_id.ok_or_else(|| anyhow::anyhow!(
+                    "No network-status-ui provider is selected — install templaros-nm-tray and choose it in Settings ▸ Providers"
+                ))?;
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let proxy = LauncherProxy::new(&connection).await?;
+                proxy.launch(&app_id.to_string(), vec!["--popup".to_owned()], "").await?;
+                Ok(())
+            }.await;
+            if let Err(error) = result {
+                let _ = tx.send(DataUpdate::Notice(format!("Network menu unavailable — {error:#}")));
+                let _ = wake.send_event(Wake::Data);
+            }
+        });
+    }
+
+    fn open_datetime_settings(&mut self) {
+        self.cluster_screen.reset();
+        self.dismiss_rail(true);
+        if let Some(cluster) = &self.cluster {
+            cluster.request_redraw();
+        }
+        if let Ok(app_id) = SETTINGS_APP_ID.parse::<AppId>() {
+            self.spawn_launch_with_args(app_id, vec!["--page".to_owned(), "date-time".to_owned()]);
+        }
     }
 
     /// Open the native clock popup; the declared action and the chip share this route.
@@ -2845,24 +3501,100 @@ impl ShellApp {
         }
     }
 
-    /// How long a toast stays up before it retires on its own.
-    const TOAST_LIFETIME: Duration = Duration::from_secs(6);
-
-    /// Create the toast window for a pending notification, if any. The compositor places
-    /// Notification-layer surfaces at the top-right of the usable area
-    /// (`templar_window::shell_surface_placement`); this side only sizes it and declares its
-    /// layer over the trusted-shell protocol.
-    fn ensure_toast(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(row) = self.pending_toast.take() else {
+    /// Create, resize or drop the single Notification-layer toast host.
+    ///
+    /// One window holds the whole visible stack, bottom-right of the sticky output, sized
+    /// to its measured cards. Lock hides everything and drops the window; ordinary
+    /// fullscreen defers ordinary cards (critical ones stay); an empty stack drops the
+    /// window so no surface and no deadline linger. The host never requests keyboard
+    /// focus and never appears in Alt-Tab, work cards or MRU: `Layer::Notification`
+    /// maps to a non-application role compositor-side, and this side claims nothing.
+    fn sync_toast_host(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        toplevels: &[templar_window::ShellToplevel],
+    ) {
+        let now = Instant::now();
+        let now_ms = notification_popup::now_ms();
+        if self.bridge.as_ref().is_some_and(ShellBridge::lock_engaged) {
+            // Lock hides message content and stops toast painting. History is untouched;
+            // the hidden ids are remembered, so unlock replays nothing.
+            self.toast_stack.hide_all();
+            self.toast_host = None;
+            self.toast_wanted = (0, 0);
+            self.toast_output = None;
             return;
-        };
-        // A new arrival replaces whatever toast is up: newest wins, oldest was already seen.
-        self.toast = None;
+        }
+        let home_revealed = self.bridge.as_ref().is_some_and(ShellBridge::home_revealed);
+        let defers = notification_popup::fullscreen_defers(toplevels, home_revealed);
+        let visible_before_deferral = self.toast_stack.visible_len();
+        if defers {
+            self.toast_stack.hide_ordinary_for_fullscreen();
+        }
+        let deferred = self.toast_stack.visible_len() != visible_before_deferral;
+        let retired = self.toast_stack.retire_expired(now, now_ms);
+        if self.toast_stack.is_empty() {
+            self.toast_host = None;
+            self.toast_wanted = (0, 0);
+            self.toast_output = None;
+            return;
+        }
+        // Sticky output: toasts stay where they first appeared until they leave.
+        // Single-output fallback: this shell knows its Home window's monitor, not the
+        // compositor's topology, so the pure choose/sticky/reclamp helpers wait on a
+        // topology feed. Until then the monitor name sticks.
+        if self.toast_output.is_none() {
+            let name = self
+                .home
+                .as_ref()
+                .and_then(|home| home.window.current_monitor())
+                .and_then(|monitor| monitor.name())
+                .unwrap_or_else(|| "home".to_owned());
+            self.toast_output = Some(name);
+        }
+        let output = self
+            .toast_output
+            .clone()
+            .unwrap_or_else(|| "home".to_owned());
+        let visible_before = self.toast_stack.visible_len();
+        self.toast_stack.promote(now, now_ms, &output, defers);
+        if (deferred || retired || self.toast_stack.visible_len() != visible_before)
+            && let Some(hosted) = &self.toast_host
+        {
+            hosted.request_redraw();
+        }
+        if self.toast_stack.visible_len() == 0 {
+            // Everything deferred: no window, but the sticky output and the queue stay.
+            self.toast_host = None;
+            self.toast_wanted = (0, 0);
+            return;
+        }
+        let app_ids: Vec<String> = self
+            .toast_stack
+            .visible()
+            .iter()
+            .filter_map(|toast| toast.presentation.app_id.clone())
+            .collect();
+        for id in app_ids {
+            self.ensure_icon(&id);
+        }
+        if self.toast_host.is_some() {
+            return;
+        }
+        let scale = self
+            .home
+            .as_ref()
+            .map_or(pixelkit_shell::Scale::ONE, |home| home.scale);
+        let height = self.measure_toast_stack_height(scale).max(1);
         let window = match event_loop.create_window(
             Window::default_attributes()
-                .with_title("Notification")
+                .with_title("Notifications")
                 .with_decorations(false)
-                .with_inner_size(LogicalSize::new(380.0, 92.0)),
+                .with_active(false)
+                .with_inner_size(LogicalSize::new(
+                    f64::from(notification_popup::TOAST_CARD_WIDTH),
+                    f64::from(height),
+                )),
         ) {
             Ok(window) => std::sync::Arc::new(window),
             Err(error) => {
@@ -2875,13 +3607,62 @@ impl ShellApp {
         {
             tracing::warn!(%error, "declaring the toast onto Layer::Notification");
         }
+        // Deliberately no `focus_surface`: toasts never steal keyboard focus.
         match HostedWindow::new(window) {
-            Ok(hosted) => {
+            Ok(mut hosted) => {
+                hosted.attach_accessibility(event_loop, self.wake_proxy.clone());
                 hosted.request_redraw();
-                self.toast = Some((hosted, row, Instant::now()));
+                self.toast_host = Some(hosted);
+                self.toast_wanted = (notification_popup::TOAST_CARD_WIDTH, height);
             }
             Err(error) => tracing::warn!(%error, "presenting the notification toast"),
         }
+    }
+
+    /// Logical height of the visible stack at `scale`, measured with the same PixelKit
+    /// layout the draw pass paints. Window sizing only; the draw pass re-measures exactly.
+    fn measure_toast_stack_height(&mut self, scale: pixelkit_shell::Scale) -> i32 {
+        let mut theme = design::theme();
+        theme.body.size *= scale.0;
+        theme.heading.size *= scale.0;
+        let width = scale.px(notification_popup::TOAST_CARD_WIDTH);
+        let mut heights = Vec::new();
+        for toast in self.toast_stack.visible() {
+            let row = &toast.presentation;
+            let actions: Vec<ToastAction<'_>> = row
+                .actions
+                .iter()
+                .map(|(key, label)| ToastAction { key, label })
+                .collect();
+            let icon = row.app_id.as_ref().and_then(|id| self.icons.get(id));
+            let card = ToastCard {
+                app: &row.app_name,
+                summary: &row.summary,
+                body: &row.body,
+                icon,
+                actions: &actions,
+                dismiss_label: "Dismiss",
+            };
+            heights.push(
+                pixelkit_ui::toast::toast_layout(
+                    &mut self.text,
+                    &theme,
+                    scale,
+                    (0, 0),
+                    width,
+                    &card,
+                )
+                .height,
+            );
+        }
+        let mut physical: i32 = heights.iter().sum();
+        physical +=
+            scale.px(notification_popup::TOAST_GAP) * heights.len().saturating_sub(1) as i32;
+        if self.toast_stack.overflow() > 0 {
+            physical += scale.px(notification_popup::TOAST_GAP)
+                + scale.px(notification_popup::OVERFLOW_STRIP_HEIGHT);
+        }
+        ((physical as f32 / scale.0).ceil() as i32).max(1)
     }
 
     /// Lock the session: take the compositor's lock and paint the screen onto it.
@@ -2915,6 +3696,10 @@ impl ShellApp {
                 .report(format!("Could not lock the session — {error:#}"), now_ms);
             return;
         }
+        self.toast_stack.hide_all();
+        self.toast_host = None;
+        self.toast_output = None;
+        self.toast_wanted = (0, 0);
         self.paint_lock();
     }
 
@@ -2982,6 +3767,13 @@ impl ShellApp {
             self.release_lock();
             return false;
         }
+        if bridge.take_lock_confirmation() {
+            self.runtime.spawn(crate::session_lock::notify_locked());
+        }
+        // Unlock-and-destroy is illegal until the compositor acknowledged the coverage barrier.
+        if !bridge.lock_locked() {
+            return false;
+        }
         let keys = bridge.take_lock_keys();
         let needs_paint = bridge.lock_needs_paint();
         if keys.is_empty() && !needs_paint {
@@ -3014,7 +3806,7 @@ impl ShellApp {
         self.runtime.spawn(async move {
             let result = crate::unlock::authenticate(password).await;
             let _ = tx.send(DataUpdate::Unlock(result));
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
@@ -3207,7 +3999,6 @@ impl ShellApp {
         let data = crate::surface::bar_screen::BarData {
             entries: &entries,
             icons: &self.icons,
-            previews: &self.previews,
             activated,
             covered,
             peeked,
@@ -3294,11 +4085,6 @@ impl ShellApp {
             declare_input_shapes(self.bridge.as_mut(), &bar.window, &regions, "the bar");
             bar.present();
         }
-        // A fan card shows the window, not its name, so the windows in the open fan are captured
-        // while it is open — and nothing else is. Home's own policy stops at `previews_covered`,
-        // which is exactly when this fan is the thing being looked at.
-        let wants = self.bar_screen.preview_wants(&entries);
-        self.refresh_fan_previews(&toplevels, &wants);
         // The surface is the output's width, and its height is whatever the presence the draw
         // just settled on asks for: the hint under a window, the bar over Home, plus whatever
         // band an open hover row or the account popover needs. The exclusive zone is 0 through
@@ -3685,7 +4471,6 @@ impl ShellApp {
                     &switcher,
                     &toplevels,
                     &self.icons,
-                    &self.previews,
                 );
             } else {
                 self.taskfield_screen.draw(&mut ui, area, &data);
@@ -3749,12 +4534,7 @@ impl ShellApp {
             .map(ShellBridge::toplevels)
             .unwrap_or_default();
         if switcher.active {
-            let shown = crate::surface::taskfield_screen::switcher_visible_range(
-                switcher,
-                (self.output_size().1 / 100).max(1) as usize,
-            );
             self.drain_previews(&toplevels);
-            self.refresh_fan_previews(&toplevels, &switcher.windows[shown]);
         }
         for key in toplevels.iter().filter_map(|top| top.icon_app_id()) {
             self.ensure_icon(key);
@@ -3820,6 +4600,22 @@ impl ShellApp {
         ) {
             Ok(()) => self.rail_gate_relayed = Some(gate.clone()),
             Err(error) => tracing::warn!(%error, "relaying the gesture gate to the compositor"),
+        }
+    }
+
+    /// Tell the compositor the committed window tab policy, if that changed since it was
+    /// last told. Called on connect and on every settings reading.
+    fn relay_tab_policy(&mut self) {
+        let Some(bridge) = &self.bridge else {
+            return;
+        };
+        if self.tab_policy_relayed.as_ref() == Some(&self.tab_settings) {
+            return;
+        }
+        let policy = self.tab_settings;
+        match bridge.send_tab_policy(&policy) {
+            Ok(()) => self.tab_policy_relayed = Some(policy),
+            Err(error) => tracing::warn!(%error, "relaying the window tab policy"),
         }
     }
 
@@ -4092,7 +4888,7 @@ impl ShellApp {
                     WindowEvent::Focused(false) => {
                         self.cluster_screen.reset();
                         self.calendar_focus_claimed = false;
-                        cluster.input.end_frame();
+                        cluster.input.blur();
                         cluster.request_redraw();
                     }
                     WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
@@ -4187,7 +4983,7 @@ impl ShellApp {
         let Some(bridge) = &self.bridge else {
             return;
         };
-        for hosted in [&self.bar, &self.cluster, &self.taskfield]
+        for hosted in [&self.home, &self.bar, &self.cluster, &self.taskfield]
             .into_iter()
             .flatten()
             .filter(|hosted| hosted.pending)
@@ -4198,58 +4994,169 @@ impl ShellApp {
         }
     }
 
-    /// Paint the toast: app and summary, and the hint that a click dismisses it.
+    /// Paint the visible toast stack: one PixelKit card per row, oldest first, plus the
+    /// overflow strip. Outcomes collected here are performed after the draw pass, and
+    /// hover/keyboard focus pauses each card's dwell with its remainder intact.
+    #[allow(clippy::too_many_lines)]
     fn redraw_toast(&mut self) {
-        let Some((hosted, row, _)) = &mut self.toast else {
-            return;
-        };
-        if !hosted.prepare() {
+        // Never paint message content while locked.
+        if self.bridge.as_ref().is_some_and(ShellBridge::lock_engaged) {
             return;
         }
-        let width = i32::try_from(hosted.buffer.width).unwrap_or(1);
-        let height = i32::try_from(hosted.buffer.height).unwrap_or(1);
-        let area = pixelkit_raster::Rect::new(0, 0, width, height);
-        let mut ui = pixelkit_ui::Ui::new(
-            pixelkit_raster::Painter::new(&mut hosted.buffer),
+        let Some(hosted) = self.toast_host.as_mut() else {
+            return;
+        };
+        if !hosted.prepare() || self.toast_stack.visible_len() == 0 {
+            return;
+        }
+        hosted.begin_semantics("Notifications");
+        let buffer_width = hosted.buffer.width as i32;
+        let scale = hosted.scale;
+        let mut ui = Ui::new(
+            Painter::new(&mut hosted.buffer),
             &mut self.text,
             &mut hosted.input,
-            crate::surface::design::theme(),
-            hosted.scale,
+            design::theme(),
+            scale,
             &mut self.kernel,
-        );
-        // Every pixel first: this surface has no alpha either, and a rounded fill leaves the
-        // four corners holding whatever the buffer had (see `field_screen::draw`).
-        ui.painter.clear(crate::surface::design::shell_fill());
-        ui.painter
-            .fill_rounded_rect(area, ui.px(8), crate::surface::design::shell_fill());
-        ui.painter.stroke_rect(
-            area,
-            ui.scale.hairline(),
-            crate::surface::design::edge_strong(),
-        );
-        let inner = area.inset(ui.px(12));
-        let (title, body) = inner.split_top(ui.px(22));
-        ui.label_styled(
-            title,
-            &row.app,
-            crate::surface::design::measurement_style(&ui),
-            crate::surface::design::text(),
-            pixelkit_text::Align::Left,
-        );
-        ui.label_styled(
-            body,
-            &row.summary,
-            crate::surface::design::state_style(&ui),
-            crate::surface::design::text_dim(),
-            pixelkit_text::Align::Left,
-        );
+        )
+        .with_focus(&mut hosted.focus)
+        .with_semantics(&mut hosted.semantics);
+        // Every pixel first: this surface is opaque, and the gaps between cards show the
+        // host ground (see `field_screen::draw` for why the clear comes first).
+        ui.painter.clear(design::shell_fill());
+        let mut rects = Vec::new();
+        let mut card_actions = Vec::new();
+        let mut control_counts = Vec::new();
+        let mut y = 0;
+        for toast in self.toast_stack.visible() {
+            let row = &toast.presentation;
+            let actions: Vec<ToastAction<'_>> = row
+                .actions
+                .iter()
+                .map(|(key, label)| ToastAction { key, label })
+                .collect();
+            let icon = row.app_id.as_ref().and_then(|id| self.icons.get(id));
+            let card = ToastCard {
+                app: &row.app_name,
+                summary: &row.summary,
+                body: &row.body,
+                icon,
+                actions: &actions,
+                dismiss_label: "Dismiss",
+            };
+            let (outcome, layout) = ui.toast((0, y), buffer_width, &card);
+            rects.push(Rect::new(0, y, buffer_width, layout.height));
+            control_counts.push(layout.actions.len() + 1);
+            if outcome.dismissed {
+                card_actions.push((row.id, ToastUserAction::Dismiss));
+            }
+            if let Some(key) = outcome.action {
+                card_actions.push((row.id, ToastUserAction::Invoke(key)));
+            }
+            y += layout.height + ui.px(notification_popup::TOAST_GAP);
+        }
+        if self.toast_stack.overflow() > 0 {
+            let strip = Rect::new(
+                0,
+                y,
+                buffer_width,
+                ui.px(notification_popup::OVERFLOW_STRIP_HEIGHT),
+            );
+            ui.label_styled(
+                strip,
+                &format!("+{} more in history", self.toast_stack.overflow()),
+                design::state_style(&ui),
+                design::text_dim(),
+                pixelkit_text::Align::Centre,
+            );
+            y += strip.h;
+        } else {
+            y -= ui.px(notification_popup::TOAST_GAP);
+        }
+        let hovered: Vec<bool> = rects.iter().map(|rect| ui.input.hovering(*rect)).collect();
         drop(ui);
+        let focused_control = hosted.focus.current();
         hosted.input.end_frame();
+        hosted.publish_semantics();
         hosted.present();
+        let stack_height = y;
+        self.settle_toast_outcomes(&hovered, &control_counts, focused_control, card_actions);
+        // Resize to the measured stack; only card rectangles intercept input, not gaps.
+        let logical_height = ((stack_height as f32 / scale.0).ceil() as i32).max(1);
+        let wanted = (notification_popup::TOAST_CARD_WIDTH, logical_height);
+        if wanted != self.toast_wanted {
+            self.toast_wanted = wanted;
+            if let Some(hosted) = &self.toast_host {
+                let _ = hosted
+                    .window
+                    .request_inner_size(LogicalSize::new(f64::from(wanted.0), f64::from(wanted.1)));
+            }
+        }
+        if let Some(hosted) = &self.toast_host {
+            let regions: Vec<_> = rects
+                .iter()
+                .map(|rect| {
+                    let left = (rect.x as f32 / scale.0).floor() as i32;
+                    let top = (rect.y as f32 / scale.0).floor() as i32;
+                    let right = (rect.right() as f32 / scale.0).ceil() as i32;
+                    let bottom = (rect.bottom() as f32 / scale.0).ceil() as i32;
+                    (left, top, right - left, bottom - top)
+                })
+                .collect();
+            declare_input_shapes(
+                self.bridge.as_mut(),
+                &hosted.window,
+                &regions,
+                "the toast host",
+            );
+        }
     }
 
-    /// One notification call, then a widget refresh, off-thread. Shared by the per-item
-    /// dismiss and invoke routes so both keep the tile live without duplicating the plumbing.
+    /// Pause what the pointer or keyboard focus is on and resume the rest with its
+    /// remainder, then perform the card outcomes the draw pass collected. Focus runs
+    /// dismiss-then-chips per card, in draw order.
+    fn settle_toast_outcomes(
+        &mut self,
+        hovered: &[bool],
+        control_counts: &[usize],
+        focused_control: Option<usize>,
+        card_actions: Vec<(u32, ToastUserAction)>,
+    ) {
+        let now = Instant::now();
+        let ids: Vec<u32> = self
+            .toast_stack
+            .visible()
+            .iter()
+            .map(|toast| toast.presentation.id)
+            .collect();
+        let mut control_base = 0;
+        for (index, id) in ids.into_iter().enumerate() {
+            let count = control_counts.get(index).copied().unwrap_or(1);
+            let keyboard = focused_control
+                .is_some_and(|focused| focused >= control_base && focused < control_base + count);
+            control_base += count;
+            if hovered.get(index).copied().unwrap_or(false) || keyboard {
+                self.toast_stack.pause(id, now);
+            } else {
+                self.toast_stack.resume(id, now);
+            }
+        }
+        for (id, action) in card_actions {
+            match action {
+                ToastUserAction::Dismiss => {
+                    self.toast_stack.dismiss(id);
+                    self.perform(FieldAction::DismissNotification(id));
+                }
+                ToastUserAction::Invoke(key) => {
+                    self.toast_stack.invoke(id);
+                    self.perform(FieldAction::InvokeNotification { id, key });
+                }
+            }
+        }
+    }
+
+    /// Run a notification command off-thread. The journal watcher alone updates the model.
     fn spawn_notification_call<F>(&self, call: F)
     where
         F: FnOnce(
@@ -4272,12 +5179,8 @@ impl ShellApp {
                 let _ = tx.send(DataUpdate::Notice(format!(
                     "Notification action failed — {error:#}"
                 )));
-            } else {
-                let (snapshot, rows) = crate::data::fetch_notifications_widget().await;
-                let _ = tx.send(DataUpdate::Widget("notifications".to_owned(), snapshot));
-                let _ = tx.send(DataUpdate::NotificationRows(rows));
             }
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
@@ -4297,9 +5200,6 @@ impl ShellApp {
                         "Cleared {count} notification{}",
                         if count == 1 { "" } else { "s" }
                     )));
-                    let (snapshot, rows) = crate::data::fetch_notifications_widget().await;
-                    let _ = tx.send(DataUpdate::Widget("notifications".to_owned(), snapshot));
-                    let _ = tx.send(DataUpdate::NotificationRows(rows));
                 }
                 Err(error) => {
                     let _ = tx.send(DataUpdate::Notice(format!(
@@ -4307,7 +5207,7 @@ impl ShellApp {
                     )));
                 }
             }
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
@@ -4367,46 +5267,25 @@ impl ShellApp {
                     )));
                 }
             }
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
-    /// Refetch notifications when the server says they changed. The subscription is installed
-    /// before the startup snapshot, so arrivals are pushed without a read/subscribe race.
+    /// Subscribe before snapshot; one owner-bound journal drives both notification hosts.
     fn spawn_notifications_watch(&self) {
         let tx = self.data_tx.clone();
         let proxy_wake = self.wake_proxy.clone();
         self.runtime.spawn(async move {
-            use futures_util::StreamExt as _;
             let Ok(connection) = crate::data::session().await else {
                 return;
             };
-            let Ok(proxy) = templar_client::proxies::NotificationsProxy::new(&connection).await
-            else {
-                return;
-            };
-            let Ok(mut changed) = proxy.receive_changed().await else {
-                return;
-            };
-            let (snapshot, rows) = crate::data::fetch_notifications_widget().await;
-            if tx
-                .send(DataUpdate::Widget("notifications".to_owned(), snapshot))
-                .is_err()
-            {
-                return;
-            }
-            let _ = tx.send(DataUpdate::NotificationRows(rows));
-            let _ = proxy_wake.send_event(Wake);
-            while changed.next().await.is_some() {
-                let (snapshot, rows) = crate::data::fetch_notifications_widget().await;
-                if tx
-                    .send(DataUpdate::Widget("notifications".to_owned(), snapshot))
-                    .is_err()
-                {
-                    return;
-                }
-                let _ = tx.send(DataUpdate::NotificationRows(rows));
-                let _ = proxy_wake.send_event(Wake);
+            let result = crate::surface::notification_feed::observe(&connection, |update| {
+                tx.send(DataUpdate::Notifications(update)).is_ok()
+                    && proxy_wake.send_event(Wake::Data).is_ok()
+            })
+            .await;
+            if let Err(error) = result {
+                tracing::warn!(%error, "notification observation stopped");
             }
         });
     }
@@ -4448,7 +5327,7 @@ impl ShellApp {
                     crate::data::fetch_browser_sources().await,
                 ));
                 let _ = tx.send(DataUpdate::FilesChanged);
-                let _ = proxy_wake.send_event(Wake);
+                let _ = proxy_wake.send_event(Wake::Data);
                 tokio::select! {
                     event = generation.next() => if event.is_none() { return; },
                     event = roots.next() => if event.is_none() { return; },
@@ -4486,7 +5365,7 @@ impl ShellApp {
                         return;
                     }
                 }
-                let _ = proxy_wake.send_event(Wake);
+                let _ = proxy_wake.send_event(Wake::Data);
                 if changed.next().await.is_none() {
                     return;
                 }
@@ -4520,7 +5399,7 @@ impl ShellApp {
                 }
                 let feed = crate::data::fetch_drawer(Drawer::Projects, 20).await;
                 let _ = tx.send(DataUpdate::Drawer(Drawer::Projects, feed));
-                let _ = proxy_wake.send_event(Wake);
+                let _ = proxy_wake.send_event(Wake::Data);
                 tokio::select! {
                     event = changed.next() => if event.is_none() { return; },
                     event = current_changed.next() => if event.is_none() { return; },
@@ -4529,8 +5408,9 @@ impl ShellApp {
         });
     }
 
-    /// Settings changes drive both Home's representation policy and the persisted launcher
-    /// recents. The signal is installed before either startup read.
+    /// Settings changes drive Home's representation policy, the persisted launcher recents,
+    /// the rails, the lanes and the window tab policy. The signal is installed before the
+    /// startup reads.
     fn spawn_settings_watch(&self) {
         let tx = self.data_tx.clone();
         let proxy_wake = self.wake_proxy.clone();
@@ -4546,11 +5426,12 @@ impl ShellApp {
                 return;
             };
             loop {
-                let (field, recents, rails, lanes) = tokio::join!(
+                let (field, recents, rails, lanes, tabs) = tokio::join!(
                     fetch_home_field_settings(),
                     crate::settings::load_recent_apps(&settings),
                     crate::settings::rails(&settings),
                     crate::settings::lanes(&settings),
+                    crate::settings::tabs(&settings),
                 );
                 if tx.send(DataUpdate::HomeFieldSettings(field)).is_err() {
                     return;
@@ -4558,13 +5439,60 @@ impl ShellApp {
                 let _ = tx.send(DataUpdate::RecentApps(recents));
                 let _ = tx.send(DataUpdate::RailSettings(rails));
                 let _ = tx.send(DataUpdate::Lanes(lanes));
-                let _ = tx.send(DataUpdate::IdleTimeout(
-                    crate::data::fetch_idle_timeout().await,
-                ));
-                let _ = proxy_wake.send_event(Wake);
+                let _ = tx.send(DataUpdate::TabSettings(tabs));
+                let _ = proxy_wake.send_event(Wake::Data);
                 if changed.next().await.is_none() {
                     return;
                 }
+            }
+        });
+    }
+
+    /// Observe actual native presentation. Subscribe before Inspect; owner changes invalidate
+    /// stale active state immediately, and re-read the same authority when it returns.
+    fn spawn_wallpaper_watch(&self) {
+        let tx = self.data_tx.clone();
+        let wake = self.wake_proxy.clone();
+        self.runtime.spawn(async move {
+            use futures_util::StreamExt as _;
+            let observe = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let proxy = templar_client::proxies::WallpaperProxy::new(&connection).await?;
+                let mut changed = proxy.receive_changed().await?;
+                let bus = zbus::fdo::DBusProxy::new(&connection).await?;
+                let mut owners = bus.receive_name_owner_changed().await?;
+                let publish = |json: Result<String, String>| {
+                    let applied = match json.and_then(|json| wallpaper_applied(&json)) {
+                        Ok(applied) => applied,
+                        Err(error) => {
+                            tracing::warn!(%error, "observing native wallpaper; keeping solid Home ground");
+                            None
+                        }
+                    };
+                    let _ = tx.send(DataUpdate::WallpaperApplied(applied));
+                    let _ = wake.send_event(Wake::Data);
+                };
+                publish(proxy.inspect().await.map_err(|error| error.to_string()));
+                loop {
+                    tokio::select! {
+                        event = changed.next() => {
+                            let Some(event) = event else { break Err::<(), _>(anyhow::anyhow!("Wallpaper1 subscription ended")); };
+                            publish(event.args().map(|args| args.json().to_string())
+                                .map_err(|error| error.to_string()));
+                        }
+                        event = owners.next() => {
+                            let Some(event) = event else { break Err(anyhow::anyhow!("D-Bus owner observation ended")); };
+                            let args = event.args()?;
+                            if args.name().as_str() != "org.templaros.Session" { continue; }
+                            publish(proxy.inspect().await.map_err(|error| error.to_string()));
+                        }
+                    }
+                }
+            };
+            if let Err(error) = observe.await {
+                tracing::warn!(%error, "native wallpaper observation stopped");
+                let _ = tx.send(DataUpdate::WallpaperApplied(None));
+                let _ = wake.send_event(Wake::Data);
             }
         });
     }
@@ -4604,7 +5532,7 @@ impl ShellApp {
                 if tx.send(DataUpdate::LockRequested).is_err() {
                     return;
                 }
-                let _ = proxy_wake.send_event(Wake);
+                let _ = proxy_wake.send_event(Wake::Data);
             }
         });
     }
@@ -4628,7 +5556,7 @@ impl ShellApp {
                 if tx.send(DataUpdate::Drawer(Drawer::Trash, feed)).is_err() {
                     return;
                 }
-                let _ = proxy_wake.send_event(Wake);
+                let _ = proxy_wake.send_event(Wake::Data);
                 if changed.next().await.is_none() {
                     return;
                 }
@@ -4669,7 +5597,7 @@ impl ShellApp {
                 crate::data::settings_widget_from(&machine),
             ));
             let _ = tx.send(DataUpdate::Machine(machine));
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
@@ -4935,7 +5863,7 @@ impl ShellApp {
                 },
             };
             let _ = tx.send(update);
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
@@ -4979,6 +5907,349 @@ impl ShellApp {
         {
             tracing::debug!(%error, "could not start a drag for the rest of the desktop");
         }
+    }
+
+    fn spawn_native_transfer(
+        &self,
+        paths: Vec<PathBuf>,
+        destination: PathBuf,
+        move_files: bool,
+        native_generation: Option<u64>,
+    ) {
+        let tx = self.data_tx.clone();
+        let wake = self.wake_proxy.clone();
+        let summary = format!(
+            "{} {} items to {}",
+            if move_files { "Move" } else { "Copy" },
+            paths.len(),
+            destination.display()
+        );
+        self.runtime.spawn(async move {
+            let mode = if move_files {
+                super::desktop_dock::TransferMode::Move
+            } else {
+                super::desktop_dock::TransferMode::Copy
+            };
+            let result = super::desktop_dock::transfer(
+                paths,
+                destination,
+                mode,
+                templar_client::files::ConflictPolicy::Fail,
+                |id| {
+                    let _ = tx.send(DataUpdate::Notice(format!("{summary} · operation {id}")));
+                    let _ = wake.send_event(Wake::Data);
+                },
+            )
+            .await;
+            let (update, success) = match result {
+                Ok(record) => {
+                    let success = record.state == templar_client::files::OperationState::Committed
+                        && record.skipped.is_empty();
+                    let can_undo = async {
+                        let connection = crate::data::session().await.ok()?;
+                        let operations =
+                            templar_client::proxies::FilesOperationsProxy::new(&connection)
+                                .await
+                                .ok()?;
+                        operations
+                            .can_undo(&record.id)
+                            .await
+                            .ok()
+                            .map(|(allowed, _)| allowed)
+                    }
+                    .await
+                    .unwrap_or(false);
+                    let notice = crate::data::describe_operation(&summary, &record);
+                    (
+                        DataUpdate::FileOperation {
+                            undo: can_undo.then(|| FileOperationUndo {
+                                op_id: record.id,
+                                summary,
+                                at: Instant::now(),
+                            }),
+                            notice,
+                        },
+                        success,
+                    )
+                }
+                Err(error) => (
+                    DataUpdate::FileOperation {
+                        undo: None,
+                        notice: format!("{summary} — {error}"),
+                    },
+                    false,
+                ),
+            };
+            let _ = tx.send(update);
+            if let Some(generation) = native_generation {
+                let _ = tx.send(DataUpdate::NativeTransferFinished {
+                    generation,
+                    success,
+                });
+            }
+            let _ = wake.send_event(Wake::Data);
+        });
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn pump_native_file_drops(&mut self) {
+        let events = self
+            .bridge
+            .as_mut()
+            .map(ShellBridge::take_native_drag_events)
+            .unwrap_or_default();
+        let scale = self
+            .home
+            .as_ref()
+            .map_or(1.0, |home| home.window.scale_factor());
+        let locked = self
+            .bridge
+            .as_ref()
+            .is_some_and(|bridge| bridge.lock_engaged() || bridge.lock_locked());
+        let on_home = self
+            .bridge
+            .as_ref()
+            .zip(self.home.as_ref())
+            .is_some_and(|(bridge, home)| bridge.native_drag_on_window(&home.window));
+        if !self.native_drop_pending
+            && !self
+                .bridge
+                .as_ref()
+                .is_some_and(ShellBridge::file_drag_live)
+        {
+            self.native_drag_origin = None;
+        }
+        for event in events {
+            match event {
+                crate::wayland_bridge::NativeDragEvent::Enter { x, y }
+                | crate::wayland_bridge::NativeDragEvent::Motion { x, y } => {
+                    if self.native_drop_pending {
+                        continue;
+                    }
+                    let target = if locked || !on_home {
+                        None
+                    } else {
+                        self.field_screen.native_drop_destination(
+                            (x * scale).round() as i32,
+                            (y * scale).round() as i32,
+                        )
+                    };
+                    let shift = self
+                        .home
+                        .as_ref()
+                        .is_some_and(|home| home.input.modifiers().shift);
+                    if let Some(bridge) = self.bridge.as_mut() {
+                        let result = if target.as_ref().is_some_and(|(_, dock)| !dock) {
+                            bridge.set_native_project_drag_target(true, shift)
+                        } else {
+                            bridge.set_native_drag_target(target.is_some(), shift)
+                        };
+                        match result {
+                            Ok(true) => {
+                                self.native_drop_target = target;
+                            }
+                            Ok(false) => {
+                                self.native_drop_target = None;
+                            }
+                            Err(error) => {
+                                self.native_drop_target = None;
+                                tracing::warn!(%error, "negotiating native file drop");
+                            }
+                        }
+                    }
+                    self.field_screen
+                        .set_native_drop_hover(self.native_drop_target.clone(), shift);
+                    if let Some(home) = &self.home {
+                        home.request_redraw();
+                    }
+                }
+                crate::wayland_bridge::NativeDragEvent::Leave => {
+                    self.field_screen.set_native_drop_hover(None, false);
+                    if !self.native_drop_pending {
+                        self.native_drop_target = None;
+                    }
+                    if let Some(home) = &self.home {
+                        home.request_redraw();
+                    }
+                }
+                crate::wayland_bridge::NativeDragEvent::Drop {
+                    x,
+                    y,
+                    move_requested,
+                } => {
+                    if self.native_drop_pending {
+                        continue;
+                    }
+                    self.field_screen.set_native_drop_hover(None, false);
+                    let target = self.field_screen.native_drop_destination(
+                        (x * scale).round() as i32,
+                        (y * scale).round() as i32,
+                    );
+                    if locked || target.is_none() || self.native_drop_target.is_none() {
+                        if let Some(bridge) = self.bridge.as_mut() {
+                            let _ = bridge.complete_native_drop(false);
+                        }
+                        continue;
+                    }
+                    self.native_drop_target = target;
+                    self.native_drop_item = self
+                        .field_screen
+                        .dock_file_at((x * scale).round() as i32, (y * scale).round() as i32)
+                        .map(Path::to_path_buf);
+                    self.native_drop_move = move_requested;
+                    let wake = self.wake_proxy.clone();
+                    if let Some(bridge) = self.bridge.as_mut() {
+                        match bridge.receive_native_drop(move || {
+                            let _ = wake.send_event(Wake::Data);
+                        }) {
+                            Ok(receiver) => {
+                                self.native_drop_receiver = Some(receiver);
+                                self.native_drop_generation =
+                                    self.native_drop_generation.wrapping_add(1);
+                                self.native_drop_pending = true;
+                            }
+                            Err(error) => {
+                                self.native_drop_target = None;
+                                self.native_drop_item = None;
+                                self.field_screen.report(
+                                    format!("Could not receive files: {error}"),
+                                    self.started.elapsed().as_millis() as u64,
+                                );
+                                let _ = bridge.complete_native_drop(false);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let result =
+            self.native_drop_receiver
+                .as_ref()
+                .and_then(|receiver| match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Some(Err("Native file drop receiver disconnected".to_owned()))
+                    }
+                });
+        if let Some(result) = result {
+            self.native_drop_receiver = None;
+            match result {
+                Ok(paths) => {
+                    if let Some((destination, dock)) = self.native_drop_target.clone() {
+                        if dock {
+                            if !self.reorder_native_dock_drop(&paths, &destination) {
+                                self.spawn_native_transfer(
+                                    paths,
+                                    destination,
+                                    self.native_drop_move,
+                                    Some(self.native_drop_generation),
+                                );
+                            }
+                        } else {
+                            let (copy_allowed, move_allowed) = self
+                                .bridge
+                                .as_ref()
+                                .map_or((false, false), ShellBridge::native_drop_actions);
+                            if copy_allowed || move_allowed {
+                                self.field_screen.offer_project_transfer(
+                                    paths,
+                                    destination,
+                                    copy_allowed,
+                                    move_allowed,
+                                );
+                            } else {
+                                self.perform(FieldAction::CancelNativeDrop);
+                                self.field_screen.report(
+                                    "The source offered no supported file transfer".to_owned(),
+                                    self.started.elapsed().as_millis() as u64,
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.field_screen
+                        .report(error, self.started.elapsed().as_millis() as u64);
+                    self.native_drop_pending = false;
+                    self.native_drop_target = None;
+                    self.native_drop_item = None;
+                    self.field_screen.set_native_drop_hover(None, false);
+                    if let Some(bridge) = self.bridge.as_mut() {
+                        let _ = bridge.complete_native_drop(false);
+                    }
+                }
+            }
+            if let Some(home) = self.home.as_ref() {
+                home.request_redraw();
+            }
+        }
+    }
+
+    fn reorder_desktop_entry(&mut self, path: &Path, index: usize) {
+        let Some(destination) = path.parent() else {
+            return;
+        };
+        let Some(dock) = self
+            .desktop_dock
+            .as_mut()
+            .filter(|dock| dock.path == destination)
+        else {
+            return;
+        };
+        if !dock.reorder(path, index) {
+            return;
+        }
+        let order = dock.order();
+        if let Ok(listing) = dock.browse_listing() {
+            self.folder_listings
+                .insert(destination.to_path_buf(), Ok(listing));
+        }
+        if let Some(id) = self.field.tiles.iter().find_map(|tile| match &tile.kind {
+            TileKind::DesktopDock { path, .. } if path == destination => Some(tile.id),
+            _ => None,
+        }) {
+            self.perform(FieldAction::Apply(FieldOp::DesktopDockOrder { id, order }));
+        }
+    }
+
+    fn reorder_native_dock_drop(&mut self, paths: &[PathBuf], destination: &Path) -> bool {
+        if paths.len() != 1
+            || self.native_drag_origin.as_ref() != paths.first()
+            || paths[0].parent() != Some(destination)
+            || !self
+                .bridge
+                .as_ref()
+                .is_some_and(ShellBridge::file_drag_live)
+        {
+            return false;
+        }
+        let Some(dock) = self
+            .desktop_dock
+            .as_ref()
+            .filter(|dock| dock.path == destination)
+        else {
+            return false;
+        };
+        let index = self
+            .native_drop_item
+            .as_ref()
+            .and_then(|path| {
+                dock.entries
+                    .iter()
+                    .position(|entry| entry.path().ok().as_ref() == Some(path))
+            })
+            .unwrap_or_else(|| dock.entries.len().saturating_sub(1));
+        self.reorder_desktop_entry(&paths[0], index);
+        if let Some(bridge) = self.bridge.as_mut()
+            && let Err(error) = bridge.complete_native_drop(true)
+        {
+            tracing::warn!(%error, "completing native dock reorder");
+        }
+        self.native_drop_pending = false;
+        self.native_drop_target = None;
+        self.native_drag_origin = None;
+        true
     }
 
     /// Offer the clipboard to the rest of the desktop as the seat selection.
@@ -5048,7 +6319,12 @@ impl ShellApp {
                 let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
                 let proxy = templar_client::proxies::FilesBrowseProxy::new(&connection).await?;
                 let name = proxy
-                    .create_directory(&directory.to_string_lossy(), "New folder")
+                    .create_directory(
+                        directory
+                            .to_str()
+                            .context("This directory API requires a UTF-8 path")?,
+                        "New folder",
+                    )
                     .await?;
                 Ok::<_, anyhow::Error>(name)
             }
@@ -5058,7 +6334,7 @@ impl ShellApp {
                 Err(error) => format!("Could not create a folder — {error:#}"),
             };
             let _ = tx.send(DataUpdate::Notice(notice));
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
@@ -5070,7 +6346,7 @@ impl ShellApp {
             let result = async {
                 let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
                 let proxy = templar_client::proxies::FilesBrowseProxy::new(&connection).await?;
-                let json = proxy.inspect(&path.to_string_lossy()).await?;
+                let json = proxy.inspect(path.to_str().context("Properties requires a UTF-8 path; native URI/path rendering remains available")?).await?;
                 let info: templar_client::files::FileInfo = serde_json::from_str(&json)?;
                 Ok::<_, anyhow::Error>(info)
             }
@@ -5085,15 +6361,15 @@ impl ShellApp {
                 Err(error) => format!("Could not read properties — {error:#}"),
             };
             let _ = tx.send(DataUpdate::Notice(notice));
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
     /// `Copy path`, rendered by `Files.Actions1` so every surface copies the identical text.
     ///
-    /// Rendering is half of it; the text then has to reach the clipboard, and it does so the
-    /// same way the Files app's Copy path does — through `wl-copy`, which takes the selection
-    /// as an ordinary client. The shell's own data source only ever offers a path set
+    /// The compositor shell publishes path text through `wl-copy` as an ordinary Wayland client;
+    /// standalone Files instead uses PixelKit's native clipboard worker. The shell's own data
+    /// source only ever offers a path set
     /// (`crate::data_device`), and a path as *text* is for pasting into a terminal or a dialog,
     /// which wants `text/plain` and nothing else.
     fn spawn_copy_path(&self, path: PathBuf) {
@@ -5102,8 +6378,9 @@ impl ShellApp {
         self.runtime.spawn(async move {
             let result = async {
                 let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
-                let proxy = templar_client::proxies::FilesActionsProxy::new(&connection).await?;
-                let rendered = proxy.render(&path.to_string_lossy(), "canonical").await?;
+                let rendered =
+                    templar_client::file_index::render_native_path(&connection, &path, "canonical")
+                        .await?;
                 copy_text_to_clipboard(&rendered).await?;
                 Ok::<_, anyhow::Error>(rendered)
             }
@@ -5113,7 +6390,7 @@ impl ShellApp {
                 Err(error) => format!("Could not copy the path — {error:#}"),
             };
             let _ = tx.send(DataUpdate::Notice(notice));
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
@@ -5171,7 +6448,7 @@ impl ShellApp {
                 let _ = tx.send(DataUpdate::Notice(format!(
                     "Could not open a terminal here — {error:#}"
                 )));
-                let _ = proxy_wake.send_event(Wake);
+                let _ = proxy_wake.send_event(Wake::Data);
             }
         });
     }
@@ -5196,7 +6473,7 @@ impl ShellApp {
             // An undo that itself leaves an undo would let Ctrl+Z oscillate; the journal keeps
             // the record either way, and `templar files undo` can reach it.
             let _ = tx.send(DataUpdate::FileOperation { undo: None, notice });
-            let _ = proxy_wake.send_event(Wake);
+            let _ = proxy_wake.send_event(Wake::Data);
         });
     }
 
@@ -5210,6 +6487,9 @@ impl ShellApp {
             .find(|entry| entry.id == app_id)
             .map(|entry| entry.logical.clone())
             .filter(|logical| !logical.is_empty());
+        let label = self.app_label(&app_id);
+        let tx = self.data_tx.clone();
+        let proxy_wake = self.wake_proxy.clone();
         self.runtime.spawn(async move {
             let connection = match crate::data::session().await {
                 Ok(connection) => connection,
@@ -5232,11 +6512,22 @@ impl ShellApp {
                     };
                     if let Err(error) = launched {
                         tracing::warn!(%error, %app_id, ?logical, "launching failed");
+                        let _ = tx.send(DataUpdate::Notice(launch_failure_notice(&label, &error)));
+                        let _ = proxy_wake.send_event(Wake::Data);
                     }
                 }
                 Err(error) => tracing::warn!(%error, "Launcher1 unavailable"),
             }
         });
+    }
+
+    /// The name the launcher showed for this application, falling back to the id so a
+    /// failure notice never names something the person never saw.
+    fn app_label(&self, app_id: &AppId) -> String {
+        self.apps
+            .iter()
+            .find(|entry| entry.id == *app_id)
+            .map_or_else(|| app_id.to_string(), |entry| entry.label().to_owned())
     }
 }
 
@@ -5279,6 +6570,14 @@ fn tool_launch(id: &str, root: &str) -> Option<(ProviderRole, Vec<String>)> {
         "project.open-editor" => Some((ProviderRole::CodeEditor, vec![root.to_owned()])),
         _ => None,
     }
+}
+
+/// What the field reports when the daemon refuses a launch: the name the launcher
+/// showed and the daemon's reason, so a refused launch reads as refused rather than
+/// as an unresponsive click. (An application that *starts* and then dies is the
+/// daemon's watchdog's to report, over notifications — the shell never sees it.)
+fn launch_failure_notice(app_label: &str, reason: impl std::fmt::Display) -> String {
+    format!("Could not launch {app_label} — {reason}")
 }
 
 /// The account chip's label when `USER` is unset: the numeric uid, which is at least true.
@@ -5357,25 +6656,73 @@ fn format_clock_fields(weekday: i32, day: i32, month: i32, hour: i32, minute: i3
     format!("{weekday} {day:02} {month} {hour:02}:{minute:02}")
 }
 
-/// The cushion treemap of `root` at `width`×`height`, plus its composition band. An unreadable
-/// or empty directory yields a flat, dim bitmap and no band.
-/// Loads one directory's contents for the treemap: the index-backed snapshot when
-/// `org.templaros.Files` answers, `templar_treemap::scan` (bounded, off the event loop) when it does
-/// not or the call fails. Keeps the shell's own thread from walking the disk on every file tray
-/// redraw — the load this exists to avoid is exactly what the fallback still does, deliberately,
-/// as the explicit path for "no service available".
-async fn load_treemap_entries(path: &std::path::Path) -> Vec<templar_treemap::RawEntry> {
-    if let Ok(connection) = crate::data::session().await
-        && let Ok(load) = templar_client::tree_source::load_snapshot_tree(&connection, path).await
-    {
-        return load.entries;
+/// Live and service-backed offscreen Home share the typed size source and off-thread raster.
+pub(super) async fn load_treemap_preview(path: PathBuf, width: u32, height: u32) -> TreemapPreview {
+    let result = load_treemap_entries(&path).await;
+    let mut preview = TreemapPreview {
+        caption: format!("Disk use · {}", path.display()),
+        path,
+        width,
+        height,
+        bitmap: None,
+        status: String::new(),
+        composition: Vec::new(),
+    };
+    match result {
+        Ok(load) => {
+            preview.status = match (load.generation, load.snapshot_seq) {
+                (Some(generation), Some(sequence)) => format!(
+                    "{} — generation {generation}, snapshot {sequence}",
+                    if load.complete {
+                        "Measured indexed sizes"
+                    } else {
+                        "Partial indexed sizes"
+                    }
+                ),
+                _ => format!(
+                    "Bounded direct scan — {}",
+                    if load.complete { "complete" } else { "partial" }
+                ),
+            };
+            if let Some(reason) = load.reason {
+                preview.status.push_str(": ");
+                preview.status.push_str(&reason);
+            }
+            match tokio::task::spawn_blocking(move || {
+                rasterize_entries(&load.entries, width, height)
+            })
+            .await
+            {
+                Ok((bitmap, composition)) => {
+                    preview.bitmap = Some(bitmap);
+                    preview.composition = composition;
+                }
+                Err(error) => preview.status = format!("Size rendering unavailable: {error}"),
+            }
+        }
+        Err(error) => preview.status = format!("Size index unavailable: {error}"),
     }
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        templar_treemap::scan(&path, templar_treemap::ScanLimits::default())
-    })
-    .await
-    .unwrap_or_default()
+    preview
+}
+
+/// A stale, partial or unreadable live index is never replaced by an event-loop disk walk.
+async fn load_treemap_entries(
+    path: &std::path::Path,
+) -> Result<templar_client::tree_source::TreeLoad, templar_client::tree_source::TreeSourceError> {
+    use templar_client::tree_source::{DirectScanSource, TreeSource, TreeSourceError};
+    let connection = crate::data::session()
+        .await
+        .map_err(|error| TreeSourceError::Call(format!("session bus unavailable: {error}")))?;
+    match templar_client::tree_source::load_snapshot_tree(&connection, path).await {
+        Ok(load) => Ok(load),
+        Err(error) if error.allows_fallback() => {
+            let path = path.to_path_buf();
+            tokio::task::spawn_blocking(move || DirectScanSource::default().load_tree(&path))
+                .await
+                .map_err(|error| TreeSourceError::Call(error.to_string()))?
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Lays out and rasterizes an already-loaded directory's contents. An unreadable or empty
@@ -5408,8 +6755,8 @@ fn rasterize_entries(
         &colours,
     );
     let weights = &tree.category_weights[tree.root.index()];
-    let total: u64 = weights.iter().sum();
-    let composition = if total == 0 {
+    let total: f64 = weights.iter().map(|weight| *weight as f64).sum();
+    let composition = if total == 0.0 {
         Vec::new()
     } else {
         templar_treemap::colors::top_categories(weights, templar_treemap::CATEGORY_COUNT)
@@ -5417,7 +6764,7 @@ fn rasterize_entries(
             .map(|(category, weight)| {
                 (
                     templar_treemap::colors::category_color(category).to_rgb_u32(),
-                    weight as f32 / total as f32,
+                    (weight as f64 / total) as f32,
                 )
             })
             .collect()
@@ -5510,57 +6857,77 @@ async fn copy_text_to_clipboard(text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(serde::Deserialize)]
-struct SearchEntry {
-    path: std::path::PathBuf,
-    is_dir: bool,
-    size_bytes: u64,
-    mtime_ms: i64,
-    #[allow(dead_code)]
-    mime: Option<String>,
-}
-
-async fn run_search(roots: Vec<String>, query: &str) -> Result<Vec<BrowseEntry>, String> {
-    let connection = match crate::data::session().await {
-        Ok(connection) => connection,
-        Err(message) => return Err(format!("Search — {message}")),
+async fn run_search(roots: Vec<PathBuf>, text: &str) -> Result<IndexedSearchResults, String> {
+    use templar_file_index::{NativePath, Query};
+    let connection = crate::data::session()
+        .await
+        .map_err(|error| format!("Search — {error}"))?;
+    let query = Query {
+        text: text.to_owned(),
+        within: roots
+            .iter()
+            .map(|path| NativePath::from_path(path))
+            .collect(),
+        page_size: 50,
+        require_metadata: true,
+        ..Query::default()
     };
-    let proxy = match FilesSearchProxy::new(&connection).await {
-        Ok(proxy) => proxy,
-        Err(error) => return Err(format!("Search — service unavailable: {error}")),
-    };
-    match proxy.search(query, roots, 50).await {
-        Ok(json) => parse_hits(&json),
-        Err(error) => Err(format!("Search — service unavailable: {error}")),
-    }
-}
-
-/// Parse `Files.Search1.Search` into the same actionable rows as directory browsing.
-fn parse_hits(json: &str) -> Result<Vec<BrowseEntry>, String> {
-    let hits: Vec<(SearchEntry, String)> = serde_json::from_str(json)
-        .map_err(|error| format!("Search — malformed response: {error}"))?;
-    Ok(hits
-        .into_iter()
-        .map(|(entry, _rank)| {
-            let name = entry.path.file_name().map_or_else(
-                || entry.path.display().to_string(),
+    let session = templar_client::file_index::SearchSession::search(&connection, &query)
+        .await
+        .map_err(|error| format!("Search — {error:#}"))?;
+    let result = session.result();
+    let entries = result
+        .hits
+        .iter()
+        .filter(|hit| hit.present)
+        .map(|hit| {
+            let row = &hit.row;
+            let path = row
+                .path
+                .native_path()
+                .map_err(|error| format!("Search — invalid native path: {error}"))?;
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
                 |name| name.to_string_lossy().into_owned(),
             );
-            BrowseEntry {
-                hidden: name.starts_with('.'),
-                path: entry.path,
+            Ok(BrowseEntry {
+                path,
                 name,
-                kind: if entry.is_dir {
+                kind: if row.kind == 1 {
                     EntryKind::Directory
                 } else {
                     EntryKind::File
                 },
-                is_symlink: false,
-                size_bytes: entry.size_bytes,
-                mtime_ms: entry.mtime_ms,
-            }
+                hidden: row.hidden,
+                is_symlink: row.kind == 2,
+                size_bytes: row.size_bytes,
+                mtime_ms: row.mtime_ns / 1_000_000,
+            })
         })
-        .collect())
+        .collect::<Result<Vec<_>, String>>()?;
+    let total = result
+        .total
+        .map_or_else(|| "unknown".to_owned(), |total| total.to_string());
+    let notice = format!(
+        "{} of {total} matches · generation {}{}{}",
+        entries.len(),
+        result.generation,
+        if result.current() {
+            ""
+        } else {
+            " · names or metadata not current; see Settings Files for the reason"
+        },
+        if result.truncated {
+            " · retained search truncated; refine the query"
+        } else {
+            ""
+        }
+    );
+    Ok(IndexedSearchResults {
+        session,
+        entries,
+        notice,
+    })
 }
 
 impl ApplicationHandler<Wake> for ShellApp {
@@ -5585,6 +6952,9 @@ impl ApplicationHandler<Wake> for ShellApp {
             Window::default_attributes()
                 .with_title("Home Surface")
                 .with_inner_size(output_size)
+                .with_transparent(
+                    winit::platform::wayland::ActiveEventLoopExtWayland::is_wayland(event_loop),
+                )
                 .with_fullscreen(Some(Fullscreen::Borderless(None))),
         ) {
             Ok(window) => std::sync::Arc::new(window),
@@ -5599,7 +6969,8 @@ impl ApplicationHandler<Wake> for ShellApp {
         match ShellBridge::connect(&home_window) {
             Ok(bridge) => {
                 tracing::info!(
-                    "connected to the compositor's trusted-shell templar_shell_v1 socket"
+                    native = bridge.native_available(),
+                    "connected Home's alpha-capable Wayland presenter"
                 );
                 match bridge.set_layer(&home_window, templar_window::Layer::HomeSurface) {
                     Ok(()) => tracing::info!("Home Surface declared onto Layer::HomeSurface"),
@@ -5607,7 +6978,7 @@ impl ApplicationHandler<Wake> for ShellApp {
                 }
                 let proxy = self.wake_proxy.clone();
                 if let Err(error) = bridge.spawn_waker(move || {
-                    let _ = proxy.send_event(Wake);
+                    let _ = proxy.send_event(Wake::Data);
                 }) {
                     tracing::warn!(%error, "the compositor's events will wait for the next input");
                 }
@@ -5616,18 +6987,32 @@ impl ApplicationHandler<Wake> for ShellApp {
                 // The gate as the defaults have it until the settings reading lands; it is
                 // relayed again then if the person chose otherwise.
                 self.relay_gesture_gate();
+                self.relay_tab_policy();
             }
             Err(error) => {
                 tracing::warn!(
                     %error,
-                    "templar_shell_v1 unavailable; the Window Shelf will show no live windows until \
+                    "templar_shell_v2 unavailable; the Window Shelf will show no live windows until \
                      this process is connected to the compositor's trusted-shell socket"
                 );
             }
         }
 
-        self.home = match HostedWindow::new(home_window) {
-            Ok(hosted) => Some(hosted),
+        self.home = match if self.bridge.is_some() {
+            Ok(HostedWindow::new_wayland(home_window))
+        } else {
+            HostedWindow::new(home_window)
+        } {
+            Ok(mut hosted) => {
+                hosted.attach_accessibility(event_loop, self.wake_proxy.clone());
+                let clipboard_wake = self.wake_proxy.clone();
+                hosted
+                    .input
+                    .attach_clipboard(pixelkit_shell::clipboard::ClipboardWorker::new(move || {
+                        let _ = clipboard_wake.send_event(Wake::Data);
+                    }));
+                Some(hosted)
+            }
             Err(error) => {
                 tracing::error!(%error, "creating the Home Surface presenter");
                 None
@@ -5638,11 +7023,13 @@ impl ApplicationHandler<Wake> for ShellApp {
         self.spawn_applications_watch();
         self.spawn_field_watch();
         self.spawn_garden_watch();
+        self.spawn_desktop_watch();
         self.spawn_files_watch();
         self.spawn_notifications_watch();
         self.spawn_providers_watch();
         self.spawn_projects_watch();
         self.spawn_settings_watch();
+        self.spawn_wallpaper_watch();
         self.spawn_trash_watch();
         self.spawn_lock_watch();
         self.spawn_reconciliation_loop();
@@ -5651,9 +7038,30 @@ impl ApplicationHandler<Wake> for ShellApp {
         }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, _wake: Wake) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, wake: Wake) {
+        if let Wake::Accessibility(event) = wake {
+            self.drain_updates();
+            if let Some(home) = &mut self.home
+                && home.window.id() == event.window_id
+            {
+                home.accessibility_event(event.window_event);
+            } else if let Some(hosted) = &mut self.toast_host
+                && hosted.window.id() == event.window_id
+            {
+                hosted.accessibility_event(event.window_event);
+            }
+            return;
+        }
+        if let Some(home) = &mut self.home {
+            home.invalidate_semantics();
+        }
         self.drain_updates();
-        self.ensure_toast(event_loop);
+        let toplevels = self
+            .bridge
+            .as_ref()
+            .map(ShellBridge::toplevels)
+            .unwrap_or_default();
+        self.sync_toast_host(event_loop, &toplevels);
         if let Some(home) = &self.home {
             home.request_redraw();
         }
@@ -5667,22 +7075,81 @@ impl ApplicationHandler<Wake> for ShellApp {
         event: WindowEvent,
     ) {
         let is_toast = self
-            .toast
+            .toast_host
             .as_ref()
-            .is_some_and(|(hosted, _, _)| hosted.window.id() == window_id);
+            .is_some_and(|hosted| hosted.window.id() == window_id);
         if is_toast {
+            if let Some(hosted) = &mut self.toast_host {
+                hosted.process_accessibility_event(&event);
+            }
+            // The toast host routes its own input to its PixelKit cards. It never claims
+            // keyboard focus: keys are only ever routed when the compositor sent them.
             match event {
                 WindowEvent::RedrawRequested => self.redraw_toast(),
-                WindowEvent::CloseRequested => self.toast = None,
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    ..
-                } => {
-                    // A click acknowledges the toast: dismiss that one notification and let
-                    // the tile carry anything else.
-                    if let Some((_, row, _)) = self.toast.take() {
-                        let id = row.id;
-                        self.perform(FieldAction::DismissNotification(id));
+                WindowEvent::CloseRequested => self.toast_host = None,
+                WindowEvent::Focused(false) => {
+                    if let Some(hosted) = &mut self.toast_host {
+                        hosted.input.blur();
+                        hosted.request_redraw();
+                    }
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    if let Some(hosted) = &mut self.toast_host {
+                        hosted
+                            .input
+                            .cursor_moved(position.x as f32, position.y as f32);
+                        hosted.request_redraw();
+                    }
+                }
+                WindowEvent::CursorLeft { .. } => {
+                    if let Some(hosted) = &mut self.toast_host {
+                        hosted.input.cursor_left();
+                        hosted.request_redraw();
+                    }
+                }
+                WindowEvent::MouseInput { state, button, .. } => {
+                    if let Some(hosted) = &mut self.toast_host
+                        && let Some(pressed) = translate_button(button)
+                    {
+                        hosted.input.mouse(pressed, state == ElementState::Pressed);
+                        hosted.request_redraw();
+                    }
+                }
+                WindowEvent::MouseWheel { delta, .. } => {
+                    if let Some(hosted) = &mut self.toast_host {
+                        let (dx, dy) = scroll_pixels(delta);
+                        hosted.input.scrolled(dx, dy);
+                        hosted.request_redraw();
+                    }
+                }
+                WindowEvent::KeyboardInput { event, .. } => {
+                    if !key_pressed(event.state) {
+                        return;
+                    }
+                    let keys = translate_keys(&event.logical_key, event.text.as_deref());
+                    if !keys.is_empty()
+                        && let Some(hosted) = &mut self.toast_host
+                    {
+                        for key in keys {
+                            if key == pixelkit_shell::KeyInput::Escape {
+                                hosted.focus.clear();
+                            }
+                            hosted.input.key(key);
+                        }
+                        hosted.request_redraw();
+                    }
+                }
+                WindowEvent::ModifiersChanged(modifiers) => {
+                    if let Some(hosted) = &mut self.toast_host {
+                        hosted.input.modifiers_changed(modifiers_of(modifiers));
+                    }
+                }
+                WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                    if let Some(hosted) = &mut self.toast_host {
+                        if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+                            hosted.scale = pixelkit_shell::Scale::new(scale_factor);
+                        }
+                        hosted.request_redraw();
                     }
                 }
                 _ => {}
@@ -5722,6 +7189,21 @@ impl ApplicationHandler<Wake> for ShellApp {
         if !is_home {
             return;
         }
+        if let Some(home) = &mut self.home {
+            home.process_accessibility_event(&event);
+            if matches!(
+                event,
+                WindowEvent::Resized(_)
+                    | WindowEvent::ScaleFactorChanged { .. }
+                    | WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::Focused(_)
+            ) {
+                home.invalidate_semantics();
+            }
+        }
 
         match event {
             WindowEvent::CloseRequested => {
@@ -5740,6 +7222,32 @@ impl ApplicationHandler<Wake> for ShellApp {
             return;
         };
         match event {
+            WindowEvent::Focused(false) => {
+                if self.native_drop_pending && self.field_screen.modal_open() {
+                    self.native_drop_pending = false;
+                    self.native_drop_target = None;
+                    if let Some(bridge) = self.bridge.as_mut() {
+                        let _ = bridge.complete_native_drop(false);
+                    }
+                }
+                self.field_screen.pointer_blurred();
+                hosted.input.blur();
+                hosted.request_redraw();
+            }
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
+                hosted.input.set_composition(&text);
+                hosted.request_redraw();
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                hosted.input.set_composition("");
+                for character in text.chars() {
+                    hosted
+                        .input
+                        .key(pixelkit_shell::KeyInput::Character(character));
+                }
+                hosted.request_redraw();
+            }
+            WindowEvent::Ime(winit::event::Ime::Disabled) => hosted.input.set_composition(""),
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                 if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
                     hosted.scale = pixelkit_shell::Scale::new(scale_factor);
@@ -5753,6 +7261,9 @@ impl ApplicationHandler<Wake> for ShellApp {
                 let keys = translate_keys(&event.logical_key, event.text.as_deref());
                 if !keys.is_empty() {
                     for key in keys {
+                        if key == pixelkit_shell::KeyInput::Escape {
+                            hosted.focus.clear();
+                        }
                         hosted.input.key(key);
                     }
                     hosted.request_redraw();
@@ -5773,7 +7284,16 @@ impl ApplicationHandler<Wake> for ShellApp {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if let Some(button) = translate_button(button) {
+                    if button == pixelkit_shell::MouseButton::Left && state == ElementState::Pressed
+                    {
+                        hosted.focus.clear();
+                    }
                     hosted.input.mouse(button, state == ElementState::Pressed);
+                    if button == pixelkit_shell::MouseButton::Left
+                        && state == ElementState::Released
+                    {
+                        self.field_screen.pointer_released(hosted.input.cursor());
+                    }
                     hosted.request_redraw();
                 }
             }
@@ -5794,6 +7314,17 @@ impl ApplicationHandler<Wake> for ShellApp {
             tracing::warn!(%error, "pumping the trusted-shell connection; treating it as gone");
             self.bridge = None;
             self.minimize_targets = MinimizeTargets::default();
+            self.previews.clear();
+            self.preview_requested.clear();
+            self.preview_demand = crate::previews::DemandTracker::default();
+            self.preview_demand_sent = false;
+        }
+        if self
+            .bridge
+            .as_ref()
+            .is_some_and(|bridge| bridge.lock_engaged() || bridge.lock_locked())
+        {
+            self.refresh_previews(&[]);
         }
         // The lock screen has no winit window, so nothing else would ever redraw it: its keys
         // arrive on the bridge's own queue and its frames are committed straight to the
@@ -5821,12 +7352,25 @@ impl ApplicationHandler<Wake> for ShellApp {
             home.request_redraw();
         }
         self.drain_updates();
-        self.ensure_toast(event_loop);
+        self.pump_native_file_drops();
+        // winit's same-scale wl_surface.enter/leave has no WindowEvent. The already-awake
+        // event loop still sees its updated current_monitor; redraw once if validity changed.
+        if let Some(home) = &self.home {
+            let active = self
+                .bridge
+                .as_ref()
+                .is_some_and(ShellBridge::native_available)
+                && wallpaper_for_home(&home.window, self.wallpaper_applied.as_ref());
+            if active != self.field_screen.wallpaper_active {
+                home.request_redraw();
+            }
+        }
         let toplevels = self
             .bridge
             .as_ref()
             .map(ShellBridge::toplevels)
             .unwrap_or_default();
+        self.sync_toast_host(event_loop, &toplevels);
         self.sync_rail_mode();
         self.ensure_bar(event_loop, &toplevels);
         self.ensure_cluster(event_loop, &toplevels);
@@ -5860,12 +7404,19 @@ impl ApplicationHandler<Wake> for ShellApp {
                 taskfield.request_redraw();
             }
         }
+        // Toasts retire on their own dwell; the stack owns the deadline. Retirement is
+        // presentation only: the service row and its history entry are untouched.
         if self
-            .toast
-            .as_ref()
-            .is_some_and(|(_, _, shown)| shown.elapsed() >= Self::TOAST_LIFETIME)
+            .toast_stack
+            .retire_expired(Instant::now(), notification_popup::now_ms())
+            && let Some(hosted) = &self.toast_host
         {
-            self.toast = None;
+            hosted.request_redraw();
+        }
+        if self.toast_stack.is_empty() && self.toast_host.is_some() {
+            self.toast_host = None;
+            self.toast_wanted = (0, 0);
+            self.toast_output = None;
         }
         if self.exit {
             event_loop.exit();
@@ -5875,22 +7426,13 @@ impl ApplicationHandler<Wake> for ShellApp {
             .bridge
             .as_ref()
             .is_some_and(ShellBridge::has_previews_ready)
+            && let Some(home) = &self.home
         {
-            if let Some(home) = &self.home {
-                home.request_redraw();
-            }
-            // The bar too: an arriving capture is the row's whole content, and without this it
-            // would keep its icon fallback until the pointer happened to move.
-            if let Some(bar) = self.bar.as_ref().filter(|_| bar_live) {
-                bar.request_redraw();
-            }
-            if let Some(taskfield) = &self.taskfield {
-                taskfield.request_redraw();
-            }
+            home.request_redraw();
         }
         // Event-driven at rest; a steady frame cadence only while a tile is lifted, so the
         // ghost follows the pointer and a throw's velocity is sampled evenly. Otherwise the next
-        // wake is the earliest of the toast's lifetime and the bar's hover timers.
+        // wake is the earliest of the toast stack's deadline and the bar's hover timers.
         if self.field_screen.animating() {
             event_loop.set_control_flow(ControlFlow::WaitUntil(
                 Instant::now() + Duration::from_millis(16),
@@ -5901,9 +7443,8 @@ impl ApplicationHandler<Wake> for ShellApp {
             return;
         }
         let toast_deadline = self
-            .toast
-            .as_ref()
-            .map(|(_, _, shown)| *shown + Self::TOAST_LIFETIME);
+            .toast_stack
+            .next_deadline(Instant::now(), notification_popup::now_ms());
         // The bar's own timers: a hover row's dwell and grace, and — while a window covers the
         // bottom strip — the dwell that reveals the bar out from under it and the grace that
         // collapses it again. `covered` has to be recomputed here because it decides which of
@@ -5946,42 +7487,18 @@ impl ApplicationHandler<Wake> for ShellApp {
             });
         // An open rail's grace: the pointer is away from it, and it goes when that runs out.
         let rail_deadline = self.rail.as_ref().and_then(|rail| rail.session.deadline());
-        let switcher_deadline = self
-            .bridge
-            .as_ref()
-            .filter(|bridge| {
-                bridge.previews_available() && self.field_settings.previews != PreviewMode::Off
-            })
-            .and_then(|bridge| {
-                let switcher = bridge.switcher();
-                if !switcher.active {
-                    return None;
-                }
-                let shown = crate::surface::taskfield_screen::switcher_visible_range(
-                    switcher,
-                    (self.output_size().1 / 100).max(1) as usize,
-                );
-                let deadline = switcher.windows[shown]
-                    .iter()
-                    .filter_map(|id| {
-                        self.preview_requested
-                            .get(id)
-                            .map(|at| *at + Duration::from_millis(500))
-                    })
-                    .min()?;
-                if deadline <= Instant::now()
-                    && let Some(surface) = &self.taskfield
-                {
-                    surface.request_redraw();
-                }
-                Some(deadline)
-            });
+        let preview_deadline = self.preview_deadline();
+        if preview_deadline.is_some_and(|deadline| deadline <= Instant::now())
+            && let Some(home) = &self.home
+        {
+            home.request_redraw();
+        }
         let deadline = [
             toast_deadline,
             bar_deadline,
             cluster_deadline,
             rail_deadline,
-            switcher_deadline,
+            preview_deadline,
         ]
         .into_iter()
         .flatten()
@@ -5995,9 +7512,153 @@ impl ApplicationHandler<Wake> for ShellApp {
     }
 }
 
+/// Retain the actual per-output observation, not desired enabled/configuration.
+fn wallpaper_applied(
+    json: &str,
+) -> Result<Option<templar_types::wallpaper::WallpaperObservation>, String> {
+    let status: templar_types::wallpaper::WallpaperStatus =
+        serde_json::from_str(json).map_err(|error| error.to_string())?;
+    Ok(status.applied)
+}
+
+fn wallpaper_for_home(
+    window: &Window,
+    applied: Option<&templar_types::wallpaper::WallpaperObservation>,
+) -> bool {
+    if applied.is_none() {
+        return false;
+    }
+    let output = window.current_monitor().and_then(|monitor| monitor.name());
+    wallpaper_on_output(applied, output.as_deref())
+}
+
+/// Current native backends advertise stable DisplayId as wl_output.name.
+/// An unknown/unentered output stays solid; another output's success cannot validate Home.
+fn wallpaper_on_output(
+    applied: Option<&templar_types::wallpaper::WallpaperObservation>,
+    name: Option<&str>,
+) -> bool {
+    let (Some(applied), Some(name)) = (applied, name) else {
+        return false;
+    };
+    applied
+        .outputs
+        .iter()
+        .any(|output| output.output.0 == name && output.presented.is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generic_refresh_preserves_desktop_watcher_listing_and_refreshes_other_folders() {
+        let desktop = PathBuf::from("/home/u/Desktop");
+        let project = PathBuf::from("/home/u/Work/project");
+        let mut listings = HashMap::from([
+            (desktop.clone(), Err("native watcher status".to_owned())),
+            (project.clone(), Err("old generic status".to_owned())),
+        ]);
+        assert_eq!(
+            invalidate_folder_listings(&mut listings, Some(&desktop)),
+            vec![project]
+        );
+        assert_eq!(listings.len(), 1);
+        assert_eq!(
+            listings[&desktop].as_ref().unwrap_err(),
+            "native watcher status"
+        );
+        assert_eq!(
+            invalidate_folder_listings(&mut listings, None),
+            vec![desktop]
+        );
+        assert!(listings.is_empty());
+    }
+
+    #[test]
+    fn wallpaper_transparency_requires_actual_presented_state_not_desired_enable() {
+        use templar_types::wallpaper::{
+            WallpaperConfig, WallpaperObservation, WallpaperOutput, WallpaperStatus,
+        };
+        let mut status = WallpaperStatus {
+            revision: Default::default(),
+            enabled: true,
+            config: WallpaperConfig::default(),
+            paused: false,
+            source: None,
+            pending: true,
+            applied: None,
+            error: None,
+        };
+        let active = |status: &WallpaperStatus| {
+            let applied = wallpaper_applied(&serde_json::to_string(status).unwrap()).unwrap();
+            wallpaper_on_output(applied.as_ref(), Some("test"))
+        };
+        assert!(!active(&status));
+        let mut output = WallpaperOutput {
+            output: templar_types::display::DisplayId("test".into()),
+            accepted: Some(Default::default()),
+            presented: None,
+            source_bytes: 4,
+            texture_bytes: 4,
+            context_replicas: 1,
+            error: None,
+        };
+        status.applied = Some(WallpaperObservation {
+            revision: Default::default(),
+            outputs: vec![output.clone()],
+            indexed_supported: false,
+        });
+        assert!(
+            !active(&status),
+            "accepted but not presented is not a valid backdrop"
+        );
+        output.presented = output.accepted;
+        status.applied.as_mut().unwrap().outputs = vec![output];
+        status.enabled = false;
+        status.error = Some("replacement decode failed".into());
+        assert!(
+            active(&status),
+            "a still-presented texture remains real during reconciliation/error"
+        );
+        assert!(
+            !wallpaper_on_output(status.applied.as_ref(), Some("other-output")),
+            "a different output's successful texture must not make Home transparent"
+        );
+        assert!(
+            !wallpaper_on_output(status.applied.as_ref(), None),
+            "unknown Home output remains solid until wl_surface.enter identifies it"
+        );
+        let mut failed_output = status.applied.as_ref().unwrap().outputs[0].clone();
+        failed_output.output.0 = "other-output".into();
+        failed_output.presented = None;
+        failed_output.error = Some("native import failed on this GPU".into());
+        status.applied.as_mut().unwrap().outputs.push(failed_output);
+        assert!(
+            !wallpaper_on_output(status.applied.as_ref(), Some("other-output")),
+            "matching but failed Home output stays solid despite another output's success"
+        );
+        // Same-scale enter/leave transitions use the current surface output, not cached success.
+        for (entered, expected) in [
+            (None, false),
+            (Some("test"), true),
+            (Some("other-output"), false),
+            (Some("test"), true),
+            (None, false),
+        ] {
+            assert_eq!(
+                wallpaper_on_output(status.applied.as_ref(), entered),
+                expected,
+                "Home entered-output transition {entered:?}"
+            );
+        }
+        status.applied.as_mut().unwrap().outputs.clear();
+        assert!(
+            !active(&status),
+            "cleared native output restores solid Home ground"
+        );
+        assert!(wallpaper_applied("not valid JSON").is_err());
+    }
 
     fn window(
         id: u64,
@@ -6020,6 +7681,7 @@ mod tests {
             geometry: templar_window::Rect::new(0, 0, 1920, 1080),
             layer: templar_window::Layer::Normal,
             group: None,
+            tab_count: None,
         }
     }
 
@@ -6144,25 +7806,6 @@ mod tests {
         let mut floating = window(2, false, false, false);
         floating.geometry = templar_window::Rect::new(0, 0, 1920, 1080);
         assert!(!bar_covered(false, &[floating]));
-    }
-
-    #[test]
-    fn a_window_covering_the_field_stops_its_previews_until_it_stops_covering_it() {
-        // Nothing in front of the field: previews run.
-        assert!(!previews_covered(false, &[]));
-        assert!(!previews_covered(false, &[window(1, false, false, false)]));
-
-        // A translucent fullscreen terminal is exactly the case that reported this: the field
-        // behind it was still capturing, and its own preview of the terminal showed through.
-        assert!(previews_covered(false, &[window(1, true, false, false)]));
-        assert!(previews_covered(false, &[window(1, false, true, false)]));
-
-        // The three ways back. Revealing Home puts the field in front; parking and un-maximizing
-        // both stop the window covering it. Each is immediate, and the cache is untouched, so
-        // what comes back is the picture that was already there rather than a blank.
-        assert!(!previews_covered(true, &[window(1, true, false, false)]));
-        assert!(!previews_covered(false, &[window(1, true, false, true)]));
-        assert!(!previews_covered(false, &[window(1, false, false, false)]));
     }
 
     fn file_undo(at: Instant) -> FileOperationUndo {
@@ -6330,5 +7973,15 @@ mod tests {
                 "{row} also launches a tool"
             );
         }
+    }
+
+    /// A refused launch names the application the launcher showed and the daemon's
+    /// reason: the notice that keeps a refusal from reading as an unresponsive click.
+    #[test]
+    fn a_refused_launch_reports_the_name_and_the_reason() {
+        assert_eq!(
+            launch_failure_notice("Proton VPN", "no manifest for this application"),
+            "Could not launch Proton VPN — no manifest for this application"
+        );
     }
 }

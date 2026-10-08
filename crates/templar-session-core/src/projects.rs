@@ -463,6 +463,7 @@ mod tests {
             keywords: std::collections::BTreeSet::default(),
             no_display: false,
             provenance: None,
+            provides: Vec::new(),
         };
 
         let closed = hints_for(&ordinary, ProjectImportance::Important, false);

@@ -10,6 +10,7 @@ pub type Result<T> = std::result::Result<T, IndexError>;
 
 #[derive(Debug)]
 pub enum IndexError {
+    #[cfg(feature = "store")]
     Sqlite(rusqlite::Error),
     Io(std::io::Error),
     Json(serde_json::Error),
@@ -39,6 +40,7 @@ pub enum IndexError {
 impl std::fmt::Display for IndexError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(feature = "store")]
             Self::Sqlite(error) => write!(formatter, "index database: {error}"),
             Self::Io(error) => write!(formatter, "index i/o: {error}"),
             Self::Json(error) => write!(formatter, "index json: {error}"),
@@ -70,6 +72,7 @@ impl std::fmt::Display for IndexError {
 impl std::error::Error for IndexError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            #[cfg(feature = "store")]
             Self::Sqlite(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Json(error) => Some(error),
@@ -78,6 +81,7 @@ impl std::error::Error for IndexError {
     }
 }
 
+#[cfg(feature = "store")]
 impl From<rusqlite::Error> for IndexError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Sqlite(error)

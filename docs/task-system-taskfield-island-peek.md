@@ -3,11 +3,18 @@
 *Planning document, 2026-09-09. Extrapolated from the external review "TemplarOS does need a
 taskbar, but the taskbar should not be responsible for making every window discoverable"
 (registered as an AKR source beside `homefield-design-advice` and
-`design-review-home-and-platform-20260901`). The reviewer writes `templar-comp`/`templar-shell`;
-this document uses the workspace's names, `lege-comp`/`lege-shell`/`lege-window`. Companion to
-`homegarden-activity-grown-home.md`, which has since been implemented. This is a proposal:
-§3 lists every recorded decision it revises. The authoritative form, once accepted, is the
-records named in §13.*
+`design-review-home-and-platform-20260901`). This retained review uses historical
+`lege-comp`/`lege-shell`/`lege-window` names; the current workspace uses
+`templar-comp`/`templar-shell`/`templar-window`. The September proposal below is historical
+rationale. Current authority is `legeos.decision.task-system-four-scales-one-model` and
+`legeos.decision.homegarden-activity-grown-places/3` in AKR.*
+
+**October 7 owner revision:** Home contains project-associated live and parked windows,
+optional previews and sessions, with unlinked windows in one Loose tray. The counts-only,
+no-window-list/no-preview and explicit-park-only clauses below are superseded by the owner's
+PDF. Project context is verified separately from explicit compositor groups. Taskfield remains
+a transient global view; it does not own persistent Home geometry. Current acceptance is
+tracked by `legeos.work.pdf-homegarden-hdmi-20261007`, not the old `home-lists-no-windows` check.
 
 ---
 

@@ -10,13 +10,10 @@
 //! than an implementation detail leaking out of the database.
 
 use crate::{
-    ENTRY_COLUMNS, Result, entry_row_from_row,
-    model::{Coverage, EntryKind, Generation, NativePath, RootId, RootState, RootStatus},
+    model::{Coverage, EntryKind, Generation, NativePath, RootId},
     query::FieldMask,
 };
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 
 /// Eight bytes exactly, which is why this is not spelled out in full: the frame header
 /// reserves eight for it and every reader checks that width. `TMPLIDX1` is the rebrand of
@@ -111,7 +108,7 @@ pub struct SnapshotManifest {
     pub snapshot_seq: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotRoot {
     pub root: RootId,
     pub path_b64: String,
@@ -119,7 +116,29 @@ pub struct SnapshotRoot {
     pub state: String,
     pub complete: bool,
     pub generation: Generation,
+    #[serde(default)]
+    pub metadata: String,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
+
+/// [`FieldMask::AGGREGATE`]'s flags byte: an aggregate was actually cached for this row.
+pub const AGGREGATE_FLAG_PRESENT: u8 = 0b0001;
+/// The last computation saw every descendant — no permission wall, no read error.
+pub const AGGREGATE_FLAG_READABLE: u8 = 0b0010;
+/// A live mutation touched the subtree since the cached totals were computed.
+pub const AGGREGATE_FLAG_STALE: u8 = 0b0100;
+
+#[cfg(feature = "store")]
+mod store {
+use super::{
+    SnapshotRequest, SnapshotManifest, SnapshotDetail, FieldMask, FORMAT, FORMAT_EXTENDED,
+    crc32c, HEADER_LEN, MAGIC, FLAG_LITTLE_ENDIAN, SnapshotRoot, EntryKind,
+    AGGREGATE_FLAG_PRESENT, AGGREGATE_FLAG_READABLE, AGGREGATE_FLAG_STALE,
+};
+use crate::{ENTRY_COLUMNS, Result, entry_row_from_row, model::{RootState, RootStatus}};
+use rusqlite::Connection;
+use std::io::Write;
 
 impl crate::Index {
     /// Writes a snapshot into `sink` and returns the manifest describing it.
@@ -179,6 +198,22 @@ impl crate::Index {
                     write_entries_section(&view, &mut payload, &selected, request, mask)?;
                 Ok((generation, snapshot_seq, selected, payload, entry_count))
             })?;
+        // A visualiser's sizes must become measured, not remain namespace-only indefinitely.
+        // Queue repair after releasing the read transaction; this frame still describes the
+        // captured unverified metadata and never waits for the writer.
+        if mask.0 & (FieldMask::SIZE.0 | FieldMask::TIMES.0 | FieldMask::MODE.0 | FieldMask::AGGREGATE.0) != 0
+            && let Some(sink) = self.sink()
+        {
+            for status in &selected {
+                if status.metadata == crate::MetadataFreshness::Unverified
+                    && request.subtree.as_ref().is_none_or(|subtree|
+                        subtree.starts_with(&status.path) || status.path.starts_with(subtree))
+                {
+                    sink.metadata_repair_requested(status.root);
+                }
+            }
+        }
+
 
         let payload_crc = crc32c(&payload);
         let mut header = Vec::with_capacity(HEADER_LEN as usize);
@@ -217,6 +252,8 @@ impl crate::Index {
                     state: status.state.as_str().to_owned(),
                     complete: status.complete,
                     generation: status.generation,
+                    metadata: status.metadata.as_str().to_owned(),
+                    reason: status.reason.clone(),
                 })
                 .collect(),
             sealed: false,
@@ -393,13 +430,6 @@ fn write_aggregate_field(payload: &mut Vec<u8>, sql_row: &rusqlite::Row<'_>) -> 
     Ok(())
 }
 
-/// [`FieldMask::AGGREGATE`]'s flags byte: an aggregate was actually cached for this row.
-pub const AGGREGATE_FLAG_PRESENT: u8 = 0b0001;
-/// The last computation saw every descendant — no permission wall, no read error.
-pub const AGGREGATE_FLAG_READABLE: u8 = 0b0010;
-/// A live mutation touched the subtree since the cached totals were computed.
-pub const AGGREGATE_FLAG_STALE: u8 = 0b0100;
-
 /// The body of [`crate::Index::write_snapshot`]'s roots header, pulled out only so that method
 /// stays short.
 fn write_roots_section(payload: &mut Vec<u8>, selected: &[RootStatus]) {
@@ -434,6 +464,8 @@ fn state_code(state: RootState) -> u8 {
 
 fn kind_code(kind: EntryKind) -> u8 {
     kind.as_i64() as u8
+}
+
 }
 
 /// One decoded entry from [`SnapshotReader::entries`]. A field the mask did not request is
@@ -499,13 +531,29 @@ impl<'a> SnapshotReader<'a> {
         if crc32c(&frame[..60]) != header_crc {
             return Err("header checksum mismatch".into());
         }
-        let payload_len = u64::from_le_bytes(frame[48..56].try_into().unwrap()) as usize;
+        if u32::from_le_bytes(frame[12..16].try_into().unwrap()) != FLAG_LITTLE_ENDIAN
+            || u32::from_le_bytes(frame[16..20].try_into().unwrap()) != HEADER_LEN
+            || frame[36..40] != [0; 4]
+        {
+            return Err("unsupported snapshot header layout".into());
+        }
+        let mask = u32::from_le_bytes(frame[20..24].try_into().unwrap());
+        let allowed = if format == FORMAT_EXTENDED { 1023 } else { FieldMask::ALL.0 };
+        if mask & !allowed != 0 { return Err("unsupported snapshot field mask".into()); }
+        let payload_len = usize::try_from(u64::from_le_bytes(frame[48..56].try_into().unwrap()))
+            .map_err(|_| "declared payload does not fit this reader")?;
+        let payload_end = (HEADER_LEN as usize).checked_add(payload_len)
+            .ok_or("declared payload length overflows")?;
+        if payload_end != frame.len() { return Err("frame length differs from its declared payload".into()); }
         let payload_crc = u32::from_le_bytes(frame[56..60].try_into().unwrap());
-        let payload = frame
-            .get(HEADER_LEN as usize..HEADER_LEN as usize + payload_len)
-            .ok_or("frame shorter than its declared payload")?;
+        let payload = &frame[HEADER_LEN as usize..payload_end];
         if crc32c(payload) != payload_crc {
             return Err("payload checksum mismatch".into());
+        }
+        let root_count = u32::from_le_bytes(frame[32..36].try_into().unwrap());
+        let section_count = payload.get(..4).ok_or("missing roots section")?;
+        if section_count != root_count.to_le_bytes() || root_count as usize > payload.len().saturating_sub(4) / 24 {
+            return Err("impossible roots section count".into());
         }
         Ok(Self {
             payload,
@@ -569,7 +617,11 @@ impl<'a> SnapshotReader<'a> {
     /// not request comes back `None`: the caller asked not to pay for it, so it is not invented.
     pub fn entries(&self) -> std::result::Result<Vec<SnapshotEntry>, String> {
         let mut cursor = self.entries_offset()?;
-        let mut entries = Vec::with_capacity(self.entry_count as usize);
+        let count = usize::try_from(self.entry_count).map_err(|_| "impossible entry count")?;
+        if count > self.payload.len().saturating_sub(cursor) / 16 {
+            return Err("entry count exceeds its payload".into());
+        }
+        let mut entries = Vec::with_capacity(count);
         for _ in 0..self.entry_count {
             let entry_id = i64::from_le_bytes(self.bytes_at(cursor, 8)?.try_into().unwrap());
             cursor += 8;
@@ -597,6 +649,7 @@ impl<'a> SnapshotReader<'a> {
             cursor = self.decode_entry_fields(cursor, &mut entry)?;
             entries.push(entry);
         }
+        if cursor != self.payload.len() { return Err("trailing bytes after entries section".into()); }
         Ok(entries)
     }
 
@@ -704,14 +757,17 @@ impl<'a> SnapshotReader<'a> {
                     .try_into()
                     .unwrap(),
             ) as usize;
-            cursor += 4 + length;
+            cursor = cursor.checked_add(4).and_then(|cursor| cursor.checked_add(length))
+                .filter(|cursor| *cursor <= self.payload.len())
+                .ok_or("truncated root path")?;
         }
         Ok(cursor)
     }
 
     fn bytes_at(&self, cursor: usize, len: usize) -> std::result::Result<&[u8], String> {
+        let end = cursor.checked_add(len).ok_or("entry length overflows")?;
         self.payload
-            .get(cursor..cursor + len)
+            .get(cursor..end)
             .ok_or("truncated entry")
             .map_err(str::to_owned)
     }
@@ -753,4 +809,49 @@ pub fn crc32c(bytes: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+
+    fn minimal_frame(count: u64, declared_payload: u64) -> Vec<u8> {
+        let payload = [0u8; 4];
+        let mut header = Vec::new();
+        header.extend_from_slice(MAGIC);
+        header.extend_from_slice(&FORMAT.to_le_bytes());
+        header.extend_from_slice(&FLAG_LITTLE_ENDIAN.to_le_bytes());
+        header.extend_from_slice(&HEADER_LEN.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&1u64.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&count.to_le_bytes());
+        header.extend_from_slice(&declared_payload.to_le_bytes());
+        header.extend_from_slice(&crc32c(&payload).to_le_bytes());
+        let crc = crc32c(&header);
+        header.extend_from_slice(&crc.to_le_bytes());
+        header.extend_from_slice(&payload);
+        header
+    }
+
+    #[test]
+    fn declared_lengths_and_counts_are_bounded_before_allocation() {
+        assert!(SnapshotReader::new(&minimal_frame(0, u64::MAX)).is_err());
+        let frame = minimal_frame(u64::MAX, 4);
+        assert!(SnapshotReader::new(&frame).unwrap().entries().is_err());
+        assert!(SnapshotReader::new(&minimal_frame(0, 4)).unwrap().entries().unwrap().is_empty());
+    }
+
+    #[test]
+    fn extra_bytes_and_unknown_layouts_are_not_accepted_as_a_compatible_frame() {
+        let mut frame = minimal_frame(0, 4);
+        frame.push(0);
+        assert!(SnapshotReader::new(&frame).is_err());
+        let mut frame = minimal_frame(0, 4);
+        frame[20..24].copy_from_slice(&FieldMask::AGGREGATE.0.to_le_bytes());
+        let crc = crc32c(&frame[..60]);
+        frame[60..64].copy_from_slice(&crc.to_le_bytes());
+        assert!(SnapshotReader::new(&frame).is_err());
+    }
 }

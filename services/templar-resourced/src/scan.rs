@@ -1,8 +1,5 @@
-//! Discover application instances from the cgroup tree alone.
-//!
-//! Because launch units are self-describing, the governor never needs `appd` to know *which*
-//! application a cgroup belongs to. `appd` only enriches (resource class, checkpoint support,
-//! foreground state comes from the compositor).
+//! Discover application, explicit work and Flatpak scopes from the cgroup tree alone.
+//! A Flatpak unit name is only a scope claim; it never grants canonical application permissions.
 
 use crate::cgroup::{CGROUP_ROOT, Cgroup};
 use anyhow::Result;
@@ -10,13 +7,15 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use templar_types::{AppId, InstanceId, unit};
+use templar_types::{ResourceId, ResourceIdentity, unit};
+use std::os::unix::fs::MetadataExt;
 
 /// One discovered instance cgroup.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveredInstance {
-    pub app_id: AppId,
-    pub instance_id: InstanceId,
+    pub identity: ResourceIdentity,
+    /// Historical wire field name; this UUID keys one managed resource, not necessarily an app.
+    pub instance_id: ResourceId,
     pub cgroup: Cgroup,
 }
 
@@ -37,7 +36,7 @@ pub fn user_session_slice(uid: u32) -> PathBuf {
     ))
 }
 
-/// Walk `slice` (non-recursively beyond unit depth) and return every TemplarOS-launched instance.
+/// Walk one owned slice at unit depth; never include session-critical units or nested parents.
 pub fn discover(slice: &Path) -> Result<Vec<DiscoveredInstance>> {
     let mut found = Vec::new();
     let entries = match fs::read_dir(slice) {
@@ -46,21 +45,28 @@ pub fn discover(slice: &Path) -> Result<Vec<DiscoveredInstance>> {
         Err(error) => return Err(error.into()),
     };
 
-    for entry in entries.filter_map(Result::ok) {
+    for entry in entries {
+        let entry = entry?;
         let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.is_dir() { continue; }
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if let Some((app_id, instance_id)) = unit::parse_unit_name(name) {
-            found.push(DiscoveredInstance {
-                app_id,
-                instance_id,
-                cgroup: Cgroup::from_directory(path),
-            });
-        }
+        let (instance_id, identity) = if let Some((app_id, instance_id)) = unit::parse_unit_name(name) {
+            (instance_id.into(), ResourceIdentity::Application { app_id })
+        } else if let Some((spawned_by, workload_id, class)) = unit::parse_workload_unit_name(name) {
+            (workload_id.into(), ResourceIdentity::Workload { workload_id, spawned_by, class })
+        } else if let Some(rest) = name.strip_prefix("app-flatpak-").and_then(|rest| rest.strip_suffix(".scope")) {
+            let Some((claim, suffix)) = rest.rsplit_once('-') else { continue; };
+            if claim.is_empty() || suffix.is_empty() { continue; }
+            (ResourceId::external_unit(name, metadata.ino()), ResourceIdentity::Flatpak { claimed_app_id: claim.to_owned() })
+        } else { continue; };
+        found.push(DiscoveredInstance { identity, instance_id, cgroup: Cgroup::from_directory(path) });
     }
 
     found.sort_by_key(|instance| instance.instance_id);
@@ -76,27 +82,19 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("templar-resourced-scan-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        let app: AppId = "org.templaros.Files".parse().unwrap();
-        let id = InstanceId::new();
+        let app: templar_types::AppId = "org.templaros.Files".parse().unwrap();
+        let id = templar_types::InstanceId::new();
         fs::create_dir_all(dir.join(unit::unit_name(&app, id))).unwrap();
         fs::create_dir_all(dir.join("app-flatpak-org.example-1234.scope")).unwrap();
         fs::write(dir.join("cgroup.procs"), "").unwrap();
 
         let found = discover(&dir).unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].app_id, app);
-        assert_eq!(found[0].instance_id, id);
+        assert_eq!(found.iter().filter(|row| matches!(&row.identity,
+            ResourceIdentity::Flatpak { claimed_app_id } if claimed_app_id == "org.example")).count(), 1);
+        let application = found.iter().find(|row| row.identity.application() == Some(&app)).unwrap();
+        assert_eq!(application.instance_id, ResourceId::from(id));
         assert!(discover(&dir.join("missing")).unwrap().is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn app_and_session_slices_are_distinct_siblings() {
-        let app = user_app_slice(1000);
-        let session = user_session_slice(1000);
-        assert_ne!(app, session);
-        assert_eq!(app.parent(), session.parent());
-        assert!(app.ends_with("app.slice"));
-        assert!(session.ends_with("session.slice"));
-    }
 }

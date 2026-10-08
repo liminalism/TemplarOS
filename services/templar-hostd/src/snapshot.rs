@@ -1,8 +1,7 @@
-//! Deployment snapshots. A deployment is a read-only btrfs snapshot of `@` plus a hostd-owned ESP
-//! directory (`distro/deploy/README.md`); this module owns the subvolume side. Root on btrfs
-//! subvolumes from the first image (ADR-0004) — no fallback filesystem path is implemented,
-//! because a deployment that silently degraded to "just a directory" on non-btrfs root would
-//! lose the one property that makes rollback safe: an atomic, space-efficient, read-only copy.
+//! Root-paired Btrfs deployment snapshots and owned ESP boot copies. Native source
+//! is the selected root, not necessarily bootstrap `@`. Candidates are installed
+//! writable, then sealed only for an explicitly read-only installation policy.
+//! There is no directory/non-Btrfs fallback that pretends to preserve rollback.
 
 use crate::cmd::CommandRunner;
 use anyhow::{Context, Result};
@@ -35,6 +34,28 @@ pub struct BtrfsSnapshotter {
 
 impl Snapshotter for BtrfsSnapshotter {
     fn create_rw(&self, source: &Path, dest: &Path) -> Result<()> {
+        if source.join(crate::layout::INSTALLED_LAYOUT).exists() {
+            let layout = crate::layout::DeploymentLayout::read(source)?;
+            let fsroot = |path: &Path| -> Result<String> {
+                let output = self.commands.run("findmnt", &["--noheadings", "--target", &path.to_string_lossy(), "--output", "FSROOT"])?;
+                if !output.status.success() { anyhow::bail!("cannot inspect native root mount identity"); }
+                Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+            };
+            let source_identity = fsroot(source)?;
+            if !crate::layout::safe_subvolume(source_identity.trim_start_matches('/')) {
+                anyhow::bail!("native source is not a declared Btrfs subvolume");
+            }
+            for path in ["var/lib/dpkg", "var/lib/apt", "var/cache/apt"] {
+                if fsroot(&source.join(path))? != source_identity {
+                    anyhow::bail!("package metadata/cache is outside its paired root; legacy blanket /var requires reviewed offline migration");
+                }
+            }
+            let expected = layout.subvolume_template.split_once("{id}").context("missing deployment identity")?.0.trim_end_matches('/');
+            let parent = dest.parent().context("missing candidate parent")?;
+            if fsroot(parent)?.trim_start_matches('/') != expected {
+                anyhow::bail!("mounted deployment directory does not match the boot subvolume template");
+            }
+        }
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {} for snapshot", parent.display()))?;

@@ -5,6 +5,9 @@
 //! `WindowService::set_modal` — this Smithay revision derives X11 modality (transient-for plus
 //! `_NET_WM_STATE_MODAL`) itself and calls these back directly, so no manual property inspection
 //! is needed here at all.
+//! `WM_TRANSIENT_FOR` resolves through genuine X11 IDs into presentation-only parent stacking.
+//! Mapping/association retries unresolved parents; property replacement or deletion updates only
+//! that child. Neither the hint nor this binding grants activation or inherits parent identity.
 //!
 //! Override-redirect windows (menus, tooltips — COMPOSITOR.md doesn't mention them because
 //! `templar_window` has no concept of them either: they are not "windows" in the recoverable-geometry
@@ -38,6 +41,14 @@ impl<B: Backend + 'static> XWaylandShellHandler for TemplarCompState<B> {
     ) -> &mut smithay::wayland::xwayland_shell::XWaylandShellState {
         &mut self.xwayland_shell_state
     }
+
+    fn surface_associated(&mut self, _xwm: XwmId, _surface: WlSurface, window: X11Surface) {
+        // The X11 map request and Wayland surface association arrive independently.
+        // Override-redirect elements already share this X11Surface through Space.
+        if !window.is_override_redirect() && window.mapped_window_id().is_some() {
+            self.map_associated_x11_window(window);
+        }
+    }
 }
 
 impl<B: Backend + 'static> XWaylandKeyboardGrabHandler for TemplarCompState<B> {
@@ -57,69 +68,11 @@ impl<B: Backend + 'static> XwmHandler for TemplarCompState<B> {
     fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        let _ = window.set_mapped(true);
-        let Some(surface) = window.wl_surface() else {
-            // XWayland associates the wl_surface before requesting the map in the ordinary case;
-            // if it somehow hasn't yet, there is nothing to map into `WindowService` yet and the
-            // window stays invisible until a property/configure notification gives us another
-            // chance. Not observed in practice against the clients this crate was run against.
-            return;
-        };
-        let geometry = window.geometry();
-        // An X11 client may have placed itself, and that position is honoured; the size is
-        // asked for as the frame around it, since the tag strip goes below the client.
-        let requested = templar_window::frame_around(templar_window::Rect::new(
-            geometry.loc.x,
-            geometry.loc.y,
-            geometry.size.w,
-            geometry.size.h,
-        ));
-        let claims = claims_from_x11(Some(window.class()));
-        let trusted_shell = surface
-            .client()
-            .is_some_and(|client| crate::state::client_is_trusted_shell(&client));
-        let peer_pid = window.pid().unwrap_or(0);
-        let x11_id = window.window_id();
-
-        let object_id = smithay::reexports::wayland_server::Resource::id(&surface);
-        if let Some(window_id) = self
-            .windows
-            .window_id_for_x11(x11_id)
-            .or_else(|| self.windows.window_id_for(&object_id))
-        {
-            self.window_service.set_mapped(window_id, true);
-            self.window_service.set_title(window_id, window.title());
-            self.windows.mark_x11_mapped(x11_id, surface, window_id);
-            let client = crate::space_sync::client_area(self, window_id);
-            let _ = window.configure(Some(rect_to_smithay(client)));
-            let element = Window::new_x11_window(window);
-            self.windows.track_element(object_id, element.clone());
-            self.space.map_element(element, (client.x, client.y), false);
-            tracing::info!(?window_id, backend = "xwayland", "toplevel remapped");
-            crate::space_sync::sync_after_change(self);
+        if let Err(error) = window.set_mapped(true) {
+            tracing::warn!(%error, x11_id = window.window_id(), "accepting X11 map request");
             return;
         }
-
-        let window_id = self.window_service.on_toplevel_mapped(
-            peer_pid,
-            client_kind(trusted_shell),
-            claims,
-            window.title(),
-            requested,
-        );
-        self.windows.mark_x11_mapped(x11_id, surface, window_id);
-
-        let client = crate::space_sync::client_area(self, window_id);
-        let _ = window.configure(Some(rect_to_smithay(client)));
-        let element = Window::new_x11_window(window);
-        self.windows.track_element(object_id, element.clone());
-        self.space.map_element(element, (client.x, client.y), false);
-        // Same rule as the xdg path (`xdg_shell.rs::handle_toplevel_commit`): a newly mapped
-        // client window takes the keyboard.
-        if self.window_service.should_activate_on_map(window_id) {
-            crate::input::activate_window(self, window_id);
-        }
-        crate::space_sync::sync_after_change(self);
+        self.map_associated_x11_window(window);
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
@@ -180,9 +133,9 @@ impl<B: Backend + 'static> XwmHandler for TemplarCompState<B> {
             w.map_or(current.size.w, |w| w as i32),
             h.map_or(current.size.h, |h| h as i32),
         ));
-        // The frame follows the size the client chose, at the position the window has — the
-        // X11 counterpart of `adopt_client_size` — so the tags stay below the client rather
-        // than over a client that just grew over them.
+        // The geometry follows the size the client chose, at the position the window
+        // has — the X11 counterpart of `adopt_client_size` — so the tabs re-derive from a
+        // client rectangle that matches the pixels rather than one the client outgrew.
         if let Some(window_id) = self.window_id_of(&window)
             && let Some(record) = self.window_service.window(window_id)
             && !record.maximized
@@ -190,13 +143,7 @@ impl<B: Backend + 'static> XwmHandler for TemplarCompState<B> {
             && !self.window_service.is_resizing(window_id)
         {
             let client = crate::space_sync::client_area(self, window_id);
-            let frame = if self.window_service.has_frame(window_id) {
-                templar_window::frame_around(templar_window::Rect::new(
-                    client.x, client.y, size.w, size.h,
-                ))
-            } else {
-                templar_window::Rect::new(client.x, client.y, size.w, size.h)
-            };
+            let frame = templar_window::Rect::new(client.x, client.y, size.w, size.h);
             self.window_service.set_geometry(window_id, frame);
             let client = crate::space_sync::client_area(self, window_id);
             let _ = window.configure(Some(rect_to_smithay(client)));
@@ -307,15 +254,20 @@ impl<B: Backend + 'static> XwmHandler for TemplarCompState<B> {
         xwayland_selection_allowed()
     }
 
-    /// `_NET_WM_NAME`/`WM_NAME` changing is delivered here rather than as its own callback —
-    /// COMPOSITOR.md's `xdg_toplevel.set_title` row's XWayland counterpart.
+    /// Smithay refreshes the cached property before this callback, including deletion.
     fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
-        if property != WmWindowProperty::Title {
-            return;
-        }
-        if let Some(window_id) = self.window_id_of(&window) {
-            self.window_service.set_title(window_id, window.title());
-            crate::space_sync::sync_after_change(self);
+        match property {
+            WmWindowProperty::Title => {
+                if let Some(window_id) = self.window_id_of(&window) {
+                    self.window_service.set_title(window_id, window.title());
+                    crate::space_sync::sync_after_change(self);
+                }
+            }
+            WmWindowProperty::TransientFor => {
+                self.update_x11_transient_parent(&window);
+                crate::space_sync::sync_after_change(self);
+            }
+            _ => {}
         }
     }
 
@@ -344,6 +296,105 @@ fn window_element<B: Backend + 'static>(
 }
 
 impl<B: Backend + 'static> TemplarCompState<B> {
+    /// Register only once both X11 mapping and Wayland association are available.
+    /// Called for either arrival order, with the X11 ID preserving identity on remap.
+    fn map_associated_x11_window(&mut self, window: X11Surface) {
+        let Some(surface) = window.wl_surface() else {
+            // surface_associated completes this path; property/configure events do not.
+            return;
+        };
+        let x11_id = window.window_id();
+        let object_id = surface.id();
+        if let Some(window_id) = self.windows.window_id_for_x11(x11_id)
+            .or_else(|| self.windows.window_id_for(&object_id))
+        {
+            // Association can also follow an already-complete map. Do not configure,
+            // refocus or create another element for the same mapped surface.
+            if self.windows.window_id_for(&object_id) == Some(window_id)
+                && self.window_service.window(window_id).is_some_and(|record| record.mapped)
+            {
+                self.refresh_x11_transient_parents(x11_id);
+                crate::space_sync::sync_after_change(self);
+                return;
+            }
+            self.window_service.set_mapped(window_id, true);
+            self.window_service.set_title(window_id, window.title());
+            self.windows.mark_x11_mapped(x11_id, surface, window_id);
+            let client = crate::space_sync::client_area(self, window_id);
+            let _ = window.configure(Some(rect_to_smithay(client)));
+            let element = Window::new_x11_window(window);
+            self.windows.track_element(object_id, element.clone());
+            self.space.map_element(element, (client.x, client.y), false);
+            self.refresh_x11_transient_parents(x11_id);
+            tracing::info!(?window_id, x11_id, backend = "xwayland", "toplevel remapped");
+            crate::space_sync::sync_after_change(self);
+            return;
+        }
+
+        let geometry = window.geometry();
+        let requested = templar_window::Rect::new(
+            geometry.loc.x, geometry.loc.y, geometry.size.w, geometry.size.h,
+        );
+        let claims = claims_from_x11(Some(window.class()));
+        let trusted_shell = surface.client()
+            .is_some_and(|client| crate::state::client_is_trusted_shell(&client));
+        let window_id = self.window_service.on_toplevel_mapped(
+            window.pid().unwrap_or(0),
+            client_kind(trusted_shell),
+            claims,
+            window.title(),
+            requested,
+        );
+        self.windows.mark_x11_mapped(x11_id, surface, window_id);
+        let client = crate::space_sync::client_area(self, window_id);
+        let _ = window.configure(Some(rect_to_smithay(client)));
+        let element = Window::new_x11_window(window);
+        self.windows.track_element(object_id, element.clone());
+        self.space.map_element(element, (client.x, client.y), false);
+        self.refresh_x11_transient_parents(x11_id);
+        if self.window_service.should_activate_on_map(window_id) {
+            crate::input::activate_window(self, window_id);
+        }
+        tracing::info!(?window_id, x11_id, backend = "xwayland", "toplevel mapped");
+        crate::space_sync::sync_after_change(self);
+    }
+
+    /// Keep parent hints presentation-only, resolving the client XID rather than the WM frame ID.
+    fn update_x11_transient_parent(&mut self, window: &X11Surface) {
+        let Some(child) = self.windows.window_id_for_x11(window.window_id()) else {
+            return;
+        };
+        let parent = window.is_transient_for()
+            .and_then(|x11_id| self.windows.window_id_for_x11(x11_id));
+        if !self.window_service.set_transient_parent(child, parent) {
+            self.window_service.set_transient_parent(child, None);
+            tracing::warn!(?child, ?parent, "X11 transient parent rejected; dialog remains independent");
+        }
+    }
+
+    /// A child may map before its parent has a Wayland association. Revisit this window and
+    /// children naming its XID when it maps; unmaps retain stable IDs and destruction detaches
+    /// children through WindowService's lifecycle. Unrelated bindings and focus stay untouched.
+    fn refresh_x11_transient_parents(&mut self, x11_id: u32) {
+        for element in self.windows.elements() {
+            let Some(window) = element.x11_surface() else {
+                continue;
+            };
+            if window.window_id() != x11_id && window.is_transient_for() != Some(x11_id) {
+                continue;
+            }
+            let Some(child) = self.windows.window_id_for_x11(window.window_id()) else {
+                continue;
+            };
+            let parent = window.is_transient_for()
+                .and_then(|x11_id| self.windows.window_id_for_x11(x11_id));
+            if !self.window_service.set_transient_parent(child, parent) {
+                self.window_service.set_transient_parent(child, None);
+                tracing::warn!(?child, ?parent, "X11 transient parent rejected; dialog remains independent");
+            }
+        }
+    }
+
     fn window_id_of(&self, window: &X11Surface) -> Option<templar_window::WindowId> {
         let surface = window.wl_surface()?;
         self.windows

@@ -106,6 +106,7 @@ pub struct Container {
 pub struct Tray {
     pub id: TrayId,
     pub name: String,
+    #[serde(with = "templar_types::native_path::many")]
     pub entries: Vec<PathBuf>,
 }
 

@@ -217,9 +217,12 @@ pub mod dpkg {
     /// (common in test fixtures and non-Debian dev machines) is treated as "no packages known",
     /// not an error.
     pub fn scan_status(path: &Path) -> Vec<InstalledPackage> {
-        let Ok(text) = fs::read_to_string(path) else {
-            return Vec::new();
-        };
+        read_status(path).unwrap_or_default()
+    }
+
+    /// Authoritative readers must distinguish unreadable metadata from an empty package set.
+    pub fn read_status(path: &Path) -> std::io::Result<Vec<InstalledPackage>> {
+        let text = fs::read_to_string(path)?;
         let mut packages = Vec::new();
         let mut name: Option<String> = None;
         let mut version: Option<String> = None;
@@ -227,7 +230,7 @@ pub mod dpkg {
         for line in text.lines().chain(std::iter::once("")) {
             if line.is_empty() {
                 if let (Some(n), Some(v)) = (name.take(), version.take()) {
-                    let installed = status.take().is_some_and(|s| s.contains("installed"));
+                    let installed = status.take().is_some_and(|s| s.split_ascii_whitespace().nth(2) == Some("installed"));
                     packages.push(InstalledPackage {
                         name: n,
                         version: v,
@@ -245,7 +248,7 @@ pub mod dpkg {
                 status = Some(v.trim().to_owned());
             }
         }
-        packages
+        Ok(packages)
     }
 
     /// Installed packages whose name starts with `prefix`.
@@ -450,6 +453,8 @@ mod tests {
         assert_eq!(packages.len(), 2);
         assert!(lrm_present(&packages));
         assert!(dpkg::find_installed(&packages, "nvidia-dkms-").is_empty());
+        fs::write(&status, "Package: linux-modules-nvidia-580-open-generic\nStatus: unknown ok not-installed\nVersion: 580.1-0ubuntu1\n\n").unwrap();
+        assert!(!lrm_present(&dpkg::scan_status(&status)), "not-installed is not installed");
 
         assert!(dpkg::scan_status(&root.join("missing")).is_empty());
         let _ = fs::remove_dir_all(&root);

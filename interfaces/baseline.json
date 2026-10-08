@@ -24,6 +24,7 @@
         "Handlers": "(s)->(as)",
         "ListMimeDefaults": "()->(a(ss))",
         "ResolveFile": "(ss)->(sss)",
+        "ResolveFileUriV1": "(ss)->(sss)",
         "ResolveUri": "(ss)->(sss)",
         "SetExtensionDefault": "(ssb)->()",
         "SetMimeDefault": "(ss)->()",
@@ -38,6 +39,8 @@
       "methods": {
         "AdjustVolume": "(i)->(u)",
         "Get": "()->(s)",
+        "Inventory": "()->(s)",
+        "SelectDevice": "(ss)->()",
         "SetMuted": "(b)->()",
         "SetVolume": "(u)->()",
         "ToggleMuted": "()->(b)"
@@ -76,6 +79,28 @@
       "signals": {},
       "properties": {}
     },
+    "org.templaros.Bluetooth1": {
+      "methods": {
+        "AcquireUi": "()->()",
+        "Answer": "(sb)->()",
+        "AnswerSecret": "(sh)->()",
+        "Cancel": "()->()",
+        "Connect": "(s)->()",
+        "Disconnect": "(s)->()",
+        "Discover": "(sb)->()",
+        "DisplaySecret": "(s)->(h)",
+        "Forget": "(s)->()",
+        "Inventory": "()->(s)",
+        "Pair": "(s)->()",
+        "ReleaseUi": "()->()",
+        "SetPowered": "(sb)->()",
+        "SetTrusted": "(sb)->()"
+      },
+      "signals": {
+        "Changed": "(s)"
+      },
+      "properties": {}
+    },
     "org.templaros.Checkpoint1": {
       "methods": {
         "Request": "(s)->(s)"
@@ -83,10 +108,25 @@
       "signals": {},
       "properties": {}
     },
+    "org.templaros.Displays1": {
+      "methods": {
+        "Confirm": "(ss)->(s)",
+        "Identify": "(ssb)->(s)",
+        "Observe": "()->(s)",
+        "Preview": "(ss)->(s)",
+        "Revert": "(s)->(s)",
+        "Validate": "(ss)->(s)"
+      },
+      "signals": {
+        "Changed": "()"
+      },
+      "properties": {}
+    },
     "org.templaros.Files.Actions1": {
       "methods": {
         "Forms": "()->(as)",
         "Render": "(ss)->(s)",
+        "RenderNative": "(ss)->(s)",
         "TerminalDirectory": "(s)->(s)"
       },
       "signals": {},
@@ -95,8 +135,11 @@
     "org.templaros.Files.Browse1": {
       "methods": {
         "CreateDirectory": "(ss)->(s)",
+        "DesktopDirectoryV1": "()->(s)",
+        "ExportBookmarks": "()->(s)",
         "Inspect": "(s)->(s)",
         "ListDirectory": "(sbu)->(s)",
+        "ListDirectoryNativeV1": "(sbu)->(s)",
         "Roots": "()->(s)",
         "SetBookmark": "(sb)->()"
       },
@@ -107,9 +150,13 @@
       "methods": {
         "ChangesSince": "(tu)->(s)",
         "CloseCursor": "(s)->()",
+        "ConfigureRoot": "(sss)->(x)",
         "FetchPage": "(suu)->(s)",
+        "Observe": "(bt)->()",
         "OpenSnapshot": "(s)->(hs)",
         "Reconcile": "(s)->(s)",
+        "RemoveRoot": "(ss)->()",
+        "RootPolicy": "(ss)->(s)",
         "Roots": "()->(s)",
         "Search": "(s)->(sts)"
       },
@@ -136,7 +183,8 @@
     },
     "org.templaros.Files.Previews1": {
       "methods": {
-        "Render": "(su)->(say)"
+        "Render": "(su)->(say)",
+        "RenderNativeV1": "(su)->(say)"
       },
       "signals": {},
       "properties": {}
@@ -216,6 +264,7 @@
     },
     "org.templaros.HomeGarden1": {
       "methods": {
+        "ActivateInstanceV1": "(s)->()",
         "AdoptWindow": "(ss)->()",
         "Clock": "()->(s)",
         "Contexts": "()->(s)",
@@ -224,8 +273,14 @@
         "ForgetAll": "()->()",
         "Hide": "(sb)->()",
         "Keep": "(s)->()",
+        "LaunchAppInPlaceV1": "(ss)->(s)",
         "Observe": "(ssss)->()",
+        "ObserveSessionV1": "(s)->()",
         "Pin": "(sb)->()",
+        "PresentationV1": "()->(s)",
+        "ResumeSessionV1": "(ss)->(s)",
+        "SessionsV1": "()->(s)",
+        "ShowAsV1": "(ss)->()",
         "Tend": "(s)->(s)",
         "WorkingDirectories": "()->(s)"
       },
@@ -233,6 +288,13 @@
         "ContextChanged": "(ss)",
         "Tended": "(su)"
       },
+      "properties": {}
+    },
+    "org.templaros.Host.Accounts1": {
+      "methods": {
+        "ChangeSelfPassword": "(h)->()"
+      },
+      "signals": {},
       "properties": {}
     },
     "org.templaros.Host.Deployments1": {
@@ -302,9 +364,22 @@
       "signals": {},
       "properties": {}
     },
+    "org.templaros.Input1": {
+      "methods": {
+        "Configure": "(sss)->(s)",
+        "Observe": "()->(s)",
+        "Reset": "(ss)->(s)"
+      },
+      "signals": {
+        "Changed": "()"
+      },
+      "properties": {}
+    },
     "org.templaros.Launcher1": {
       "methods": {
         "Launch": "(sass)->(s)",
+        "LaunchFilesV1": "(sass)->(s)",
+        "LaunchInDirectoryV1": "(sasss)->(s)",
         "LaunchLogical": "(ssass)->(s)"
       },
       "signals": {},
@@ -320,12 +395,35 @@
       "signals": {},
       "properties": {}
     },
+    "org.templaros.Network1": {
+      "methods": {
+        "AcquireUi": "()->()",
+        "Activate": "(ss)->(o)",
+        "Answer": "(sb)->()",
+        "AnswerSecret": "(sh)->()",
+        "Cancel": "()->()",
+        "Connect": "(ssaysbb)->(o)",
+        "Disconnect": "(s)->()",
+        "Forget": "(s)->()",
+        "Inventory": "()->(s)",
+        "ReleaseUi": "()->()",
+        "Scan": "(s)->()",
+        "SetAutoconnect": "(sb)->()",
+        "SetWireless": "(b)->()"
+      },
+      "signals": {
+        "Changed": "(s)"
+      },
+      "properties": {}
+    },
     "org.templaros.Notifications1": {
       "methods": {
         "ClearAll": "()->(u)",
         "Dismiss": "(u)->(b)",
         "Invoke": "(us)->(b)",
-        "ListActive": "()->(as)"
+        "ListActive": "()->(as)",
+        "Snapshot": "()->(s)",
+        "TransitionsSince": "(ts)->(s)"
       },
       "signals": {
         "Changed": "()"
@@ -335,10 +433,13 @@
     "org.templaros.Power1": {
       "methods": {
         "GetProfile": "(s)->(s)",
+        "Inspect": "()->(s)",
         "ResetProfile": "(s)->()",
         "SetProfile": "(ss)->()"
       },
-      "signals": {},
+      "signals": {
+        "Changed": "(s)"
+      },
       "properties": {}
     },
     "org.templaros.Projects1": {
@@ -381,21 +482,25 @@
     "org.templaros.Resources1": {
       "methods": {
         "ExplainInstance": "(s)->(s)",
+        "ExplainTarget": "(s)->(s)",
         "ForgetInstance": "(s)->()",
         "RecentTraces": "(u)->(s)",
         "Report": "()->(s)",
+        "ResolvePid": "(u)->(s)",
         "SetInstanceActivity": "(sxbb)->()",
         "SetInstanceHints": "(sbbbb)->()",
         "SetInstanceState": "(sbb)->()",
         "SetInstanceWork": "(sbxbx)->()",
         "SetStage": "(s)->()",
         "Stage": "()->(s)",
-        "Status": "()->(sb)"
+        "Status": "()->(sb)",
+        "Targets": "()->(s)"
       },
       "signals": {
         "NonMemoryStall": "(ss)",
         "PressureAction": "(ssbss)",
-        "PressureChanged": "(ss)"
+        "PressureChanged": "(ss)",
+        "TargetsChanged": "()"
       },
       "properties": {}
     },
@@ -407,6 +512,7 @@
         "Lock": "()->()",
         "Logout": "()->()",
         "NotifyIdle": "(b)->()",
+        "NotifyLocked": "()->()",
         "NotifyUnlocked": "()->()",
         "PowerOff": "()->()",
         "Reboot": "()->()",
@@ -426,6 +532,7 @@
       "methods": {
         "Changes": "(u)->(as)",
         "Get": "(s)->(s)",
+        "Inspect": "()->(s)",
         "List": "()->(a(ss))",
         "Reset": "(ss)->()",
         "Schema": "()->(a(sssb))",
@@ -434,6 +541,44 @@
       },
       "signals": {
         "Changed": "(s)"
+      },
+      "properties": {}
+    },
+    "org.templaros.TabCounts1": {
+      "methods": {
+        "BindWindow": "(sst)->()",
+        "DetachWindow": "(ss)->()",
+        "GetCount": "(t)->(buts)",
+        "RegisterAdapter": "(s)->(t)",
+        "ReportTabs": "(ssu)->()"
+      },
+      "signals": {
+        "Changed": "(t)"
+      },
+      "properties": {}
+    },
+    "org.templaros.Wallpaper1": {
+      "methods": {
+        "Inspect": "()->(s)",
+        "Next": "()->(s)",
+        "Pause": "()->(s)",
+        "Previous": "()->(s)",
+        "Refresh": "()->(s)",
+        "Resume": "()->(s)"
+      },
+      "signals": {
+        "Changed": "(s)"
+      },
+      "properties": {}
+    },
+    "org.templaros.Workloads1": {
+      "methods": {
+        "List": "()->(s)",
+        "RegisterChild": "(uss)->(s)",
+        "Resolve": "(u)->(s)"
+      },
+      "signals": {
+        "Changed": "()"
       },
       "properties": {}
     }

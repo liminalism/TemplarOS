@@ -1,0 +1,1436 @@
+{
+  "schema_version": 1,
+  "observed_date": "2026-10-06",
+  "environment": {
+    "platform": "native Ubuntu 26.04 / Lubuntu development host",
+    "build": "native release optimized, same Rust worker and geometry for both modes",
+    "live_session_touched": false
+  },
+  "decision": {
+    "default_colors": 256,
+    "owner_priority": "one-time modest loading cost is acceptable for infrequent wallpaper changes",
+    "explicit_opt_out": "quantize_colors:null in JSON; off in Appearance; preserved persisted settings",
+    "quality": "lossy; smooth skies/backgrounds/gradients visibly band, including at 256 colors; dithering remains off"
+  },
+  "inputs": [
+    {
+      "path": "Butterfly-Kenneth-Wimer-4k.jpg",
+      "kind": "derived installed photographic wallpaper",
+      "origin": "/usr/share/lxqt/wallpapers/Butterfly-Kenneth-Wimer.jpg",
+      "origin_size": [
+        1920,
+        1278
+      ],
+      "source_sha256": "c237c26f6f0b18db3afa62a0eff13cb8208b79a1ef35aaadcb745d8f9faef146",
+      "source_note": "Pillow-generated untagged RGB 3840x2160 JPEG; resized intentionally for full-size load measurements",
+      "fixture_sha256": "5ce487df2c523ac12d505d46a8fa2d8f0f2c419d088c5668fbfe0cb9cbf763aa",
+      "fixture_dimensions": [
+        3840,
+        2160
+      ]
+    },
+    {
+      "path": "fog-4k.jpg",
+      "kind": "derived installed photographic wallpaper",
+      "origin": "/usr/share/lxqt/wallpapers/fog.jpg",
+      "origin_size": [
+        2048,
+        1536
+      ],
+      "source_sha256": "2141481083e70d96dd98c2535c88c4adf678c496256953d2dfcf84767b40cb03",
+      "source_note": "Pillow-generated untagged RGB 3840x2160 JPEG; resized intentionally for full-size load measurements",
+      "fixture_sha256": "b2ddac2aba79a3994fc794d29474fd05b41270c7f5006ea51284cc8ef4f4cbbf",
+      "fixture_dimensions": [
+        3840,
+        2160
+      ]
+    },
+    {
+      "path": "after-the-rain-4k.jpg",
+      "kind": "derived installed photographic wallpaper",
+      "origin": "/usr/share/lxqt/wallpapers/after-the-rain.jpg",
+      "origin_size": [
+        3000,
+        1993
+      ],
+      "source_sha256": "e6cb8b3e09b904cc493ff17fddcd564d4e46a1761d05adf972c285a1fd878234",
+      "source_note": "Pillow-generated untagged RGB 3840x2160 JPEG; resized intentionally for full-size load measurements",
+      "fixture_sha256": "0c89a116ee950e66bf2f95bedb38c8288b37bc64516a52b8d99673fd0e9ca57c",
+      "fixture_dimensions": [
+        3840,
+        2160
+      ]
+    },
+    {
+      "path": "gradient-4k.png",
+      "kind": "synthetic smooth full-gamut gradient",
+      "origin": "generated",
+      "source_note": "R=x*255/3839; G=y*255/2159; B=(x+y)*255/5998, integer division",
+      "fixture_sha256": "647dbf95654126dfb5baaee0173ff2f78a7c65c377314940ab729db444adc9c2",
+      "fixture_dimensions": [
+        3840,
+        2160
+      ]
+    }
+  ],
+  "timing_runs": [
+    {
+      "input": "Butterfly-Kenneth-Wimer-4k.jpg",
+      "colors": null,
+      "worker_options_omitted": false,
+      "elapsed_ms": 45.148,
+      "user_cpu_seconds": 0.024215999999999998,
+      "system_cpu_seconds": 0.01009,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "retained_pixel_and_palette_bytes": 33177600,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 275756
+    },
+    {
+      "input": "Butterfly-Kenneth-Wimer-4k.jpg",
+      "colors": 256,
+      "worker_options_omitted": false,
+      "elapsed_ms": 182.932,
+      "user_cpu_seconds": 0.169507,
+      "system_cpu_seconds": 0.013039,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "ca1d3419eee7a6a564d42a20cc0f6c70d03f7a5230c4bf5de45a36c7ee71e294"
+      },
+      "retained_pixel_and_palette_bytes": 8295424,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 324236
+    },
+    {
+      "input": "fog-4k.jpg",
+      "colors": null,
+      "worker_options_omitted": false,
+      "elapsed_ms": 54.262,
+      "user_cpu_seconds": 0.04593,
+      "system_cpu_seconds": 0.007987,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "retained_pixel_and_palette_bytes": 33177600,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 324236
+    },
+    {
+      "input": "fog-4k.jpg",
+      "colors": 256,
+      "worker_options_omitted": false,
+      "elapsed_ms": 141.683,
+      "user_cpu_seconds": 0.129541,
+      "system_cpu_seconds": 0.010041,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "d1085ba1534cd9e30fb79d876e76d21e58e67b0a82abd32a272f31ca48effa69"
+      },
+      "retained_pixel_and_palette_bytes": 8295424,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 356556
+    },
+    {
+      "input": "after-the-rain-4k.jpg",
+      "colors": null,
+      "worker_options_omitted": false,
+      "elapsed_ms": 46.907,
+      "user_cpu_seconds": 0.026042,
+      "system_cpu_seconds": 0.01903,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "retained_pixel_and_palette_bytes": 33177600,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 356556
+    },
+    {
+      "input": "after-the-rain-4k.jpg",
+      "colors": 256,
+      "worker_options_omitted": false,
+      "elapsed_ms": 177.176,
+      "user_cpu_seconds": 0.165603,
+      "system_cpu_seconds": 0.010036,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "10e43db2df5aa160441fb3b202637d49395dec4b6ec017015fb70fe427e66a5f"
+      },
+      "retained_pixel_and_palette_bytes": 8295424,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 356876
+    },
+    {
+      "input": "gradient-4k.png",
+      "colors": null,
+      "worker_options_omitted": false,
+      "elapsed_ms": 368.666,
+      "user_cpu_seconds": 0.361132,
+      "system_cpu_seconds": 0.0060019999999999995,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "retained_pixel_and_palette_bytes": 33177600,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 356876
+    },
+    {
+      "input": "gradient-4k.png",
+      "colors": 256,
+      "worker_options_omitted": false,
+      "elapsed_ms": 469.385,
+      "user_cpu_seconds": 0.45350399999999996,
+      "system_cpu_seconds": 0.014015,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "083fe46179bd5b2453f8f5a6a21a4757ed83a34dc5f553d513fea7d96929d548"
+      },
+      "retained_pixel_and_palette_bytes": 8295424,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 356876
+    },
+    {
+      "input": "Butterfly-Kenneth-Wimer-4k.jpg",
+      "colors": null,
+      "worker_options_omitted": false,
+      "elapsed_ms": 37.897,
+      "user_cpu_seconds": 0.024933,
+      "system_cpu_seconds": 0.010969999999999999,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "retained_pixel_and_palette_bytes": 33177600,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 392236
+    },
+    {
+      "input": "Butterfly-Kenneth-Wimer-4k.jpg",
+      "colors": null,
+      "worker_options_omitted": false,
+      "elapsed_ms": 39.822,
+      "user_cpu_seconds": 0.027777,
+      "system_cpu_seconds": 0.00992,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "retained_pixel_and_palette_bytes": 33177600,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424556
+    },
+    {
+      "input": "Butterfly-Kenneth-Wimer-4k.jpg",
+      "colors": 256,
+      "worker_options_omitted": false,
+      "elapsed_ms": 190.034,
+      "user_cpu_seconds": 0.173544,
+      "system_cpu_seconds": 0.015047,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "ca1d3419eee7a6a564d42a20cc0f6c70d03f7a5230c4bf5de45a36c7ee71e294"
+      },
+      "retained_pixel_and_palette_bytes": 8295424,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424664
+    },
+    {
+      "input": "Butterfly-Kenneth-Wimer-4k.jpg",
+      "colors": 256,
+      "worker_options_omitted": false,
+      "elapsed_ms": 200.921,
+      "user_cpu_seconds": 0.181137,
+      "system_cpu_seconds": 0.018012999999999998,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "ca1d3419eee7a6a564d42a20cc0f6c70d03f7a5230c4bf5de45a36c7ee71e294"
+      },
+      "retained_pixel_and_palette_bytes": 8295424,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424664
+    },
+    {
+      "input": "fog-4k.jpg",
+      "colors": null,
+      "worker_options_omitted": false,
+      "elapsed_ms": 58.722,
+      "user_cpu_seconds": 0.045909,
+      "system_cpu_seconds": 0.012242,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "retained_pixel_and_palette_bytes": 33177600,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424664
+    },
+    {
+      "input": "fog-4k.jpg",
+      "colors": null,
+      "worker_options_omitted": false,
+      "elapsed_ms": 63.185,
+      "user_cpu_seconds": 0.050183,
+      "system_cpu_seconds": 0.011807,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "retained_pixel_and_palette_bytes": 33177600,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424664
+    },
+    {
+      "input": "fog-4k.jpg",
+      "colors": 256,
+      "worker_options_omitted": false,
+      "elapsed_ms": 151.974,
+      "user_cpu_seconds": 0.1378,
+      "system_cpu_seconds": 0.011982,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "d1085ba1534cd9e30fb79d876e76d21e58e67b0a82abd32a272f31ca48effa69"
+      },
+      "retained_pixel_and_palette_bytes": 8295424,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424704
+    },
+    {
+      "input": "fog-4k.jpg",
+      "colors": 256,
+      "worker_options_omitted": false,
+      "elapsed_ms": 152.174,
+      "user_cpu_seconds": 0.133819,
+      "system_cpu_seconds": 0.016977,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "d1085ba1534cd9e30fb79d876e76d21e58e67b0a82abd32a272f31ca48effa69"
+      },
+      "retained_pixel_and_palette_bytes": 8295424,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424704
+    },
+    {
+      "input": "after-the-rain-4k.jpg",
+      "colors": null,
+      "worker_options_omitted": false,
+      "elapsed_ms": 52.211,
+      "user_cpu_seconds": 0.041152999999999995,
+      "system_cpu_seconds": 0.009033,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "retained_pixel_and_palette_bytes": 33177600,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424704
+    },
+    {
+      "input": "after-the-rain-4k.jpg",
+      "colors": null,
+      "worker_options_omitted": false,
+      "elapsed_ms": 48.309,
+      "user_cpu_seconds": 0.037679,
+      "system_cpu_seconds": 0.009915,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "retained_pixel_and_palette_bytes": 33177600,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424704
+    },
+    {
+      "input": "after-the-rain-4k.jpg",
+      "colors": 256,
+      "worker_options_omitted": false,
+      "elapsed_ms": 193.287,
+      "user_cpu_seconds": 0.181727,
+      "system_cpu_seconds": 0.010983,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "10e43db2df5aa160441fb3b202637d49395dec4b6ec017015fb70fe427e66a5f"
+      },
+      "retained_pixel_and_palette_bytes": 8295424,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424756
+    },
+    {
+      "input": "after-the-rain-4k.jpg",
+      "colors": 256,
+      "worker_options_omitted": false,
+      "elapsed_ms": 193.25,
+      "user_cpu_seconds": 0.179205,
+      "system_cpu_seconds": 0.012013,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "10e43db2df5aa160441fb3b202637d49395dec4b6ec017015fb70fe427e66a5f"
+      },
+      "retained_pixel_and_palette_bytes": 8295424,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424756
+    },
+    {
+      "input": "gradient-4k.png",
+      "colors": null,
+      "worker_options_omitted": false,
+      "elapsed_ms": 389.296,
+      "user_cpu_seconds": 0.374276,
+      "system_cpu_seconds": 0.01401,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "retained_pixel_and_palette_bytes": 33177600,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424756
+    },
+    {
+      "input": "gradient-4k.png",
+      "colors": null,
+      "worker_options_omitted": false,
+      "elapsed_ms": 387.906,
+      "user_cpu_seconds": 0.38345199999999996,
+      "system_cpu_seconds": 0.004004,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "retained_pixel_and_palette_bytes": 33177600,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424756
+    },
+    {
+      "input": "gradient-4k.png",
+      "colors": 256,
+      "worker_options_omitted": false,
+      "elapsed_ms": 508.022,
+      "user_cpu_seconds": 0.49340199999999995,
+      "system_cpu_seconds": 0.013009999999999999,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "083fe46179bd5b2453f8f5a6a21a4757ed83a34dc5f553d513fea7d96929d548"
+      },
+      "retained_pixel_and_palette_bytes": 8295424,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424808
+    },
+    {
+      "input": "gradient-4k.png",
+      "colors": 256,
+      "worker_options_omitted": false,
+      "elapsed_ms": 505.926,
+      "user_cpu_seconds": 0.49449899999999997,
+      "system_cpu_seconds": 0.009989,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "083fe46179bd5b2453f8f5a6a21a4757ed83a34dc5f553d513fea7d96929d548"
+      },
+      "retained_pixel_and_palette_bytes": 8295424,
+      "seals": 15,
+      "fork_exec_child_peak_rss_kib_including_parent": 424808
+    }
+  ],
+  "three_run_timing_summary": [
+    {
+      "input": "Butterfly-Kenneth-Wimer-4k.jpg",
+      "colors": null,
+      "samples": 3,
+      "median_ms": 39.822,
+      "min_ms": 37.897,
+      "max_ms": 45.148
+    },
+    {
+      "input": "Butterfly-Kenneth-Wimer-4k.jpg",
+      "colors": 256,
+      "samples": 3,
+      "median_ms": 190.034,
+      "min_ms": 182.932,
+      "max_ms": 200.921
+    },
+    {
+      "input": "fog-4k.jpg",
+      "colors": null,
+      "samples": 3,
+      "median_ms": 58.722,
+      "min_ms": 54.262,
+      "max_ms": 63.185
+    },
+    {
+      "input": "fog-4k.jpg",
+      "colors": 256,
+      "samples": 3,
+      "median_ms": 151.974,
+      "min_ms": 141.683,
+      "max_ms": 152.174
+    },
+    {
+      "input": "after-the-rain-4k.jpg",
+      "colors": null,
+      "samples": 3,
+      "median_ms": 48.309,
+      "min_ms": 46.907,
+      "max_ms": 52.211
+    },
+    {
+      "input": "after-the-rain-4k.jpg",
+      "colors": 256,
+      "samples": 3,
+      "median_ms": 193.25,
+      "min_ms": 177.176,
+      "max_ms": 193.287
+    },
+    {
+      "input": "gradient-4k.png",
+      "colors": null,
+      "samples": 3,
+      "median_ms": 387.906,
+      "min_ms": 368.666,
+      "max_ms": 389.296
+    },
+    {
+      "input": "gradient-4k.png",
+      "colors": 256,
+      "samples": 3,
+      "median_ms": 505.926,
+      "min_ms": 469.385,
+      "max_ms": 508.022
+    }
+  ],
+  "after_exec_worker_memory_samples": [
+    {
+      "input": "Butterfly-Kenneth-Wimer-4k.jpg",
+      "colors": null,
+      "sampled_after_exec_peak_kib": {
+        "Rss": 35924,
+        "Pss": 33716,
+        "Pss_Anon": 436,
+        "Pss_File": 940,
+        "Pss_Shmem": 32400
+      },
+      "interval_ms": 2,
+      "note": "Only sampled while /proc/PID/exe identified the actual Rust decoder; samples can miss peaks"
+    },
+    {
+      "input": "Butterfly-Kenneth-Wimer-4k.jpg",
+      "colors": 256,
+      "sampled_after_exec_peak_kib": {
+        "Rss": 35648,
+        "Pss": 33099,
+        "Pss_Anon": 1652,
+        "Pss_File": 939,
+        "Pss_Shmem": 31784
+      },
+      "interval_ms": 2,
+      "note": "Only sampled while /proc/PID/exe identified the actual Rust decoder; samples can miss peaks"
+    },
+    {
+      "input": "fog-4k.jpg",
+      "colors": null,
+      "sampled_after_exec_peak_kib": {
+        "Rss": 36024,
+        "Pss": 33765,
+        "Pss_Anon": 432,
+        "Pss_File": 993,
+        "Pss_Shmem": 32400
+      },
+      "interval_ms": 2,
+      "note": "Only sampled while /proc/PID/exe identified the actual Rust decoder; samples can miss peaks"
+    },
+    {
+      "input": "fog-4k.jpg",
+      "colors": 256,
+      "sampled_after_exec_peak_kib": {
+        "Rss": 36268,
+        "Pss": 33703,
+        "Pss_Anon": 1628,
+        "Pss_File": 927,
+        "Pss_Shmem": 32400
+      },
+      "interval_ms": 2,
+      "note": "Only sampled while /proc/PID/exe identified the actual Rust decoder; samples can miss peaks"
+    },
+    {
+      "input": "after-the-rain-4k.jpg",
+      "colors": null,
+      "sampled_after_exec_peak_kib": {
+        "Rss": 35904,
+        "Pss": 33716,
+        "Pss_Anon": 436,
+        "Pss_File": 940,
+        "Pss_Shmem": 32400
+      },
+      "interval_ms": 2,
+      "note": "Only sampled while /proc/PID/exe identified the actual Rust decoder; samples can miss peaks"
+    },
+    {
+      "input": "after-the-rain-4k.jpg",
+      "colors": 256,
+      "sampled_after_exec_peak_kib": {
+        "Rss": 36016,
+        "Pss": 33459,
+        "Pss_Anon": 1648,
+        "Pss_File": 851,
+        "Pss_Shmem": 32236
+      },
+      "interval_ms": 2,
+      "note": "Only sampled while /proc/PID/exe identified the actual Rust decoder; samples can miss peaks"
+    },
+    {
+      "input": "gradient-4k.png",
+      "colors": null,
+      "sampled_after_exec_peak_kib": {
+        "Rss": 36916,
+        "Pss": 34419,
+        "Pss_Anon": 944,
+        "Pss_File": 1079,
+        "Pss_Shmem": 32396
+      },
+      "interval_ms": 2,
+      "note": "Only sampled while /proc/PID/exe identified the actual Rust decoder; samples can miss peaks"
+    },
+    {
+      "input": "gradient-4k.png",
+      "colors": 256,
+      "sampled_after_exec_peak_kib": {
+        "Rss": 36140,
+        "Pss": 33499,
+        "Pss_Anon": 1624,
+        "Pss_File": 1087,
+        "Pss_Shmem": 31816
+      },
+      "interval_ms": 2,
+      "note": "Only sampled while /proc/PID/exe identified the actual Rust decoder; samples can miss peaks"
+    }
+  ],
+  "same_size_rgb_error": [
+    {
+      "input": "Butterfly-Kenneth-Wimer-4k.jpg",
+      "channel_rms_8bit": [
+        3.90734188443395,
+        3.2150558066228143,
+        4.302788327245693
+      ],
+      "rgb_psnr_db": 36.4558686404512,
+      "purpose": "same-size RGB error observation, not a perceptual acceptance guarantee"
+    },
+    {
+      "input": "fog-4k.jpg",
+      "channel_rms_8bit": [
+        4.1079785832113895,
+        3.050711062535359,
+        3.749383388734419
+      ],
+      "rgb_psnr_db": 36.8554146534986,
+      "purpose": "same-size RGB error observation, not a perceptual acceptance guarantee"
+    },
+    {
+      "input": "after-the-rain-4k.jpg",
+      "channel_rms_8bit": [
+        3.6146165044107144,
+        3.04253919499592,
+        3.921264339355002
+      ],
+      "rgb_psnr_db": 37.13873959742006,
+      "purpose": "same-size RGB error observation, not a perceptual acceptance guarantee"
+    },
+    {
+      "input": "gradient-4k.png",
+      "channel_rms_8bit": [
+        14.59701472986582,
+        12.126786039426367,
+        11.763436240963609
+      ],
+      "rgb_psnr_db": 25.925275572990166,
+      "purpose": "same-size RGB error observation, not a perceptual acceptance guarantee"
+    }
+  ],
+  "quality_visual_observation": "Actual RGBA/WuDP contact sheet inspected: main photographic objects/detail retained; butterfly and sunset smooth sky bands clearly visible; synthetic gradient bands obvious. This is not lossless output or a general perceptual quality certification.",
+  "default_worker_smokes": [
+    {
+      "case": "FD worker without options",
+      "result": {
+        "input": "Butterfly-Kenneth-Wimer-4k.jpg",
+        "colors": 256,
+        "worker_options_omitted": true,
+        "elapsed_ms": 184.226,
+        "peak_rss_kib": 424808,
+        "user_cpu_seconds": 0.17364,
+        "system_cpu_seconds": 0.009033,
+        "descriptor": {
+          "version": 1,
+          "width": 3840,
+          "height": 2160,
+          "source_width": 3840,
+          "source_height": 2160,
+          "stride": 3840,
+          "format": "indexed8",
+          "bytes": 8294400,
+          "palette_colors": 256,
+          "palette_sha256": "ca1d3419eee7a6a564d42a20cc0f6c70d03f7a5230c4bf5de45a36c7ee71e294"
+        },
+        "retained_pixel_and_palette_bytes": 8295424,
+        "seals": 15
+      }
+    },
+    {
+      "case": "empty_options",
+      "options_json": "{}",
+      "elapsed_ms": 185.526,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 3840,
+        "format": "indexed8",
+        "bytes": 8294400,
+        "palette_colors": 256,
+        "palette_sha256": "ca1d3419eee7a6a564d42a20cc0f6c70d03f7a5230c4bf5de45a36c7ee71e294"
+      }
+    },
+    {
+      "case": "explicit_off",
+      "options_json": "{\"quantize_colors\":null}",
+      "elapsed_ms": 39.576,
+      "descriptor": {
+        "version": 1,
+        "width": 3840,
+        "height": 2160,
+        "source_width": 3840,
+        "source_height": 2160,
+        "stride": 15360,
+        "format": "rgba8",
+        "bytes": 33177600,
+        "palette_colors": 0,
+        "palette_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "actual_private_policy_smoke": {
+    "initial": {
+      "revision": {
+        "owner_epoch": "f4338e32-3f90-4176-8916-2fcdd6a24a3e",
+        "generation": 5
+      },
+      "enabled": false,
+      "config": {
+        "sources": [],
+        "recursive": false,
+        "order": "random",
+        "interval_seconds": null,
+        "sizing": "fill",
+        "ground": [
+          24,
+          26,
+          30,
+          255
+        ],
+        "texture": {
+          "kind": "native"
+        },
+        "worker_budget_bytes": 201326592,
+        "transition_budget_bytes": 268435456,
+        "quantize_colors": 256,
+        "outputs": {}
+      },
+      "paused": false,
+      "source": null,
+      "pending": false,
+      "applied": null,
+      "error": "Compositor wallpaper authority unavailable: owner_unavailable: path must be shorter than SUN_LEN"
+    },
+    "explicit_off": {
+      "sources": [
+        [
+          47,
+          104,
+          111,
+          109,
+          101,
+          47,
+          100,
+          107,
+          47,
+          114,
+          117,
+          115,
+          116,
+          45,
+          112,
+          114,
+          111,
+          106,
+          101,
+          99,
+          116,
+          115,
+          47,
+          76,
+          101,
+          103,
+          101,
+          79,
+          83,
+          47,
+          46,
+          97,
+          103,
+          101,
+          110,
+          116,
+          47,
+          115,
+          99,
+          114,
+          97,
+          116,
+          99,
+          104,
+          47,
+          119,
+          97,
+          108,
+          108,
+          112,
+          97,
+          112,
+          101,
+          114,
+          45,
+          100,
+          101,
+          102,
+          97,
+          117,
+          108,
+          116,
+          45,
+          113,
+          117,
+          97,
+          110,
+          116,
+          105,
+          122,
+          97,
+          116,
+          105,
+          111,
+          110,
+          47,
+          66,
+          117,
+          116,
+          116,
+          101,
+          114,
+          102,
+          108,
+          121,
+          45,
+          75,
+          101,
+          110,
+          110,
+          101,
+          116,
+          104,
+          45,
+          87,
+          105,
+          109,
+          101,
+          114,
+          45,
+          52,
+          107,
+          46,
+          106,
+          112,
+          103
+        ]
+      ],
+      "recursive": false,
+      "order": "random",
+      "interval_seconds": null,
+      "sizing": "fill",
+      "ground": [
+        24,
+        26,
+        30,
+        255
+      ],
+      "texture": {
+        "kind": "native"
+      },
+      "worker_budget_bytes": 201326592,
+      "transition_budget_bytes": 268435456,
+      "quantize_colors": null,
+      "outputs": {}
+    },
+    "after_actual_sessiond_restart": {
+      "revision": {
+        "owner_epoch": "56a8cd6a-d169-4383-aee1-13a0e05b6344",
+        "generation": 1
+      },
+      "enabled": false,
+      "config": {
+        "sources": [
+          [
+            47,
+            104,
+            111,
+            109,
+            101,
+            47,
+            100,
+            107,
+            47,
+            114,
+            117,
+            115,
+            116,
+            45,
+            112,
+            114,
+            111,
+            106,
+            101,
+            99,
+            116,
+            115,
+            47,
+            76,
+            101,
+            103,
+            101,
+            79,
+            83,
+            47,
+            46,
+            97,
+            103,
+            101,
+            110,
+            116,
+            47,
+            115,
+            99,
+            114,
+            97,
+            116,
+            99,
+            104,
+            47,
+            119,
+            97,
+            108,
+            108,
+            112,
+            97,
+            112,
+            101,
+            114,
+            45,
+            100,
+            101,
+            102,
+            97,
+            117,
+            108,
+            116,
+            45,
+            113,
+            117,
+            97,
+            110,
+            116,
+            105,
+            122,
+            97,
+            116,
+            105,
+            111,
+            110,
+            47,
+            66,
+            117,
+            116,
+            116,
+            101,
+            114,
+            102,
+            108,
+            121,
+            45,
+            75,
+            101,
+            110,
+            110,
+            101,
+            116,
+            104,
+            45,
+            87,
+            105,
+            109,
+            101,
+            114,
+            45,
+            52,
+            107,
+            46,
+            106,
+            112,
+            103
+          ]
+        ],
+        "recursive": false,
+        "order": "random",
+        "interval_seconds": null,
+        "sizing": "fill",
+        "ground": [
+          24,
+          26,
+          30,
+          255
+        ],
+        "texture": {
+          "kind": "native"
+        },
+        "worker_budget_bytes": 201326592,
+        "transition_budget_bytes": 268435456,
+        "quantize_colors": null,
+        "outputs": {}
+      },
+      "paused": false,
+      "source": null,
+      "pending": false,
+      "applied": null,
+      "error": "Compositor wallpaper authority unavailable: owner_unavailable: path must be shorter than SUN_LEN"
+    },
+    "after_settings_reset": {
+      "sources": [],
+      "recursive": false,
+      "order": "random",
+      "interval_seconds": null,
+      "sizing": "fill",
+      "ground": [
+        24,
+        26,
+        30,
+        255
+      ],
+      "texture": {
+        "kind": "native"
+      },
+      "worker_budget_bytes": 201326592,
+      "transition_budget_bytes": 268435456,
+      "quantize_colors": 256,
+      "outputs": {}
+    },
+    "history_undo_restores_default": {
+      "revision": {
+        "owner_epoch": "56a8cd6a-d169-4383-aee1-13a0e05b6344",
+        "generation": 9
+      },
+      "enabled": false,
+      "config": {
+        "sources": [],
+        "recursive": false,
+        "order": "random",
+        "interval_seconds": null,
+        "sizing": "fill",
+        "ground": [
+          24,
+          26,
+          30,
+          255
+        ],
+        "texture": {
+          "kind": "native"
+        },
+        "worker_budget_bytes": 201326592,
+        "transition_budget_bytes": 268435456,
+        "quantize_colors": 256,
+        "outputs": {}
+      },
+      "paused": false,
+      "source": null,
+      "pending": false,
+      "applied": null,
+      "error": null
+    },
+    "history_undo_restores_explicit_off": {
+      "revision": {
+        "owner_epoch": "56a8cd6a-d169-4383-aee1-13a0e05b6344",
+        "generation": 12
+      },
+      "enabled": false,
+      "config": {
+        "sources": [
+          [
+            47,
+            104,
+            111,
+            109,
+            101,
+            47,
+            100,
+            107,
+            47,
+            114,
+            117,
+            115,
+            116,
+            45,
+            112,
+            114,
+            111,
+            106,
+            101,
+            99,
+            116,
+            115,
+            47,
+            76,
+            101,
+            103,
+            101,
+            79,
+            83,
+            47,
+            46,
+            97,
+            103,
+            101,
+            110,
+            116,
+            47,
+            115,
+            99,
+            114,
+            97,
+            116,
+            99,
+            104,
+            47,
+            119,
+            97,
+            108,
+            108,
+            112,
+            97,
+            112,
+            101,
+            114,
+            45,
+            100,
+            101,
+            102,
+            97,
+            117,
+            108,
+            116,
+            45,
+            113,
+            117,
+            97,
+            110,
+            116,
+            105,
+            122,
+            97,
+            116,
+            105,
+            111,
+            110,
+            47,
+            66,
+            117,
+            116,
+            116,
+            101,
+            114,
+            102,
+            108,
+            121,
+            45,
+            75,
+            101,
+            110,
+            110,
+            101,
+            116,
+            104,
+            45,
+            87,
+            105,
+            109,
+            101,
+            114,
+            45,
+            52,
+            107,
+            46,
+            106,
+            112,
+            103
+          ]
+        ],
+        "recursive": false,
+        "order": "random",
+        "interval_seconds": null,
+        "sizing": "fill",
+        "ground": [
+          24,
+          26,
+          30,
+          255
+        ],
+        "texture": {
+          "kind": "native"
+        },
+        "worker_budget_bytes": 201326592,
+        "transition_budget_bytes": 268435456,
+        "quantize_colors": null,
+        "outputs": {}
+      },
+      "paused": false,
+      "source": null,
+      "pending": false,
+      "applied": null,
+      "error": null
+    },
+    "undo_to_default_result": {
+      "event_id": "9cf8413b-1912-4a75-8241-033470b205e4",
+      "undone": true
+    },
+    "undo_to_off_result": {
+      "event_id": "524938ef-3035-4b10-bab6-885654800e7d",
+      "undone": true
+    }
+  },
+  "native_logical_source_storage": {
+    "rgba_bytes": 33177600,
+    "indexed_bytes_with_256_rgba_palette": 8295424,
+    "rgba_mib": 31.640625,
+    "indexed_mib": 7.9111328125,
+    "ratio": 3.9995062337982965,
+    "physical_gpu_allocation_measured": false
+  },
+  "verification": {
+    "templar_types_tests_passed": 44,
+    "templar_session_core_tests_passed": 96,
+    "templar_wallpaper_decode_compat_tests_passed": 26,
+    "test_note": "Removed obsolete incidental off-by-default assertion; alpha-linear-light regression checks actual color in both RGBA and indexed formats"
+  },
+  "limits": [
+    "Three timing samples per mode, not calibrated stable p95",
+    "Installed photos intentionally resized to 4K and saved as untagged JPEG fixtures; measurements do not claim original ICC metadata support",
+    "Per-child wait4 maxRSS included inherited pre-exec Python heap; those fork+exec values are labeled separately and excluded from worker-memory claims",
+    "After-exec 2-ms RSS/PSS sampling can miss peaks; worker still enforces configured 192-MiB address-space ceiling",
+    "Logical R8+palette texture savings apply to native indexed rendering; X11/layer-shell owners use ordinary output formats and portal delegates decoding",
+    "No physical GPU, system-wide savings, matched Variety or full quantizer-comparison acceptance claim",
+    "Temporary inputs/contact sheet/private runtime removed after observation"
+  ],
+  "schema_note": "Raster descriptor observations retain palette count/digest rather than redundant full palette copies for every repeated timing run."
+}

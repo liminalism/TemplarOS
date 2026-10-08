@@ -32,9 +32,10 @@ tracing-subscriber = { workspace = true }
 zbus = { workspace = true }
 pixelkit-raster = { workspace = true }
 pixelkit-text = { workspace = true }
-pixelkit-ui = { workspace = true }
+pixelkit-ui = { workspace = true, features = ["accessibility"] }
 pixelkit-shell = { workspace = true }
-pixelkit-windowing = { workspace = true }
+pixelkit-windowing = { workspace = true, features = ["accessibility"] }
+templar-ui = { workspace = true }
 
 [lints]
 workspace = true
@@ -43,7 +44,7 @@ workspace = true
 name = "templar-files"
 section = "utils"
 priority = "optional"
-depends = "$auto, templaros-sessiond, templaros-filed, wl-clipboard"
+depends = "$auto, templaros-sessiond, templaros-filed"
 assets = [
     ["target/release/templar-files", "usr/bin/templar-files", "755"],
     ["org.templaros.Files.desktop", "usr/share/applications/org.templaros.Files.desktop", "644"],

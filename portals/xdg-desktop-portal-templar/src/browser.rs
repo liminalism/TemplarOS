@@ -19,14 +19,14 @@ use templar_filed::{BrowseEntry, browse::MAX_ENTRIES};
 
 /// One pattern from a caller's filter. `Glob` is a shell pattern over the file name; `Mime` is a
 /// content type.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FilterPattern {
     Glob(String),
     Mime(String),
 }
 
 /// One named filter from the request's `filters` option, e.g. "Images" over `*.png`, `*.jpg`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileFilter {
     pub name: String,
     pub patterns: Vec<FilterPattern>,
@@ -58,37 +58,82 @@ impl FileFilter {
     }
 }
 
-/// Shell-glob matching over `*` and `?`, case-insensitively. Iterative with backtracking, so a
-/// pathological pattern cannot blow the stack the way the naive recursion can.
-fn glob_matches(pattern: &str, name: &str) -> bool {
-    let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
-    let name: Vec<char> = name.to_lowercase().chars().collect();
-    let (mut p, mut n) = (0_usize, 0_usize);
-    let (mut star, mut after_star) = (None, 0_usize);
-    while n < name.len() {
-        match pattern.get(p) {
-            Some('*') => {
-                star = Some(p);
-                p += 1;
-                after_star = n;
+type GlobChars<'a> = std::iter::Peekable<std::iter::FlatMap<
+    std::str::Chars<'a>, std::char::ToLowercase, fn(char) -> std::char::ToLowercase,
+>>;
+
+fn glob_chars(value: &str) -> GlobChars<'_> {
+    value.chars().flat_map(char::to_lowercase as fn(char) -> std::char::ToLowercase).peekable()
+}
+
+/// Match one folded glob atom, including the bracket classes browsers use for
+/// extension filters. Unclosed classes are literal; no regex, recursion or heap scratch.
+fn glob_atom(pattern: &mut GlobChars<'_>, value: char) -> bool {
+    match pattern.next() {
+        Some('?') => true,
+        Some('\\') => pattern.next() == Some(value),
+        Some('[') => {
+            let mut class = pattern.clone();
+            let negated = matches!(class.peek(), Some('!' | '^'));
+            if negated { class.next(); }
+            let mut first = true;
+            let mut matched = false;
+            while let Some(mut character) = class.next() {
+                if character == ']' && !first {
+                    *pattern = class;
+                    return matched != negated;
+                }
+                if character == '\\' {
+                    let Some(escaped) = class.next() else { break };
+                    character = escaped;
+                }
+                let mut range = class.clone();
+                if range.next() == Some('-')
+                    && let Some(mut end) = range.next()
+                    && end != ']'
+                {
+                    if end == '\\' {
+                        let Some(escaped) = range.next() else { break };
+                        end = escaped;
+                    }
+                    matched |= character <= value && value <= end;
+                    class = range;
+                } else {
+                    matched |= character == value;
+                }
+                first = false;
             }
-            Some('?') => {
-                p += 1;
-                n += 1;
-            }
-            Some(character) if *character == name[n] => {
-                p += 1;
-                n += 1;
-            }
-            _ => {
-                let Some(at) = star else { return false };
-                p = at + 1;
-                after_star += 1;
-                n = after_star;
-            }
+            value == '['
         }
+        Some(character) => character == value,
+        None => false,
     }
-    pattern[p..].iter().all(|character| *character == '*')
+}
+
+/// Case-insensitive shell globs, iteratively backtracked without allocating
+/// lowercased copies for every visible filename on every frame.
+fn glob_matches(pattern: &str, name: &str) -> bool {
+    let mut pattern = glob_chars(pattern);
+    let mut name = glob_chars(name);
+    let mut star = None;
+    while let Some(value) = name.peek().copied() {
+        if pattern.peek() == Some(&'*') {
+            pattern.next();
+            star = Some((pattern.clone(), name.clone()));
+            continue;
+        }
+        let mut next = pattern.clone();
+        if glob_atom(&mut next, value) {
+            pattern = next;
+            name.next();
+            continue;
+        }
+        let Some((after_star, remainder)) = star.as_mut() else { return false };
+        if remainder.next().is_none() { return false; }
+        pattern = after_star.clone();
+        name = remainder.clone();
+    }
+    pattern.all(|character| character == '*')
 }
 
 /// What one activation of a row means.
@@ -168,10 +213,19 @@ impl Browser {
             Some(_) => {}
             None => self.current_filter = None,
         }
+        if !matches!(self.kind, ChooserKind::Open { directory: true, .. }) {
+            let filter = self.current_filter.and_then(|index| self.filters.get(index));
+            self.selected.retain(|path| path.file_name().is_some_and(|name|
+                filter.is_none_or(|filter| filter.accepts(&name.to_string_lossy()))));
+        }
     }
 
     pub fn is_selected(&self, path: &Path) -> bool {
         self.selected.iter().any(|selected| selected == path)
+    }
+
+    pub fn selected_count(&self) -> usize {
+        self.selected.len()
     }
 
     /// Replace the listing wholesale. The entries are used in the order given — `templar-filed`
@@ -210,7 +264,8 @@ impl Browser {
         self.entries
             .iter()
             .filter(|entry| {
-                entry.is_dir() || filter.is_none_or(|filter| filter.accepts(&entry.name))
+                (entry.is_dir() || !matches!(self.kind, ChooserKind::Open { directory: true, .. }))
+                    && (entry.is_dir() || filter.is_none_or(|filter| filter.accepts(&entry.name)))
             })
             .collect()
     }
@@ -218,7 +273,9 @@ impl Browser {
     /// Move to `directory`, dropping a selection that no longer makes sense there.
     pub fn enter(&mut self, directory: PathBuf) {
         self.directory = directory;
-        self.selected.clear();
+        if !matches!(self.kind, ChooserKind::Open { multiple: true, directory: true }) {
+            self.selected.clear();
+        }
     }
 
     /// Move to the parent directory, if there is one.
@@ -262,8 +319,12 @@ impl Browser {
     pub fn choose(&self, save_name: &str) -> Result<Vec<PathBuf>, &'static str> {
         match &self.kind {
             ChooserKind::Open {
-                directory: true, ..
-            } => Ok(vec![self.directory.clone()]),
+                multiple, directory: true,
+            } => Ok(if *multiple && !self.selected.is_empty() {
+                self.selected.clone()
+            } else {
+                vec![self.directory.clone()]
+            }),
             ChooserKind::Open { multiple, .. } => {
                 if self.selected.is_empty() {
                     return Err("Choose at least one file.");
@@ -280,15 +341,19 @@ impl Browser {
                 Ok(self.save_files_targets())
             }
             ChooserKind::Save { .. } | ChooserKind::SaveFiles { .. } => {
-                let candidate = PathBuf::from(save_name.trim());
-                if candidate.as_os_str().is_empty() {
+                let candidate = PathBuf::from(save_name);
+                if save_name.trim().is_empty() {
                     return Err("Enter a file name.");
                 }
-                Ok(vec![if candidate.is_absolute() {
+                let target = if candidate.is_absolute() {
                     candidate
                 } else {
                     self.directory.join(candidate)
-                }])
+                };
+                if target.is_dir() {
+                    return Err("Choose a file name, not a folder.");
+                }
+                Ok(vec![target])
             }
         }
     }
@@ -336,6 +401,22 @@ mod tests {
             Vec::new(),
             None,
         )
+    }
+
+    #[test]
+    fn browser_extension_classes_select_files_without_hiding_the_requested_type() {
+        let text = FileFilter {
+            name: "*.txt".into(),
+            patterns: vec![FilterPattern::Glob("*.[tT][xX][tT]".into())],
+        };
+        assert!(text.accepts("fixture.txt"));
+        assert!(text.accepts("SECOND.TXT"));
+        assert!(!text.accepts("picture.png"));
+        assert!(!glob_matches("report-[0-9]?.[!p]df", "report-42.pdf"));
+        assert!(glob_matches("report-[0-9]?.[!p]df", "report-42.adf"));
+        assert!(glob_matches("literal\\*.txt", "literal*.txt"));
+        assert!(glob_matches("unclosed[.txt", "unclosed[.txt"));
+        assert!(glob_matches("*.txt", "名前😀.txt"));
     }
 
     /// The model this module exists for. The bug it starts from: the dialog truncated every
@@ -428,5 +509,63 @@ mod tests {
                 PathBuf::from("/home/u/Downloads/two.txt"),
             ])
         );
+    }
+
+    #[test]
+    fn changing_filter_drops_files_no_longer_visible_in_multi_selection() {
+        let mut browser = Browser::new(
+            ChooserKind::Open { multiple: true, directory: false },
+            PathBuf::from("/home/u"),
+            vec![
+                FileFilter { name: "Text".into(), patterns: vec![FilterPattern::Glob("*.txt".into())] },
+                FileFilter { name: "Images".into(), patterns: vec![FilterPattern::Glob("*.png".into())] },
+            ], None);
+        browser.set_listing(vec![file("a.txt"), file("b.png")], false);
+        browser.activate(0);
+        browser.activate(1);
+        browser.set_current_filter(Some(1));
+        assert_eq!(browser.choose(""), Ok(vec![PathBuf::from("/home/u/b.png")]));
+        assert!(!browser.is_selected(Path::new("/home/u/a.txt")));
+    }
+
+    #[test]
+    fn directory_multi_selection_is_not_replaced_by_navigation() {
+        let mut browser = Browser::new(
+            ChooserKind::Open { multiple: true, directory: true },
+            PathBuf::from("/home/u"), Vec::new(), None);
+        browser.set_listing(vec![
+            entry("one", EntryKind::Directory),
+            file("not-a-directory.txt"),
+            entry("two", EntryKind::Directory),
+        ], false);
+        assert_eq!(browser.visible().len(), 2);
+        assert_eq!(browser.choose(""), Ok(vec![PathBuf::from("/home/u")]));
+        browser.pick(PathBuf::from("/home/u/one"));
+        browser.pick(PathBuf::from("/home/u/two"));
+        browser.activate(0);
+        assert_eq!(browser.directory(), Path::new("/home/u/one"));
+        assert_eq!(browser.choose(""), Ok(vec![
+            PathBuf::from("/home/u/one"), PathBuf::from("/home/u/two"),
+        ]));
+        browser.pick(PathBuf::from("/home/u/one"));
+        assert_eq!(browser.choose(""), Ok(vec![PathBuf::from("/home/u/two")]));
+    }
+
+    #[test]
+    fn single_directory_choose_returns_the_navigated_folder() {
+        let mut browser = Browser::new(
+            ChooserKind::Open { multiple: false, directory: true },
+            PathBuf::from("/home/u"), Vec::new(), None);
+        browser.set_listing(vec![entry("one", EntryKind::Directory)], false);
+        browser.activate(0);
+        assert_eq!(browser.choose(""), Ok(vec![PathBuf::from("/home/u/one")]));
+    }
+
+    #[test]
+    fn save_preserves_nonempty_filename_whitespace() {
+        let browser = Browser::new(ChooserKind::Save { current_name: None },
+            PathBuf::from("/home/u"), Vec::new(), None);
+        assert_eq!(browser.choose(" report.txt "),
+            Ok(vec![PathBuf::from("/home/u/ report.txt ")]));
     }
 }

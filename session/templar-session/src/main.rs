@@ -7,11 +7,10 @@
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use std::process::{Child, Command};
+use std::{os::unix::fs::FileTypeExt, path::{Component, Path, PathBuf}, process::{Child, Command}};
 
 const TARGET: &str = "templaros-session.target";
 const COMPOSITOR_UNIT: &str = "templar-comp.service";
-const WAYLAND_DISPLAY: &str = "wayland-0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Step {
@@ -38,12 +37,20 @@ const START_STEPS: &[Step] = &[
             "XDG_CURRENT_DESKTOP=TemplarOS",
             "XDG_SESSION_DESKTOP=templaros",
             "XDG_SESSION_TYPE=wayland",
-            "WAYLAND_DISPLAY=wayland-0",
+            "QT_QPA_PLATFORMTHEME=gtk3",
         ],
     },
     Step {
         program: "systemctl",
         args: &["--user", "import-environment", "XDG_SEAT", "XDG_VTNR"],
+    },
+    // Processes retain their original display connection even after activation
+    // environment changes. Retire selected backends from the previous desktop;
+    // these remain activation-driven, not eagerly started here.
+    Step {
+        program: "systemctl",
+        args: &["--user", "stop", "xdg-desktop-portal.service", "xdg-desktop-portal-gtk.service",
+            "xdg-desktop-portal-lxqt.service", "xdg-desktop-portal-templar.service"],
     },
     // Autostart is arbitrated by sessiond (one provider per role); mask the generic runner.
     Step {
@@ -82,7 +89,7 @@ const CLEANUP_STEPS: &[Step] = &[
     },
     Step {
         program: "systemctl",
-        args: &["--user", "unset-environment", "WAYLAND_DISPLAY"],
+        args: &["--user", "unset-environment", "WAYLAND_DISPLAY", "QT_QPA_PLATFORMTHEME"],
     },
 ];
 
@@ -96,10 +103,13 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt().init();
+    use std::io::IsTerminal as _;
+    // No ANSI under the journal: journald stores coloured MESSAGE fields as byte arrays.
+    tracing_subscriber::fmt()
+        .with_ansi(std::io::stdout().is_terminal())
+        .init();
     let cli = Cli::parse();
 
-    debug_assert_eq!(WAYLAND_DISPLAY, "wayland-0");
     if cli.dry_run {
         for step in START_STEPS
             .iter()
@@ -114,7 +124,17 @@ fn main() -> Result<()> {
     }
 
     let mut helpers = Vec::new();
-    let result = run_steps(START_STEPS).and_then(|()| {
+    let result = (|| {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from).context("XDG_RUNTIME_DIR is required for compositor readiness")?;
+        let ready_path = runtime.join("templaros/compositor-display.json");
+        match std::fs::remove_file(&ready_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("clearing stale compositor readiness"),
+        }
+        run_steps(START_STEPS)?;
+        let wayland_display = ready_display(&runtime)?;
         // Polkit's agent registers a UnixSession subject from its PID. A user-manager service
         // has no PAM session, so these children must remain under this greetd-launched process.
         // The target start has already waited for the compositor's Type=notify readiness.
@@ -122,8 +142,9 @@ fn main() -> Result<()> {
             match Command::new(step.program)
                 .args(step.args)
                 .env_remove("DISPLAY")
-                .env("WAYLAND_DISPLAY", WAYLAND_DISPLAY)
+                .env("WAYLAND_DISPLAY", &wayland_display)
                 .env("QT_QPA_PLATFORM", "wayland")
+                .env("QT_QPA_PLATFORMTHEME", "gtk3")
                 .spawn()
             {
                 Ok(child) => helpers.push(child),
@@ -131,7 +152,7 @@ fn main() -> Result<()> {
             }
         }
         run_step(WAIT_STEP)
-    });
+    })();
     stop_helpers(&mut helpers);
     // Cleanup also runs after a failed start.  That is what returns SDDM to a usable greeter when
     // the compositor cannot take the seat, rather than stranding the user on an empty VT.
@@ -143,6 +164,40 @@ fn main() -> Result<()> {
     tracing::info!(unit = COMPOSITOR_UNIT, "session ended");
     result
 }
+
+#[derive(serde::Deserialize)]
+struct DisplayReady {
+    schema: u32,
+    compositor_pid: u32,
+    socket: String,
+}
+
+fn ready_display(runtime: &Path) -> Result<String> {
+    let ready: DisplayReady = serde_json::from_slice(
+        &std::fs::read(runtime.join("templaros/compositor-display.json"))
+            .context("reading actual ready compositor display")?,
+    ).context("decoding compositor display readiness")?;
+    validate_ready_name(ready.schema, ready.compositor_pid, &ready.socket)?;
+    let process = PathBuf::from(format!("/proc/{}/comm", ready.compositor_pid));
+    let name = std::fs::read_to_string(process).context("ready compositor process no longer exists")?;
+    if name.trim() != "templar-comp" {
+        bail!("display readiness PID is not a templar compositor");
+    }
+    if !std::fs::symlink_metadata(runtime.join(&ready.socket))?.file_type().is_socket() {
+        bail!("ready compositor display is not a Unix socket");
+    }
+    Ok(ready.socket)
+}
+
+fn validate_ready_name(schema: u32, pid: u32, socket: &str) -> Result<()> {
+    let mut components = Path::new(socket).components();
+    if schema != 1 || pid == 0 || !matches!(components.next(), Some(Component::Normal(_)))
+        || components.next().is_some() {
+        bail!("invalid compositor display readiness schema, PID or socket basename");
+    }
+    Ok(())
+}
+
 
 fn desktop_helpers() -> [Step; 2] {
     let arguments: &'static [&'static str] =
@@ -204,4 +259,17 @@ fn run_step(step: Step) -> Result<()> {
         bail!("{} {:?} failed with {status}", step.program, step.args);
     }
     Ok(())
+}
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+    #[test]
+    fn readiness_uses_one_actual_socket_basename() {
+        assert!(validate_ready_name(1, 42, "wayland-7").is_ok());
+        for socket in ["", "/run/user/1000/wayland-0", "../wayland-0", ".", "nested/wayland-0"] {
+            assert!(validate_ready_name(1, 42, socket).is_err());
+        }
+        assert!(validate_ready_name(2, 42, "wayland-7").is_err());
+        assert!(validate_ready_name(1, 0, "wayland-7").is_err());
+    }
 }

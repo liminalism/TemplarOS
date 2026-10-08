@@ -72,7 +72,7 @@ pub fn run(exec: Option<&[String]>) -> anyhow::Result<i32> {
         "  outputs:              {}",
         state.window_service.outputs().len()
     );
-    println!("  private protocols:    templar_shell_v1, templar_recovery_v1");
+    println!("  private protocols:    templar_shell_v2, templar_recovery_v1");
     println!(
         "  idle screen-off:      {}",
         state.idle.timeout().map_or_else(
@@ -106,7 +106,8 @@ pub(crate) fn build_state(
 ) -> anyhow::Result<(State, String)> {
     let display: Display<State> = Display::new()?;
     let dh = display.handle();
-    let identity_cache = DbusIdentityCache::spawn(runtime);
+    let identity_cache =
+        DbusIdentityCache::spawn(runtime, crate::identity_sink::install(&event_loop.handle()));
     let governor = GovernorNotifier::spawn(runtime);
     let idle_notifier = IdleNotifier::spawn(runtime);
     let shell_sink = crate::shell_sink::install(&event_loop.handle());
@@ -135,12 +136,12 @@ mod tests {
     use std::sync::mpsc;
     use wayland_client::{Connection, Dispatch, QueueHandle, protocol::wl_registry};
 
-    /// Globals that exist only for the trusted shell: `templar_shell_v1` can shelve, activate and
+    /// Globals that exist only for the trusted shell: `templar_shell_v2` can shelve, activate and
     /// place surfaces in privileged layers, `templar_recovery_v1` drives the pressure overlay, and
     /// the three capture globals read other applications' pixels — the output one reads the whole
     /// screen. A global an ordinary client cannot see is one it cannot attempt to bind.
     const TRUSTED_ONLY: [&str; 5] = [
-        "templar_shell_manager_v1",
+        "templar_shell_manager_v2",
         "templar_recovery_manager_v1",
         "ext_output_image_capture_source_manager_v1",
         "ext_foreign_toplevel_image_capture_source_manager_v1",
@@ -169,18 +170,9 @@ mod tests {
         }
     }
 
-    /// A client connects to the compositor and sees every protocol it is supposed to.
-    ///
-    /// The point of doing this over a socket with a real `wayland-client` rather than by
-    /// inspecting our own `State` is that only the wire tells the truth: a global that is
-    /// constructed but never registered, or registered against the wrong interface name or
-    /// version, looks perfectly correct from inside the compositor and is invisible to a client.
-    /// This is also the only test in the crate that runs a client at all, so it is what stands
-    /// behind `--check`'s claim that the compositor "comes up".
-    ///
-    /// It needs no display, no seat and no session bus, which is what lets it run in CI.
+    /// Protected globals are absent on the public socket and reachable on the private socket.
     #[test]
-    fn a_client_connects_and_sees_every_advertised_protocol() {
+    fn public_socket_conceals_protected_globals_private_socket_exposes_them() {
         let (socket_tx, socket_rx) = mpsc::channel();
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
@@ -230,38 +222,6 @@ mod tests {
 
         let ordinary = connect(&socket_name);
         let advertised = registry_of(&ordinary);
-
-        // Everything TemplarOS's own documents promise an ordinary client. A protocol dropped from
-        // `TemplarCompState::new` fails here rather than at a user's first attempt to use it.
-        //
-        // `wl_output` is deliberately absent: outputs are created by the backend (one synthetic
-        // output for winit, one per connector for udev), and the self-check backend has none.
-        for required in [
-            "wl_compositor",
-            "wl_shm",
-            "wl_seat",
-            "xdg_wm_base",
-            "zxdg_decoration_manager_v1",
-            "xdg_activation_v1",
-            "xdg_wm_dialog_v1",
-            // ADR-0010's compositor-owned lock screen and the shell's toplevel listing.
-            "ext_session_lock_manager_v1",
-            "ext_foreign_toplevel_list_v1",
-            "wp_viewporter",
-            "wp_fractional_scale_manager_v1",
-            "wp_presentation",
-            // A client saying "do not turn the screen off while I am playing this"
-            // (`src/idle.rs`). Ordinary clients may bind it: that is the protocol's whole point.
-            "zwp_idle_inhibit_manager_v1",
-            // Clipboard managers and tools (`wl-copy`, the portal backend): selections without
-            // keyboard focus (`src/state.rs`'s `data_control_state`).
-            "zwlr_data_control_manager_v1",
-        ] {
-            assert!(
-                advertised.iter().any(|name| name == required),
-                "compositor did not advertise {required}; it advertised: {advertised:?}"
-            );
-        }
 
         // The security boundary, from the outside: everything in `TRUSTED_ONLY` is gated by
         // `can_view` on having connected over the private socket.

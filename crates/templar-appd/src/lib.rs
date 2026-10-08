@@ -9,7 +9,8 @@
 //! 4. client-supplied `app_id` / `WM_CLASS` are checked for consistency; a mismatch is logged
 //!    but cannot replace the verified identity.
 //!
-//! This crate is a library hosted by `templar-sessiond`; it owns no process of its own.
+//! Policy is hosted by `templar-sessiond`. The `templar-app-exec` binary is only a
+//! native-argv adapter: it replaces itself with an already-brokered application.
 
 #![forbid(unsafe_code)]
 
@@ -18,9 +19,11 @@ pub mod desktop_entry;
 pub mod identity;
 pub mod launcher;
 pub mod manifests;
+pub mod native_exec;
 pub mod store;
 pub mod systemd1;
 pub mod variants;
+pub mod workload;
 
 pub use identity::{IdentityResolution, InstanceRecord, Registry};
 pub use templar_types::IdentityConfidence;

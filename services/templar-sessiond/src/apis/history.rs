@@ -8,7 +8,7 @@
 use crate::apis::failed;
 use anyhow::{Context, bail};
 use parking_lot::RwLock;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use templar_associationd::engine::AssociationEngine;
 use templar_session_core::{
     change_log,
@@ -20,7 +20,7 @@ use templar_session_core::{
     settings::{self, SettingsValues},
 };
 use templar_state::Store;
-use templar_types::ProviderRole;
+use templar_types::{ProviderRole, dbus::session as names};
 use zbus::{fdo, object_server::SignalEmitter};
 
 #[derive(Debug)]
@@ -30,6 +30,9 @@ pub struct HistoryApi {
     engine: Arc<RwLock<AssociationEngine>>,
     settings_values: Arc<RwLock<SettingsValues>>,
     providers: Arc<RwLock<ProviderRegistry>>,
+    mimeapps_path: PathBuf,
+    appearance: Arc<super::appearance::AppearanceEffects>,
+    wallpaper: super::wallpaper::WallpaperHost,
 }
 
 impl HistoryApi {
@@ -39,6 +42,9 @@ impl HistoryApi {
         engine: Arc<RwLock<AssociationEngine>>,
         settings_values: Arc<RwLock<SettingsValues>>,
         providers: Arc<RwLock<ProviderRegistry>>,
+        mimeapps_path: PathBuf,
+        appearance: Arc<super::appearance::AppearanceEffects>,
+        wallpaper: super::wallpaper::WallpaperHost,
     ) -> Self {
         Self {
             history,
@@ -46,6 +52,9 @@ impl HistoryApi {
             engine,
             settings_values,
             providers,
+            mimeapps_path,
+            appearance,
+            wallpaper,
         }
     }
 }
@@ -129,9 +138,16 @@ impl HistoryApi {
             .parse()
             .map_err(|_| fdo::Error::InvalidArgs("event_id is not a UUID".into()))?;
 
-        let reverted_domain = self
-            .store
-            .transaction(|tx| -> anyhow::Result<Option<String>> {
+        let guard = self.appearance.lock().await;
+        let reverted_domain = (|| -> anyhow::Result<Option<(String, String)>> {
+            let mut connection = self.store.lock();
+            let mut values = self.settings_values.write();
+            let transaction = connection.transaction()?;
+            let tx = &transaction;
+            let mut pending_setting = None;
+            let mut pending_provider = None;
+            let mut pending_association = None;
+            let domain = (|| -> anyhow::Result<Option<(String, String)>> {
                 let Some(event) = find_within(tx, event_id)? else {
                     return Ok(None);
                 };
@@ -154,16 +170,16 @@ impl HistoryApi {
 
                 match entry.domain.as_str() {
                     domain if domain.starts_with("associations.") => {
+                        let engine = self.engine.write();
                         templar_associationd::store::revert_within(tx, &entry)?;
+                        let restored = templar_associationd::store::load_db_within(tx)?;
+                        pending_association = Some((engine, restored));
                     }
                     "settings" => {
-                        let mut values = self.settings_values.write();
-                        settings::revert_within(
-                            tx,
-                            &mut values,
-                            &entry.key,
-                            entry.old_value.as_deref(),
+                        let restored = settings::revert_within(
+                            tx, &entry.key, entry.old_value.as_deref(),
                         )?;
+                        pending_setting = Some((entry.key.clone(), restored));
                     }
                     "providers.selection" => {
                         let role = ProviderRole::ALL
@@ -171,13 +187,11 @@ impl HistoryApi {
                             .copied()
                             .find(|role| role.as_str() == entry.key)
                             .context("unknown provider role in change_log entry")?;
-                        let mut registry = self.providers.write();
-                        providers::revert_selection_within(
-                            tx,
-                            &mut registry,
-                            role,
-                            entry.old_value.as_deref(),
+                        let registry = self.providers.write();
+                        let restored = providers::revert_selection_within(
+                            tx, role, entry.old_value.as_deref(),
                         )?;
+                        pending_provider = Some((registry, role, restored));
                     }
                     "background.approval" => {
                         // No in-memory cache to reload afterward: `Background1` always reads
@@ -207,22 +221,65 @@ impl HistoryApi {
                         reversible: false,
                     },
                 )?;
-                Ok(Some(entry.domain))
-            })
-            .map_err(failed)?;
+                Ok(Some((entry.domain, entry.key)))
+            })()?;
+            transaction.commit()?;
+            if let Some((key, restored)) = pending_setting {
+                match restored {
+                    Some(value) => values.set(&key, value),
+                    None => { values.reset(&key); }
+                }
+            }
+            if let Some((mut registry, role, restored)) = pending_provider {
+                match restored {
+                    Some(app_id) => registry.select(role, app_id),
+                    None => { registry.deselect(role); }
+                }
+            }
+            if let Some((mut engine, restored)) = pending_association {
+                engine.replace_database(restored);
+                if let Err(error) = engine.export_mimeapps(&self.mimeapps_path) {
+                    tracing::warn!(%error, path = %self.mimeapps_path.display(), "undo committed but regenerating mimeapps.list failed");
+                }
+            }
+            Ok(domain)
+        })().map_err(failed)?;
 
-        let Some(domain) = reverted_domain else {
+        let Some((domain, mut key)) = reverted_domain else {
             return Ok(false);
         };
-        if domain.starts_with("associations.") {
-            match templar_associationd::store::load_db(&self.store) {
-                Ok(db) => self.engine.write().replace_database(db),
-                Err(error) => {
-                    tracing::warn!(%error, "undo committed but reloading the association database failed");
-                }
+        let effects = if domain == "settings" && super::appearance::AppearanceEffects::affects(&key) {
+            self.appearance.reconcile(guard).await
+        } else {
+            drop(guard);
+            Ok(())
+        };
+        if domain == "settings" && super::wallpaper::WallpaperHost::affects(&key) { self.wallpaper.reconcile().await.map_err(failed)?; }
+        if let Some(scope) = domain.strip_prefix("associations.") {
+            if scope == "project-mime" {
+                key = key.replacen('\u{1f}', ":", 1);
+            }
+            if let Err(error) = emitter.connection().emit_signal(
+                None::<&str>, names::ASSOCIATIONS_PATH,
+                "org.templaros.Associations1", "DefaultsChanged", &(scope, key.as_str()),
+            ).await {
+                tracing::warn!(%error, "undo committed but association change notification failed");
+            }
+        }
+        if domain == "settings" || domain == "providers.selection" {
+            let (path, interface) = if domain == "settings" {
+                (names::SETTINGS_PATH, "org.templaros.Settings1")
+            } else {
+                (names::PROVIDERS_PATH, "org.templaros.Providers1")
+            };
+            if let Err(error) = emitter.connection().emit_signal(
+                None::<&str>, path, interface, "Changed", &(key,),
+            ).await {
+                tracing::warn!(%error, "undo committed but domain change notification failed");
             }
         }
         let _ = emitter.changed().await;
+        effects.map_err(|error| failed(format!("Undo committed; supported toolkit configuration incomplete: {error:#}")))?;
         Ok(true)
     }
 

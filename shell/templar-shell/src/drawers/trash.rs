@@ -47,7 +47,9 @@ impl TrashClient for templar_client::proxies::FilesTrashProxy<'_> {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct TrashEntry {
     pub name: String,
+    #[serde(with = "templar_types::native_path")]
     pub trashed_path: PathBuf,
+    #[serde(with = "templar_types::native_path")]
     pub original_path: PathBuf,
     pub deletion_date: String,
     #[serde(default)]

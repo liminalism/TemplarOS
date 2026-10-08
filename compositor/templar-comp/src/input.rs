@@ -3,11 +3,9 @@
 //! and "pointer button up ending a drag" all live here, plus the fixed recovery keybindings
 //! (`src/keybindings.rs`) intercepted before a key ever reaches a client.
 //!
-//! Coordinates are converted from device/physical space to the one global logical scene exactly
-//! once, at `AbsolutePositionEvent::position_transformed` — the same boundary
-//! `templar_window::geometry::physical_to_logical` exists for — and never again: everything from
-//! `MotionEvent` onward (`WindowService::update_drag`, hit-testing, focus) stays in that one
-//! logical space, matching `crates/templar-window`'s own invariant.
+//! Device/physical coordinates enter the one global logical scene exactly once. Absolute
+//! devices use the output's real signal, rotation and inverse calibrated viewport; from
+//! `MotionEvent` onward drag/hit/focus coordinates remain logical, matching `templar-window`.
 
 use crate::chrome::layout::{self, ControlTag};
 use crate::state::{Backend, TemplarCompState};
@@ -17,9 +15,10 @@ use smithay::{
         InputBackend, InputEvent, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
         PointerMotionEvent,
     },
-    desktop::WindowSurfaceType,
+    desktop::{WindowSurfaceType, find_popup_root_surface},
     input::{
         Seat, SeatHandler, SeatState,
+        dnd::{DnDGrab, DndTarget, GrabType, Source},
         keyboard::FilterResult,
         pointer::{
             AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, Focus, GestureHoldBeginEvent,
@@ -36,6 +35,7 @@ use smithay::{
     },
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial},
     wayland::{
+        compositor::get_parent,
         seat::WaylandFocus,
         selection::{
             SelectionHandler,
@@ -87,8 +87,45 @@ impl<B: Backend + 'static> DataDeviceHandler for TemplarCompState<B> {
     }
 }
 
-impl<B: Backend + 'static> smithay::input::dnd::DndGrabHandler for TemplarCompState<B> {}
-impl<B: Backend + 'static> WaylandDndGrabHandler for TemplarCompState<B> {}
+impl<B: Backend + 'static> smithay::input::dnd::DndGrabHandler for TemplarCompState<B> {
+    fn dropped(&mut self, _target: Option<DndTarget<'_, Self>>, _validated: bool,
+        _seat: Seat<Self>, _location: Point<f64, Logical>) {
+        // Called under the grab mutex: clear plain state only, never refresh pointer focus here.
+        self.native_file_drag_active = false;
+        self.dwell = None;
+    }
+    fn cancelled(&mut self, _seat: Seat<Self>, _location: Point<f64, Logical>) {
+        self.native_file_drag_active = false;
+        self.dwell = None;
+    }
+}
+impl<B: Backend + 'static> WaylandDndGrabHandler for TemplarCompState<B> {
+    fn dnd_requested<S: Source>(&mut self, source: S, _icon: Option<WlSurface>,
+        seat: Seat<Self>, serial: Serial, type_: GrabType) {
+        if self.session_lock.locked {
+            source.cancel();
+            return;
+        }
+        let file_drag = source.metadata().is_some_and(|metadata|
+            metadata.mime_types.iter().any(|mime| mime == templar_types::uri_list::MIME_TYPE));
+        match type_ {
+            GrabType::Pointer => {
+                let Some(pointer) = seat.get_pointer() else { source.cancel(); return; };
+                let Some(start) = pointer.grab_start_data() else { source.cancel(); return; };
+                let grab = DnDGrab::new_pointer(&self.display_handle, start, source, seat);
+                self.native_file_drag_active = file_drag;
+                pointer.set_grab(self, grab, serial, Focus::Keep);
+            }
+            GrabType::Touch => {
+                let Some(touch) = seat.get_touch() else { source.cancel(); return; };
+                let Some(start) = touch.grab_start_data() else { source.cancel(); return; };
+                let grab = DnDGrab::new_touch(&self.display_handle, start, source, seat);
+                self.native_file_drag_active = false;
+                touch.set_grab(self, grab, serial);
+            }
+        }
+    }
+}
 
 /// Give `window_id` keyboard focus: `WindowService::activate` plus the matching
 /// `xdg_toplevel.configure{activated}` round trip on every affected toplevel — the
@@ -247,12 +284,38 @@ pub fn focus_home_if_needed<B: Backend + 'static>(
 /// ([`press_target_at`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Affordance {
-    /// One of the control tags (`chrome::layout::control_tags`).
+    /// One of the window controls (`chrome::layout::tab_control_tags`).
     Button(ControlTag),
-    /// The name tag: a move.
+    /// The title tab: a move.
     Tag,
-    /// Just outside the frame: a resize of these edges.
+    /// In a reserved corner square or just outside the window: a resize of these edges.
     Edge(templar_window::ResizeEdges),
+}
+
+/// A fresh press on a visible control. A moved/hidden/replaced target cancels release.
+#[derive(Clone, Copy, Debug)]
+pub struct TabControlPress {
+    window_id: WindowId,
+    control: ControlTag,
+    rect: templar_window::Rect,
+}
+
+impl TabControlPress {
+    fn matches(self, target: PressTarget, layout: Option<templar_window::WindowLayout>) -> bool {
+        target == PressTarget::Affordance(self.window_id, Affordance::Button(self.control))
+            && layout.is_some_and(|layout| layout::tab_control_tags(&layout).into_iter()
+                .any(|(control, rect)| control == self.control && rect == self.rect))
+    }
+}
+
+/// One window's tabs as the press hit test sees them: the shared layout plus which of its
+/// rectangles are currently drawn. Hidden chrome takes no input, so the hit test needs the
+/// same visibility paint drew with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TabHitRects {
+    layout: templar_window::WindowLayout,
+    title_visible: bool,
+    controls_visible: bool,
 }
 
 /// One window as the press hit test sees it — everything [`press_target_at`] needs and nothing
@@ -260,18 +323,13 @@ enum Affordance {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PressCandidate {
     window_id: WindowId,
-    /// The window's *frame* (tag strip included), which is what owns the point.
+    /// The window's client rectangle, which is what owns the point.
     geometry: templar_window::Rect,
-    is_client: bool,
     has_frame: bool,
     maximized: bool,
-    /// The tag strip along the bottom edge, when the window wears one (`has_frame`) or is being
-    /// shown one over itself (`covering_chrome`).
-    strip: Option<templar_window::Rect>,
-    /// Whether that strip is drawn *over* the window's own pixels rather than below them — true
-    /// for a screen-filling window's chrome, false for an ordinary window's frame, where the
-    /// strip is compositor-owned screen the client does not occupy.
-    strip_over_client: bool,
+    /// Shared layout and visibility. Screen-filling clients use it too; shell surfaces
+    /// have no tabs and retain their normal stacked input priority.
+    tabs: Option<TabHitRects>,
 }
 
 /// What a pointer press at a point is asking for.
@@ -289,32 +347,48 @@ enum PressTarget {
 /// The press target at `pos`, given every visible window top-first.
 ///
 /// Pure, and deliberately so: this is the one place that decides which window a press belongs
-/// to, and getting it wrong is indistinguishable from "the windows fight for focus".
+/// to, and getting it wrong is indistinguishable from "the windows fight for focus". The motion
+/// path answers cursor shape from this same function, so what the cursor promises and what a
+/// press then does cannot disagree.
+///
+/// Priority inside one window: the reserved resize squares first (the exact corner always
+/// resizes, never closes), then the visible tabs (controls before title), then the client
+/// itself, then the edge resize band the tabs sit in. A gap between exterior tabs belongs to
+/// whatever is behind — no pixels of this window are there — while a gap in overlaid chrome
+/// is the client's own pixels showing through.
 fn press_target_at(candidates: &[PressCandidate], pos: TemplarPoint) -> PressTarget {
     for candidate in candidates {
-        if rect_contains(candidate.geometry, pos) {
-            if !candidate.is_client {
-                return PressTarget::Window(candidate.window_id);
-            }
-            if let Some(strip) = candidate.strip
-                && rect_contains(strip, pos)
+        if candidate.has_frame && !candidate.maximized {
+            for (index, square) in
+                templar_window::WindowLayout::resize_squares(candidate.geometry)
+                    .iter()
+                    .enumerate()
             {
-                if let Some(tag) = layout::control_tag_at(strip, pos) {
+                if rect_contains(*square, pos) {
+                    let corner = templar_window::Corner::ALL[index];
+                    return PressTarget::Affordance(
+                        candidate.window_id,
+                        Affordance::Edge(corner.resize_edges()),
+                    );
+                }
+            }
+        }
+        if let Some(tabs) = &candidate.tabs {
+            let visibility = layout::TabVisibility {
+                title: tabs.title_visible,
+                controls: tabs.controls_visible,
+            };
+            match layout::tab_hit_at(&tabs.layout, visibility, pos) {
+                Some(layout::TabHit::Control(tag)) => {
                     return PressTarget::Affordance(candidate.window_id, Affordance::Button(tag));
                 }
-                if rect_contains(layout::name_tag(strip), pos) {
+                Some(layout::TabHit::Title) => {
                     return PressTarget::Affordance(candidate.window_id, Affordance::Tag);
                 }
-                // The gap between the two tags. On a framed window no pixels of it are there, so
-                // the press belongs to whatever is behind. On a screen-filling window the strip
-                // is drawn over the window's own client area, and falling through would raise
-                // the window *underneath* on every click along the bottom row of the one in
-                // front.
-                if candidate.strip_over_client {
-                    return PressTarget::Window(candidate.window_id);
-                }
-                continue;
+                None => {}
             }
+        }
+        if rect_contains(candidate.geometry, pos) {
             return PressTarget::Window(candidate.window_id);
         }
         if candidate.has_frame
@@ -325,6 +399,41 @@ fn press_target_at(candidates: &[PressCandidate], pos: TemplarPoint) -> PressTar
         }
     }
     PressTarget::Nothing
+}
+
+fn tab_approach_at(candidates: &[PressCandidate], pos: TemplarPoint) -> Option<WindowId> {
+    for candidate in candidates {
+        if let Some(tabs) = candidate.tabs {
+            let client = candidate.geometry;
+            let near_inside_edge = rect_contains(client, pos)
+                && (pos.x - client.x < templar_window::TAB_ACTIVATION_DEPTH
+                    || client.right() - pos.x <= templar_window::TAB_ACTIVATION_DEPTH
+                    || pos.y - client.y < templar_window::TAB_ACTIVATION_DEPTH
+                    || client.bottom() - pos.y <= templar_window::TAB_ACTIVATION_DEPTH);
+            if tab_aims_at(tabs, pos)
+                || near_inside_edge
+                || templar_window::WindowLayout::activation_regions(client)
+                    .into_iter().any(|region| rect_contains(region, pos))
+            {
+                return Some(candidate.window_id);
+            }
+        }
+        if rect_contains(candidate.geometry, pos) {
+            return None;
+        }
+    }
+    None
+}
+
+fn tab_aims_at(tabs: TabHitRects, pos: TemplarPoint) -> bool {
+    let corridor = |rect: templar_window::Rect| {
+        let margin = templar_window::geometry::RESIZE_MARGIN;
+        rect_contains(templar_window::Rect::new(
+            rect.x - margin, rect.y - margin, rect.width + 2 * margin, rect.height + 2 * margin,
+        ), pos)
+    };
+    (tabs.title_visible && corridor(tabs.layout.title))
+        || (tabs.controls_visible && tabs.layout.controls.iter().any(|(_, rect)| corridor(*rect)))
 }
 
 /// What a primary-button press-and-release in the window overview turned out to be.
@@ -397,8 +506,8 @@ fn taskfield_release(
 /// Which window a press should bring forward before it does anything else, or `None` when it
 /// should bring none forward.
 ///
-/// Everything a window owns focuses it: its client area, its name tag and its edge zones. The two
-/// exceptions are the close and park tags — activating a window in
+/// Everything a window owns focuses it: its client area, its title tab and its edge zones. The
+/// two exceptions are the close and park controls — activating a window in
 /// order to close it, or to send it to the shelf a frame later, would take the keyboard away from
 /// whatever the user was typing into and hand it to something that is about to disappear.
 fn press_activates(target: PressTarget) -> Option<WindowId> {
@@ -409,7 +518,7 @@ fn press_activates(target: PressTarget) -> Option<WindowId> {
     }
 }
 
-/// The band's park button: put `window_id` on the Home shelf and hand the keyboard to whatever
+/// The title tab's park control: put `window_id` on the Home shelf and hand the keyboard to whatever
 /// is left on top — the next visible client window, or Home when there is none — exactly as
 /// Ctrl+Alt+P does for the activated window (`keybindings::park_focused`).
 fn park_window<B: Backend + 'static>(state: &mut TemplarCompState<B>, window_id: WindowId) {
@@ -437,7 +546,7 @@ fn park_window<B: Backend + 'static>(state: &mut TemplarCompState<B>, window_id:
 /// A client request (`xdg_toplevel.move`/`resize`, or the XWayland equivalent) must present the
 /// serial of the button press that motivated it — the implicit grab Smithay installed when that
 /// press was delivered is both the proof the press happened and the start data. The compositor's
-/// own affordances (recovery band, resize grip) hit-test the press *before* it is routed through
+/// own affordances (title tab, resize squares) hit-test the press *before* it is routed through
 /// `PointerHandle::button`, deliberately, so the press never reaches a client — but that also
 /// means no implicit grab exists yet at that moment, so demanding one silently disabled both
 /// affordances. Their start data is synthesized here instead: the press is the compositor's own
@@ -507,7 +616,7 @@ fn start_gesture<B: Backend + 'static>(
             };
             start_data
         }
-        // See `GestureOrigin`: at band/grip press time the press has not been routed through
+        // See `GestureOrigin`: at tab/edge press time the press has not been routed through
         // `PointerHandle::button` yet, so there is no implicit grab to inherit — and must not
         // be, because this press is swallowed rather than delivered to any client.
         GestureOrigin::CompositorAffordance => PointerGrabStartData {
@@ -528,7 +637,7 @@ fn start_gesture<B: Backend + 'static>(
     if !started {
         return;
     }
-    // A band drag moves the whole group; `Shift` held moves that member alone (planning doc
+    // A title drag moves the whole group; `Shift` held moves that member alone (planning doc
     // §2.1). Decided once, here, from the modifiers as the gesture starts — mid-drag the answer
     // must not change under the pointer.
     let followers = match gesture {
@@ -548,7 +657,7 @@ fn start_gesture<B: Backend + 'static>(
         window_id,
         gesture,
         followers,
-        // A press on a name tag that never moves is a click, and a click on a name tag pins the
+        // A press on a title tab that never moves is a click, and a click on a title pins the
         // window. Only from the tag: `xdg_toplevel.move` is a client asking to be dragged, and a
         // client-side title bar that happens to receive a bare click must not pin anything.
         pins_on_click: origin == GestureOrigin::CompositorAffordance
@@ -606,8 +715,8 @@ pub struct WindowGestureGrab<B: Backend + 'static> {
     pressed_at: TemplarPoint,
     /// Whether a release that never left [`CLICK_SLOP`] of [`Self::pressed_at`] pins the window.
     pins_on_click: bool,
-    /// The other members of the dragged window's group, with their offsets from it: a band drag
-    /// moves the whole group. Empty for a resize, for an ungrouped window and for a `Shift`-held
+    /// The other members of the dragged window's group, with their offsets from it: a title
+    /// drag moves the whole group. Empty for a resize, for an ungrouped window and for a `Shift`-held
     /// drag, which moves that member alone.
     followers: Vec<(WindowId, templar_window::Point)>,
 }
@@ -661,8 +770,8 @@ impl<B: Backend + 'static> PointerGrab<TemplarCompState<B>> for WindowGestureGra
                         crate::space_sync::apply_dragged_geometry(data, *id, placed);
                     }
                 }
-                // Which band, if any, this drag is hovering: releasing there groups the two
-                // (planning doc §2 rule 6). Only a band — an ordinary drop anywhere else,
+                // Which title tab, if any, this drag is hovering: releasing there groups the two
+                // (planning doc §2 rule 6). Only a title tab — an ordinary drop anywhere else,
                 // including on top of another window, still just moves a window.
                 data.drop_target =
                     crate::window_groups::tag_drop_target(data, self.window_id, pointer);
@@ -694,8 +803,8 @@ impl<B: Backend + 'static> PointerGrab<TemplarCompState<B>> for WindowGestureGra
         handle.button(data, event);
 
         if !handle.current_pressed().contains(&BTN_LEFT) {
-            // A name tag that was pressed and let go without moving is a click, and a click on a
-            // name tag pins the window above the others. Checked before the drag is finished, so
+            // A title tab that was pressed and let go without moving is a click, and a click on
+            // a title pins the window above the others. Checked before the drag is finished, so
             // "did it move" is asked of the pointer rather than of a geometry that a repair may
             // have changed for reasons of its own.
             let released_at = to_templar_point(handle.current_location());
@@ -741,7 +850,7 @@ impl<B: Backend + 'static> PointerGrab<TemplarCompState<B>> for WindowGestureGra
                             }
                         }
                     }
-                    // Dropped on another window's band: that is the gesture that groups
+                    // Dropped on another window's title tab: that is the gesture that groups
                     // (planning doc §2 rule 6). It happens after the drag has settled, so the
                     // placement `place_beside` computes starts from where the window was let go.
                     if let Some(target) = data.drop_target.take()
@@ -857,7 +966,7 @@ impl<B: Backend + 'static> PointerGrab<TemplarCompState<B>> for WindowGestureGra
     }
 
     /// The grab ending for any reason at all — including one this grab did not handle, such as
-    /// the seat being taken away — clears the drop-target highlight, so a band can never be left
+    /// the seat being taken away — clears the drop-target highlight, so a title can never be left
     /// glowing at a drag that is over. It also drops any in-flight drag/resize and the
     /// compositor cursor, because cancellation used to leave both latched with nothing to
     /// finish them.
@@ -878,9 +987,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         event: InputEvent<I>,
         output_name: Option<&str>,
     ) {
-        // Every event, before it is dispatched anywhere: this is the session's only idle source
-        // (`src/idle.rs`), and "any input at all" is the whole condition.
-        self.note_activity();
+        // Physical seat events advance the sole idle clock. Inventory hotplug does not invent
+        // user activity or postpone a lock/suspend deadline.
+        if !matches!(&event, InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }) {
+            self.note_activity();
+        }
         match event {
             InputEvent::Keyboard { event, .. } => self.on_keyboard::<I>(&event),
             InputEvent::PointerMotion { event, .. } => self.on_pointer_motion::<I>(&event),
@@ -964,6 +1075,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             // The overlay took this key, so a walk in progress is over: it chooses nothing, since
             // activating a window behind a modal overlay would be a change nobody saw happen.
             self.cancel_switch_walk();
+            self.name_tab_menu = crate::chrome::NameTabMenu::default();
             return;
         }
 
@@ -999,6 +1111,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                     && keysym.raw() == smithay::input::keyboard::keysyms::KEY_Escape;
                 modifier_pressed = event.state() == smithay::backend::input::KeyState::Pressed
                     && keysym.is_modifier_key();
+                if state.name_tab_menu.open.is_some()
+                    && keysym.raw() == smithay::input::keyboard::keysyms::KEY_Escape
+                {
+                    return FilterResult::Intercept(None);
+                }
                 // The switcher walks a list frozen for the length of the hold; this is where the
                 // release that commits it is seen. Read from the modifier state rather than
                 // matched by keysym, so either Alt (or either Super) ending the walk cannot be
@@ -1057,6 +1174,15 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 }
             },
         );
+
+        if self.name_tab_menu.open.is_some()
+            && (escape_pressed || action.as_ref().is_some_and(|action| action.is_some())
+                || self.pending_super_reveal.is_some() || self.session_lock.locked)
+        {
+            self.name_tab_menu.dismiss();
+            B::request_redraw(self);
+            self.refresh_name_menu_pointer(serial, time);
+        }
 
         // Apply the gesture's reveal change before any chord action, so an action that toggles
         // the reveal itself (Super+D) computes from the restored state. Applied here, not inside
@@ -1129,7 +1255,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let position = clamp_to_outputs(current + event.delta(), || {
             space
                 .outputs()
-                .filter_map(|output| space.output_geometry(output))
+                .filter_map(|output| crate::viewport::output_geometry(&space, output))
         });
         let under = self.surface_under(position);
         pointer.motion(
@@ -1144,6 +1270,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         pointer.frame(self);
         self.update_perimeter_cursor(to_templar_point(position));
         self.update_dwell(to_templar_point(position));
+        self.update_tabs(to_templar_point(position));
         self.update_gesture_gate(current, position);
     }
 
@@ -1169,17 +1296,19 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         event: &I::PointerMotionAbsoluteEvent,
         output_name: Option<&str>,
     ) {
-        let Some(output) = (match output_name {
-            Some(name) => self.space.outputs().find(|o| o.name() == name),
-            None => self.space.outputs().next(),
-        }) else {
-            return;
+        let output = match output_name {
+            Some(name) => {
+                let id = self.display_control.output_id_for_alias(name);
+                self.space.outputs().find(|output| output.name() == name || id.is_some_and(|id| output.name() == id.0))
+            },
+            None => {
+                let primary = self.display_control.primary_id();
+                self.space.outputs().find(|output| primary.is_some_and(|id| output.name() == id.0)).or_else(|| self.space.outputs().next())
+            },
         };
-        let Some(output_geo) = self.space.output_geometry(output) else {
-            return;
-        };
-        // The one place device coordinates become the global logical scene (module doc).
-        let pos = event.position_transformed(output_geo.size) + output_geo.loc.to_f64();
+        let Some(output) = output else { return; };
+        let Some(pos) = crate::viewport::absolute_position(&self.space, output,
+            event.position_transformed((1, 1).into()), self.backend_data.absolute_input_transform(output)) else { return; };
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer();
         let Some(pointer) = pointer else { return };
@@ -1197,6 +1326,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         pointer.frame(self);
         self.update_perimeter_cursor(to_templar_point(pos));
         self.update_dwell(to_templar_point(pos));
+        self.update_tabs(to_templar_point(pos));
         self.update_gesture_gate(previous, pos);
     }
 
@@ -1221,9 +1351,24 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         // Same modality as `on_keyboard`'s overlay branch: a click while the overlay is up picks
         // a button (or does nothing, on a miss) and is never forwarded to a client underneath.
         if !self.session_lock.locked && self.recovery_protocol.pressure_overlay.is_some() {
+            self.name_tab_menu = crate::chrome::NameTabMenu::default();
             if button_state == ButtonState::Pressed {
                 self.handle_pressure_overlay_click(pointer.current_location());
             }
+            return;
+        }
+
+        if self.session_lock.locked
+            || !matches!(self.window_service.presentation(), templar_window::Presentation::Normal)
+        {
+            self.name_tab_menu.dismiss();
+        }
+        if !self.session_lock.locked && self.name_tab_menu.button(
+            &mut self.window_service, to_templar_point(pointer.current_location()), button,
+            button_state == ButtonState::Pressed,
+        ) {
+            crate::space_sync::sync_after_change(self);
+            self.refresh_name_menu_pointer(serial, event.time_msec());
             return;
         }
 
@@ -1241,6 +1386,24 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             return;
         }
 
+        // Control presses install no Smithay grab, but still own their entire button pair.
+        if self.swallowing_press {
+            if button == BTN_LEFT && button_state == ButtonState::Released {
+                self.swallowing_press = false;
+                if let Some(pressed) = self.pending_tab_control.take() {
+                    let pos = to_templar_point(pointer.current_location());
+                    if !self.session_lock.locked
+                        && self.popup_owner_at(pointer.current_location()).is_none()
+                        && pressed.matches(self.press_target_at(pos), self.window_service.window_layout(pressed.window_id))
+                    {
+                        self.activate_tab_control(pressed.window_id, pressed.control);
+                    }
+                }
+                self.window_service.clear_tab_latches();
+                self.update_tabs(to_templar_point(pointer.current_location()));
+            }
+            return;
+        }
         if ButtonState::Pressed == button_state && !pointer.is_grabbed() {
             // A click means the user is doing something else — a switcher walk is over, and
             // chooses nothing: the click itself says where the user is going.
@@ -1255,21 +1418,14 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 .seat
                 .get_pointer()
                 .is_some_and(|grabbed| grabbed.is_grabbed());
-            self.swallowing_press = swallow_matching_release(compositor_owned, grab_installed);
+            self.swallowing_press = button == BTN_LEFT
+                && swallow_matching_release(compositor_owned, grab_installed);
             if compositor_owned {
+                if self.name_tab_menu.open.is_some() {
+                    self.refresh_name_menu_pointer(serial, event.time_msec());
+                }
                 return;
             }
-        }
-        // A press the compositor took is not also the client's. Where a grab was installed this
-        // makes no difference (the grab has `Focus::Clear`), but a tag that acts and returns —
-        // close, park, unmaximize, pin — installs none, and under a screen-filling window's chrome
-        // the surface with pointer focus is that window's own client, right there under the strip.
-        // The release goes with the press: half a click is worse than none.
-        if self.swallowing_press {
-            if ButtonState::Released == button_state {
-                self.swallowing_press = false;
-            }
-            return;
         }
 
         pointer.button(
@@ -1282,6 +1438,19 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             },
         );
         pointer.frame(self);
+        if button_state == ButtonState::Released && !pointer.is_grabbed() {
+            self.update_tabs(to_templar_point(pointer.current_location()));
+        }
+    }
+
+    /// Menu ownership changes even when no window geometry or stacking rank changed.
+    fn refresh_name_menu_pointer(&mut self, serial: Serial, time: u32) {
+        let Some(pointer) = self.seat.get_pointer().filter(|pointer| !pointer.is_grabbed()) else { return; };
+        let location = pointer.current_location();
+        let under = self.surface_under(location);
+        pointer.motion(self, under, &MotionEvent { location, serial, time });
+        pointer.frame(self);
+        self.update_perimeter_cursor(to_templar_point(location));
     }
 
     /// Hit-test `location` (global logical) against whichever output it falls on and, if it lands
@@ -1293,13 +1462,12 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     fn handle_pressure_overlay_click(&mut self, location: Point<f64, Logical>) {
         let pos = to_templar_point(location);
         let Some(output) = self.space.outputs().find(|output| {
-            self.space
-                .output_geometry(output)
+            crate::viewport::output_geometry(&self.space, output)
                 .is_some_and(|geometry| geometry.to_f64().contains(location))
         }) else {
             return;
         };
-        let Some(geometry) = self.space.output_geometry(output) else {
+        let Some(geometry) = crate::viewport::output_geometry(&self.space, output) else {
             return;
         };
         let area = templar_window::Rect::new(
@@ -1317,14 +1485,13 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// The press target under `pos`, from `WindowService` alone.
     ///
     /// Windows are walked top-first (`WindowService::stacking_order`), and window geometry — not
-    /// `Space`'s own input-region test — is the hit-test authority, so the band always wins
+    /// `Space`'s own input-region test — is the hit-test authority, so the tabs always win
     /// over whatever the client's surface would have done with the same point (COMPOSITOR.md:
-    /// "the compositor-owned recovery band" wins over client content). The first window whose
-    /// frame contains the point settles it: a band button, the band, the grip, or the window
-    /// itself because the point is the client's. A point just *outside* a framed window's edge
-    /// is that window's resize zone (`templar_window::resize_edges_at`), and a window above another
-    /// takes its zone before the one beneath sees the press — the invisible border belongs to
-    /// the window on top.
+    /// compositor-owned chrome wins over client content). The first window whose rectangles
+    /// contain the point settles it: a resize square, a control, the title, the window itself
+    /// because the point is the client's, or the edge resize band. A window above another
+    /// takes its zone before the one beneath sees the press — the invisible border belongs
+    /// to the window on top.
     fn press_target_at(&self, pos: TemplarPoint) -> PressTarget {
         press_target_at(&self.press_candidates(), pos)
     }
@@ -1334,8 +1501,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     fn press_candidates(&self) -> Vec<PressCandidate> {
         // In the window overview a window owns its *card* and nothing else — the same rectangle
         // the renderer drew it into (`WindowService::presentation_rect`), so a card is clicked
-        // exactly where it is seen. It wears no frame there: no band, no resize zone, no control
-        // tags, because none of them was drawn.
+        // exactly where it is seen. It wears no tabs there: no title, no resize zone, no
+        // controls, because none of them was drawn.
         if matches!(
             self.window_service.presentation(),
             templar_window::Presentation::Taskfield(_)
@@ -1348,11 +1515,9 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                     Some(PressCandidate {
                         window_id,
                         geometry: self.window_service.presentation_rect(window_id)?,
-                        is_client: true,
                         has_frame: false,
                         maximized: false,
-                        strip: None,
-                        strip_over_client: false,
+                        tabs: None,
                     })
                 })
                 .collect();
@@ -1364,21 +1529,18 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             .filter_map(|window_id| {
                 let record = self.window_service.window(window_id)?;
                 let framed = self.window_service.has_frame(window_id);
-                let chrome_shown = self.window_service.covering_chrome() == Some(window_id);
+                let tabs = self.window_service.window_layout(window_id)
+                    .map(|layout| TabHitRects {
+                        layout,
+                        title_visible: self.window_service.title_revealed(window_id),
+                        controls_visible: self.window_service.controls_revealed(window_id),
+                    });
                 Some(PressCandidate {
                     window_id,
                     geometry: record.geometry,
-                    is_client: self.window_service.is_client_window(window_id),
-                    has_frame: framed || chrome_shown,
-                    maximized: record.maximized,
-                    strip: (framed || chrome_shown)
-                        .then(|| {
-                            self.window_service
-                                .recovery_affordance(window_id)
-                                .map(|affordance| affordance.strip)
-                        })
-                        .flatten(),
-                    strip_over_client: !framed && chrome_shown,
+                    has_frame: framed,
+                    maximized: record.covers_screen(),
+                    tabs,
                 })
             })
             .collect()
@@ -1392,6 +1554,10 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// away. Locked sessions show nothing of the windows behind the lock surface, cursor included.
     fn update_perimeter_cursor(&mut self, pos: TemplarPoint) {
         if self.session_lock.locked || self.pointer_gesture_active() {
+            return;
+        }
+        if self.name_tab_menu.open.is_some_and(|menu| rect_contains(menu.panel, pos)) {
+            self.show_compositor_cursor(Some("default"));
             return;
         }
         // While a card is being dragged the selection ring is the drop target: one ring, already
@@ -1414,10 +1580,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         self.show_compositor_cursor(shape);
     }
 
-    /// A dwell at a screen edge: the **top-left** corner is Home ([`DwellIntent::HomeCorner`]),
-    /// the bottom-right corner of a window filling the screen is that window's own chrome
-    /// ([`DwellIntent::CoveringChrome`]), and the whole bottom edge — bottom-left corner included
-    /// — is Peek ([`DwellIntent::BarPeek`]).
+    /// A screen-edge dwell: top-left reveals Home and the bottom edge peeks the bar.
+    /// Window tabs use their own four-edge approach state, never a second anchor owner.
     ///
     /// Both have to be the compositor's rule rather than the shell's: whatever is under the
     /// pointer owns it, so under a maximized or fullscreen window the shell never learns the
@@ -1429,7 +1593,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// zone, and so no work area is recomputed and no window reflows on the way in or out. Only
     /// the stacking order does ([`templar_window::WindowService::set_peek_output`]).
     fn update_dwell(&mut self, pos: TemplarPoint) {
-        if self.session_lock.locked {
+        if self.session_lock.locked || self.name_tab_menu.open.is_some() {
             self.dwell = None;
             return;
         }
@@ -1450,28 +1614,86 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 crate::space_sync::sync_after_change(self);
             }
         }
-        // A covering window's own chrome goes the same way, and holds for the same reason: the
-        // strip it just showed has to be reachable, so the pointer is allowed anywhere on it.
-        if let Some(shown) = self.window_service.covering_chrome()
-            && !self.holding_covering_chrome(shown, pos)
-        {
-            self.dwell = None;
-            if self.window_service.set_covering_chrome(None) {
-                crate::space_sync::sync_after_change(self);
-            }
-        }
-        // A held button is a drag, not a request: a window thrown at the corner is not someone
-        // asking for Home. `is_grabbed` is true for the whole of a held button (smithay's
-        // `DefaultGrab` installs a `ClickGrab` on press) as well as for our own move/resize
-        // grabs, so this is both rules at once.
-        let intent = if self.pointer_gesture_active() {
-            None
-        } else {
-            self.dwell_intent_at(pos)
-        };
+        // Real file DnD may ask for Home without releasing its source. Every other held-button
+        // gesture still blocks dwell; a thrown/moved/resized window is not a Home request.
+        let intent = dwell_during_grab(self.pointer_gesture_active(),
+            self.native_file_drag_active, self.dwell_intent_at(pos));
         let now = crate::window_bridge::now_monotonic_ns(&self.clock);
         self.dwell = dwell_after_motion(self.dwell.take(), intent, pos, now);
         if self.dwell.is_some() && !self.dwell_timer_pending {
+            self.arm_dwell_timer();
+        }
+    }
+
+    /// Follow the pointer with the nearest window's tabs, and latch while aiming.
+    ///
+    /// Runs on both motion paths after `update_dwell`. The topmost client approached
+    /// along any edge follows the pointer unless its visible target corridor is aimed
+    /// at. Entry/exit arm once; leaving retains the corner. Higher windows and shell
+    /// surfaces win. Relocation and reveal change pixels/input only, never focus.
+    ///
+    /// Frozen while any grab holds the pointer (a press, a menu, a move/resize): the latch
+    /// taken at press/grab start owns the tabs until that gesture's own termination path
+    /// releases them. Pure service state, never the pointer handle, so there is no
+    /// synchronous Smithay pointer-mutex reentry from any grab callback.
+    fn update_tabs(&mut self, pos: TemplarPoint) {
+        if self.session_lock.locked || self.pointer_gesture_active() {
+            return;
+        }
+        if matches!(
+            self.window_service.presentation(),
+            templar_window::Presentation::Taskfield(_)
+        ) {
+            self.window_service.clear_tab_interaction();
+            return;
+        }
+        let candidates = self.press_candidates();
+        let approached = if self.over_shell_overlay(pos) || self.tab_reserved_edge(pos) {
+            None
+        } else {
+            tab_approach_at(&candidates, pos)
+        };
+        let now = crate::window_bridge::now_monotonic_ns(&self.clock);
+        let mut corner_moved = false;
+        for candidate in candidates {
+            let window_id = candidate.window_id;
+            if candidate.tabs.is_none() {
+                continue;
+            }
+            if Some(window_id) == approached {
+                let Some(layout) = self.window_service.window_layout(window_id) else {
+                    continue;
+                };
+                // Aiming at a visible title/control freezes the tabs; anywhere else on the
+                // window lets them follow. Set before selecting, so the just-aimed corner
+                // is the one that holds.
+                let aiming = tab_aims_at(TabHitRects {
+                    layout,
+                    title_visible: self.window_service.title_revealed(window_id),
+                    controls_visible: self.window_service.controls_revealed(window_id),
+                }, pos);
+                self.window_service.set_tab_latched(window_id, aiming);
+                if self
+                    .window_service
+                    .select_tab_corner(window_id, pos)
+                    .is_some_and(|(previous, next)| previous != next)
+                {
+                    corner_moved = true;
+                }
+                self.window_service.note_tab_approach(window_id, now);
+            } else {
+                self.window_service.set_tab_latched(window_id, false);
+                if self.window_service.controls_revealed(window_id)
+                    || self.window_service.has_tab_pending(window_id)
+                {
+                    self.window_service.note_tab_leave(window_id, now);
+                }
+            }
+        }
+        if corner_moved {
+            B::request_redraw(self);
+        }
+        if self.window_service.next_tab_deadline().is_some() && !self.dwell_timer_pending {
             self.arm_dwell_timer();
         }
     }
@@ -1485,7 +1707,12 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// the remainder on the same source.
     fn arm_dwell_timer(&mut self) {
         self.dwell_timer_pending = true;
-        let timer = Timer::from_duration(Duration::from_millis(DWELL_MS));
+        let now = crate::window_bridge::now_monotonic_ns(&self.clock);
+        let delay = self.window_service.next_tab_deadline()
+            .map(|at| Duration::from_nanos(at.saturating_sub(now)))
+            .unwrap_or(Duration::from_millis(DWELL_MS))
+            .min(Duration::from_millis(DWELL_MS));
+        let timer = Timer::from_duration(delay);
         if let Err(error) = self
             .loop_handle
             .insert_source(timer, |_, (), state: &mut Self| {
@@ -1502,12 +1729,63 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
     }
 
+    /// The shared wakeup elapsed: fire tab grace deadlines, then the dwell intent, and
+    /// wait out whichever remainder is shorter on the same source.
+    ///
+    /// One timer source serves both purposes rather than one per hover: motion only (re)arms
+    /// deadlines in `WindowService`, and this callback — running on the event loop, never under
+    /// a grab's pointer mutex — is what fires them. Tab timers therefore cannot pile, and this
+    /// path never synchronously reenters the Smithay pointer lock from a grab callback.
+    fn finish_dwell(&mut self) -> Option<Duration> {
+        if self.session_lock.locked {
+            self.window_service.clear_tab_interaction();
+            self.dwell = None;
+            return None;
+        }
+        if self.pointer_gesture_active() {
+            if self.native_file_drag_active
+                && self.dwell.as_ref().is_some_and(|dwell| dwell.intent == DwellIntent::HomeCorner)
+            {
+                // Home reveal is the only native-drag exception. Keep name-tab deadlines
+                // frozen for the grab, rather than spinning on a deadline we cannot fire.
+                return self.finish_dwell_intent();
+            }
+            self.dwell = None;
+            return None;
+        }
+        self.fire_tab_grace();
+        let intent_remaining = self.finish_dwell_intent();
+        let now = crate::window_bridge::now_monotonic_ns(&self.clock);
+        let tab_remaining = self
+            .window_service
+            .next_tab_deadline()
+            .map(|at| at.saturating_sub(now))
+            .map(Duration::from_nanos);
+        match (intent_remaining, tab_remaining) {
+            (Some(dwell), Some(tabs)) => Some(dwell.min(tabs)),
+            (Some(dwell), None) => Some(dwell),
+            (None, tabs) => tabs,
+        }
+    }
+
+    /// Fire the single hover-state authority outside pointer-grab callbacks.
+    fn fire_tab_grace(&mut self) {
+        if let Some(pointer) = self.seat.get_pointer() {
+            self.update_tabs(to_templar_point(pointer.current_location()));
+        }
+        let now = crate::window_bridge::now_monotonic_ns(&self.clock);
+        let changed = !self.window_service.fire_tab_deadlines(now).is_empty();
+        if changed {
+            B::request_redraw(self);
+        }
+    }
+
     /// The dwell elapsed. Act, wait out the remainder, or fire into a no-op.
     ///
     /// Re-reads where the pointer actually is rather than trusting the position that armed the
     /// timer: motion since then may have moved the dwell to another intent, ended it, or reset
     /// its anchor. `Some(remaining)` means the anchor was reset while this timer was in flight.
-    fn finish_dwell(&mut self) -> Option<Duration> {
+    fn finish_dwell_intent(&mut self) -> Option<Duration> {
         let dwell = self.dwell.take()?;
         let pointer = self.seat.get_pointer()?;
         let pos = to_templar_point(pointer.current_location());
@@ -1548,46 +1826,19 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                     crate::space_sync::sync_after_change(self);
                 }
             }
-            DwellIntent::CoveringChrome(window_id) => {
-                if self.window_service.set_covering_chrome(Some(window_id)) {
-                    crate::space_sync::sync_after_change(self);
-                }
-            }
         }
         None
     }
 
-    /// What a dwell at `pos` would be about, if anything.
-    ///
-    /// The three regions are disjoint by construction (`in_peek_band` excludes both squares it
-    /// could otherwise meet), so there is never a precedence question between them: each region
-    /// has one rule.
-    ///
-    /// - the **top-left** square is **Home**, whatever is on the screen. The bar has no Home chip,
-    ///   so this is the only pointer route there, and a window filling the screen is exactly when
-    ///   it is needed most. It moved here from the bottom-left because Peek needs that corner:
-    ///   the affordance has to be where the island starts, or the pointer travels away from the
-    ///   thing it is reaching for.
-    /// - the **bottom-right** square is a screen-filling window's **own chrome**, shown over it.
-    ///   One dwell shows the whole strip, tag included, because it *is* one strip.
-    /// - the **bottom edge**, its left corner included, is **Peek**: raise the island over a
-    ///   window filling the screen, and say so with `bar_peeked`.
-    ///
-    /// The one state-dependent part: while that chrome is already showing, neither the
-    /// bottom-right corner nor the bottom edge asks for anything. The strip is under the pointer
-    /// and the strip is what is being reached for — the strip is `TAG_HEIGHT` tall and the peek
-    /// band is its bottom ten pixels, so without this, resting on the close tag long enough to aim
-    /// at it opens the island underneath the thing being aimed at.
+    /// Home and Peek retain priority over window approach bands. Overlaid tabs are
+    /// inset from those output-edge gestures by the shared layout.
     fn dwell_intent_at(&self, pos: TemplarPoint) -> Option<DwellIntent> {
         let output = self
             .window_service
             .outputs()
             .iter()
             .find(|output| rect_contains(output.logical, pos))?;
-        // What is filling this output, if anything — maximized or fullscreen alike
-        // (`WindowRecord::covers_screen`). Such a window has no frame to reach for and the shell's
-        // bar carries no copy of its controls, so the right-hand square is the only route to them.
-        // The topmost one, because that is the one whose chrome the corner would be over.
+        // Topmost screen-filling client on this output, for the bar's peek route.
         let covering = self.window_service.stacking_order().into_iter().find(|id| {
             self.window_service.is_client_window(*id)
                 // Visible, not merely covering: a reveal hides every client window, so with Home
@@ -1599,8 +1850,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 })
         });
 
-        // The top-left square is Home, whatever is on the screen — it is nowhere near the tag
-        // strip a screen-filling window shows along its bottom edge, so unlike the other two it
+        // The top-left square is Home, whatever is on the screen — it is nowhere near the
+        // tabs a screen-filling window overlays at its own corner, so unlike the other two it
         // needs no "already showing" guard.
         if in_home_corner(output.logical, pos) {
             // Not while the shell's own chrome is under the pointer: whatever it is showing there
@@ -1613,29 +1864,12 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             // costs a re-sync and a refocus for a state that has not changed.
             return (!self.window_service.home_revealed()).then_some(DwellIntent::HomeCorner);
         }
-        // The user's rule: "close/maximize/minimize should appear on hover in the bottom
-        // right, over the full screen window, not adjacent to it." One dwell shows the whole
-        // strip, name tag included — they are one strip.
-        if in_controls_corner(output.logical, pos) {
-            if self.over_shell_overlay(pos) {
-                return None;
-            }
-            // Already showing: the strip is the thing under the pointer, and the corner is not
-            // asking for anything else while it is.
-            if self.window_service.covering_chrome().is_some() {
-                return None;
-            }
-            return covering.map(DwellIntent::CoveringChrome);
-        }
         // Gesture rails replace Peek outright: two activators for the same surfaces would open
         // and close them over each other (`src/gesture_gate.rs`). The corners above stay.
         if self.gesture_gate.config().enabled {
             return None;
         }
-        // The strip a covering window's chrome puts on screen is `TAG_HEIGHT` tall and the peek
-        // band is its bottom ten pixels, so without this, resting on the close tag long enough to
-        // aim at it opens the switcher underneath the thing being aimed at.
-        if self.window_service.covering_chrome().is_some() || !in_peek_band(output.logical, pos) {
+        if !in_peek_band(output.logical, pos) {
             return None;
         }
         covering.map(|_| {
@@ -1647,12 +1881,12 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         })
     }
 
-    /// Pin or unpin a window on a click of its name tag, and put the new answer on screen: the
-    /// stacking order changes, and the tag draws the window's name in italic while it holds.
+    /// Pin or unpin a window on a click of its title tab, and put the new answer on screen:
+    /// the stacking order changes, and the tab draws the window's name in italic while it holds.
     ///
-    /// The user's rule, and the reason it is the tag rather than a fourth control: the tag is
-    /// already the thing you take hold of to say "this window, here", and there is nothing else
-    /// a bare click on it could have meant.
+    /// The user's rule, and the reason it is the title rather than a fourth control: the title
+    /// is already the thing you take hold of to say "this window, here", and there is nothing
+    /// else a bare click on it could have meant.
     fn toggle_always_on_top(&mut self, window_id: WindowId) {
         if !self.window_service.is_client_window(window_id) {
             return;
@@ -1661,23 +1895,6 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         crate::space_sync::sync_after_change(self);
     }
 
-    /// Whether a covering window's chrome should stay shown: the pointer is still in one of the
-    /// corners that opened it, or anywhere on the strip it put there. Without the strip, moving on
-    /// to the close button would be moving off the thing that summoned it.
-    fn holding_covering_chrome(&self, window_id: WindowId, pos: TemplarPoint) -> bool {
-        let Some(window) = self.window_service.window(window_id) else {
-            return false;
-        };
-        if in_controls_corner(window.geometry, pos) {
-            return true;
-        }
-        // The strip is `TAG_HEIGHT` tall and spans the window, so it already contains both bottom
-        // corner squares — including the bottom-left one, which is Peek's now and must not end the
-        // chrome the person is reaching across.
-        self.window_service
-            .recovery_affordance(window_id)
-            .is_some_and(|affordance| rect_contains(affordance.strip, pos))
-    }
 
     /// Whether a peek on `output` should stay up: the pointer is still on the edge that opened
     /// it, or anywhere on the shell's own surface.
@@ -1707,6 +1924,14 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         })
     }
 
+    fn tab_reserved_edge(&self, pos: TemplarPoint) -> bool {
+        self.window_service.outputs().iter().any(|output| {
+            rect_contains(output.logical, pos)
+                && (in_home_corner(output.logical, pos)
+                    || pos.y >= output.logical.bottom() - PEEK_BAND)
+        })
+    }
+
     /// Feed the gesture gate one motion segment (`src/gesture_gate.rs`) — `from` and `to` are the
     /// pointer before and after the report, global logical — and, while a rail is open, tell the
     /// shell where the pointer went instead. Both motion paths call this after `update_dwell`.
@@ -1722,6 +1947,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         // pointer outright, and a rail opening under one would be a menu nobody can see.
         if !self.gesture_gate.config().enabled
             || self.session_lock.locked
+            || self.name_tab_menu.open.is_some()
             || self.recovery_protocol.pressure_overlay.is_some()
             || matches!(
                 self.window_service.presentation(),
@@ -1885,7 +2111,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
 
     /// Whether a compositor-run pointer gesture (a move or a resize) is in progress.
     fn pointer_gesture_active(&self) -> bool {
-        self.seat
+        self.swallowing_press || self.seat
             .get_pointer()
             .is_some_and(|pointer| pointer.is_grabbed())
     }
@@ -1982,6 +2208,19 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         true
     }
 
+    /// The window whose popup owns `location`, if a popup is under the point: popups paint
+    /// and receive input outside their toplevel's declared geometry, so the surface tree —
+    /// not chrome geometry — resolves them.
+    fn popup_owner_at(&self, location: Point<f64, Logical>) -> Option<(WindowId, WlSurface)> {
+        let (mut surface, _) = self.surface_under(location)?;
+        while let Some(parent) = get_parent(&surface) {
+            surface = parent;
+        }
+        let popup = self.popups.find_popup(&surface)?;
+        let root = find_popup_root_surface(&popup).ok()?;
+        self.windows.window_id_for(&root.id()).map(|id| (id, root))
+    }
+
     /// Returns whether the press was the compositor's own — one of the affordances on a window's
     /// tag strip — and must therefore not also be delivered to a client.
     fn handle_press_for_focus_or_drag(
@@ -1994,12 +2233,43 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             return false;
         }
         let pos = to_templar_point(location);
+        // Popups paint and receive input outside their toplevel's declared geometry.
+        // Resolve that actual surface tree before geometry-only chrome/activation:
+        // otherwise a menu row can raise the window behind it and dismiss its owner.
+        let popup_owner = self.popup_owner_at(location);
+        if let Some((window_id, root)) = popup_owner {
+            if self.window_service.is_client_window(window_id) {
+                if !self.window_service.window(window_id).is_some_and(|window| window.activated) {
+                    activate_window(self, window_id);
+                }
+            } else if let Some(keyboard) = self.seat.get_keyboard() {
+                keyboard.set_focus(self, Some(root), serial);
+            }
+            return false;
+        }
         let target = self.press_target_at(pos);
 
+        // A secondary title press is a menu request, not activation, drag, or the pin-click.
+        // Capture its WindowId before any later focus change can retarget the choices.
+        if button == 0x111
+            && let PressTarget::Affordance(window_id, Affordance::Tag) = target
+            && self.window_service.is_client_window(window_id)
+            && matches!(self.window_service.layer_of(window_id), Some(Layer::Normal | Layer::AppOnTop))
+            && let Some(output) = self.window_service.outputs().iter()
+                .find(|output| rect_contains(output.logical, pos)).map(|output| output.logical)
+        {
+            self.name_tab_menu.show(window_id, pos, output, button);
+            self.dwell = None;
+            self.gesture_gate.close();
+            self.show_compositor_cursor(Some("default"));
+            B::request_redraw(self);
+            return true;
+        }
+
         // Click to focus, and only click — TemplarOS does not follow the mouse. Pressing anywhere a
-        // window owns brings that window forward first: its title band, its resize affordances
+        // window owns brings that window forward first: its title tab, its resize affordances
         // and its client area alike. Doing it before anything else means a drag started from the
-        // band drags a window that is already on top and already has the keyboard, rather than
+        // title drags a window that is already on top and already has the keyboard, rather than
         // moving a window the user cannot type into — which is what "the windows fight for
         // focus" looked like from the outside.
         if let Some(window_id) = press_activates(target) {
@@ -2015,8 +2285,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             }
         }
 
-        // The compositor's own affordances, checked before the client sees the press: the band
-        // moves the window, the corner grip and the edge zones resize it. All are
+        // The compositor's own affordances, checked before the client sees the press: the
+        // title moves the window, the corner squares and the edge zones resize it. All are
         // compositor-owned screen area by the same argument (`press_target_at`'s doc) — without
         // them a window whose client draws no frame, which is most XWayland windows, could be
         // neither moved nor resized by anyone.
@@ -2027,42 +2297,24 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         if button == BTN_LEFT
             && let PressTarget::Affordance(window_id, affordance) = target
         {
+            // Freeze the tabs for the press: the layout cannot move between press and
+            // release, so Close never flees. Grab presses release from the grab's own
+            // termination path; latch-and-act presses release with the swallowed release.
+            self.window_service.set_tab_latched(window_id, true);
             let seat = self.seat.clone();
             let gesture = match affordance {
-                Affordance::Button(ControlTag::Close) => {
-                    crate::backend::close_window(self, window_id);
-                    return true;
-                }
-                Affordance::Button(ControlTag::Park) => {
-                    park_window(self, window_id);
-                    return true;
-                }
-                Affordance::Button(ControlTag::Maximize) => {
-                    // The middle tag is the way back out of whichever way this window filled the
-                    // screen. Fullscreen first: maximizing instead configured the client to the
-                    // maximized rectangle while `fullscreen` stayed true, which is a window that
-                    // is both and neither.
-                    let fullscreen = self
-                        .window_service
-                        .window(window_id)
-                        .is_some_and(|window| window.fullscreen);
-                    if fullscreen {
-                        crate::xdg_shell::apply_fullscreen(self, window_id, false);
-                        return true;
+                Affordance::Button(control) => {
+                    if let Some(layout) = self.window_service.window_layout(window_id)
+                        && let Some((_, rect)) = layout::tab_control_tags(&layout)
+                            .into_iter().find(|(tag, _)| *tag == control)
+                    {
+                        self.pending_tab_control = Some(TabControlPress { window_id, control, rect });
                     }
-                    let maximized = self
-                        .window_service
-                        .window(window_id)
-                        .is_some_and(|window| window.maximized);
-                    crate::xdg_shell::apply_maximized(self, window_id, !maximized);
                     return true;
                 }
-                // A covering window's name tag names it and pins it, and nothing else. Dragging
-                // it would move a window whose geometry is the output off the output, which
-                // COMPOSITOR.md says is never repaired — and there is nowhere for it to go
-                // anyway — so the click is taken here rather than at the end of a gesture that
-                // must not start.
-                Affordance::Tag if self.window_service.covering_chrome() == Some(window_id) => {
+                // A screen-filling title remains a pin/click route; restore precedes move.
+                Affordance::Tag if self.window_service.window(window_id)
+                    .is_some_and(|window| window.covers_screen()) => {
                     self.toggle_always_on_top(window_id);
                     return true;
                 }
@@ -2111,7 +2363,27 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         false
     }
 
+    fn activate_tab_control(&mut self, window_id: WindowId, control: ControlTag) {
+        match control {
+            ControlTag::Close => crate::backend::close_window(self, window_id),
+            ControlTag::Park => park_window(self, window_id),
+            ControlTag::Maximize => {
+                if let Some(window) = self.window_service.window(window_id) {
+                    let (fullscreen, maximized) = (window.fullscreen, window.maximized);
+                    if fullscreen {
+                        crate::xdg_shell::apply_fullscreen(self, window_id, false);
+                    } else {
+                        crate::xdg_shell::apply_maximized(self, window_id, !maximized);
+                    }
+                }
+            }
+        }
+    }
+
     fn on_pointer_axis<I: InputBackend>(&mut self, event: &I::PointerAxisEvent) {
+        if !self.session_lock.locked && self.name_tab_menu.open.is_some() {
+            return;
+        }
         let source = event.source();
         let horizontal_amount = event
             .amount(Axis::Horizontal)
@@ -2164,13 +2436,18 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         // still handed clicks to whatever was behind the lock screen.
         if self.session_lock.locked {
             let output = self.space.outputs().find(|output| {
-                self.space
-                    .output_geometry(output)
+                crate::viewport::output_geometry(&self.space, output)
                     .is_some_and(|geometry| geometry.to_f64().contains(pos))
             })?;
-            let origin = self.space.output_geometry(output)?.loc.to_f64();
+            let origin = crate::viewport::output_geometry(&self.space, output)?.loc.to_f64();
             let surface = self.session_lock.surfaces.get(&output.name())?;
             return Some((surface.wl_surface().clone(), origin));
+        }
+        if self.name_tab_menu.open.is_some_and(|menu| {
+            self.window_service.is_visible(menu.window_id)
+                && rect_contains(menu.panel, to_templar_point(pos))
+        }) {
+            return None;
         }
         // The window overview is modal for the pointer exactly as it is for the keyboard: the
         // only surface that can be pointed at is the shell's `Layer::Presentation` one, and only
@@ -2269,9 +2546,7 @@ fn under_gate_exception(
         .is_some_and(|app_id| config.is_exception(app_id.as_str()))
 }
 
-/// The side of each of the three corner squares an output reserves, in logical pixels: Home at the
-/// top-left, a screen-filling window's own chrome at the bottom-right, and Peek at the bottom-left
-/// (which is simply the near end of [`PEEK_BAND`], not a square of its own).
+/// The side of the output's Home activation square, in logical pixels.
 ///
 /// A calibration knob rather than a constant of nature: a person pushing a real mouse into a
 /// corner of a real screen has to be able to land on it, and a fractional scale eats a pixel or
@@ -2339,10 +2614,10 @@ pub enum DwellIntent {
     /// peeked" as no intent at all — which is how promotion used to be unreachable without a
     /// motion past the island.
     BarPromote(String),
-    /// Either bottom corner of a window that fills the screen: show that window's own name tag
-    /// and controls over it. Such a window has no frame to reach for and the shell's bar carries
-    /// no copy of its controls, so without this there is no pointer route to closing it at all.
-    CoveringChrome(WindowId),
+}
+
+fn dwell_during_grab(grabbed: bool, native_file_drag: bool, intent: Option<DwellIntent>) -> Option<DwellIntent> {
+    if grabbed && !(native_file_drag && intent == Some(DwellIntent::HomeCorner)) { None } else { intent }
 }
 
 /// A dwell in progress: what it is for, where the pointer settled, and when it settled there.
@@ -2381,11 +2656,7 @@ fn dwell_after_motion(
 
 /// Whether `pos` is in the square at `output`'s **top-left** corner that reveals Home.
 ///
-/// It used to be the bottom-left one. Peek took that corner (planning doc §6: the corner
-/// affordance is where the island starts, so Peek reveals it in place), and two dwells cannot
-/// share a square. The top-left is the only other corner nothing owns — the bottom-right is a
-/// screen-filling window's own chrome — and Home's primary route was never this anyway: it is the
-/// bare `Super` tap, of which this is the pointer spelling.
+/// Home uses the top-left corner; the entire bottom edge belongs to Peek.
 fn in_home_corner(output: templar_window::Rect, pos: TemplarPoint) -> bool {
     pos.x >= output.x
         && pos.x < output.x + CORNER_SQUARE
@@ -2393,31 +2664,18 @@ fn in_home_corner(output: templar_window::Rect, pos: TemplarPoint) -> bool {
         && pos.y < output.y + CORNER_SQUARE
 }
 
-/// The bottom-*right* square. It is where a screen-filling window's own controls appear, and it
-/// means nothing when no window fills the screen — a corner that does something only sometimes is
-/// better than one that does two things.
-fn in_controls_corner(output: templar_window::Rect, pos: TemplarPoint) -> bool {
-    pos.x >= output.right() - CORNER_SQUARE
-        && pos.x < output.right()
-        && pos.y >= output.bottom() - CORNER_SQUARE
-        && pos.y < output.bottom()
-}
 
 /// Whether `pos` is in the band along `output`'s bottom edge that opens a peek — the bottom-left
 /// corner **included**, which is the corner the affordance is drawn in
 /// (`chrome::collect_output_chrome`).
 ///
-/// Disjoint from the other two squares by construction rather than by a precedence rule: Home is
-/// at the top-left and a screen-filling window's chrome at the bottom-right, so one pointer
-/// position never means two things. The `in_home_corner` exclusion is kept for an output shorter
-/// than `CORNER_SQUARE + PEEK_BAND`, where the two would otherwise meet.
+/// Disjoint from Home even on an output shorter than both activation regions.
 fn in_peek_band(output: templar_window::Rect, pos: TemplarPoint) -> bool {
     pos.x >= output.x
         && pos.x < output.right()
         && pos.y >= output.bottom() - PEEK_BAND
         && pos.y < output.bottom()
         && !in_home_corner(output, pos)
-        && !in_controls_corner(output, pos)
 }
 
 /// The affordance Peek draws in `output`'s bottom-left corner: [`PEEK_AFFORDANCE`] logical pixels
@@ -2440,7 +2698,20 @@ pub fn peek_affordance(output: templar_window::Rect) -> templar_window::Rect {
 mod tests {
     use super::*;
     use smithay::utils::Size;
-    use templar_window::{Rect, frame_around};
+    use templar_window::{Corner, Rect, TabPlacement, WindowLayout};
+
+    #[test]
+    fn native_file_drag_alone_can_dwell_for_home_without_releasing_its_source() {
+        assert_eq!(dwell_during_grab(true, true, Some(DwellIntent::HomeCorner)), Some(DwellIntent::HomeCorner));
+        assert_eq!(dwell_during_grab(true, false, Some(DwellIntent::HomeCorner)), None);
+        assert_eq!(dwell_during_grab(true, true, Some(DwellIntent::BarPeek("panel".into()))), None);
+        assert_eq!(dwell_during_grab(true, true, Some(DwellIntent::BarPromote("panel".into()))), None);
+        assert_eq!(dwell_during_grab(false, false, Some(DwellIntent::HomeCorner)), Some(DwellIntent::HomeCorner));
+        let pos = TemplarPoint { x: 2, y: 2 };
+        let start = dwell_after_motion(None, dwell_during_grab(true, true, Some(DwellIntent::HomeCorner)), pos, 0).unwrap();
+        let continued = dwell_after_motion(Some(start), Some(DwellIntent::HomeCorner), pos, DWELL_MS * 1_000_000).unwrap();
+        assert_eq!(continued.since_ns, 0, "native drag motion preserves a real corner dwell");
+    }
 
     fn output(x: i32, y: i32, width: i32, height: i32) -> Rectangle<i32, Logical> {
         Rectangle::new(Point::from((x, y)), Size::from((width, height)))
@@ -2503,35 +2774,12 @@ mod tests {
         );
     }
 
-    /// A fullscreen window owns both bottom corners: the tag at the left, the controls at the
-    /// right, drawn over it rather than beside it. The user's rule, and the reason for it is that
-    /// there is otherwise no pointer route to closing a fullscreen window at all — it wears no
-    /// frame, and the island carries no copy of its controls.
     #[test]
-    fn a_fullscreen_window_owns_the_bottom_right_corner_and_peek_owns_the_rest_of_the_edge() {
+    fn peek_keeps_both_bottom_corners_when_tabs_follow() {
         let screen = Rect::new(0, 0, 1920, 1080);
-        for (x, y, home, right, band) in [
-            (0, 0, true, false, false),        // Home, out of the way at the top
-            (0, 1079, false, false, true),     // the bottom-left corner is Peek's
-            (1919, 1079, false, true, false),  // the controls' corner
-            (1912, 1072, false, true, false),  // the far edge of that square
-            (1911, 1079, false, false, true),  // one pixel inside it, along the bottom
-            (960, 1079, false, false, true),   // the middle of the edge is Peek's
-            (960, 1069, false, false, false),  // above the band
-            (1919, 1069, false, false, false), // and above the right-hand square
-        ] {
-            assert_eq!(in_home_corner(screen, at(x, y)), home, "home at {x},{y}");
-            assert_eq!(
-                in_controls_corner(screen, at(x, y)),
-                right,
-                "right at {x},{y}"
-            );
-            assert_eq!(in_peek_band(screen, at(x, y)), band, "band at {x},{y}");
-            // Three regions along one edge, and never two of them at once.
-            let claims = u8::from(in_home_corner(screen, at(x, y)))
-                + u8::from(in_controls_corner(screen, at(x, y)))
-                + u8::from(in_peek_band(screen, at(x, y)));
-            assert!(claims <= 1, "{claims} regions claim {x},{y}");
+        for pos in [at(0, 1079), at(1919, 1079), at(1912, 1072)] {
+            assert!(in_peek_band(screen, pos));
+            assert!(!in_home_corner(screen, pos));
         }
     }
 
@@ -2630,33 +2878,51 @@ mod tests {
         assert!(!swallow_matching_release(false, false));
     }
 
+    /// The output the fixtures lay out against: roomy, so exterior chrome fits.
+    fn screen() -> Rect {
+        Rect::new(0, 0, 1920, 1080)
+    }
+
     /// A framed client window, laid out the way the compositor lays one out: the record's
-    /// geometry is the *frame*, and the strip is the one `templar_window` puts below the client
-    /// area (`frame_around`/`tag_strip`).
-    fn framed(raw: u64, client: Rect) -> PressCandidate {
-        let geometry = frame_around(client);
+    /// geometry *is* the client rectangle, and the tabs are the shared [`WindowLayout`] at
+    /// `corner`, drawn and clickable.
+    fn framed_at(raw: u64, client: Rect, corner: Corner) -> PressCandidate {
         PressCandidate {
             window_id: WindowId(raw),
-            geometry,
-            is_client: true,
+            geometry: client,
             has_frame: true,
             maximized: false,
-            strip: Some(templar_window::tag_strip(geometry)),
-            strip_over_client: false,
+            tabs: Some(TabHitRects {
+                layout: WindowLayout::new(client, corner, TabPlacement::SameCorner, screen()),
+                title_visible: true,
+                controls_visible: true,
+            }),
         }
     }
 
-    /// A window filling the output with its own chrome shown over it: no frame, so the strip is
-    /// its own client area rather than compositor-owned screen beside it.
+    /// [`framed_at`] at the default corner.
+    fn framed(raw: u64, client: Rect) -> PressCandidate {
+        framed_at(raw, client, Corner::BottomRight)
+    }
+
+    /// A window filling the output with its own chrome shown overlaid inside it: no
+    /// exterior, so the layout clamps to the same corner within the client.
     fn covering(raw: u64, output: Rect) -> PressCandidate {
         PressCandidate {
             window_id: WindowId(raw),
             geometry: output,
-            is_client: true,
             has_frame: true,
             maximized: true,
-            strip: Some(templar_window::tag_strip(output)),
-            strip_over_client: true,
+            tabs: Some(TabHitRects {
+                layout: WindowLayout::new(
+                    output,
+                    Corner::BottomRight,
+                    TabPlacement::SameCorner,
+                    output,
+                ),
+                title_visible: true,
+                controls_visible: true,
+            }),
         }
     }
 
@@ -2666,11 +2932,54 @@ mod tests {
         PressCandidate {
             window_id: WindowId(raw),
             geometry: rect,
-            is_client: true,
             has_frame: false,
             maximized: false,
-            strip: None,
-            strip_over_client: false,
+            tabs: None,
+        }
+    }
+
+    #[test]
+    fn four_side_approach_respects_higher_windows_and_client_interior() {
+        let client = Rect::new(300, 300, 640, 480);
+        let mut window = framed_at(1, client, Corner::TopRight);
+        window.tabs.as_mut().unwrap().controls_visible = false;
+        for pos in [at(280, 500), at(960, 500), at(500, 280), at(500, 800)] {
+            assert_eq!(tab_approach_at(&[window], pos), Some(WindowId(1)));
+        }
+        assert_eq!(tab_approach_at(&[window], client.center()), None);
+        let higher = card(2, Rect::new(250, 250, 200, 400));
+        assert_eq!(tab_approach_at(&[higher, window], at(280, 500)), None);
+    }
+
+    #[test]
+    fn control_release_requires_the_same_visible_stationary_target() {
+        let window = framed_at(1, Rect::new(300, 300, 640, 480), Corner::TopRight);
+        let original = window.tabs.unwrap().layout;
+        let rect = original.control_rect(templar_window::TabControl::Close);
+        let pressed = TabControlPress { window_id: window.window_id, control: ControlTag::Close, rect };
+        let target = press_target_at(&[window], rect.center());
+        assert!(pressed.matches(target, Some(original)));
+        let moved = WindowLayout::new(original.client, Corner::BottomLeft, original.placement, screen());
+        assert!(!pressed.matches(target, Some(moved)));
+        assert!(!pressed.matches(target, None));
+        assert!(!pressed.matches(PressTarget::Nothing, Some(original)));
+        let mut hidden = window;
+        hidden.tabs.as_mut().unwrap().controls_visible = false;
+        assert!(!pressed.matches(press_target_at(&[hidden], rect.center()), Some(original)));
+        let higher = card(2, rect);
+        assert!(!pressed.matches(press_target_at(&[higher, window], rect.center()), Some(original)));
+    }
+
+    #[test]
+    fn opposite_controls_keep_the_aim_corridor_at_the_far_corner() {
+        let tabs = TabHitRects {
+            layout: WindowLayout::new(Rect::new(300, 300, 640, 480), Corner::TopLeft, TabPlacement::OppositeCorners, screen()),
+            title_visible: true,
+            controls_visible: true,
+        };
+        for (_, rect) in tabs.layout.controls {
+            assert!(tab_aims_at(tabs, rect.center()));
+            assert!(tab_aims_at(tabs, at(rect.x - 2, rect.center().y)));
         }
     }
 
@@ -2775,9 +3084,10 @@ mod tests {
         );
     }
 
-    /// Eight points around one window's perimeter, two per side, and the four cursor names they
-    /// promise. What the pointer shows and what a press then starts come from the same
-    /// hit-test, so they cannot disagree.
+    /// Points around one window's perimeter and the cursor names they promise. What the
+    /// pointer shows and what a press then starts come from the same hit-test, so they cannot
+    /// disagree. The bottom edge carries the title tab, so its resize points sit clear of it:
+    /// left of the title, and in the reserved corner square at the right.
     #[test]
     fn the_perimeter_promises_the_resize_a_press_would_start() {
         let window = framed(1, Rect::new(100, 100, 400, 300));
@@ -2815,32 +3125,92 @@ mod tests {
             "top, left"
         );
         assert_eq!(shape(mid_x, frame.y - 2), Some("nesw-resize"), "top, right");
+        // The title spans the bottom centre: left of it is the bottom-left corner's resize,
+        // and the bottom-right corner answers from its reserved square.
         assert_eq!(
-            shape(mid_x - 1, frame.bottom() + 1),
+            shape(200, frame.bottom() + 1),
             Some("nesw-resize"),
-            "bottom, left"
+            "bottom, left of the title"
         );
         assert_eq!(
-            shape(mid_x, frame.bottom() + 1),
+            shape(frame.right() + 5, frame.bottom() + 5),
             Some("nwse-resize"),
-            "bottom, right"
+            "bottom-right, from the reserved square"
         );
 
+        // On the title is a move, not a resize: no cursor promise.
+        let title = window.tabs.expect("framed").layout.title;
+        assert_eq!(shape(title.center().x, title.center().y), None);
         // Inside the window and far outside it are the client's and nobody's: no promise either way.
         assert_eq!(shape(mid_x, mid_y), None);
         assert_eq!(shape(frame.x - 40, mid_y), None);
     }
 
+    /// Child 1 (`visible-corners-route-to-resize`): every visible client corner routes to its
+    /// own resize — the reserved squares answer before any tab — while Close answers from its
+    /// own rectangle at every corner. Never the twain.
+    #[test]
+    fn every_corner_resizes_and_close_answers_from_its_own_rect() {
+        use templar_window::TabControl;
+        for corner in Corner::ALL {
+            let window = framed_at(1, Rect::new(300, 300, 640, 480), corner);
+            let candidates = [window];
+            let layout = window.tabs.expect("framed").layout;
+            for (index, square) in
+                WindowLayout::resize_squares(window.geometry).iter().enumerate()
+            {
+                let expected = Corner::ALL[index];
+                assert_eq!(
+                    press_target_at(&candidates, square.center()),
+                    PressTarget::Affordance(
+                        WindowId(1),
+                        Affordance::Edge(expected.resize_edges())
+                    ),
+                    "{expected:?} square at layout corner {corner:?}"
+                );
+            }
+            let close = layout.control_rect(TabControl::Close);
+            assert_eq!(
+                press_target_at(&candidates, close.center()),
+                PressTarget::Affordance(WindowId(1), Affordance::Button(ControlTag::Close)),
+                "Close at {corner:?}"
+            );
+        }
+    }
+
+    /// Child 3 (`hidden-controls-take-nothing`): with controls unrevealed their rectangles
+    /// answer nothing clickable — no button, no cursor — while the title still moves.
+    #[test]
+    fn hidden_controls_take_no_press() {
+        let mut window = framed(1, Rect::new(100, 140, 400, 300));
+        let tabs = window.tabs.as_mut().expect("framed");
+        tabs.controls_visible = false;
+        let layout = tabs.layout;
+        let candidates = [window];
+        for (_, rect) in layout.controls {
+            let target = press_target_at(&candidates, rect.center());
+            assert!(
+                !matches!(target, PressTarget::Affordance(_, Affordance::Button(_))),
+                "hidden control answers at {:?}",
+                rect.center()
+            );
+        }
+        assert_eq!(
+            press_target_at(&candidates, layout.title.center()),
+            PressTarget::Affordance(WindowId(1), Affordance::Tag)
+        );
+    }
+
     /// The fault the user reported as "the windows fight for focus": pressing a window's title
-    /// band started a move and nothing else. The window being dragged was neither raised nor
+    /// tab started a move and nothing else. The window being dragged was neither raised nor
     /// given the keyboard, so a person moved a window they still could not type into and the
     /// window they *had* been typing into kept the keyboard — every drag left the two disagreeing
     /// about which window was in front.
     #[test]
-    fn pressing_a_windows_name_tag_focuses_that_window() {
+    fn pressing_a_windows_title_tab_focuses_that_window() {
         let window = framed(1, Rect::new(100, 140, 400, 300));
-        let strip = window.strip.expect("a framed window has a strip");
-        let target = press_target_at(&[window], at(strip.x + 20, strip.y + 4));
+        let layout = window.tabs.expect("framed").layout;
+        let target = press_target_at(&[window], layout.title.center());
         assert_eq!(
             target,
             PressTarget::Affordance(WindowId(1), Affordance::Tag)
@@ -2848,68 +3218,85 @@ mod tests {
         assert_eq!(
             press_activates(target),
             Some(WindowId(1)),
-            "a press on the name tag is click-to-focus before it is a drag"
+            "a press on the title is click-to-focus before it is a drag"
         );
-        // The control tags act; the gap between the two tags belongs to nobody here.
-        let close = press_target_at(&[window], at(strip.right() - 4, strip.y + 4));
+        // The controls act; the exterior gap beside the stack belongs to nobody here.
+        let close = layout.control_rect(templar_window::TabControl::Close);
         assert_eq!(
-            close,
+            press_target_at(&[window], close.center()),
             PressTarget::Affordance(WindowId(1), Affordance::Button(ControlTag::Close))
         );
-        let name = layout::name_tag(strip);
-        let gap = press_target_at(&[window], at(name.right() + 2, strip.y + 4));
-        assert_eq!(gap, PressTarget::Nothing, "the gap falls through");
+        // Outside the client beside the stack, inside the chrome bounds, on no tab.
+        let gap_point = at(layout.client.right() + 10, layout.client.bottom() - 10);
+        assert_eq!(
+            press_target_at(&[window], gap_point),
+            PressTarget::Nothing,
+            "the exterior gap falls through"
+        );
         // A window beneath owns the gap when it is there.
         let beneath = framed(2, Rect::new(0, 0, 900, 700));
         assert_eq!(
-            press_target_at(&[window, beneath], at(name.right() + 2, strip.y + 4)),
+            press_target_at(&[window, beneath], gap_point),
             PressTarget::Window(WindowId(2))
         );
     }
 
-    /// A maximized window under the shell's bar has no strip: its whole frame is the client's,
-    /// and its controls are the bar's.
+    /// A maximized window whose chrome is hidden has no tabs: its whole geometry is the
+    /// client's, and presses there belong to the client.
     #[test]
-    fn a_window_without_a_frame_offers_no_tags() {
+    fn a_window_without_a_frame_offers_no_tabs() {
         let mut window = framed(1, Rect::new(0, 0, 1600, 900));
         window.has_frame = false;
         window.maximized = true;
-        window.strip = None;
-        let target = press_target_at(&[window], at(1590, 928));
+        window.tabs = None;
+        let target = press_target_at(&[window], at(1590, 890));
         assert_eq!(target, PressTarget::Window(WindowId(1)));
     }
 
-    /// The gap between a covering window's two tags is the window's own pixels, not a hole
-    /// through to whatever is behind it. Without this, every click along the bottom row of the
-    /// front window raised the one underneath.
+    /// The gap in a screen-filling window's overlaid chrome is the window's own pixels, not a
+    /// hole through to whatever is behind it. Without this, clicks on the front window's own
+    /// area raised the one underneath.
     #[test]
-    fn the_gap_between_a_covering_windows_tags_still_belongs_to_that_window() {
+    fn the_gap_in_overlaid_chrome_still_belongs_to_that_window() {
         let output = Rect::new(0, 0, 1920, 1080);
         let front = covering(1, output);
         let behind = covering(2, output);
-        let strip = templar_window::tag_strip(output);
-        let middle = at(output.width / 2, strip.y + strip.height / 2);
-        assert!(layout::control_tag_at(strip, middle).is_none());
-        assert!(!rect_contains(layout::name_tag(strip), middle));
+        let layout = front.tabs.expect("shown").layout;
+        assert!(layout.overlay);
+        let middle = at(output.width / 2, layout.title.center().y);
+        assert!(layout.control_at(middle).is_none());
+        assert!(!layout.title_at(middle));
         assert_eq!(
             press_target_at(&[front, behind], middle),
             PressTarget::Window(WindowId(1))
         );
 
-        // A framed window's strip really is a hole: nothing of it is drawn there.
-        let over = framed(3, Rect::new(0, 0, 1920, 1000));
-        let hole = templar_window::tag_strip(over.geometry);
-        let gap = at(over.geometry.width / 2, hole.y + hole.height / 2);
+        // An exterior gap really is a hole: nothing of the window is drawn there, so the
+        // window beneath owns it.
+        let over = framed(3, Rect::new(0, 0, 1800, 1000));
+        let over_layout = over.tabs.expect("framed").layout;
+        assert!(!over_layout.overlay);
+        // Beside the control stack: inside the chrome bounds, on no tab, clear of the
+        // corner square.
+        let gap = at(1810, 990);
+        assert!(over_layout.control_at(gap).is_none());
+        assert!(!over_layout.title_at(gap));
+        let under = framed(2, Rect::new(1700, 900, 400, 300));
         assert_eq!(
-            press_target_at(&[over, behind], gap),
+            press_target_at(&[over], gap),
+            PressTarget::Nothing,
+            "the exterior gap falls through"
+        );
+        assert_eq!(
+            press_target_at(&[over, under], gap),
             PressTarget::Window(WindowId(2))
         );
     }
 
     /// A press that never moves is a click; one that leaves the slop is the drag it always was.
-    /// This is the whole of "clicking the name tag pins the window, dragging still drags it".
+    /// This is the whole of "clicking the title pins the window, dragging still drags it".
     #[test]
-    fn a_name_tag_press_that_never_moves_is_a_click() {
+    fn a_title_press_that_never_moves_is_a_click() {
         let pressed = at(400, 928);
         assert!(is_click(pressed, pressed));
         assert!(is_click(pressed, at(400 + CLICK_SLOP, 928 - CLICK_SLOP)));
@@ -2960,52 +3347,51 @@ mod tests {
                 Affordance::Button(ControlTag::Maximize)
             )),
             Some(WindowId(1)),
-            "maximizing a background window brings it forward, like every other band press"
+            "maximizing a background window brings it forward, like every other title press"
         );
         assert_eq!(press_activates(PressTarget::Nothing), None);
     }
 
     /// The stacking order settles overlap, and it settles it once: the window on top owns every
-    /// point inside its frame, including the points where the window beneath it has drawn its own
-    /// title band. Chrome that shows through from underneath (the compositing fault fixed in
-    /// `src/scene.rs`) must never become a click target — a person clicking a title bar they can
-    /// see and having a different window take the keyboard is exactly what "fighting for focus"
-    /// looks like.
+    /// point inside its client rectangle, including the points where the window beneath it has
+    /// drawn its own title tab. Chrome that shows through from underneath (the compositing fault
+    /// fixed in `src/scene.rs`) must never become a click target — a person clicking a title tab
+    /// they can see and having a different window take the keyboard is exactly what "fighting for
+    /// focus" looks like.
     #[test]
     fn the_window_on_top_owns_every_point_inside_its_frame() {
         let top = framed(1, Rect::new(100, 340, 400, 300));
         let buried = framed(2, Rect::new(120, 140, 400, 300));
-        let buried_strip = buried.strip.expect("a framed window has a strip");
-        let overlap = at(buried_strip.x + 20, buried_strip.y + 4);
+        let buried_title = buried.tabs.expect("framed").layout.title;
+        let overlap = at(buried_title.x + 20, buried_title.center().y);
         assert!(
             rect_contains(top.geometry, overlap),
             "the test point overlaps"
         );
+        let top_layout = top.tabs.expect("framed").layout;
         assert!(
-            !rect_contains(top.strip.expect("a framed window has a strip"), overlap),
-            "and lands in the top window's client area rather than its own tags"
+            top_layout.control_at(overlap).is_none() && !top_layout.title_at(overlap),
+            "and lands in the top window's client area rather than its own tabs"
         );
 
         let target = press_target_at(&[top, buried], overlap);
         assert_eq!(
             target,
             PressTarget::Window(WindowId(1)),
-            "the point is inside the top window's frame, so it belongs to the top window"
+            "the point is inside the top window, so it belongs to the top window"
         );
     }
 
     /// A shell surface (the Home Surface) is not a client window: it takes the keyboard, but it
-    /// is never activated or raised, and it has no band to press.
+    /// is never activated or raised, and it has no tabs to press.
     #[test]
-    fn a_shell_surface_takes_the_press_without_offering_a_tag() {
+    fn a_shell_surface_takes_the_press_without_offering_a_tab() {
         let home = PressCandidate {
             window_id: WindowId(9),
             geometry: Rect::new(0, 0, 1920, 1080),
-            is_client: false,
             has_frame: false,
             maximized: false,
-            strip: None,
-            strip_over_client: false,
+            tabs: None,
         };
         let target = press_target_at(&[home], at(400, 400));
         assert_eq!(target, PressTarget::Window(WindowId(9)));

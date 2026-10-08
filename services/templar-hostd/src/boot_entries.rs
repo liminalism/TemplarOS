@@ -119,6 +119,7 @@ pub struct BootEntry {
     /// Recorded as a comment, the same way the systemd-boot entry does it: not a kernel argument,
     /// but the one place a person looking at a boot entry can see which module build goes with it.
     pub nvidia_modules: Option<String>,
+    pub read_only: bool,
 }
 
 impl BootEntry {
@@ -133,6 +134,7 @@ impl BootEntry {
             },
             subvolume: deployment.subvolume.clone(),
             nvidia_modules: deployment.nvidia_modules.clone(),
+            read_only: deployment.read_only,
         }
     }
 
@@ -149,6 +151,7 @@ impl BootEntry {
             title: format!("TemplarOS ({id}) — known good"),
             subvolume: subvolume.to_owned(),
             nvidia_modules: None,
+            read_only: false,
         }
     }
 }
@@ -181,13 +184,14 @@ pub fn render(entries: &[BootEntry], root: &RootSpec) -> String {
             out,
             "\nmenuentry '{title}' --id '{id}' {{\n    \
              search --no-floppy --set=root --file {dir}/{id}/vmlinuz\n    \
-             linux {dir}/{id}/vmlinuz {root} rootflags=subvol={subvolume} rw {key}{id}\n    \
+             linux {dir}/{id}/vmlinuz {root} rootflags=subvol={subvolume} {mode} {key}{id}\n    \
              initrd {dir}/{id}/initrd.img\n",
             title = entry.title,
             dir = ESP_DEPLOYMENT_DIR,
             root = root.cmdline_arg(),
             subvolume = entry.subvolume,
             key = CMDLINE_KEY,
+            mode = if entry.read_only { "ro" } else { "rw" },
         );
         if let Some(modules) = &entry.nvidia_modules {
             let _ = writeln!(out, "    # nvidia-modules {modules}");
@@ -209,13 +213,7 @@ pub fn write_entries(boot_root: &Path, entries: &[BootEntry], root: &RootSpec) -
                 entry.id
             );
         }
-        if entry.subvolume.is_empty()
-            || !entry.subvolume.starts_with('@')
-            || !entry
-                .subvolume
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '/' | '.' | '_' | '-'))
-        {
+        if !crate::layout::safe_subvolume(&entry.subvolume) {
             bail!("refusing unsafe root subvolume {:?}", entry.subvolume);
         }
     }
@@ -248,34 +246,42 @@ impl Grub {
     }
 
     /// The known-good deployment id, if one has been recorded.
-    fn known_good_entry(&self) -> Option<BootEntry> {
-        let text = fs::read_to_string(self.known_good_path()).ok()?;
+    pub(crate) fn known_good_entry(&self) -> Result<Option<BootEntry>> {
+        let text = match fs::read_to_string(self.known_good_path()) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error).context("reading known-good boot identity"),
+        };
         let mut lines = text.lines();
-        let id = lines.next()?.trim();
-        let subvolume = lines
-            .next()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("@");
-        (is_valid_deployment_id(id)).then(|| BootEntry::known_good_at(id, subvolume))
+        let id = lines.next().context("empty known-good boot identity")?.trim();
+        let subvolume = lines.next().unwrap_or("@").trim();
+        let read_only = match lines.next() {
+            None | Some("false") => false,
+            Some("true") => true,
+            Some(_) => anyhow::bail!("invalid known-good root policy"),
+        };
+        if !is_valid_deployment_id(id) || !crate::layout::safe_subvolume(subvolume) {
+            anyhow::bail!("unsafe known-good boot identity; reviewed recovery required");
+        }
+        let mut entry = BootEntry::known_good_at(id, subvolume);
+        entry.read_only = read_only;
+        Ok(Some(entry))
     }
 
     /// Remember the deployment and its boot-root subvolume together.
     pub fn record_known_good(&self, deployment: &Deployment) -> Result<()> {
         fs::create_dir_all(&self.state_dir)
             .with_context(|| format!("creating {}", self.state_dir.display()))?;
-        fs::write(
-            self.known_good_path(),
-            format!("{}\n{}\n", deployment.id, deployment.subvolume),
-        )
-        .with_context(|| format!("recording known-good deployment {}", deployment.id))
+        crate::deploy::write_atomically(&self.known_good_path(),
+            format!("{}\n{}\n{}\n", deployment.id, deployment.subvolume, deployment.read_only).as_bytes())
+            .with_context(|| format!("recording known-good deployment {}", deployment.id))
     }
 
     /// Regenerate the entries file: the known-good deployment first, so a person reading the menu
     /// sees the safe choice at the top, then `candidate` when one is staged.
     pub fn refresh_entries(&self, candidate: Option<&Deployment>) -> Result<()> {
         let mut entries = Vec::new();
-        if let Some(entry) = self.known_good_entry() {
+        if let Some(entry) = self.known_good_entry()? {
             entries.push(entry);
         }
         if let Some(candidate) = candidate
@@ -308,6 +314,7 @@ mod tests {
             kernel: Some("linux-image-7.0.0-generic".into()),
             nvidia_modules: Some("linux-modules-nvidia-580-open-generic".into()),
             known_good,
+            read_only: true,
         }
     }
 
@@ -428,7 +435,7 @@ mod tests {
         // What GRUB is asked to boot is exactly what the entry is named.
         assert_eq!(
             commands.calls().last().unwrap().args,
-            ["txn-20260903T120000Z"]
+            [format!("--boot-directory={}", dir.path().join("boot").display()), "txn-20260903T120000Z".into()]
         );
 
         // A rollback leaves the previous deployment as the only entry.

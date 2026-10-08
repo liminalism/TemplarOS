@@ -5,6 +5,15 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "$script_dir/.." && pwd -P)"
 nm_tray2_dir="${NM_TRAY2_DIR:-${repo_root}/forks/nm-tray-2}"
 
+# cargo, cargo-deb and just usually live in ~/.cargo/bin, which a bare login PATH (and
+# `env -i`) does not carry. Prefer them there over failing the require_command checks below.
+if [ -d "$HOME/.cargo/bin" ]; then
+    case ":$PATH:" in
+        *":$HOME/.cargo/bin:"*) ;;
+        *) export PATH="$HOME/.cargo/bin:$PATH" ;;
+    esac
+fi
+
 skip_build=0
 skip_nm_tray2=0
 dry_run=0
@@ -227,9 +236,18 @@ fi
 if ((dry_run == 0)) && [[ ! -x /usr/bin/templar ]]; then
     die "/usr/bin/templar was not installed"
 fi
-if ! run /usr/bin/templar doctor --root /; then
-    die "the installed doctor check failed; do not log out until its failures are fixed"
-fi
+doctor_status=0
+run /usr/bin/templar doctor --root / || doctor_status=$?
+case "$doctor_status" in
+    0) ;;
+    2)
+        # Doctor distinguishes warnings (2) from installed-contract errors (1).
+        # Preserving the live desktop leaves its old build pending next-login activation.
+        warn "doctor reported warnings (shown above), not an installed-package error"
+        warn "runtime activation and file-index reconciliation require the new service at next login"
+        ;;
+    *) die "the installed doctor check failed; do not log out until its errors are fixed" ;;
+esac
 
 if ((dry_run == 1)); then
     printf '\nDry run complete; no build or installation command was executed.\n'

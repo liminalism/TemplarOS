@@ -1,0 +1,16 @@
+[package]
+name = "templar-effects"
+description = "The WGSL effect library: the essence transition (windows leaving through the gaps to the Homegarden), surface materials and bottom-bar plate interaction, with their pure planners and uniform layouts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# No dependencies at all: shader sources, geometry and arithmetic. The GPU host (the standalone
+# sandbox in tools/effects-sandbox today, the compositor later) owns devices, textures and
+# pipelines; this crate decides what to draw and packs the bytes it is drawn with.
+[dependencies]
+
+[lints]
+workspace = true

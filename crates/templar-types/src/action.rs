@@ -236,7 +236,7 @@ impl fmt::Display for ActionCategory {
 pub enum Requires {
     /// Always offered.
     Always,
-    /// Needs the trusted-shell compositor connection (`templar_shell_v1`).
+    /// Needs the trusted-shell compositor connection (`templar_shell_v2`).
     TrustedShell,
     /// Needs a tile to be focused on the field.
     FocusedTile,
@@ -715,13 +715,20 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Provider(ProviderRole::NetworkStatusUi),
     },
-    // The bar's clock. `Requires::Always` rather than a `Calendar` provider role: there is no such
-    // role, and inventing one for a single chip would put a contract in `templar-session-core` to
-    // carry one launch. The bar dims the chip when no installed application declares
-    // `Categories=Calendar`, which is the same thing a person sees.
+    // The clock opens the shell's native calendar; editing belongs to native Settings.
     ActionDecl {
         id: "clock.open-calendar",
         label: "Calendar",
+        control: None,
+        category: ActionCategory::System,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "clock.open-settings",
+        label: "Date & Time settings",
         control: None,
         category: ActionCategory::System,
         chords: &[],
@@ -983,11 +990,61 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "garden.keep",
-        label: "Keep this size and place",
+        label: "Keep on Home",
         control: None,
         category: ActionCategory::Field,
         chords: &[],
         cli_verb: Some("garden keep"),
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "garden.show-coding",
+        label: "Show as: Coding",
+        control: None,
+        category: ActionCategory::Field,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "garden.show-video",
+        label: "Show as: Video",
+        control: None,
+        category: ActionCategory::Field,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "garden.show-images",
+        label: "Show as: Images",
+        control: None,
+        category: ActionCategory::Field,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "garden.show-documents",
+        label: "Show as: Documents",
+        control: None,
+        category: ActionCategory::Field,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "garden.show-plain",
+        label: "Show as: Plain",
+        control: None,
+        category: ActionCategory::Field,
+        chords: &[],
+        cli_verb: None,
         confirm: false,
         requires: Requires::Always,
     },

@@ -178,16 +178,14 @@ pub fn tag_drop_target<B: Backend + 'static>(
         .find(|id| {
             state
                 .window_service
-                .recovery_affordance(*id)
-                .is_some_and(|affordance| {
-                    contains(crate::chrome::layout::name_tag(affordance.strip), pointer)
-                })
+                .window_layout(*id)
+                .is_some_and(|layout| layout.title_at(pointer))
         })
 }
 
-/// The followers of a band drag: every other member of `anchor`'s group, with its offset from the
-/// anchor's origin. Empty for an ungrouped window and for a `Shift`-held drag, which moves the
-/// one window (planning doc §2.1).
+/// The followers of a title drag: every other member of `anchor`'s group, with its offset from
+/// the anchor's origin. Empty for an ungrouped window and for a `Shift`-held drag, which moves
+/// the one window (planning doc §2.1).
 ///
 /// Offsets rather than a delta per motion event: the followers then track the anchor exactly,
 /// with no accumulated rounding, and a repair at the end of the gesture — never during it —
@@ -222,10 +220,6 @@ pub fn drag_followers<B: Backend + 'static>(
             ))
         })
         .collect()
-}
-
-fn contains(rect: templar_window::Rect, point: Point) -> bool {
-    point.x >= rect.x && point.x < rect.right() && point.y >= rect.y && point.y < rect.bottom()
 }
 
 /// Name this window's group. The shell learns the new name from the next `group` event, like

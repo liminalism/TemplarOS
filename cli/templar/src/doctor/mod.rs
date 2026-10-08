@@ -83,6 +83,21 @@ pub fn run_all(context: &Context) -> Vec<Finding> {
     run_all_with_hardware(context, &hardware::HardwareOptions::default())
 }
 
+/// Run one built-in check by id, for `--check`. Returns `None` when the id is not a
+/// built-in — the caller then resolves it as a hardware case (with `--hardware`) or
+/// reports it unknown.
+pub fn run_one_builtin(context: &Context, id: &str) -> Option<Finding> {
+    checks::all()
+        .iter()
+        .find(|check| check.id() == id)
+        .map(|check| check.run(context))
+}
+
+/// The ids `--check` accepts on its own.
+pub fn builtin_ids() -> Vec<&'static str> {
+    checks::all().iter().map(|check| check.id()).collect()
+}
+
 /// Run the package/image checks and, when requested, append the selected hardware-matrix plan.
 pub fn run_all_with_hardware(
     context: &Context,
@@ -218,6 +233,21 @@ mod tests {
         let short = abbreviate(&long);
         assert_eq!(short.chars().count(), DETAIL_CHARS + 1);
         assert!(short.ends_with('…'));
+    }
+
+    #[test]
+    fn check_selection_runs_one_builtin_by_id() {
+        // `--check file-index` used to require `--hardware` and then fail as unknown
+        // hardware; a built-in id now selects exactly that check, no hardware needed.
+        let context = Context {
+            root: std::path::PathBuf::from("/"),
+            hardware: false,
+        };
+        let finding = run_one_builtin(&context, "file-index").expect("a built-in id resolves");
+        assert_eq!(finding.id, "file-index");
+        assert!(run_one_builtin(&context, "gpu-mode").is_none());
+        assert!(run_one_builtin(&context, "bogus-name").is_none());
+        assert!(builtin_ids().contains(&"file-index"));
     }
 
     #[test]

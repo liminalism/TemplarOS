@@ -57,3 +57,8 @@ else
     done
 fi
 fi
+
+# Prepare private persistent stores before repart copies them into @var. The
+# finalizer adds UUID identities and optional sealing after boot artifacts exist.
+python3 /usr/libexec/templaros-deployment-layout --root / --image-build \
+    --layout /usr/share/templaros/layout.toml

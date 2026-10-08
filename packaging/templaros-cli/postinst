@@ -10,8 +10,9 @@
 # still serves login shells; being sourced twice is a no-op, because it defines its function only
 # if it is not already defined.
 #
-# The block below is run verbatim by `cargo test -p templar garden`, so a change to it that stops
-# loading the hook fails there rather than on someone's desktop a week later.
+# The blocks below are run verbatim by `cargo test -p templar garden` and the completion
+# delivery test beside it, so a change that stops loading a hook fails there rather than on
+# someone's desktop a week later.
 set -e
 
 case "$1" in
@@ -25,6 +26,16 @@ case "$1" in
 # /etc/profile.d. Installed by templaros-cli, and removed again when it is.
 [ -r /etc/profile.d/60-templaros-garden.sh ] && . /etc/profile.d/60-templaros-garden.sh
 # <<< templaros garden hook <<<
+HOOK
+        fi
+        if [ -f /etc/bash.bashrc ] &&
+            ! grep -qF '# >>> templaros completion hook >>>' /etc/bash.bashrc
+        then
+            cat >>/etc/bash.bashrc <<'HOOK'
+# >>> templaros completion hook >>>
+# Job-completion reporting for notifications, beside the garden hook above.
+[ -r /etc/profile.d/61-templaros-completion.sh ] && . /etc/profile.d/61-templaros-completion.sh
+# <<< templaros completion hook <<<
 HOOK
         fi
         ;;

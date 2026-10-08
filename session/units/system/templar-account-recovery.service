@@ -1,0 +1,19 @@
+[Unit]
+Description=Recover root-paired account maintenance before login
+Documentation=https://templaros.org/docs/host
+ConditionPathExists=|/var/lib/templaros/hostd/accounts/intent.json
+ConditionPathExists=|/var/lib/templaros/account-maintenance/active.json
+After=local-fs.target
+Before=templar-hostd.service greetd.service systemd-user-sessions.service
+RequiresMountsFor=/var/lib/templaros/hostd/accounts
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/unshare --mount --propagation private -- /usr/bin/python3 -I /usr/libexec/templaros-account-maintenance --root / --state /var/lib/templaros/hostd/accounts --recover
+RemainAfterExit=yes
+StateDirectory=templaros/hostd/accounts
+StateDirectoryMode=0700
+UMask=0077
+LimitCORE=0
+PrivateMounts=yes
+TimeoutStartSec=300

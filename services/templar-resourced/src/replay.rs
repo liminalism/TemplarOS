@@ -29,7 +29,7 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
-use templar_types::InstanceId;
+use templar_types::ResourceId;
 
 /// The trace format this build writes.
 ///
@@ -95,8 +95,8 @@ pub struct Divergence {
     /// `kind` of each recorded action, in order.
     pub recorded_actions: Vec<String>,
     pub replayed_actions: Vec<String>,
-    pub recorded_victim: Option<InstanceId>,
-    pub replayed_victim: Option<InstanceId>,
+    pub recorded_victim: Option<ResourceId>,
+    pub replayed_victim: Option<ResourceId>,
 }
 
 impl Divergence {
@@ -175,7 +175,7 @@ impl ReplayReport {
     }
 }
 
-fn short(id: Option<InstanceId>) -> String {
+fn short(id: Option<ResourceId>) -> String {
     id.map_or_else(
         || "none".to_owned(),
         |id| id.to_string().chars().take(8).collect(),
@@ -255,7 +255,7 @@ pub fn replay(source: &str, jsonl: &str, config: GovernorConfig) -> ReplayReport
 ///
 /// `RestoreDynamicLimits` is emitted for every application at `Normal` and names no victim, so it
 /// is excluded — otherwise every calm tick would claim whichever instance happened to sort first.
-fn victim_of(actions: &[Action]) -> Option<InstanceId> {
+fn victim_of(actions: &[Action]) -> Option<ResourceId> {
     actions
         .iter()
         .find(|action| !matches!(action, Action::RestoreDynamicLimits { .. }))
@@ -349,8 +349,9 @@ mod tests {
 
     fn instance(memory: u64, disposable: bool) -> InstanceTrace {
         InstanceTrace {
-            instance_id: InstanceId::new(),
+            instance_id: ResourceId::new(),
             app_id: "org.templaros.Test".to_owned(),
+            metadata: None,
             memory_current_bytes: memory,
             memory_growth_bytes_per_second: 0,
             full_psi_avg10: 0.0,
@@ -408,7 +409,7 @@ mod tests {
         // exactly what went into the decision. If reconstruction quietly dropped or defaulted a
         // field, every replay would agree with every recording and prove nothing.
         let source = AppSample {
-            instance_id: InstanceId::new(),
+            instance_id: ResourceId::new(),
             memory_current: 3 * GIB,
             memory_growth_per_second: -17,
             full_psi_avg10: 2.5,
@@ -426,6 +427,7 @@ mod tests {
         let trace = InstanceTrace {
             instance_id: source.instance_id,
             app_id: "org.templaros.Test".to_owned(),
+            metadata: None,
             memory_current_bytes: source.memory_current,
             memory_growth_bytes_per_second: source.memory_growth_per_second,
             full_psi_avg10: source.full_psi_avg10,

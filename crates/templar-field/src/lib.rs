@@ -32,6 +32,7 @@
 #![forbid(unsafe_code)]
 
 pub mod drag;
+pub mod desktop_dock;
 pub mod field;
 pub mod focus;
 pub mod garden;
@@ -45,6 +46,7 @@ pub mod text;
 pub mod tile;
 
 pub use drag::{Drag, DragConfig, DragSample};
+pub use desktop_dock::ensure_desktop_dock;
 pub use field::{
     Cell, Container, FieldDocument, Landing, Located, PixelRect, Placement, Tray, cell_at,
     cell_rect, tile_rect,
@@ -66,4 +68,4 @@ pub use tile::{
 /// the *load* boundary the two directions differ: an older document is brought forward through
 /// [`migrate::DOCUMENT_MIGRATIONS`], and a newer one is refused with the stored copy left
 /// untouched. See [`migrate`].
-pub const DOCUMENT_VERSION: u32 = 1;
+pub const DOCUMENT_VERSION: u32 = 2;

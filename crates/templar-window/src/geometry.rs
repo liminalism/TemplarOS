@@ -1,8 +1,11 @@
 //! Geometry primitives and the recovery invariant.
 //!
-//! Every normal window must keep a compositor-owned **tag strip** (its bottom strip, where the
-//! name tag and the control tags are drawn) visible on at least one active output, after every
-//! drag, output change, scale change, resume and application geometry request. All coordinates are global compositor-logical coordinates.
+//! Every normal window must keep a compositor-owned recovery tab reachable on at least one active
+//! output, after every drag, output change, scale change, resume and application geometry request.
+//! The tab is one horizontal title plus three controls ([`WindowLayout`]) following the nearest of
+//! the window's four client corners; the bottom-edge recovery band below is the corridor the
+//! repair pass guarantees, which keeps at least the bottom tabs reachable and, through overlay
+//! clamping, every other corner's too. All coordinates are global compositor-logical coordinates.
 
 use crate::layers::Layer;
 use serde::{Deserialize, Serialize};
@@ -135,7 +138,7 @@ pub enum Edge {
 }
 
 /// Where along its edge an anchored shell surface sits
-/// (`templar-shell-v1.xml`'s `set_edge_alignment`).
+/// (`templar-shell-v2.xml`'s `set_edge_alignment`).
 ///
 /// Placement only: the alignment moves the surface along its edge and changes nothing about what
 /// it reserves, so moving between alignments reflows no window — the same property as growing a
@@ -206,6 +209,10 @@ pub fn work_area_for(logical: Rect, zones: &[Exclusive]) -> Rect {
     })
 }
 
+/// The nonexclusive shell bar/machine strip. Notification placement clears it even though
+/// it does not reduce `Output::usable()`.
+pub const SHELL_BAR_HEIGHT: i32 = 48;
+
 /// Where the compositor should place a shell surface on `output`.
 ///
 /// xdg-shell gives a client no way to position itself, and that is correct rather than a gap: a
@@ -233,7 +240,7 @@ pub fn shell_surface_placement(
     let full = output.logical;
     if let Some(zone) = exclusive {
         // Across the edge, the zone is a floor on the surface's thickness, not its size
-        // (`templar-shell-v1.xml`'s `set_exclusive_zone`): a bar that opens a row above itself grows
+        // (`templar-shell-v2.xml`'s `set_exclusive_zone`): a bar that opens a row above itself grows
         // over the windows beside it without moving them, because `work_area_for` follows the
         // zone alone.
         //
@@ -246,7 +253,7 @@ pub fn shell_surface_placement(
         let thickness =
             |requested_side: i32, available: i32| requested_side.max(size).min(available);
         // Where along the edge is the shell's to say, not the compositor's — the same argument as
-        // before, now with a way for the shell to answer it (`templar-shell-v1.xml`'s
+        // before, now with a way for the shell to answer it (`templar-shell-v2.xml`'s
         // `set_edge_alignment`). `Start` is what a surface that never asked for anything gets, so
         // this is the behaviour every existing claim already had. The offset is placement alone:
         // `work_area_for` reads `size` and never this, so sliding a strip along its edge reflows
@@ -309,16 +316,16 @@ pub fn shell_surface_placement(
         return full;
     }
     if layer == Layer::Notification {
-        // A toast anchors to the top-right of the usable area: visible over whatever is being
-        // worked on, clear of any reserved edge, and where every desktop has taught people to
-        // glance. The client still owns only its size.
+        // Bottom-right, above the nonexclusive bar, machine cluster and bottom gestures.
+        // The size remains client-owned; the compositor re-clamps on output changes.
         let usable = output.usable();
         let margin = 12;
-        let width = requested.width.clamp(1, usable.width);
-        let height = requested.height.clamp(1, usable.height);
+        let width = requested.width.clamp(1, usable.width.max(1));
+        let height = requested.height.clamp(1, usable.height.max(1));
+        let bottom = SHELL_BAR_HEIGHT + margin;
         return Rect::new(
-            usable.right() - width - margin.min(usable.width - width),
-            usable.y + margin.min(usable.height - height),
+            usable.right() - width - margin.min((usable.width - width).max(0)),
+            usable.bottom() - height - bottom.min((usable.height - height).max(0)),
             width,
             height,
         );
@@ -393,31 +400,33 @@ pub fn place_new_window(requested: Rect, existing_windows: usize, outputs: &[Out
     repair_window(placed, outputs)
 }
 
-/// Minimum visible width of the tag strip.
+/// Minimum visible width of the recovery band.
 pub const MIN_RECOVERY_WIDTH: i32 = 96;
-/// Height of the compositor-owned tag strip at the bottom of a window: the name tag at its left
-/// and the control tags at its right are this tall.
+/// Height of one horizontal title tab: the title on a window's top or bottom edge is this tall,
+/// and the recovery band below is one tab tall too.
 pub const TAG_HEIGHT: i32 = 32;
 
-/// The compositor-owned strip along a window's bottom edge, through which it can always be
-/// grabbed (by its name tag, `chrome::layout::name_tag`) and controlled (by its control tags).
-/// The one derivation of where the tags are: everything else is relative to this rectangle.
-pub fn tag_strip(window: Rect) -> Rect {
+/// The compositor-owned band along a window's bottom edge: the corridor the repair pass
+/// guarantees on an output, through which the window's bottom-corner tabs stay reachable. The
+/// corner tabs themselves live in [`WindowLayout`]; this rectangle is only the invariant's
+/// measure, kept at the bottom edge so a tall window may hang off the top of an output, never
+/// off the bottom.
+pub fn recovery_band(window: Rect) -> Rect {
     let height = window.height.clamp(1, TAG_HEIGHT);
     Rect {
         x: window.x,
-        // `max` keeps a degenerate (zero-height) window's strip at its own origin.
+        // `max` keeps a degenerate (zero-height) window's band at its own origin.
         y: window.bottom().saturating_sub(height).max(window.y),
         width: window.width.max(1),
         height,
     }
 }
 
-/// The compositor's grab affordance for one window: the tag strip, plus whether the compositor
-/// must actively paint a temporary tab over it.
+/// The compositor's grab affordance for one window: the recovery band, plus whether the
+/// compositor must actively paint a temporary tab over it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RecoveryAffordance {
-    pub strip: Rect,
+    pub band: Rect,
     /// True for client-side-decorated and borderless windows: the client controls that screen
     /// area and may draw over it, so the compositor cannot rely on a client-drawn title bar to
     /// make the window recoverable and must paint its own temporary tab.
@@ -429,23 +438,23 @@ pub struct RecoveryAffordance {
 /// enum itself so this module stays free of window-record concerns.
 pub fn recovery_affordance(geometry: Rect, client_owns_band: bool) -> RecoveryAffordance {
     RecoveryAffordance {
-        strip: tag_strip(geometry),
+        band: recovery_band(geometry),
         requires_compositor_paint: client_owns_band,
     }
 }
 
-/// True when enough of the tag strip is visible on some output's usable area.
+/// True when enough of the recovery band is visible on some output's usable area.
 ///
 /// Against [`Output::usable`], not [`Output::logical`]: a band hidden underneath a dock is not
 /// something the user can grab, so counting it would make "recoverable" mean "drawn somewhere"
 /// rather than "reachable".
 pub fn is_recoverable(window: Rect, outputs: &[Output]) -> bool {
-    let strip = tag_strip(window);
+    let band = recovery_band(window);
     let required_width = window.width.clamp(1, MIN_RECOVERY_WIDTH);
 
     outputs.iter().any(|output| {
-        strip.intersection(output.usable()).is_some_and(|visible| {
-            visible.width >= required_width && visible.height >= strip.height
+        band.intersection(output.usable()).is_some_and(|visible| {
+            visible.width >= required_width && visible.height >= band.height
         })
     })
 }
@@ -467,8 +476,8 @@ pub fn repair_window(window: Rect, outputs: &[Output]) -> Rect {
     let visible_height = window.height.clamp(1, TAG_HEIGHT).min(output.height.max(1));
 
     // Permit most of a large window to remain outside the output, but guarantee that the
-    // compositor-owned tag strip along its bottom edge remains reachable: a tall window may hang
-    // off the top of the output, never off the bottom.
+    // compositor-owned recovery band along its bottom edge remains reachable: a tall window may
+    // hang off the top of the output, never off the bottom.
     let minimum_x = output
         .x
         .saturating_sub(window.width.saturating_sub(visible_width));
@@ -486,45 +495,23 @@ pub fn repair_window(window: Rect, outputs: &[Output]) -> Rect {
 }
 
 /// The smallest a window may be resized to. Not an arbitrary floor: it is exactly the size at
-/// which the tag strip is still grabbable ([`MIN_RECOVERY_WIDTH`]) *and* there is a client area
-/// at least as tall as the strip above it. A window shrunk to this size can therefore still be
-/// moved and still be grown again — from any edge or corner ([`resize_edges_at`]) — which is the
-/// property that makes an interactive resize safe to offer at all.
+/// which the recovery band is still grabbable ([`MIN_RECOVERY_WIDTH`]) *and* a minimum title tab
+/// still fits beside the reserved resize squares. A window shrunk to this size can therefore
+/// still be moved and still be grown again — from any edge or corner ([`resize_edges_at`]) —
+/// which is the property that makes an interactive resize safe to offer at all.
+///
+/// There is no frame/client split anymore: a window's geometry *is* its client rectangle, and
+/// [`WindowLayout`] tabs live outside it (or overlaid inside it when there is no exterior room).
+/// Showing, hiding or relocating tabs never resizes the client.
 pub const MIN_WINDOW_WIDTH: i32 = MIN_RECOVERY_WIDTH;
 /// See [`MIN_WINDOW_WIDTH`].
 pub const MIN_WINDOW_HEIGHT: i32 = 2 * TAG_HEIGHT;
 
-/// The rectangle a framed window's client surface occupies: everything above the tag strip.
-/// The strip is the compositor's, drawn *below* the client rather than over it — chrome painted
-/// over a client's own pixels hid the first line of every terminal and the close button of every
-/// client-decorated window.
-///
-/// Never empty: a frame shorter than the strip still yields a one-pixel client area, so a caller
-/// can always configure it.
-pub fn client_area(frame: Rect) -> Rect {
-    Rect {
-        x: frame.x,
-        y: frame.y,
-        width: frame.width.max(1),
-        height: frame.height.saturating_sub(TAG_HEIGHT).max(1),
-    }
-}
-
-/// The frame a client surface of `client` needs — the inverse of [`client_area`]: the same
-/// origin, one tag strip taller.
-pub fn frame_around(client: Rect) -> Rect {
-    Rect {
-        x: client.x,
-        y: client.y,
-        width: client.width.max(1),
-        height: client.height.max(1).saturating_add(TAG_HEIGHT),
-    }
-}
-
-/// How far outside a window's frame a press still grabs its edge, in logical pixels. Outside,
-/// never inside: an edge zone inside the frame would take the client's own outermost pixels —
-/// its scrollbar, its own resize border — and the tags own the bottom strip. Every edge and every
-/// corner resizes; there is no separate grip.
+/// How far outside a window a press still grabs its edge, in logical pixels. Outside, never
+/// inside: an edge zone inside the window would take the client's own outermost pixels — its
+/// scrollbar, its own resize border. Every edge and every corner resizes; there is no separate
+/// grip. The corner squares ([`WindowLayout::resize_square`]) take priority over tabs, and tabs
+/// take priority over the edge band they sit in.
 pub const RESIZE_MARGIN: i32 = 8;
 
 /// Which edges a press at `point`, just outside `frame`, grabs — `None` for a point inside the
@@ -671,7 +658,7 @@ pub fn move_into_view(window: Rect, outputs: &[Output]) -> Rect {
     let minimum_x = output.x;
     let maximum_x = output.right().saturating_sub(window.width.max(1));
     // A window taller than the output cannot fit; it is set flush with the bottom edge, so the
-    // tag strip along that edge stays reachable and the excess hangs off the top.
+    // recovery band along that edge stays reachable and the excess hangs off the top.
     let maximum_y = output.bottom().saturating_sub(window.height.max(1));
     let minimum_y = output.y.min(maximum_y);
 
@@ -1032,7 +1019,9 @@ fn div_round(numerator: i64, denominator: i64) -> i64 {
     }
 }
 
-pub(crate) fn choose_target_output(window: Rect, outputs: &[Output]) -> &Output {
+/// Output with greatest overlap, or nearest to the rect when it lies offscreen.
+/// The caller must supply at least one output.
+pub fn choose_target_output(window: Rect, outputs: &[Output]) -> &Output {
     let most_intersection = outputs
         .iter()
         .max_by_key(|output| window.intersection_area(output.logical))
@@ -1070,6 +1059,746 @@ fn clamp(value: i32, minimum: i32, maximum: i32) -> i32 {
         minimum
     } else {
         value.clamp(minimum, maximum)
+    }
+}
+
+// ---- Corner-following window tabs ---------------------------------------------------
+//
+// One horizontal title tab plus three controls (park, maximize/restore, close) per window,
+// following the nearest of the window's four client corners as the pointer approaches from any
+// side (plan: `docs/planning/homegarden-previews-notifications-window-tabs.md` §3).
+// [`WindowLayout`] is the one derivation of where every tab rectangle is: chrome paint, pointer
+// hover/press, move/resize, groups, configure, space sync, output repair and recovery all
+// consume it, so the drawn tab and the clickable tab cannot drift apart.
+//
+// The client rectangle is authoritative: tabs live *outside* it when there is room, overlaid
+// *inside* it at the same corner when there is not (output edge, maximized, fullscreen, tiny
+// window). Moving, showing or hiding tabs never changes the client rectangle and never emits a
+// client resize.
+
+/// A window's four client corners. All four are real layouts — never aliases of each other.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl Corner {
+    /// Every corner, in deterministic tie-break order.
+    pub const ALL: [Corner; 4] = [
+        Self::TopLeft,
+        Self::TopRight,
+        Self::BottomLeft,
+        Self::BottomRight,
+    ];
+
+    /// Whether this is a top (`TopLeft`/`TopRight`) corner: its title sits on the top edge.
+    #[must_use]
+    pub const fn is_top(self) -> bool {
+        matches!(self, Self::TopLeft | Self::TopRight)
+    }
+
+    /// Whether this is a left (`TopLeft`/`BottomLeft`) corner.
+    #[must_use]
+    pub const fn is_left(self) -> bool {
+        matches!(self, Self::TopLeft | Self::BottomLeft)
+    }
+
+    /// The corner's point on `client`.
+    #[must_use]
+    pub fn point(self, client: Rect) -> Point {
+        Point {
+            x: if self.is_left() {
+                client.x
+            } else {
+                client.right()
+            },
+            y: if self.is_top() {
+                client.y
+            } else {
+                client.bottom()
+            },
+        }
+    }
+
+    /// The resize edges a press in this corner's square drags.
+    #[must_use]
+    pub const fn resize_edges(self) -> ResizeEdges {
+        ResizeEdges {
+            left: self.is_left(),
+            right: !self.is_left(),
+            top: self.is_top(),
+            bottom: !self.is_top(),
+        }
+    }
+
+    /// The stable name the settings schema and the protocol use.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::TopLeft => "top-left",
+            Self::TopRight => "top-right",
+            Self::BottomLeft => "bottom-left",
+            Self::BottomRight => "bottom-right",
+        }
+    }
+
+    /// Parse [`Self::name`]; `None` for anything else.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|corner| corner.name() == name)
+    }
+}
+
+/// How a window's title and controls are arranged at its active corner.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TabPlacement {
+    /// The default right angle: the title on the adjacent horizontal edge and the three
+    /// controls stacked vertically on the adjacent side, meeting at the same corner.
+    SameCorner,
+    /// Title at one end of the top/bottom edge and a horizontal control row at the opposite
+    /// end of the same edge. The exact opposite geometry stays a prototype-review point;
+    /// same-edge (not diagonal) is the proposed meaning.
+    OppositeCorners,
+}
+
+impl TabPlacement {
+    /// The stable name the settings schema and the protocol use.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::SameCorner => "same-corner",
+            Self::OppositeCorners => "opposite-corners",
+        }
+    }
+
+    /// Parse [`Self::name`]; `None` for anything else.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "same-corner" => Some(Self::SameCorner),
+            "opposite-corners" => Some(Self::OppositeCorners),
+            _ => None,
+        }
+    }
+}
+
+/// One of the three window controls, in canonical order.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TabControl {
+    Park,
+    Maximize,
+    Close,
+}
+
+impl TabControl {
+    /// Every control. Placement order (nearest the anchor corner first) is
+    /// [`Self::corner_outward`]: Close rides nearest the corner so it is found first, and it
+    /// is the one control that must never sit on a resize target.
+    pub const ALL: [TabControl; 3] = [Self::Park, Self::Maximize, Self::Close];
+
+    /// Corner-outward order: the first entry sits nearest the anchor corner.
+    #[must_use]
+    pub const fn corner_outward() -> [TabControl; 3] {
+        [Self::Close, Self::Maximize, Self::Park]
+    }
+}
+
+/// The tab policy: arrangement, follow, visibility and defaults. One value shared by every
+/// window; per-window state (active corner, latch, reveal) lives on the service beside it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TabPolicy {
+    /// [`TabPlacement::SameCorner`] unless the person asked for opposite ends.
+    pub placement: TabPlacement,
+    /// Follow the nearest corner as the pointer approaches; when false every window keeps
+    /// [`Self::fixed_corner`].
+    pub follow_pointer: bool,
+    /// The predictable accessibility fallback, and the corner used while `follow_pointer`
+    /// is false.
+    pub fixed_corner: Corner,
+    /// Show controls always instead of only on hover reveal.
+    pub controls_always: bool,
+    /// Keep the title visible while its window is visible (the default); when false the
+    /// title hides with the controls until hovered.
+    pub title_always: bool,
+    /// The corner a new window's tabs start at.
+    pub default_corner: Corner,
+}
+
+impl Default for TabPolicy {
+    fn default() -> Self {
+        Self {
+            placement: TabPlacement::SameCorner,
+            follow_pointer: true,
+            fixed_corner: Corner::TopRight,
+            controls_always: false,
+            title_always: true,
+            default_corner: Corner::TopRight,
+        }
+    }
+}
+
+impl TabPolicy {
+    /// Parse a policy out of `set_tab_policy` wire values (protocol v14): each argument the
+    /// enum value the XML declares, unknown values falling back to [`Self::default`] field
+    /// by field, so a skewed or future sender cannot corrupt the policy.
+    pub fn from_protocol(
+        placement: u32,
+        follow_pointer: u32,
+        fixed_corner: u32,
+        controls: u32,
+        title: u32,
+        default_corner: u32,
+    ) -> Self {
+        let corner = |raw: u32| {
+            Corner::ALL
+                .get(usize::try_from(raw).unwrap_or(usize::MAX))
+                .copied()
+                .unwrap_or(Corner::TopRight)
+        };
+        Self {
+            placement: match placement {
+                1 => TabPlacement::OppositeCorners,
+                _ => TabPlacement::SameCorner,
+            },
+            follow_pointer: follow_pointer != 0,
+            fixed_corner: corner(fixed_corner),
+            controls_always: controls == 1,
+            title_always: title != 1,
+            default_corner: corner(default_corner),
+        }
+    }
+
+    /// Parse a policy out of committed settings: `lookup` maps a `windows.tabs.*` key to its
+    /// stored token (`same-corner`, `true`, `top-right`, …). Missing or unparsable values fall
+    /// back to [`Self::default`] field by field, which is what makes Set/Reset/undo/restart
+    /// converge: every reader parses the same committed bytes through this one function.
+    pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Self {
+        let choice = |key: &str| lookup(key);
+        let flag = |key: &str, default: bool| {
+            choice(key).map_or(default, |value| match value.as_str() {
+                "true" => true,
+                "false" => false,
+                _ => default,
+            })
+        };
+        Self {
+            placement: choice("windows.tabs.placement")
+                .as_deref()
+                .and_then(TabPlacement::from_name)
+                .unwrap_or(TabPlacement::SameCorner),
+            follow_pointer: flag("windows.tabs.follow-pointer", true),
+            fixed_corner: choice("windows.tabs.fixed-corner")
+                .as_deref()
+                .and_then(Corner::from_name)
+                .unwrap_or(Corner::TopRight),
+            controls_always: choice("windows.tabs.controls")
+                .is_some_and(|value| value == "always"),
+            title_always: choice("windows.tabs.title").is_none_or(|value| value != "hover"),
+            default_corner: choice("windows.tabs.default-corner")
+                .as_deref()
+                .and_then(Corner::from_name)
+                .unwrap_or(Corner::TopRight),
+        }
+    }
+}
+
+/// How far a title tab extends along its edge at most: a title is a tab, not a bar.
+pub const TAB_TITLE_MAX_WIDTH: i32 = 240;
+/// How far it extends at least before the layout falls back to overlay.
+pub const TAB_TITLE_MIN_WIDTH: i32 = 64;
+/// One control is a square of this side.
+pub const TAB_CONTROL_SIZE: i32 = 28;
+/// The gap between two controls in a row or stack.
+pub const TAB_CONTROL_GAP: i32 = 4;
+/// Side of the reserved resize square at each client corner, reaching diagonally outward.
+/// Twice [`RESIZE_MARGIN`]: the square covers the corner's whole edge band and the diagonal
+/// approach to it, so a press aimed at the exact corner always resizes, never closes.
+pub const RESIZE_SQUARE: i32 = 2 * RESIZE_MARGIN;
+/// How far outside each client edge pointer approach is noticed for corner selection.
+pub const TAB_ACTIVATION_DEPTH: i32 = 48;
+/// Corner-selection hysteresis in logical pixels: the winning corner keeps the tabs until
+/// another corner is nearer by more than this, so crossing a midpoint does not jitter.
+pub const TAB_HYSTERESIS: i32 = 8;
+/// Grace before hidden controls answer a fresh approach, in milliseconds.
+pub const TAB_REVEAL_GRACE_MS: u64 = 120;
+/// Grace before controls hide after the pointer leaves their window, in milliseconds. The
+/// title stays; only the controls go, and the last corner is retained.
+pub const TAB_EXIT_GRACE_MS: u64 = 250;
+
+/// One window's complete tab geometry: client rect (authoritative), active corner, title rect,
+/// the three control rects, and whether any chrome had to clamp inside the client.
+///
+/// Built by [`WindowLayout::new`] — the one constructor every consumer (paint, hit, damage,
+/// recovery, configure) shares — and by [`crate::WindowService::window_layout`], which feeds it
+/// the window's stored corner and policy. There are no other tab rectangles anywhere.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WindowLayout {
+    /// The client rectangle. Never resized by tab computation: tabs are derived from it.
+    pub client: Rect,
+    /// The corner the tabs currently follow.
+    pub corner: Corner,
+    /// The arrangement in force.
+    pub placement: TabPlacement,
+    /// True when at least one chrome rectangle had no exterior room and clamped inside the
+    /// client at the same corner (output edge, maximized/fullscreen, tiny window).
+    pub overlay: bool,
+    /// The horizontal title tab. Always horizontal, never rotated, on the top or bottom edge.
+    pub title: Rect,
+    /// The three controls in [`TabControl::corner_outward`] order: index 0 rides nearest the
+    /// anchor corner. A fixed array — three controls need no heap.
+    pub controls: [(TabControl, Rect); 3],
+}
+
+impl WindowLayout {
+    /// Derive every tab rectangle for `client` at `corner` under `placement`, placing chrome
+    /// outside the client where `output` (the window's usable area) has room and clamping it
+    /// inside at the same corner where it has not.
+    ///
+    /// The client rectangle passes through untouched: deriving a layout never resizes anything,
+    /// which is what lets pure tab relocation send no client configure at all.
+    pub fn new(client: Rect, corner: Corner, placement: TabPlacement, output: Rect) -> Self {
+        let client = Rect::new(client.x, client.y, client.width.max(1), client.height.max(1));
+        // Leave the output's Home corner and bottom peek/gesture corridor unobstructed.
+        // This bounds decoration only: the client still occupies its original geometry.
+        let inset_x = RESIZE_SQUARE.min((output.width - MIN_WINDOW_WIDTH).max(0) / 2);
+        let inset_y = RESIZE_SQUARE.min((output.height - MIN_WINDOW_HEIGHT).max(0) / 2);
+        let output = Rect::new(
+            output.x + inset_x, output.y + inset_y,
+            output.width - 2 * inset_x, output.height - 2 * inset_y,
+        );
+
+        // Room for chrome between the two reserved corner squares on one edge.
+        let room_between_squares = |span: i32| span - 2 * RESIZE_SQUARE;
+
+        // -- Title: horizontal, on the adjacent horizontal edge, inset past the corner square.
+        let title_exterior_width =
+            room_between_squares(client.width).clamp(TAB_TITLE_MIN_WIDTH, TAB_TITLE_MAX_WIDTH);
+        let title_exterior = if corner.is_left() {
+            Rect::new(
+                client.x + RESIZE_SQUARE,
+                Self::title_y(client, corner),
+                title_exterior_width.min(room_between_squares(client.width).max(1)),
+                TAG_HEIGHT,
+            )
+        } else {
+            let width = title_exterior_width.min(room_between_squares(client.width).max(1));
+            Rect::new(
+                client.right() - RESIZE_SQUARE - width,
+                Self::title_y(client, corner),
+                width,
+                TAG_HEIGHT,
+            )
+        };
+        let title_fits_exterior = room_between_squares(client.width) >= TAB_TITLE_MIN_WIDTH
+            && output.intersection(title_exterior) == Some(title_exterior);
+        let exterior_controls = match placement {
+            TabPlacement::SameCorner => Self::same_corner_stack(client, corner),
+            TabPlacement::OppositeCorners => Self::opposite_row(client, corner),
+        };
+        let controls_fit = match placement {
+            TabPlacement::SameCorner => room_between_squares(client.height) >= Self::stack_span(),
+            TabPlacement::OppositeCorners => room_between_squares(client.width)
+                >= title_exterior_width + TAB_CONTROL_GAP + Self::stack_span(),
+        } && exterior_controls.iter().all(|rect| {
+            output.intersection(*rect) == Some(*rect)
+                && rect.intersection(title_exterior).is_none()
+        });
+        let overlay = !title_fits_exterior || !controls_fit;
+        let (title, controls) = if overlay {
+            Self::overlay_tabs(Self::overlay_area(client, output, corner), corner, placement)
+        } else {
+            (title_exterior, exterior_controls)
+        };
+        let order = TabControl::corner_outward();
+        let controls = [
+            (order[0], controls[0]),
+            (order[1], controls[1]),
+            (order[2], controls[2]),
+        ];
+        Self {
+            client,
+            corner,
+            placement,
+            overlay,
+            title,
+            controls,
+        }
+    }
+
+    /// The title's exterior y: above the client for top corners, below it for bottom ones.
+    fn title_y(client: Rect, corner: Corner) -> i32 {
+        if corner.is_top() {
+            client.y - TAG_HEIGHT
+        } else {
+            client.bottom()
+        }
+    }
+
+    /// Ordinary overlays stay inside visible client pixels. A sub-minimum client may
+    /// leave too little room for four distinct targets; give it bounded overflow rather
+    /// than three coincident controls. Reserved resize squares remain excluded.
+    fn overlay_area(client: Rect, output: Rect, corner: Corner) -> Rect {
+        let visible = client.intersection(output).unwrap_or(output);
+        if visible.width >= TAB_CONTROL_SIZE + TAB_CONTROL_GAP + RESIZE_SQUARE
+            && visible.height >= 24
+        {
+            return visible;
+        }
+        let width = MIN_WINDOW_WIDTH.min(output.width).max(1);
+        let height = MIN_WINDOW_HEIGHT.min(output.height).max(1);
+        let anchored = |anchor: Rect, corner: Corner| Rect::new(
+            (if corner.is_left() { anchor.x } else { anchor.right() - width })
+                .clamp(output.x, (output.right() - width).max(output.x)),
+            (if corner.is_top() { anchor.y } else { anchor.bottom() - height })
+                .clamp(output.y, (output.bottom() - height).max(output.y)),
+            width, height,
+        );
+        let fits = |area: Rect| Self::resize_squares(client)
+            .into_iter().all(|square| square.intersection(area).is_none());
+        let preferred = anchored(visible, corner);
+        if fits(preferred) {
+            return preferred;
+        }
+        // Keep the requested corner if possible; output-corner recovery is only for
+        // a client too small to hold the minimum overflow without crossing a resize square.
+        std::iter::once(corner).chain(Corner::ALL)
+            .map(|corner| anchored(output, corner))
+            .find(|area| fits(*area))
+            .unwrap_or(preferred)
+    }
+
+    fn overlay_tabs(area: Rect, corner: Corner, placement: TabPlacement) -> (Rect, [Rect; 3]) {
+        let mut title = Self::overlay_title(area, corner);
+        let controls = match placement {
+            TabPlacement::SameCorner => {
+                let controls = Self::overlay_stack(area, corner);
+                let reserved = controls[0].width + TAB_CONTROL_GAP;
+                title.width = title.width.min((area.width - reserved).max(1));
+                title.x = if corner.is_left() {
+                    area.x + reserved
+                } else {
+                    area.right() - reserved - title.width
+                };
+                title.height = title.height.min(title.width);
+                title.y = if corner.is_top() { area.y } else { area.bottom() - title.height };
+                controls
+            }
+            TabPlacement::OppositeCorners => {
+                if area.width >= TAB_TITLE_MIN_WIDTH + TAB_CONTROL_GAP + Self::stack_span() {
+                    title.width = title.width.min(area.width - Self::stack_span() - TAB_CONTROL_GAP);
+                    title.x = if corner.is_left() { area.x } else { area.right() - title.width };
+                    Self::overlay_row(area, corner)
+                } else {
+                    // A narrow window uses a second horizontal row rather than putting
+                    // controls over the entire drag target.
+                    title.height = title.height.min((area.height - TAB_CONTROL_GAP) / 2).max(1);
+                    title.y = if corner.is_top() { area.y } else { area.bottom() - title.height };
+                    let remaining = Rect::new(
+                        area.x,
+                        if corner.is_top() { title.bottom() + TAB_CONTROL_GAP } else { area.y },
+                        area.width,
+                        (area.height - title.height - TAB_CONTROL_GAP).max(1),
+                    );
+                    Self::overlay_row(remaining, corner)
+                }
+            }
+        };
+        (title, controls)
+    }
+
+    /// The title clamped inside the client at the same corner's edge: same corner, same
+    /// horizontal edge, horizontal text, inside rather than outside.
+    fn overlay_title(client: Rect, corner: Corner) -> Rect {
+        let width = TAB_TITLE_MAX_WIDTH.min(client.width.max(1));
+        let height = TAG_HEIGHT.min(client.height.max(1));
+        let x = if corner.is_left() {
+            client.x
+        } else {
+            client.right() - width
+        };
+        let y = if corner.is_top() {
+            client.y
+        } else {
+            client.bottom() - height
+        };
+        Rect::new(x, y, width, height)
+    }
+
+    /// The length one control row or stack occupies along its axis: three squares, two gaps.
+    fn stack_span() -> i32 {
+        3 * TAB_CONTROL_SIZE + 2 * TAB_CONTROL_GAP
+    }
+
+    /// The same-corner vertical stack, exterior: on the adjacent side, Close nearest the
+    /// corner, running away from it.
+    fn same_corner_stack(client: Rect, corner: Corner) -> [Rect; 3] {
+        let x = if corner.is_left() {
+            client.x - TAB_CONTROL_SIZE
+        } else {
+            client.right()
+        };
+        std::array::from_fn(|index| {
+            let step = i32::try_from(index).unwrap_or(0) * (TAB_CONTROL_SIZE + TAB_CONTROL_GAP);
+            let y = if corner.is_top() {
+                client.y + RESIZE_SQUARE + step
+            } else {
+                client.bottom() - RESIZE_SQUARE - TAB_CONTROL_SIZE - step
+            };
+            Rect::new(x, y, TAB_CONTROL_SIZE, TAB_CONTROL_SIZE)
+        })
+    }
+
+    /// The same-corner stack clamped inside the client along the same side. On a tiny
+    /// client the controls shrink to fit side by side rather than drop one: three small
+    /// controls beat two full-size ones and a window that cannot be parked.
+    fn overlay_stack(client: Rect, corner: Corner) -> [Rect; 3] {
+        let size = Self::overlay_control_size(client.height.max(1), client.width.max(1));
+        let x = if corner.is_left() {
+            client.x
+        } else {
+            client.right() - size
+        };
+        let column = |index: usize| {
+            let step = i32::try_from(index).unwrap_or(0) * (size + TAB_CONTROL_GAP);
+            let y = if corner.is_top() {
+                client.y + step
+            } else {
+                client.bottom() - size - step
+            };
+            Rect::new(x, y.clamp(client.y, client.bottom() - size), size, size)
+        };
+        [column(0), column(1), column(2)]
+    }
+
+    /// The control side that fits three controls plus two gaps along `span`: full size
+    /// unless the client is too short for it. Never below one pixel, never wider than
+    /// `across`.
+    fn overlay_control_size(span: i32, across: i32) -> i32 {
+        ((span - 2 * TAB_CONTROL_GAP) / 3)
+            .clamp(1, TAB_CONTROL_SIZE)
+            .min(across.max(1))
+    }
+
+    /// The opposite-end horizontal row, exterior: on the same edge as the title, anchored at
+    /// the far corner, Close nearest it, running back toward the title's end.
+    fn opposite_row(client: Rect, corner: Corner) -> [Rect; 3] {
+        let y = Self::title_y(client, corner);
+        // Controls are squares of the tab's own proportion: centred on the title's height.
+        let control_y = y + (TAG_HEIGHT - TAB_CONTROL_SIZE) / 2;
+        std::array::from_fn(|index| {
+            let step = i32::try_from(index).unwrap_or(0) * (TAB_CONTROL_SIZE + TAB_CONTROL_GAP);
+            let x = if corner.is_left() {
+                // Title at the left end; controls run left from the far (right) corner.
+                client.right() - RESIZE_SQUARE - TAB_CONTROL_SIZE - step
+            } else {
+                // Title at the right end; controls run right from the far (left) corner.
+                client.x + RESIZE_SQUARE + step
+            };
+            Rect::new(x, control_y, TAB_CONTROL_SIZE, TAB_CONTROL_SIZE)
+        })
+    }
+
+    /// A horizontal row within its allocated overlay area. `overlay_tabs` reserves
+    /// a separate title region, stacking the row beneath it on a narrow client.
+    fn overlay_row(client: Rect, corner: Corner) -> [Rect; 3] {
+        let size = Self::overlay_control_size(client.width.max(1), client.height.max(1));
+        let y = if corner.is_top() {
+            client.y
+        } else {
+            client.bottom() - size
+        }
+        .clamp(client.y, client.bottom() - size);
+        std::array::from_fn(|index| {
+            let step = i32::try_from(index).unwrap_or(0) * (size + TAB_CONTROL_GAP);
+            let x = if corner.is_left() {
+                client.right() - size - step
+            } else {
+                client.x + step
+            };
+            Rect::new(
+                x.clamp(client.x, client.right() - size),
+                y,
+                size,
+                size,
+            )
+        })
+    }
+
+    /// The reserved resize square at one client corner: [`RESIZE_SQUARE`] on a side, reaching
+    /// diagonally outward from the corner point. Strictly outside the client, disjoint from
+    /// the other three squares on any non-degenerate client, and never holding a control.
+    pub fn resize_square(client: Rect, corner: Corner) -> Rect {
+        let tip = corner.point(client);
+        Rect::new(
+            if corner.is_left() {
+                tip.x - RESIZE_SQUARE
+            } else {
+                tip.x
+            },
+            if corner.is_top() {
+                tip.y - RESIZE_SQUARE
+            } else {
+                tip.y
+            },
+            RESIZE_SQUARE,
+            RESIZE_SQUARE,
+        )
+    }
+
+    /// All four resize squares, in [`Corner::ALL`] order.
+    pub fn resize_squares(client: Rect) -> [Rect; 4] {
+        Corner::ALL.map(|corner| Self::resize_square(client, corner))
+    }
+
+    /// The four edge activation regions, in top/bottom/left/right order: bands
+    /// [`TAB_ACTIVATION_DEPTH`] deep outside each client edge, spanning it. Approach from any
+    /// side selects the nearest corner ([`Self::nearest_corner`]); the bands only say that the
+    /// pointer is near enough to ask.
+    pub fn activation_regions(client: Rect) -> [Rect; 4] {
+        [
+            Rect::new(
+                client.x,
+                client.y - TAB_ACTIVATION_DEPTH,
+                client.width.max(1),
+                TAB_ACTIVATION_DEPTH,
+            ),
+            Rect::new(
+                client.x,
+                client.bottom(),
+                client.width.max(1),
+                TAB_ACTIVATION_DEPTH,
+            ),
+            Rect::new(
+                client.x - TAB_ACTIVATION_DEPTH,
+                client.y,
+                TAB_ACTIVATION_DEPTH,
+                client.height.max(1),
+            ),
+            Rect::new(
+                client.right(),
+                client.y,
+                TAB_ACTIVATION_DEPTH,
+                client.height.max(1),
+            ),
+        ]
+    }
+
+    /// Which corner the tabs follow for a pointer at `point`: the nearest client corner, with
+    /// deterministic ties ([`Corner::ALL`] order wins) and hysteresis — `current`, when given,
+    /// is kept until another corner is nearer by more than [`TAB_HYSTERESIS`], so crossing a
+    /// midpoint does not jitter the tabs. Pure integer arithmetic: the same inputs always
+    /// answer the same corner.
+    pub fn nearest_corner(client: Rect, point: Point, current: Option<Corner>) -> Corner {
+        let corner = |c: Corner| c.point(client);
+        let distance_squared = |c: Corner| {
+            let tip = corner(c);
+            let dx = i64::from(point.x) - i64::from(tip.x);
+            let dy = i64::from(point.y) - i64::from(tip.y);
+            dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
+        };
+        let best = Corner::ALL
+            .into_iter()
+            .min_by_key(|candidate| distance_squared(*candidate))
+            .unwrap_or(Corner::TopRight);
+        let Some(current) = current else {
+            return best;
+        };
+        // `isqrt` is monotonic, so comparing roots compares distances to a pixel — without it
+        // the hysteresis band would be measured in square-pixels, which is not a distance.
+        let nearer = distance_squared(best).isqrt();
+        let held = distance_squared(current).isqrt();
+        if held.saturating_sub(nearer) <= i64::from(TAB_HYSTERESIS) {
+            current
+        } else {
+            best
+        }
+    }
+
+    /// The control whose rectangle contains `point`, if any — geometry only. Whether a hidden
+    /// control answers is the hit test's decision (it does not), not the layout's.
+    pub fn control_at(&self, point: Point) -> Option<TabControl> {
+        self.controls
+            .iter()
+            .find(|(_, rect)| {
+                point.x >= rect.x
+                    && point.x < rect.right()
+                    && point.y >= rect.y
+                    && point.y < rect.bottom()
+            })
+            .map(|(control, _)| *control)
+    }
+
+    /// Whether `point` is on the title tab.
+    pub fn title_at(&self, point: Point) -> bool {
+        point.x >= self.title.x
+            && point.x < self.title.right()
+            && point.y >= self.title.y
+            && point.y < self.title.bottom()
+    }
+
+    /// This control's rectangle.
+    pub fn control_rect(&self, control: TabControl) -> Rect {
+        self.controls
+            .iter()
+            .find(|(candidate, _)| *candidate == control)
+            .map_or(self.title, |(_, rect)| *rect)
+    }
+
+    /// Everything the pointer can interact with: client, title, controls and resize squares.
+    /// Paint and hit share it through this one function.
+    pub fn input_bounds(&self) -> Rect {
+        let mut bounds = self.client;
+        let grow = |bounds: Rect, rect: Rect| {
+            let x = bounds.x.min(rect.x);
+            let y = bounds.y.min(rect.y);
+            Rect {
+                x,
+                y,
+                width: bounds.right().max(rect.right()) - x,
+                height: bounds.bottom().max(rect.bottom()) - y,
+            }
+        };
+        bounds = grow(bounds, self.title);
+        for (_, rect) in &self.controls {
+            bounds = grow(bounds, *rect);
+        }
+        for square in Self::resize_squares(self.client) {
+            bounds = grow(bounds, square);
+        }
+        bounds
+    }
+
+    /// What (re)painting this window's chrome touches: title plus controls. A relocation
+    /// damages the union of the old and the new bounds — never the whole output, never the
+    /// client beneath exterior chrome.
+    pub fn damage_bounds(&self) -> Rect {
+        let mut bounds = self.title;
+        let grow = |bounds: Rect, rect: Rect| {
+            let x = bounds.x.min(rect.x);
+            let y = bounds.y.min(rect.y);
+            Rect {
+                x,
+                y,
+                width: bounds.right().max(rect.right()) - x,
+                height: bounds.bottom().max(rect.bottom()) - y,
+            }
+        };
+        for (_, rect) in &self.controls {
+            bounds = grow(bounds, *rect);
+        }
+        bounds
+    }
+
+    /// The rectangle that must stay on an output for this window to stay recoverable: its
+    /// title tab, the thing a person grabs.
+    pub fn recovery_rect(&self) -> Rect {
+        self.title
     }
 }
 
@@ -1426,7 +2155,7 @@ mod tests {
             .with_work_area(work_area_for(screen, &[Exclusive::new(Edge::Bottom, 80)]));
         let outputs = vec![output];
 
-        // A window whose whole tag strip sits beneath the bar: visible, but not grabbable.
+        // A window whose whole recovery band sits beneath the bar: visible, not grabbable.
         let buried = Rect::new(200, 370, 900, 700);
         assert!(
             !is_recoverable(buried, &outputs),
@@ -1448,7 +2177,7 @@ mod tests {
     }
 
     /// A tall window may hang off the top of its output, never off the bottom: the repair keeps
-    /// the whole tag strip reachable and moves nothing else.
+    /// the whole recovery band reachable and moves nothing else.
     #[test]
     fn a_window_dragged_off_the_bottom_is_pulled_back_until_its_tags_show() {
         let outputs = vec![Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000)];
@@ -1574,7 +2303,7 @@ mod tests {
     }
 
     /// Where along its edge the surface sits is the shell's to say
-    /// (`templar-shell-v1.xml`'s `set_edge_alignment`), on all four edges. Every other test in this
+    /// (`templar-shell-v2.xml`'s `set_edge_alignment`), on all four edges. Every other test in this
     /// module builds its claim with [`Exclusive::new`] — the start alignment — so they are the
     /// proof that a surface which never asks is placed exactly where it always was.
     #[test]
@@ -1690,20 +2419,13 @@ mod tests {
     }
 
     #[test]
-    fn the_client_area_sits_above_the_tags_and_the_frame_is_its_inverse() {
-        let frame = Rect::new(100, 200, 640, 480);
-        let client = client_area(frame);
-        assert_eq!(client, Rect::new(100, 200, 640, 480 - TAG_HEIGHT));
-        assert_eq!(frame_around(client), frame);
-        let strip = tag_strip(frame);
-        assert_eq!(strip, Rect::new(100, 680 - TAG_HEIGHT, 640, TAG_HEIGHT));
-        assert!(
-            client.intersection(strip).is_none(),
-            "the tags are below the client, never over it"
-        );
-        // A frame too short for a client still yields one the compositor can configure.
-        assert_eq!(client_area(Rect::new(0, 0, 100, 10)).height, 1);
-        assert_eq!(client_area(Rect::new(0, 0, 0, 0)).width, 1);
+    fn the_recovery_band_is_one_tab_tall_along_the_bottom_edge() {
+        let window = Rect::new(100, 200, 640, 480);
+        let band = recovery_band(window);
+        assert_eq!(band, Rect::new(100, 680 - TAG_HEIGHT, 640, TAG_HEIGHT));
+        // A degenerate window still yields a band the compositor can reason about.
+        assert_eq!(recovery_band(Rect::new(0, 0, 400, 10)).height, 10);
+        assert_eq!(recovery_band(Rect::new(0, 0, 0, 0)), Rect::new(0, 0, 1, 1));
     }
 
     /// Eight side halves, four midpoints, three frames: every press on the perimeter takes the
@@ -1854,14 +2576,13 @@ mod tests {
     }
 
     #[test]
-    fn a_window_at_the_minimum_size_still_has_a_full_tag_strip_and_a_client() {
+    fn a_window_at_the_minimum_size_still_has_a_full_recovery_band() {
         // The property that makes shrinking safe: it is always undoable by pointer.
         let window = Rect::new(0, 0, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT);
-        assert_eq!(tag_strip(window).height, TAG_HEIGHT);
-        assert_eq!(client_area(window).height, TAG_HEIGHT);
-        // A window shorter than its own strip is nothing but strip.
-        assert_eq!(tag_strip(Rect::new(0, 0, 400, 10)).height, 10);
-        assert_eq!(tag_strip(Rect::new(0, 0, 0, 0)), Rect::new(0, 0, 1, 1));
+        assert_eq!(recovery_band(window).height, TAG_HEIGHT);
+        // A window shorter than its own band is nothing but band.
+        assert_eq!(recovery_band(Rect::new(0, 0, 400, 10)).height, 10);
+        assert_eq!(recovery_band(Rect::new(0, 0, 0, 0)), Rect::new(0, 0, 1, 1));
     }
 
     #[test]
@@ -2195,14 +2916,14 @@ mod tests {
     }
 
     /// A Notification-layer shell surface keeps its requested size and anchors to the
-    /// top-right of the output's usable area, clear of any reserved edge.
+    /// bottom-right, clear of reserved edges and the nonexclusive shell strip.
     #[test]
-    fn notification_surfaces_anchor_top_right_of_the_usable_area() {
+    fn notification_surfaces_anchor_bottom_right_above_the_shell_strip() {
         let output = Output::new("eDP-1", Rect::new(0, 0, 1920, 1080), 1000)
             .with_work_area(Rect::new(0, 40, 1920, 1040));
         let placed =
             shell_surface_placement(Layer::Notification, None, &output, Rect::new(0, 0, 360, 88));
-        assert_eq!(placed, Rect::new(1920 - 360 - 12, 40 + 12, 360, 88));
+        assert_eq!(placed, Rect::new(1920 - 360 - 12, 1080 - 88 - SHELL_BAR_HEIGHT - 12, 360, 88));
         // A toast wider than the output is clamped rather than walked off-screen.
         let huge = shell_surface_placement(
             Layer::Notification,
@@ -2212,6 +2933,27 @@ mod tests {
         );
         assert!(huge.width <= 1920 && huge.height <= 1040);
         assert!(huge.x >= 0 && huge.y >= 40);
+    }
+
+    #[test]
+    fn notification_growth_shrink_and_output_changes_preserve_bottom_right_anchor() {
+        let mut placed = Rect::new(0, 0, 380, 80);
+        for output in [
+            Output::new("first", Rect::new(0, 0, 1280, 800), 1000),
+            Output::new("first", Rect::new(0, 0, 960, 600), 1500),
+            Output::new("remaining", Rect::new(-1920, 100, 1920, 1080), 2000),
+        ] {
+            for height in [80, 200, 320, 80] {
+                placed = shell_surface_placement(
+                    Layer::Notification, None, &output,
+                    Rect::new(placed.x, placed.y, placed.width, height),
+                );
+                assert_eq!(placed.height, height);
+                assert_eq!(placed.bottom(), output.usable().bottom() - SHELL_BAR_HEIGHT - 12);
+                assert_eq!(placed.right(), output.usable().right() - 12);
+                assert!(placed.y >= output.usable().y);
+            }
+        }
     }
 
     /// The side the window is already on wins, and the placement is edge to edge.
@@ -2264,5 +3006,419 @@ mod tests {
             bounding_rect(&[Rect::new(100, 100, 200, 200), Rect::new(400, 300, 100, 100)]),
             Some(Rect::new(100, 100, 400, 300))
         );
+    }
+}
+
+#[cfg(test)]
+mod tab_layout_tests {
+    use super::*;
+
+    /// A roomy output: chrome fits outside the client unless the test says otherwise.
+    fn output() -> Rect {
+        Rect::new(0, 0, 1920, 1080)
+    }
+
+    fn overlaps(a: Rect, b: Rect) -> bool {
+        a.intersection(b).is_some()
+    }
+
+    /// Child 1 (`targets-separated`): the four resize squares are outside the client,
+    /// pairwise disjoint, and no control — Close included — ever touches one, at every
+    /// corner, under both arrangements, from minimum size up.
+    #[test]
+    fn resize_squares_are_outside_disjoint_and_never_hold_a_control() {
+        let clients = [
+            Rect::new(200, 200, 800, 600),
+            Rect::new(0, 0, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT),
+            Rect::new(-400, -300, 150, 90),
+            Rect::new(100, 100, 40, 40),
+            Rect::new(100, 100, 1, 1),
+        ];
+        for client in clients {
+            let squares = WindowLayout::resize_squares(client);
+            for (index, square) in squares.iter().enumerate() {
+                assert_eq!((square.width, square.height), (RESIZE_SQUARE, RESIZE_SQUARE));
+                assert!(
+                    !overlaps(*square, client),
+                    "resize square {index} of {client:?} eats client pixels"
+                );
+                for other in &squares[index + 1..] {
+                    assert!(
+                        !overlaps(*square, *other),
+                        "resize squares of {client:?} overlap"
+                    );
+                }
+                // The square answers the corner it is named for. Probed 4px out from the
+                // tip: the squares (16px) intentionally reach past the 8px edge band to
+                // catch diagonal approaches, so their centres sit outside
+                // `resize_edges_at`'s band on the right/bottom — the press path checks
+                // squares first and routes those (see the compositor's
+                // `every_corner_resizes` test). Where band and square overlap they agree.
+                let corner = Corner::ALL[index];
+                let tip = corner.point(client);
+                let probe = Point {
+                    x: tip.x + if corner.is_left() { -4 } else { 4 },
+                    y: tip.y + if corner.is_top() { -4 } else { 4 },
+                };
+                assert!(
+                    probe.x >= square.x
+                        && probe.x < square.right()
+                        && probe.y >= square.y
+                        && probe.y < square.bottom(),
+                    "probe for {corner:?} escaped its own square"
+                );
+                assert_eq!(
+                    resize_edges_at(client, probe),
+                    Some(corner.resize_edges()),
+                    "square {corner:?} of {client:?} does not resize that corner"
+                );
+            }
+            for corner in Corner::ALL {
+                for placement in [TabPlacement::SameCorner, TabPlacement::OppositeCorners] {
+                    let layout = WindowLayout::new(client, corner, placement, output());
+                    for (control, rect) in &layout.controls {
+                        for square in &squares {
+                            assert!(
+                                !overlaps(*rect, *square),
+                                "{control:?} at {corner:?}/{placement:?} on {client:?} \
+                                 sits on a resize target"
+                            );
+                        }
+                    }
+                    assert!(
+                        !overlaps(layout.title, squares[corner as usize]),
+                        "title at {corner:?} covers its own resize square"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Child 2 (`four-corner-shared-layout`): every corner is a real layout — the title is
+    /// always horizontal on the adjacent horizontal edge, exterior chrome never overlaps the
+    /// client or itself, and Close rides nearest the anchor corner.
+    #[test]
+    fn every_corner_lays_out_a_horizontal_title_and_three_separate_controls() {
+        let client = Rect::new(300, 300, 640, 480);
+        for corner in Corner::ALL {
+            for placement in [TabPlacement::SameCorner, TabPlacement::OppositeCorners] {
+                let layout = WindowLayout::new(client, corner, placement, output());
+                assert!(!layout.overlay, "{corner:?}/{placement:?} should fit outside");
+                assert_eq!(layout.client, client, "layout must not resize the client");
+                // Horizontal title on the adjacent edge, never rotated.
+                assert_eq!(layout.title.height, TAG_HEIGHT);
+                assert!(layout.title.width >= layout.title.height);
+                if corner.is_top() {
+                    assert_eq!(layout.title.bottom(), client.y);
+                } else {
+                    assert_eq!(layout.title.y, client.bottom());
+                }
+                assert!(!overlaps(layout.title, client));
+                // Three fixed controls, pairwise disjoint, clear of title and client.
+                assert_eq!(layout.controls.len(), 3);
+                for (index, (control, rect)) in layout.controls.iter().enumerate() {
+                    assert_eq!(*control, TabControl::corner_outward()[index]);
+                    assert_eq!((rect.width, rect.height), (TAB_CONTROL_SIZE, TAB_CONTROL_SIZE));
+                    assert!(!overlaps(*rect, client), "{control:?} overlaps the client");
+                    assert!(!overlaps(*rect, layout.title), "{control:?} overlaps the title");
+                    for (_, other) in &layout.controls[index + 1..] {
+                        assert!(!overlaps(*rect, *other), "controls overlap each other");
+                    }
+                }
+                // Close nearest the anchor corner: the active corner for the
+                // same-corner right angle, the far corner of the same edge for the
+                // opposite-end row (its controls anchor there and run back).
+                let anchor = match placement {
+                    TabPlacement::SameCorner => corner,
+                    TabPlacement::OppositeCorners => match corner {
+                        Corner::TopLeft => Corner::TopRight,
+                        Corner::TopRight => Corner::TopLeft,
+                        Corner::BottomLeft => Corner::BottomRight,
+                        Corner::BottomRight => Corner::BottomLeft,
+                    },
+                };
+                let tip = anchor.point(client);
+                let close = layout.control_rect(TabControl::Close);
+                let park = layout.control_rect(TabControl::Park);
+                let distance = |rect: Rect| {
+                    let dx = i64::from(rect.center().x - tip.x);
+                    let dy = i64::from(rect.center().y - tip.y);
+                    dx * dx + dy * dy
+                };
+                assert!(
+                    distance(close) < distance(park),
+                    "Close is not nearest the {anchor:?} anchor ({corner:?}/{placement:?})"
+                );
+                // Paint and hit agree: every drawn rect answers itself.
+                assert!(layout.title_at(layout.title.center()));
+                for (control, rect) in &layout.controls {
+                    assert_eq!(layout.control_at(rect.center()), Some(*control));
+                }
+            }
+        }
+    }
+
+    /// Child 2: same-corner is a right angle (title horizontal, controls vertical on the
+    /// adjacent side); opposite-corners puts a horizontal row at the far end of the same edge.
+    #[test]
+    fn arrangements_share_no_shape() {
+        let client = Rect::new(300, 300, 640, 480);
+        for corner in Corner::ALL {
+            let same = WindowLayout::new(client, corner, TabPlacement::SameCorner, output());
+            let (_, first) = same.controls[0];
+            let (_, second) = same.controls[1];
+            assert_eq!(first.x, second.x, "same-corner stack is not vertical");
+            assert_ne!(first.y, second.y);
+
+            let opposite =
+                WindowLayout::new(client, corner, TabPlacement::OppositeCorners, output());
+            let (_, first) = opposite.controls[0];
+            let (_, second) = opposite.controls[1];
+            assert_eq!(first.y, second.y, "opposite row is not horizontal");
+            assert_ne!(first.x, second.x);
+            // Same edge as the title, opposite end from it.
+            assert!(
+                first.y >= opposite.title.y && first.bottom() <= opposite.title.bottom(),
+                "opposite controls are not on the title's edge"
+            );
+            if corner.is_left() {
+                assert!(first.x > opposite.title.right(), "row is not at the far end");
+            } else {
+                assert!(first.right() < opposite.title.x, "row is not at the far end");
+            }
+        }
+    }
+
+    /// Child 2 (recovery): with no exterior room — output edge, maximized/fullscreen-sized,
+    /// tiny window — chrome clamps inside the client at the same corner instead of leaving
+    /// the screen, and every control survives.
+    #[test]
+    fn without_exterior_room_chrome_overlays_inside_at_the_same_corner() {
+        // Flush with the output: a maximized-sized client has no exterior anywhere.
+        let client = Rect::new(0, 0, 1920, 1040);
+        let tight = Rect::new(0, 0, 1920, 1040);
+        for corner in Corner::ALL {
+            for placement in [TabPlacement::SameCorner, TabPlacement::OppositeCorners] {
+                let layout = WindowLayout::new(client, corner, placement, tight);
+                assert!(layout.overlay, "{corner:?}/{placement:?} should overlay");
+                assert_eq!(client.intersection(layout.title), Some(layout.title));
+                for (control, rect) in &layout.controls {
+                    assert_eq!(
+                        client.intersection(*rect),
+                        Some(*rect),
+                        "{control:?} escapes the client"
+                    );
+                }
+            }
+        }
+        // Tiny window: all three controls survive, none dropped, none off-output.
+        let tiny = Rect::new(500, 500, 60, 40);
+        for corner in Corner::ALL {
+            let layout = WindowLayout::new(tiny, corner, TabPlacement::SameCorner, output());
+            let mut seen = [false; 3];
+            for (control, rect) in &layout.controls {
+                seen[*control as usize] = true;
+                assert_eq!(output().intersection(*rect), Some(*rect));
+            }
+            assert!(seen.iter().all(|seen| *seen), "a control went missing");
+        }
+        // Top edge: the title overlays while the side keeps its exterior stack — same
+        // corner throughout, nothing offscreen.
+        let top_edge = Rect::new(400, 0, 640, 480);
+        let layout = WindowLayout::new(top_edge, Corner::TopRight, TabPlacement::SameCorner, output());
+        assert!(layout.overlay);
+        assert_eq!(output().intersection(layout.title), Some(layout.title));
+    }
+
+    /// Child 3 (`follow-and-latch` selection half): nearest-corner choice is deterministic,
+    /// ties break in [`Corner::ALL`] order, and hysteresis holds the current corner across
+    /// small crossings.
+    #[test]
+    fn nearest_corner_selection_is_deterministic_with_ties_and_hysteresis() {
+        let client = Rect::new(100, 100, 400, 300);
+        // Deep in each quadrant, no contest.
+        assert_eq!(
+            WindowLayout::nearest_corner(client, Point { x: 0, y: 0 }, None),
+            Corner::TopLeft
+        );
+        assert_eq!(
+            WindowLayout::nearest_corner(client, Point { x: 600, y: 0 }, None),
+            Corner::TopRight
+        );
+        assert_eq!(
+            WindowLayout::nearest_corner(client, Point { x: 0, y: 500 }, None),
+            Corner::BottomLeft
+        );
+        assert_eq!(
+            WindowLayout::nearest_corner(client, Point { x: 600, y: 500 }, None),
+            Corner::BottomRight
+        );
+        // Exact ties break in ALL order, every time.
+        let middle_top = Point { x: 300, y: 100 };
+        for _ in 0..2 {
+            assert_eq!(
+                WindowLayout::nearest_corner(client, middle_top, None),
+                Corner::TopLeft
+            );
+        }
+        let centre = Point { x: 300, y: 250 };
+        assert_eq!(
+            WindowLayout::nearest_corner(client, centre, None),
+            Corner::TopLeft
+        );
+        // Hysteresis: each pixel past the midpoint is two pixels of corner-distance
+        // difference, so half the band past keeps the held corner and past the band switches.
+        assert_eq!(
+            WindowLayout::nearest_corner(
+                client,
+                Point { x: 300 + TAB_HYSTERESIS / 2 - 1, y: 100 },
+                Some(Corner::TopLeft)
+            ),
+            Corner::TopLeft
+        );
+        assert_eq!(
+            WindowLayout::nearest_corner(
+                client,
+                Point { x: 300 + TAB_HYSTERESIS, y: 100 },
+                Some(Corner::TopLeft)
+            ),
+            Corner::TopRight
+        );
+    }
+
+    /// Corner names round-trip through the settings wire spelling.
+    #[test]
+    fn corner_and_placement_names_round_trip() {
+        for corner in Corner::ALL {
+            assert_eq!(Corner::from_name(corner.name()), Some(corner));
+        }
+        assert_eq!(Corner::from_name("middle"), None);
+        assert_eq!(
+            TabPlacement::from_name(TabPlacement::SameCorner.name()),
+            Some(TabPlacement::SameCorner)
+        );
+        assert_eq!(
+            TabPlacement::from_name(TabPlacement::OppositeCorners.name()),
+            Some(TabPlacement::OppositeCorners)
+        );
+        assert_eq!(TabPlacement::from_name("diagonal"), None);
+    }
+
+    /// Child 4 (`settings-converge` parsing half): one parser, field-by-field defaults, so
+    /// every reader of the committed bytes converges on the same policy.
+    #[test]
+    fn tab_policy_parses_committed_settings_with_field_defaults() {
+        use std::collections::HashMap;
+        let lookup = |map: &HashMap<String, String>| {
+            let map = map.clone();
+            move |key: &str| -> Option<String> { map.get(key).cloned() }
+        };
+        // Empty store: the proposed defaults.
+        let empty: HashMap<String, String> = HashMap::new();
+        assert_eq!(
+            TabPolicy::from_lookup(&lookup(&empty)),
+            TabPolicy::default()
+        );
+        assert_eq!(TabPolicy::default().default_corner, Corner::TopRight);
+        assert!(TabPolicy::default().title_always);
+        // Every field set: every field honoured.
+        let full: HashMap<String, String> = [
+            ("windows.tabs.placement", "opposite-corners"),
+            ("windows.tabs.follow-pointer", "false"),
+            ("windows.tabs.fixed-corner", "bottom-left"),
+            ("windows.tabs.controls", "always"),
+            ("windows.tabs.title", "hover"),
+            ("windows.tabs.default-corner", "bottom-right"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect();
+        assert_eq!(
+            TabPolicy::from_lookup(&lookup(&full)),
+            TabPolicy {
+                placement: TabPlacement::OppositeCorners,
+                follow_pointer: false,
+                fixed_corner: Corner::BottomLeft,
+                controls_always: true,
+                title_always: false,
+                default_corner: Corner::BottomRight,
+            }
+        );
+        // Garbage in one field does not move the others.
+        let mut mixed = full.clone();
+        mixed.insert("windows.tabs.placement".into(), "diagonal".into());
+        mixed.insert("windows.tabs.follow-pointer".into(), "sometimes".into());
+        let policy = TabPolicy::from_lookup(&lookup(&mixed));
+        assert_eq!(policy.placement, TabPlacement::SameCorner);
+        assert!(policy.follow_pointer);
+        mixed.insert("windows.tabs.title".into(), "sometimes".into());
+        assert!(TabPolicy::from_lookup(&lookup(&mixed)).title_always);
+        assert_eq!(policy.fixed_corner, Corner::BottomLeft);
+    }
+
+    /// Child 4: the wire parser speaks the XML's values — and a skewed sender's unknown
+    /// values land on the defaults, never on a corrupt policy.
+    #[test]
+    fn tab_policy_parses_protocol_values_with_field_defaults() {
+        assert_eq!(
+            TabPolicy::from_protocol(0, 1, 1, 0, 0, 1),
+            TabPolicy::default()
+        );
+        assert_eq!(
+            TabPolicy::from_protocol(1, 0, 2, 1, 1, 3),
+            TabPolicy {
+                placement: TabPlacement::OppositeCorners,
+                follow_pointer: false,
+                fixed_corner: Corner::BottomLeft,
+                controls_always: true,
+                title_always: false,
+                default_corner: Corner::BottomRight,
+            }
+        );
+        assert_eq!(
+            TabPolicy::from_protocol(9, 7, 9, 9, 9, 9),
+            TabPolicy::default()
+        );
+    }
+
+    #[test]
+    fn clipped_and_tiny_layouts_keep_four_distinct_reachable_targets() {
+        let output = Rect::new(-800, -200, 800, 600);
+        for client in [
+            Rect::new(-1000, -800, 640, 900),
+            Rect::new(-90, 100, 640, 280),
+            Rect::new(-600, 0, 96, 64),
+            Rect::new(-600, 0, 60, 40),
+            Rect::new(-600, 0, 24, 100),
+            Rect::new(-600, 0, 48, 100),
+            Rect::new(-600, 0, 1, 1),
+            output,
+        ] {
+            for corner in Corner::ALL {
+                for placement in [TabPlacement::SameCorner, TabPlacement::OppositeCorners] {
+                    let layout = WindowLayout::new(client, corner, placement, output);
+                    assert_eq!(layout.client, client);
+                    let targets = [
+                        layout.title, layout.controls[0].1,
+                        layout.controls[1].1, layout.controls[2].1,
+                    ];
+                    for (index, target) in targets.into_iter().enumerate() {
+                        assert!(target.width > 0 && target.height > 0);
+                        assert_eq!(target.intersection(output), Some(target), "{layout:?}");
+                        for other in &targets[..index] {
+                            assert!(target.intersection(*other).is_none(), "{layout:?}");
+                        }
+                        for square in WindowLayout::resize_squares(client) {
+                            assert!(target.intersection(square).is_none(), "{layout:?}");
+                        }
+                    }
+                    for (control, rect) in layout.controls {
+                        assert_eq!(layout.control_at(rect.center()), Some(control));
+                    }
+                    assert!(layout.title_at(layout.title.center()));
+                    assert!(layout.control_at(layout.title.center()).is_none());
+                }
+            }
+        }
     }
 }

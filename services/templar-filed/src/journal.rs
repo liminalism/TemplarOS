@@ -169,6 +169,8 @@ fn kind_name(kind: &OperationKind) -> &'static str {
     match kind {
         OperationKind::Copy { .. } => "copy",
         OperationKind::Move { .. } => "move",
+        OperationKind::RestoreMoveV1 { .. } => "restore-move-v1",
+        OperationKind::UndoCopyV1 { .. } => "undo-copy-v1",
         OperationKind::Rename { .. } => "rename",
         OperationKind::Trash { .. } => "trash",
         OperationKind::RestoreFromTrash { .. } => "restore",

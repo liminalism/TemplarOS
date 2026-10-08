@@ -1,22 +1,13 @@
-//! Governor enrichment: tells `templar-resourced` which instance is on screen
-//! (`org.templaros.Resources1.SetInstanceState`) and when one has no windows left
-//! (`ForgetInstance`). The contract is `interfaces/dbus/org.templaros.Resources1.xml`; the proxy is
-//! `templar_client::proxies::ResourcesProxy` — both owned by the session-daemon/governor track, read
-//! here, never edited.
-//!
-//! `templar-resourced` never *needs* this to contain a runaway application (unit names are
-//! self-describing, so cgroup → instance works from `/sys/fs/cgroup` alone, ADR-0002); this is
-//! enrichment only, so it is safe to coalesce, delay, drop or fail silently — never safe to block
-//! the render thread for.
+//! Focus/visibility enrichment never blocks rendering. Kernel PID membership resolves native
+//! applications, explicit workloads and observed Flatpak scopes without granting an AppId.
+//! Multiple window-owning processes in one resource are combined with OR, not last-writer wins.
 
+use futures_util::StreamExt;
 use std::{collections::HashMap, time::Duration};
 use templar_client::proxies::ResourcesProxy;
-use templar_types::InstanceId;
+use templar_types::{InstanceId, ResourceId};
 use tokio::sync::mpsc;
 
-/// How long to batch focus/visibility churn before flushing to the governor. Window activation
-/// during a fast alt-tab sequence can generate several state changes a frame; only the final
-/// state within one window matters to the governor.
 const COALESCE_WINDOW: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,199 +20,188 @@ struct InstanceState {
 enum Event {
     State(InstanceId, InstanceState),
     Forget(InstanceId),
+    Process(u32, InstanceState),
+    ProcessGone(u32),
 }
 
-/// Sends focus/visibility enrichment and end-of-life notices to `templar-resourced`. Cheap to
-/// clone; every clone shares the same background task and coalescing buffer.
 #[derive(Clone, Debug)]
 pub struct GovernorNotifier {
     tx: mpsc::UnboundedSender<Event>,
 }
 
 impl GovernorNotifier {
-    /// Spawn the background task on `handle`. Never blocks; if `org.templaros.Resources` is not on
-    /// the bus (governor not started yet, or restarting), every call up to that point is
-    /// dropped silently and picked back up automatically once a connection succeeds.
     pub fn spawn(handle: &tokio::runtime::Handle) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         handle.spawn(run(rx));
         Self { tx }
     }
 
-    /// Focus or visibility changed for `instance_id`. Safe to call every frame; only the state
-    /// at the end of the coalescing window is actually sent.
+    /// Fallback for a genuinely resolved native instance whose peer PID is unavailable.
     pub fn set_instance_state(&self, instance_id: InstanceId, foreground: bool, visible: bool) {
-        let _ = self.tx.send(Event::State(
-            instance_id,
-            InstanceState {
-                foreground,
-                visible,
-            },
-        ));
+        let _ = self.tx.send(Event::State(instance_id, InstanceState { foreground, visible }));
     }
 
-    /// `instance_id`'s last window just closed.
     pub fn forget_instance(&self, instance_id: InstanceId) {
         let _ = self.tx.send(Event::Forget(instance_id));
+    }
+
+    /// The caller must aggregate all windows belonging to this actual peer PID first.
+    pub fn set_process_state(&self, pid: u32, foreground: bool, visible: bool) {
+        let _ = self.tx.send(Event::Process(pid, InstanceState { foreground, visible }));
+    }
+
+    /// Remove the PID when its last window disappears. This does not forget a headless workload.
+    pub fn forget_process(&self, pid: u32) {
+        let _ = self.tx.send(Event::ProcessGone(pid));
     }
 }
 
 async fn run(mut events: mpsc::UnboundedReceiver<Event>) {
-    // `ResourcesProxy` owns everything it needs internally (zbus connections are Arc-backed), so
-    // no separate `Connection` binding needs to be kept alive alongside it.
-    let mut proxy: Option<ResourcesProxy<'_>> = None;
+    let mut instances = HashMap::new();
+    let mut processes = HashMap::new();
+    let mut forgotten = Vec::new();
+    let mut combined = HashMap::new();
+    let mut published: HashMap<ResourceId, InstanceState> = HashMap::new();
+    let mut departed = Vec::new();
 
     loop {
-        // Wait for the first event of a new batch, then drain whatever else arrives within the
-        // coalescing window before touching the bus at all.
-        let Some(first) = events.recv().await else {
-            return;
-        };
-
-        let mut pending_state: HashMap<InstanceId, InstanceState> = HashMap::new();
-        let mut pending_forget: Vec<InstanceId> = Vec::new();
-        apply(first, &mut pending_state, &mut pending_forget);
-
-        let deadline = tokio::time::Instant::now() + COALESCE_WINDOW;
-        loop {
-            tokio::select! {
-                () = tokio::time::sleep_until(deadline) => break,
-                next = events.recv() => match next {
-                    Some(event) => apply(event, &mut pending_state, &mut pending_forget),
-                    None => break,
-                },
+        let Some(first) = events.recv().await else { return; };
+        apply(first, &mut instances, &mut processes, &mut forgotten);
+        let setup = async {
+            let connection = zbus::Connection::session().await?;
+            let proxy = ResourcesProxy::new(&connection).await?;
+            let bus = zbus::fdo::DBusProxy::new(&connection).await?;
+            // Subscribe before resolving PIDs. First-tick membership and owner acquisition can
+            // otherwise be missed while the compositor is idle.
+            let owners = bus.receive_name_owner_changed().await?;
+            let targets = proxy.receive_targets_changed().await?;
+            Ok::<_, zbus::Error>((proxy, owners, targets, connection))
+        }.await;
+        let (mut active, mut owners, mut targets, connection) = match setup {
+            Ok(setup) => setup,
+            Err(error) => {
+                tracing::debug!(%error, "governor enrichment unavailable; retaining window state");
+                continue;
             }
-        }
+        };
+        published.clear();
 
-        if proxy.is_none() {
-            match zbus::Connection::session().await {
-                Ok(new_connection) => match ResourcesProxy::new(&new_connection).await {
-                    Ok(new_proxy) => proxy = Some(new_proxy),
-                    Err(error) => {
-                        tracing::debug!(%error, "Resources1 proxy unavailable; governor enrichment dropped for this batch");
-                    }
-                },
-                Err(error) => {
-                    tracing::debug!(%error, "no session bus; governor enrichment dropped for this batch");
+        'connected: loop {
+            let deadline = tokio::time::Instant::now() + COALESCE_WINDOW;
+            loop {
+                tokio::select! {
+                    () = tokio::time::sleep_until(deadline) => break,
+                    next = events.recv() => match next {
+                        Some(event) => apply(event, &mut instances, &mut processes, &mut forgotten),
+                        None => return,
+                    },
                 }
             }
-        }
 
-        let Some(active) = &proxy else {
-            continue;
-        };
-
-        let mut connection_lost = false;
-        for (instance_id, state) in pending_state {
-            let instance_id = instance_id.to_string();
-            if let Err(error) = active
-                .set_instance_state(&instance_id, state.foreground, state.visible)
-                .await
-            {
-                tracing::debug!(%error, %instance_id, "SetInstanceState failed");
-                connection_lost = true;
+            combined.clear();
+            combined.extend(instances.iter().map(|(id, state)| (*id, *state)));
+            let mut resolution_failed = false;
+            for (&pid, state) in &processes {
+                match active.resolve_pid(pid).await {
+                    Ok(key) => {
+                        if let Some(id) = ResourceId::parse(&key) {
+                            combined.entry(id).and_modify(|value| {
+                                value.foreground |= state.foreground;
+                                value.visible |= state.visible;
+                            }).or_insert(*state);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, pid, "kernel resource resolution unavailable");
+                        resolution_failed = true;
+                    }
+                }
             }
-        }
-        for instance_id in pending_forget {
-            let instance_id = instance_id.to_string();
-            if let Err(error) = active.forget_instance(&instance_id).await {
-                tracing::debug!(%error, %instance_id, "ForgetInstance failed");
-                connection_lost = true;
+            // A failed read is not evidence that a previously visible resource became headless.
+            if resolution_failed {
+                for (id, state) in &published { combined.entry(*id).or_insert(*state); }
             }
-        }
+            departed.clear();
+            departed.extend(published.keys().filter(|id| !combined.contains_key(id)).copied());
+            let mut uuid_buffer = [0_u8; 36];
+            for id in &departed {
+                let key = id.uuid().hyphenated().encode_lower(&mut uuid_buffer);
+                match active.set_instance_state(key, false, false).await {
+                    Ok(()) => { published.remove(id); }
+                    Err(error) => tracing::debug!(%error, %id, "clearing window enrichment failed"),
+                }
+            }
+            for (id, state) in &combined {
+                if published.get(id) == Some(state) { continue; }
+                let key = id.uuid().hyphenated().encode_lower(&mut uuid_buffer);
+                match active.set_instance_state(key, state.foreground, state.visible).await {
+                    Ok(()) => { published.insert(*id, *state); }
+                    Err(error) => tracing::debug!(%error, %id, "publishing window enrichment failed"),
+                }
+            }
+            for id in forgotten.drain(..) {
+                if combined.contains_key(&id) { continue; }
+                let key = id.uuid().hyphenated().encode_lower(&mut uuid_buffer);
+                if let Err(error) = active.forget_instance(key).await {
+                    tracing::debug!(%error, %id, "forgetting native instance failed");
+                }
+            }
 
-        // As in the identity cache: treat a call failure as "maybe the governor restarted" and
-        // reconnect from scratch next batch, rather than staying wedged on a dead proxy forever.
-        if connection_lost {
-            proxy = None;
+            'wait: loop {
+                tokio::select! {
+                    next = events.recv() => {
+                        let Some(event) = next else { return; };
+                        apply(event, &mut instances, &mut processes, &mut forgotten);
+                        break 'wait;
+                    }
+                    changed = owners.next() => {
+                        let Some(changed) = changed else { break 'connected; };
+                        if let Ok(args) = changed.args() {
+                            if args.name().as_str() == templar_types::dbus::resources::BUS_NAME {
+                                if args.new_owner().as_ref().is_some() {
+                                    // Signal streams are owner-bound. Register against the new
+                                    // producer before taking its initial PID-resolution snapshot.
+                                    match ResourcesProxy::new(&connection).await {
+                                        Ok(proxy) => match proxy.receive_targets_changed().await {
+                                            Ok(stream) => { active = proxy; targets = stream; }
+                                            Err(error) => tracing::debug!(%error, "new governor membership subscription unavailable"),
+                                        },
+                                        Err(error) => tracing::debug!(%error, "new governor proxy unavailable"),
+                                    }
+                                }
+                                published.clear();
+                                break 'wait;
+                            }
+                        }
+                    }
+                    changed = targets.next() => {
+                        if changed.is_none() { break 'connected; }
+                        break 'wait;
+                    }
+                }
+            }
         }
     }
 }
 
 fn apply(
     event: Event,
-    pending_state: &mut HashMap<InstanceId, InstanceState>,
-    pending_forget: &mut Vec<InstanceId>,
+    instances: &mut HashMap<ResourceId, InstanceState>,
+    processes: &mut HashMap<u32, InstanceState>,
+    forgotten: &mut Vec<ResourceId>,
 ) {
     match event {
-        Event::State(instance_id, state) => {
-            pending_state.insert(instance_id, state);
+        Event::State(id, state) => {
+            let id = ResourceId::from(id);
+            instances.insert(id, state);
+            forgotten.retain(|forgotten| *forgotten != id);
         }
-        Event::Forget(instance_id) => {
-            pending_state.remove(&instance_id);
-            pending_forget.push(instance_id);
+        Event::Forget(id) => {
+            let id = ResourceId::from(id);
+            instances.remove(&id);
+            forgotten.push(id);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn forgetting_an_instance_cancels_its_pending_state() {
-        let mut state = HashMap::new();
-        let mut forget = Vec::new();
-        let instance = InstanceId::new();
-
-        apply(
-            Event::State(
-                instance,
-                InstanceState {
-                    foreground: true,
-                    visible: true,
-                },
-            ),
-            &mut state,
-            &mut forget,
-        );
-        assert_eq!(state.len(), 1);
-
-        apply(Event::Forget(instance), &mut state, &mut forget);
-        assert!(state.is_empty());
-        assert_eq!(forget, vec![instance]);
-    }
-
-    #[test]
-    fn later_state_for_the_same_instance_overwrites_the_earlier_one() {
-        let mut state = HashMap::new();
-        let mut forget = Vec::new();
-        let instance = InstanceId::new();
-
-        apply(
-            Event::State(
-                instance,
-                InstanceState {
-                    foreground: false,
-                    visible: true,
-                },
-            ),
-            &mut state,
-            &mut forget,
-        );
-        apply(
-            Event::State(
-                instance,
-                InstanceState {
-                    foreground: true,
-                    visible: true,
-                },
-            ),
-            &mut state,
-            &mut forget,
-        );
-        assert_eq!(state.len(), 1);
-        assert!(state[&instance].foreground);
-    }
-
-    #[tokio::test]
-    async fn calls_with_no_session_bus_do_not_panic_or_block() {
-        let handle = tokio::runtime::Handle::current();
-        let notifier = GovernorNotifier::spawn(&handle);
-        notifier.set_instance_state(InstanceId::new(), true, true);
-        notifier.forget_instance(InstanceId::new());
-        // Give the background task a chance to run and hit the (expected) connection failure;
-        // the assertion is simply that this test completes instead of hanging or panicking.
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        Event::Process(pid, state) => { processes.insert(pid, state); }
+        Event::ProcessGone(pid) => { processes.remove(&pid); }
     }
 }

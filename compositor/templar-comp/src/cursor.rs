@@ -20,7 +20,7 @@ use smithay::{
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 surface::WaylandSurfaceRenderElement,
             },
-            gles::GlesRenderer,
+            ImportAll, ImportMem,
         },
     },
     input::pointer::{CursorIcon, CursorImageAttributes, CursorImageStatus},
@@ -107,9 +107,9 @@ impl Builtin {
 }
 
 render_elements! {
-    pub CursorRenderElement<=GlesRenderer>;
-    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
-    Memory=MemoryRenderBufferRenderElement<GlesRenderer>,
+    pub CursorRenderElement<R> where R: ImportAll + ImportMem;
+    Surface=WaylandSurfaceRenderElement<R>,
+    Memory=MemoryRenderBufferRenderElement<R>,
 }
 
 /// Long-lived upload cache for the built-in cursors, one buffer per [`Builtin`].
@@ -143,14 +143,14 @@ impl Default for CursorRenderer {
 
 impl CursorRenderer {
     /// Cursor elements local to `output_geometry`, front-to-back.
-    pub fn elements(
+    pub fn elements<R: ImportAll + ImportMem>(
         &mut self,
-        renderer: &mut GlesRenderer,
+        renderer: &mut R,
         status: &mut CursorImageStatus,
         pointer_location: Point<f64, Logical>,
         output_geometry: Rectangle<i32, Logical>,
         scale: Scale<f64>,
-    ) -> Vec<CursorRenderElement> {
+    ) -> Vec<CursorRenderElement<R>> where R::TextureId: Clone + Send + 'static {
         if !output_geometry.to_f64().contains(pointer_location) {
             return Vec::new();
         }

@@ -24,33 +24,13 @@ use crate::chrome::layout::{self, PressureChoice};
 use pixelkit_raster::{Painter, Rect as PxRect};
 use pixelkit_text::{FaceId, TextCache, TextStyle, cache::Align};
 use templar_window::Rect as LRect;
+use templar_types::appearance::Palette;
 
 /// Text and cache together, or nothing at all — the one parameter every drawing function below
 /// threads through instead of taking `Option<&ChromeFonts>` directly, so this module never needs
 /// to know `ChromeFonts`'s own shape.
 pub type Fonts<'a> = Option<(&'a mut TextCache, FaceId)>;
 
-pub const RECOVERY_BAND_COLOR: u32 = pixelkit_raster::color::from_rgb(0x2E, 0x33, 0x3D);
-pub const RECOVERY_TAB_COLOR: u32 = pixelkit_raster::color::from_rgb(0xD9, 0x8C, 0x1A);
-pub const PRESSURE_OVERLAY_COLOR: u32 = pixelkit_raster::color::from_rgb(0x73, 0x14, 0x14);
-/// The window overview's scrim: what the cards sit on, and the one thing that makes the mode
-/// read as a mode rather than as windows that shrank.
-pub const TASKFIELD_SCRIM_COLOR: u32 = pixelkit_raster::color::from_rgb(0x14, 0x15, 0x1B);
-pub const SCATTER_LABEL_COLOR: u32 = pixelkit_raster::color::from_rgb(0x14, 0x15, 0x1B);
-pub const SCATTER_FOCUS_ACCENT: u32 = pixelkit_raster::color::from_rgb(0x4E, 0x9A, 0xE8);
-pub const SWITCHER_PANEL_COLOR: u32 = pixelkit_raster::color::from_rgb(0x1A, 0x1C, 0x22);
-pub const SWITCHER_SELECTED_COLOR: u32 = pixelkit_raster::color::from_rgb(0x35, 0x47, 0x63);
-pub const LOCK_SCREEN_COLOR: u32 = pixelkit_raster::color::from_rgb(0x14, 0x16, 0x1A);
-pub const BUTTON_COLOR: u32 = pixelkit_raster::color::from_rgb(0x3A, 0x3F, 0x4B);
-pub const BUTTON_SELECTED_COLOR: u32 = pixelkit_raster::color::from_rgb(0x4E, 0x9A, 0xE8);
-/// A band being hovered by another window's band drag: release here and the two are grouped.
-/// Deliberately not one of the group accents — the target may already have one, and "you are
-/// about to drop something here" is a state of the gesture, not of a group.
-pub const BAND_DROP_TARGET_COLOR: u32 = pixelkit_raster::color::from_rgb(0x35, 0x47, 0x63);
-/// The gesture gate's learning outline (`chrome::collect_gesture_gate`): barely there while idle,
-/// the focus accent while the gate is armed on that output.
-pub const GESTURE_GATE_COLOR: u32 = pixelkit_raster::color::from_rgb(0x3A, 0x3F, 0x4B);
-pub const GESTURE_GATE_ARMED_COLOR: u32 = pixelkit_raster::color::from_rgb(0x4E, 0x9A, 0xE8);
 
 /// Scale a *logical* rectangle up to the physical pixel space a widget's own buffer is drawn in
 /// (`chrome/cache.rs`'s `buffer_scale`) — used for anything laid out once in logical coordinates
@@ -69,13 +49,13 @@ fn canvas(pixel_w: i32, pixel_h: i32) -> PxRect {
     PxRect::new(0, 0, pixel_w, pixel_h)
 }
 
-/// A window's recovery band or recovery tab (`templar_window::geometry::recovery_affordance`):
+/// A window's title tab (the title rectangle of its [`templar_window::WindowLayout`]):
 /// opaque `background`, the window's title elided to fit, in contrast-picked ink. With no font,
 /// exactly the flat rectangle chrome drew before this module existed.
 ///
 /// `group` is the window's group accent and name, if it is in one: the accent becomes a stripe
-/// down the left of the band, and the name is drawn before the title. The stripe is what makes a
-/// group visible with no font at all, and legible at a glance on a band that may be 96 pixels
+/// down the left of the tab, and the name is drawn before the title. The stripe is what makes a
+/// group visible with no font at all, and legible at a glance on a tab that may be 96 pixels
 /// wide — the name is the elaboration, not the signal.
 #[allow(clippy::too_many_arguments)]
 pub fn name_tag(
@@ -85,13 +65,14 @@ pub fn name_tag(
     background: u32,
     title: &str,
     group: Option<(u32, &str)>,
+    tab_count: Option<u32>,
     fonts: Fonts<'_>,
     scale: f32,
 ) {
     let area = canvas(pixel_w, pixel_h);
     painter.fill_rect(area, background);
     let ink = layout::text_ink_for(background);
-    let title_right = area.right();
+    let mut title_right = area.right();
 
     let mut left = area.x;
     if let Some((accent, _)) = group {
@@ -101,6 +82,32 @@ pub fn name_tag(
     }
 
     let Some((cache, face)) = fonts else { return };
+    if let Some(count) = tab_count.filter(|count| *count > 0) {
+        // Format without a heap allocation; a count badge is at most ten decimal digits.
+        let mut digits = [0u8; 10];
+        let mut start = digits.len();
+        let mut value = count;
+        loop {
+            start -= 1;
+            digits[start] = b'0' + (value % 10) as u8;
+            value /= 10;
+            if value == 0 { break; }
+        }
+        let label = std::str::from_utf8(&digits[start..]).unwrap_or("");
+        let padding = (4.0 * scale).round() as i32;
+        let badge_width = ((label.len() as f32 * 8.0 + 8.0) * scale).round() as i32;
+        let badge = PxRect::new(
+            area.right() - badge_width - padding, area.y + padding,
+            badge_width, (area.h - 2 * padding).max(0),
+        );
+        if badge.x >= left + padding && badge.h > 0 {
+            painter.fill_rect(badge, ink);
+            let style = TextStyle::new(face, (12.0 * scale).max(8.0));
+            let y = badge.y + ((badge.h - cache.line_height(style)) / 2).max(0);
+            cache.draw_fitted(painter, label, badge, y, style, background, Align::Centre);
+            title_right = badge.x - padding;
+        }
+    }
     let label = match group {
         Some((_, name)) if !name.is_empty() && !title.is_empty() => format!("{name} — {title}"),
         Some((_, name)) if !name.is_empty() => name.to_owned(),
@@ -124,8 +131,9 @@ pub fn name_tag(
     cache.draw_fitted(painter, title, text_area, y, style, ink, Align::Left);
 }
 
-/// The control tags, contiguous at the right end of the strip: `tags` are in the widget's own
-/// coordinates (`chrome::collect_control_tags`), already scaled.
+/// The three window controls: `tags` are in the widget's own coordinates
+/// (`chrome::collect_control_tags`), already scaled — a vertical stack for the same-corner
+/// arrangement, a horizontal row for opposite ends.
 pub fn control_tags(
     painter: &mut Painter<'_>,
     pixel_w: i32,
@@ -135,9 +143,12 @@ pub fn control_tags(
     scale: f32,
 ) {
     let area = canvas(pixel_w, pixel_h);
-    painter.fill_rect(area, background);
-    let ink = layout::text_ink_for(background);
+    painter.erase_rect(area);
+    // This widget is uploaded as ARGB so gaps can stay transparent. The raster
+    // painter's ordinary RGB mode preserves the caller's alpha lane verbatim.
+    let ink = 0xff00_0000 | layout::text_ink_for(background);
     for (tag, rect) in tags {
+        painter.fill_rect(*rect, background | 0xff00_0000);
         control_tag_glyph(painter, *tag, *rect, ink, scale);
     }
 }
@@ -155,9 +166,11 @@ fn control_tag_glyph(
     if rect.w <= 0 || rect.h <= 0 {
         return;
     }
-    painter.fill_rect(rect, BUTTON_COLOR);
-    let stroke = (2.0 * scale).round().max(1.0) as i32;
-    let reach = ((10.0 * scale).round() as i32).clamp(stroke, rect.w.min(rect.h) - 2 * stroke);
+    painter.push_clip(rect);
+    let side = rect.w.min(rect.h);
+    let stroke = ((2.0 * scale).round() as i32).clamp(1, side);
+    let reach = ((10.0 * scale).round() as i32)
+        .clamp(stroke, (side - 2 * stroke).max(stroke));
     let cx = rect.x + rect.w / 2;
     let cy = rect.y + rect.h / 2;
     let left = cx - reach / 2;
@@ -184,6 +197,7 @@ fn control_tag_glyph(
             }
         }
     }
+    painter.pop_clip();
 }
 
 /// The pressure overlay (`templar_recovery_v1.show_pressure_overlay`): the message, the offending
@@ -201,14 +215,15 @@ pub fn pressure_overlay(
     selected: PressureChoice,
     fonts: Fonts<'_>,
     scale: f32,
+    palette: &Palette,
 ) {
     let area = canvas(pixel_w, pixel_h);
-    painter.fill_rect(area, PRESSURE_OVERLAY_COLOR);
+    painter.fill_rect(area, opaque(palette.danger_soft));
 
-    draw_buttons(painter, buttons, selected, scale);
+    draw_buttons(painter, buttons, selected, scale, palette);
 
     let Some((cache, face)) = fonts else { return };
-    let ink = layout::text_ink_for(PRESSURE_OVERLAY_COLOR);
+    let ink = layout::text_ink_for(opaque(palette.danger_soft));
     let margin = (48.0 * scale).round() as i32;
     let body_style = TextStyle::new(face, (18.0 * scale).max(9.0));
     let offender_style = TextStyle::new(face, (14.0 * scale).max(8.0));
@@ -260,9 +275,9 @@ pub fn pressure_overlay(
     for (index, rect) in buttons.iter().enumerate() {
         let choice = PressureChoice::from_index(index);
         let background = if choice == selected {
-            BUTTON_SELECTED_COLOR
+            opaque(palette.accent)
         } else {
-            BUTTON_COLOR
+            opaque(palette.shell_low)
         };
         let label_ink = layout::text_ink_for(background);
         let label_style = TextStyle::new(face, (14.0 * scale).max(8.0));
@@ -287,14 +302,15 @@ fn draw_buttons(
     buttons: &[PxRect; 4],
     selected: PressureChoice,
     scale: f32,
+    palette: &Palette,
 ) {
     let radius = (6.0 * scale).round() as i32;
     for (index, rect) in buttons.iter().enumerate() {
         let choice = PressureChoice::from_index(index);
         let color = if choice == selected {
-            BUTTON_SELECTED_COLOR
+            opaque(palette.accent)
         } else {
-            BUTTON_COLOR
+            opaque(palette.shell_low)
         };
         painter.fill_rounded_rect(*rect, radius, color);
     }
@@ -307,16 +323,11 @@ pub fn scatter_label(
     pixel_w: i32,
     pixel_h: i32,
     title: &str,
-    focused: bool,
+    background: u32,
     fonts: Fonts<'_>,
     scale: f32,
 ) {
     let area = canvas(pixel_w, pixel_h);
-    let background = if focused {
-        SCATTER_FOCUS_ACCENT
-    } else {
-        SCATTER_LABEL_COLOR
-    };
     painter.fill_rect(area, background);
     let Some((cache, face)) = fonts else { return };
     if title.is_empty() {
@@ -349,12 +360,13 @@ pub fn switcher_row(
     parked: bool,
     fonts: Fonts<'_>,
     scale: f32,
+    palette: &Palette,
 ) {
     let area = canvas(pixel_w, pixel_h);
     let background = if selected {
-        SWITCHER_SELECTED_COLOR
+        opaque(palette.accent_soft)
     } else {
-        SWITCHER_PANEL_COLOR
+        opaque(palette.system_shell)
     };
     painter.fill_rect(area, background);
     let Some((cache, face)) = fonts else { return };
@@ -439,11 +451,12 @@ pub fn lock_screen(
     pixel_h: i32,
     fonts: Fonts<'_>,
     scale: f32,
+    palette: &Palette,
 ) {
     let area = canvas(pixel_w, pixel_h);
-    painter.fill_rect(area, LOCK_SCREEN_COLOR);
+    painter.fill_rect(area, opaque(palette.ground));
     let Some((cache, face)) = fonts else { return };
-    let ink = layout::text_ink_for(LOCK_SCREEN_COLOR);
+    let ink = layout::text_ink_for(opaque(palette.ground));
     let style = TextStyle::new(face, (20.0 * scale).max(10.0));
     let text = "Session locked";
     let width = cache.measure(text, style);
@@ -457,6 +470,9 @@ pub fn lock_screen(
 mod tests {
     use super::*;
     use pixelkit_raster::WindowBuffer;
+    use templar_types::appearance::LIGHT;
+    const RECOVERY_BAND_COLOR: u32 = 0xff00_0000 | LIGHT.shell_low;
+    const RECOVERY_TAB_COLOR: u32 = 0xff00_0000 | LIGHT.activity;
 
     fn pixel_at(buffer: &WindowBuffer, x: i32, y: i32) -> u32 {
         buffer.pixels[(y as u32 * buffer.width + x as u32) as usize]
@@ -473,6 +489,7 @@ mod tests {
                 32,
                 RECOVERY_BAND_COLOR,
                 "Waterfox",
+                None,
                 None,
                 None,
                 1.0,
@@ -496,6 +513,7 @@ mod tests {
                 "",
                 None,
                 None,
+                None,
                 1.0,
             );
         }
@@ -506,65 +524,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pressure_overlay_paints_a_distinct_colour_for_the_selected_button() {
-        let mut buffer = WindowBuffer::new(400, 300);
-        let buttons = [
-            PxRect::new(10, 200, 80, 40),
-            PxRect::new(100, 200, 80, 40),
-            PxRect::new(190, 200, 80, 40),
-            PxRect::new(280, 200, 80, 40),
-        ];
-        {
-            let mut painter = Painter::new(&mut buffer);
-            pressure_overlay(
-                &mut painter,
-                400,
-                300,
-                "Something happened.",
-                None,
-                &buttons,
-                PressureChoice::Terminate,
-                None,
-                1.0,
-            );
-        }
-        // Background is opaque everywhere outside the buttons.
-        assert_eq!(pixel_at(&buffer, 5, 5), PRESSURE_OVERLAY_COLOR);
-        // The selected (Terminate, index 2) button's centre is the selected colour; an
-        // unselected button's centre is not.
-        assert_eq!(pixel_at(&buffer, 230, 220), BUTTON_SELECTED_COLOR);
-        assert_eq!(pixel_at(&buffer, 50, 220), BUTTON_COLOR);
-    }
-
-    #[test]
-    fn switcher_row_highlights_only_the_selected_row() {
-        let mut selected = WindowBuffer::new(200, 28);
-        {
-            let mut painter = Painter::new(&mut selected);
-            switcher_row(&mut painter, 200, 28, "Terminal", true, false, None, 1.0);
-        }
-        assert_eq!(pixel_at(&selected, 0, 0), SWITCHER_SELECTED_COLOR);
-
-        let mut plain = WindowBuffer::new(200, 28);
-        {
-            let mut painter = Painter::new(&mut plain);
-            switcher_row(&mut painter, 200, 28, "Terminal", false, true, None, 1.0);
-        }
-        assert_eq!(pixel_at(&plain, 0, 0), SWITCHER_PANEL_COLOR);
-    }
-
-    #[test]
-    fn lock_screen_is_opaque_and_plain_with_no_font() {
-        let mut buffer = WindowBuffer::new(300, 200);
-        {
-            let mut painter = Painter::new(&mut buffer);
-            lock_screen(&mut painter, 300, 200, None, 1.0);
-        }
-        for (x, y) in [(0, 0), (299, 199), (150, 100)] {
-            assert_eq!(pixel_at(&buffer, x, y), LOCK_SCREEN_COLOR);
-        }
-    }
 
     #[test]
     fn scaled_px_multiplies_every_field() {
@@ -576,6 +535,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn control_gaps_are_transparent_instead_of_painted_dead_targets() {
+        let mut buffer = WindowBuffer::new(28, 92);
+        let tags = [
+            (layout::ControlTag::Close, PxRect::new(0, 0, 28, 28)),
+            (layout::ControlTag::Maximize, PxRect::new(0, 32, 28, 28)),
+            (layout::ControlTag::Park, PxRect::new(0, 64, 28, 28)),
+        ];
+        control_tags(&mut Painter::new(&mut buffer), 28, 92, RECOVERY_BAND_COLOR, &tags, 1.0);
+        for y in [28, 29, 30, 31, 60, 61, 62, 63] {
+            for x in 0..28 {
+                assert_eq!(pixel_at(&buffer, x, y), 0);
+            }
+        }
+        assert_eq!(pixel_at(&buffer, 0, 0), RECOVERY_BAND_COLOR);
+        for (_, rect) in tags {
+            for y in rect.y..rect.bottom() {
+                for x in rect.x..rect.right() {
+                    assert_eq!(pixel_at(&buffer, x, y) >> 24, 255);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tiny_control_glyphs_stay_opaque_and_do_not_paint_gap_pixels() {
+        for size in 1..=28 {
+            let mut buffer = WindowBuffer::new(size as u32, (3 * size + 8) as u32);
+            let tags = [
+                (layout::ControlTag::Close, PxRect::new(0, 0, size, size)),
+                (layout::ControlTag::Maximize, PxRect::new(0, size + 4, size, size)),
+                (layout::ControlTag::Park, PxRect::new(0, 2 * size + 8, size, size)),
+            ];
+            control_tags(&mut Painter::new(&mut buffer), size, 3 * size + 8, 0, &tags, 1.0);
+            for y in 0..3 * size + 8 {
+                for x in 0..size {
+                    let control_pixel = tags.iter().any(|(_, rect)| rect.contains(x, y));
+                    assert_eq!(pixel_at(&buffer, x, y) >> 24, if control_pixel { 255 } else { 0 });
+                }
+            }
+        }
+    }
+
     /// `pixelkit-text/test-fonts` (dev-dependency only, `Cargo.toml`) embeds a real face
     /// specifically so downstream tests get deterministic glyphs without depending on whatever
     /// fonts the host running `cargo test` happens to have — see `chrome/text.rs`'s doc. These
@@ -583,6 +585,19 @@ mod tests {
     mod with_a_real_font {
         use super::*;
         use pixelkit_text::font::test_fonts;
+
+        #[test]
+        fn tab_count_badge_changes_pixels_without_changing_title() {
+            let mut cache = TextCache::new(test_fonts::set());
+            let mut unknown = WindowBuffer::new(200, 32);
+            let mut known = WindowBuffer::new(200, 32);
+            for (buffer, count) in [(&mut unknown, None), (&mut known, Some(7))] {
+                name_tag(&mut Painter::new(buffer), 200, 32, RECOVERY_BAND_COLOR,
+                    "same title", None, count, Some((&mut cache, test_fonts::LATIN)), 1.0);
+            }
+            assert_ne!(unknown.pixels, known.pixels);
+            assert_eq!(pixel_at(&known, 0, 0), RECOVERY_BAND_COLOR);
+        }
 
         #[test]
         fn name_tag_draws_more_than_just_the_background() {
@@ -597,6 +612,7 @@ mod tests {
                     RECOVERY_BAND_COLOR,
                     "Waterfox",
                     None,
+                    None,
                     Some((&mut cache, test_fonts::LATIN)),
                     1.0,
                 );
@@ -610,41 +626,6 @@ mod tests {
             assert_eq!(buffer.pixels[buffer.pixels.len() - 1], RECOVERY_BAND_COLOR);
         }
 
-        #[test]
-        fn pressure_overlay_button_labels_are_drawn_when_a_font_is_available() {
-            let mut cache = TextCache::new(test_fonts::set());
-            let mut buffer = WindowBuffer::new(400, 300);
-            let buttons = [
-                PxRect::new(10, 200, 80, 40),
-                PxRect::new(100, 200, 80, 40),
-                PxRect::new(190, 200, 80, 40),
-                PxRect::new(280, 200, 80, 40),
-            ];
-            {
-                let mut painter = Painter::new(&mut buffer);
-                pressure_overlay(
-                    &mut painter,
-                    400,
-                    300,
-                    "Waterfox was terminated after sustained memory pressure.",
-                    Some("org.waterfox.Waterfox"),
-                    &buttons,
-                    PressureChoice::Wait,
-                    Some((&mut cache, test_fonts::LATIN)),
-                    1.0,
-                );
-            }
-            // At least one button's interior differs from its own flat background colour — the
-            // label was actually drawn, not merely the button rectangle.
-            let selected_button = buttons[0];
-            let region_has_ink = (selected_button.y..selected_button.bottom())
-                .flat_map(|y| (selected_button.x..selected_button.right()).map(move |x| (x, y)))
-                .any(|(x, y)| pixel_at(&buffer, x, y) != BUTTON_SELECTED_COLOR);
-            assert!(
-                region_has_ink,
-                "expected a drawn label inside the selected button"
-            );
-        }
 
         #[test]
         fn long_window_titles_are_elided_to_fit_the_band() {

@@ -16,13 +16,16 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 
 if ! declare -F __templaros_garden_prompt >/dev/null 2>&1; then
+    source "${BASH_SOURCE[0]%/*}/59-templaros-journal.sh"
     __templaros_garden_prompt() {
+        local last_status=$?
         if [ "${__templaros_garden_pwd-}" = "$PWD" ]; then
-            return
+            return "$last_status"
         fi
         if command templar garden observe terminal-entered "$PWD" --role terminal >/dev/null 2>&1; then
             __templaros_garden_pwd=$PWD
         fi
+        return "$last_status"
     }
 
     if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then

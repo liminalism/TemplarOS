@@ -10,7 +10,7 @@ use crate::WindowId;
 use serde::{Deserialize, Serialize};
 
 /// A window group's identity. Ids start at 1 and are never reused: 0 means "no group" on the wire
-/// (`interfaces/wayland/templar-shell-v1.xml`'s `group` event), so it must never name a live group.
+/// (`interfaces/wayland/templar-shell-v2.xml`'s `group` event), so it must never name a live group.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct GroupId(pub u64);
 
@@ -60,6 +60,12 @@ impl GroupRecord {
     }
 }
 
+/// Logical width of the accent stripe a grouped window wears at the leading edge of its
+/// horizontal title tab (planning doc §2 rule 7: "a stripe of the same colour in each
+/// member's band"). Titles are always horizontal, so the stripe never rotates with the
+/// corner — paint scales this width into pixels at the tab's leading edge.
+pub const GROUP_STRIPE_WIDTH: i32 = 4;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +106,21 @@ mod tests {
             last_active: WindowId(1),
         };
         assert_eq!(record.display_name(), "");
+    }
+
+    /// The stripe fits inside every corner's title tab — paint's leading-edge stripe is
+    /// always drawable, never wider than the tab.
+    #[test]
+    fn the_group_stripe_fits_every_corner_s_title() {
+        use crate::geometry::{Corner, TabPlacement, WindowLayout};
+        let client = crate::geometry::Rect::new(300, 300, 640, 480);
+        let output = crate::geometry::Rect::new(0, 0, 1920, 1080);
+        for corner in Corner::ALL {
+            let layout = WindowLayout::new(client, corner, TabPlacement::SameCorner, output);
+            assert!(
+                GROUP_STRIPE_WIDTH < layout.title.width,
+                "stripe overflows the {corner:?} title"
+            );
+        }
     }
 }

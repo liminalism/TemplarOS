@@ -1,6 +1,6 @@
 //! `ext-foreign-toplevel-list-v1`: the generic, title/app-id-only toplevel listing COMPOSITOR.md
 //! lists as a required protocol for third-party listeners (screen readers, task switchers that
-//! aren't `templar-shell`). `templar_shell_v1` (`src/protocols_shell.rs`) is the richer, shell-specific
+//! aren't `templar-shell`). `templar_shell_v2` (`src/protocols_shell.rs`) is the richer, shell-specific
 //! channel; this one exists for everyone else and carries nothing beyond what the standard
 //! protocol itself defines.
 
@@ -14,7 +14,7 @@ use templar_window::WindowId;
 #[derive(Debug, Default)]
 pub struct ForeignToplevelState {
     handles: HashMap<WindowId, ForeignToplevelHandle>,
-    /// Each handle's `ext_foreign_toplevel_handle_v1.identifier`, which `templar_shell_v1` relays so
+    /// Each handle's `ext_foreign_toplevel_handle_v1.identifier`, which `templar_shell_v2` relays so
     /// the shell can pair a capture of a window (obtained through the standard protocols, which
     /// name windows by this identifier) with the window's `templar_shell_toplevel_v1`.
     identifiers: HashMap<WindowId, String>,

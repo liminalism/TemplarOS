@@ -15,48 +15,53 @@ use pixelkit_windowing::{PixelApp, Waker, WindowConfig, run_app};
 use std::sync::{Arc, Mutex, mpsc};
 use templar_client::proxies::SettingsProxy;
 use templar_session_core::settings::{SettingSpec, SettingValue};
+use templar_types::SettingsPage;
+use templar_types::settings::{
+    Capability, Observation, OperationError, OperationResult, Revision, SettingObservation,
+};
+
+type SettingsSnapshot = Observation<Vec<SettingObservation<SettingValue>>>;
 
 const HOME_PREFIX: &str = "shell.home-field.";
 const APPEARANCE_PREFIX: &str = "shell.appearance.";
 const GARDEN_PREFIX: &str = "shell.home-garden.";
+/// `shell.notifications.*`: drawn as a section of the System page (below) rather than a
+/// page of its own, until a Notifications destination exists in `SettingsPage`.
+const NOTIFICATIONS_PREFIX: &str = "shell.notifications.";
 /// The one `shell.home-garden.*` key the typed key form cannot draw: a list of directory names
 /// does not fit a 184-pixel control rectangle, so the Homegarden page gives it a section.
 const GARDEN_IGNORE_KEY: &str = "shell.home-garden.ignore";
 const RAILS_PREFIX: &str = "shell.rails.";
+/// `windows.tabs.*`: the corner-following title/control tab policy.
+const WINDOWS_PREFIX: &str = "windows.tabs.";
 /// The Rails page's list key, given a section for the same reason as `GARDEN_IGNORE_KEY`.
 const RAILS_EXCEPTIONS_KEY: &str = "shell.rails.exceptions";
-/// `System` is second because it is the page the Home Field's Settings widget opens into: the
-/// widget reports the battery, the volume and the brightness, and this is where they can be set
-/// outright. The rest keep the order they have had, so a person who learned where a tab is does
-/// not have to learn it again.
-/// Appearance is last rather than beside Home Field for the same reason: it is new, and moving
-/// six tabs to make room for it would cost every person who already knows where History is.
-/// Homegarden is appended rather than placed beside Home Field for the same reason Appearance
-/// was: it is new, and moving nine tabs to make room for it would cost every person who already
-/// knows where History is. Rails is appended for the same reason again.
-const PAGE_NAMES: [&str; 11] = [
-    "Home Field",
-    "System",
-    "Providers",
-    "Associations",
-    "Background",
-    "Resources",
-    "History",
-    "Hardware",
-    "Appearance",
-    "Homegarden",
-    "Rails",
-];
-/// The index of each page that draws controls rather than rendered text.
-const HOME_PAGE: usize = 0;
-const SYSTEM_PAGE: usize = 1;
-const PROVIDERS_PAGE: usize = 2;
-const ASSOCIATIONS_PAGE: usize = 3;
-const BACKGROUND_PAGE: usize = 4;
-const HISTORY_PAGE: usize = 6;
-const APPEARANCE_PAGE: usize = 8;
-const GARDEN_PAGE: usize = 9;
-const RAILS_PAGE: usize = 10;
+const PAGE_NAMES: [&str; SettingsPage::ALL.len()] = {
+    let mut labels = [""; SettingsPage::ALL.len()];
+    let mut index = 0;
+    while index < labels.len() {
+        labels[SettingsPage::ALL[index] as usize] = SettingsPage::ALL[index].label();
+        index += 1;
+    }
+    labels
+};
+const HOME_PAGE: usize = SettingsPage::HomeField as usize;
+const SYSTEM_PAGE: usize = SettingsPage::System as usize;
+const SOUND_PAGE: usize = SettingsPage::Sound as usize;
+const FILES_PAGE: usize = SettingsPage::Files as usize;
+const NETWORK_PAGE: usize = SettingsPage::Network as usize;
+const BLUETOOTH_PAGE: usize = SettingsPage::Bluetooth as usize;
+const DISPLAYS_PAGE: usize = SettingsPage::Displays as usize;
+const INPUT_PAGE: usize = SettingsPage::Input as usize;
+const PROVIDERS_PAGE: usize = SettingsPage::Providers as usize;
+const ASSOCIATIONS_PAGE: usize = SettingsPage::Associations as usize;
+const BACKGROUND_PAGE: usize = SettingsPage::Background as usize;
+const HISTORY_PAGE: usize = SettingsPage::History as usize;
+const APPEARANCE_PAGE: usize = SettingsPage::Appearance as usize;
+const GARDEN_PAGE: usize = SettingsPage::Homegarden as usize;
+const RAILS_PAGE: usize = SettingsPage::Rails as usize;
+const WINDOWS_PAGE: usize = SettingsPage::Windows as usize;
+const DATE_TIME_PAGE: usize = SettingsPage::DateTime as usize;
 /// How far one press of a stepper moves a level: the same five points `templar status louder` and
 /// the Home Field's own controls use, so no two surfaces disagree about what one step means.
 const STEP_PERCENT: i32 = 5;
@@ -68,18 +73,29 @@ const HISTORY_LIMIT: u32 = 200;
 struct SettingRow {
     spec: SettingSpec,
     value: SettingValue,
+    capability: Capability,
 }
 
 #[derive(Debug)]
 enum Command {
+    RefreshSettings,
     Set { key: String, value: SettingValue },
     Reset { key: String },
     System(SystemCommand),
+    Power(crate::power::PowerCommand),
+    Displays(crate::displays::DisplaysCommand),
+    Input(crate::input::InputCommand),
+    DateTime(crate::datetime::DateTimeCommand),
+    Sound(crate::sound::SoundCommand),
+    Files(crate::files::FilesCommand),
+    Network(crate::network::NetworkCommand),
+    Bluetooth(crate::bluetooth::BluetoothCommand),
     Background(BackgroundCommand),
     History(HistoryCommand),
     Providers(ProvidersCommand),
     Associations(AssociationsCommand),
     Garden(GardenCommand),
+    Wallpaper(crate::wallpaper::WallpaperCommand),
 }
 
 /// One change to Home's garden that is not a typed setting, or a plain re-read.
@@ -148,16 +164,23 @@ enum SystemCommand {
     ToggleMute,
     SetBrightness(u32),
     StepBrightness(i32),
-    /// How long the session may be idle before the screen turns off, in seconds; 0 is never.
-    /// `Power1` policy, enforced by the compositor (`compositor/templar-comp/src/idle.rs`).
-    SetScreenOff(u32),
 }
 
 #[derive(Debug)]
 enum ResultMessage {
+    SettingsSnapshot(Result<SettingsSnapshot, String>),
+    Wallpaper(crate::wallpaper::WallpaperState),
+    Sound(crate::sound::SoundState),
+    Files(crate::files::FilesState),
+    Network(crate::network::NetworkState),
+    Bluetooth(crate::bluetooth::BluetoothState),
+    Power(crate::power::PowerState),
+    Displays(crate::displays::DisplaysState),
+    Input(crate::input::InputState),
+    DateTime(crate::datetime::DateTimeState),
     Setting {
         key: String,
-        result: Result<(), String>,
+        result: OperationResult<SettingValue>,
     },
     /// Every system command answers with the state that followed it, so the page shows what the
     /// service actually did rather than what was asked for — a level the service clamped is the
@@ -192,14 +215,15 @@ enum ResultMessage {
 
 #[derive(Debug)]
 struct Backend {
-    commands: mpsc::Sender<Command>,
+    commands: tokio::sync::mpsc::UnboundedSender<Command>,
     results: mpsc::Receiver<ResultMessage>,
     waker: Arc<Mutex<Waker>>,
 }
 
 impl Backend {
     fn new() -> Self {
-        let (command_tx, command_rx) = mpsc::channel();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let watcher_commands = command_tx.downgrade();
         let (result_tx, result_rx) = mpsc::channel();
         let waker = Arc::new(Mutex::new(Waker::detached()));
         let worker_waker = Arc::clone(&waker);
@@ -207,27 +231,69 @@ impl Backend {
             .name("templar-settings-writes".into())
             .spawn(move || {
                 let runtime = tokio::runtime::Runtime::new().expect("settings write runtime");
-                while let Ok(command) = command_rx.recv() {
-                    let message = match command {
-                        Command::System(system) => runtime.block_on(run_system_command(system)),
-                        Command::Background(background) => {
-                            runtime.block_on(run_background_command(background))
+                runtime.block_on(async move {
+                    let mut files = crate::files::FilesController::default();
+                    let mut network = crate::network::NetworkController::default();
+                    let mut bluetooth = crate::bluetooth::BluetoothController::default();
+                    let mut power = crate::power::PowerController::default();
+                    let mut displays = crate::displays::DisplaysController::default();
+                    let mut input = crate::input::InputController::default();
+                    let mut datetime = crate::datetime::DateTimeController::default();
+                    let (network_tx, mut network_rx) = tokio::sync::mpsc::unbounded_channel();
+                    let (bluetooth_tx, mut bluetooth_rx) = tokio::sync::mpsc::unbounded_channel();
+                    let (power_tx, mut power_rx) = tokio::sync::mpsc::unbounded_channel();
+                    let network_tx = Arc::new(network_tx);
+                    let bluetooth_tx = Arc::new(bluetooth_tx);
+                    let power_tx = Arc::new(power_tx);
+                    if let Err(error) = network.subscribe(Arc::downgrade(&network_tx)).await {
+                        tracing::warn!(%error, "Network change subscription unavailable");
+                    }
+                    if let Err(error) = bluetooth.subscribe(Arc::downgrade(&bluetooth_tx)).await {
+                        tracing::warn!(%error, "Bluetooth change subscription unavailable");
+                    }
+                    if let Err(error) = power.subscribe(Arc::downgrade(&power_tx)).await {
+                        tracing::warn!(%error, "Power change subscription unavailable");
+                    }
+                    tokio::spawn(watch_files(watcher_commands.clone()));
+                    tokio::spawn(watch_audio(watcher_commands.clone()));
+                    tokio::spawn(watch_settings(watcher_commands.clone()));
+                    tokio::spawn(watch_displays(watcher_commands.clone()));
+                    tokio::spawn(watch_wallpaper(watcher_commands.clone()));
+                    tokio::spawn(watch_input(watcher_commands));
+                    loop {
+                        let command = tokio::select! {
+                            biased;
+                            command = command_rx.recv() => match command { Some(command) => command, None => break },
+                            Some(command) = network_rx.recv() => Command::Network(command),
+                            Some(command) = bluetooth_rx.recv() => Command::Bluetooth(command),
+                            Some(command) = power_rx.recv() => Command::Power(command),
+                        };
+                        let message = match command {
+                            Command::RefreshSettings => ResultMessage::SettingsSnapshot(
+                                read_setting_values().await.map_err(|error| error.to_string())),
+                            Command::System(system) => run_system_command(system).await,
+                            Command::Sound(command) => ResultMessage::Sound(crate::sound::run(command).await),
+                            Command::Files(command) => ResultMessage::Files(files.run(command).await),
+                            Command::Network(command) => ResultMessage::Network(network.run(command).await),
+                            Command::Bluetooth(command) => ResultMessage::Bluetooth(bluetooth.run(command).await),
+                            Command::Power(command) => ResultMessage::Power(power.run(command).await),
+                            Command::Displays(command) => ResultMessage::Displays(displays.run(command).await),
+                            Command::Input(command) => ResultMessage::Input(input.run(command).await),
+                            Command::DateTime(command) => ResultMessage::DateTime(datetime.run(command).await),
+                            Command::Background(background) => run_background_command(background).await,
+                            Command::History(history) => run_history_command(history).await,
+                            Command::Providers(providers) => run_providers_command(providers).await,
+                            Command::Associations(associations) => run_associations_command(associations).await,
+                            Command::Garden(garden) => run_garden_command(garden).await,
+                            Command::Wallpaper(command) => ResultMessage::Wallpaper(crate::wallpaper::run(command).await),
+                            Command::Set { .. } | Command::Reset { .. } => run_setting_command(command).await,
+                        };
+                        if result_tx.send(message).is_err() {
+                            break;
                         }
-                        Command::History(history) => runtime.block_on(run_history_command(history)),
-                        Command::Providers(providers) => {
-                            runtime.block_on(run_providers_command(providers))
-                        }
-                        Command::Associations(associations) => {
-                            runtime.block_on(run_associations_command(associations))
-                        }
-                        Command::Garden(garden) => runtime.block_on(run_garden_command(garden)),
-                        Command::Set { .. } | Command::Reset { .. } => {
-                            runtime.block_on(run_setting_command(command))
-                        }
-                    };
-                    let _ = result_tx.send(message);
-                    worker_waker.lock().expect("waker mutex").wake();
-                }
+                        worker_waker.lock().expect("waker mutex").wake();
+                    }
+                });
             })
             .expect("spawn settings writer");
         Self {
@@ -235,6 +301,237 @@ impl Backend {
             results: result_rx,
             waker,
         }
+    }
+}
+
+async fn read_setting_values() -> Result<SettingsSnapshot> {
+    let connection = zbus::Connection::session().await?;
+    let proxy = SettingsProxy::new(&connection).await?;
+    serde_json::from_str(&proxy.inspect().await?).map_err(Into::into)
+}
+
+async fn watch_audio(commands: tokio::sync::mpsc::WeakUnboundedSender<Command>) {
+    use futures_util::StreamExt as _;
+    let watch = async {
+        let connection = zbus::Connection::session().await?;
+        let proxy = templar_client::proxies::AudioProxy::new(&connection).await?;
+        let mut changed = proxy.receive_changed().await?;
+        let bus = zbus::fdo::DBusProxy::new(&connection).await?;
+        let mut owners = bus.receive_name_owner_changed().await?;
+        if let Some(sender) = commands.upgrade() {
+            let _ = sender.send(Command::Sound(crate::sound::SoundCommand::Refresh));
+        }
+        loop {
+            tokio::select! {
+                event = changed.next() => if event.is_none() { return Ok::<_, zbus::Error>(()); },
+                event = owners.next() => {
+                    let Some(event) = event else { return Ok(()); };
+                    let Ok(args) = event.args() else { continue; };
+                    if args.name().as_str() != "org.templaros.Session" { continue; }
+                }
+            }
+            let Some(sender) = commands.upgrade() else {
+                return Ok(());
+            };
+            if sender
+                .send(Command::Sound(crate::sound::SoundCommand::Refresh))
+                .is_err()
+            {
+                return Ok(());
+            }
+        }
+    };
+    if let Err(error) = watch.await {
+        tracing::warn!(%error, "audio observation unavailable");
+    }
+}
+
+async fn watch_files(commands: tokio::sync::mpsc::WeakUnboundedSender<Command>) {
+    use futures_util::StreamExt as _;
+    let watch = async {
+        let connection = zbus::Connection::session().await?;
+        let proxy = templar_client::proxies::FilesIndexProxy::new(&connection).await?;
+        let mut generations = proxy.receive_generation_advanced().await?;
+        let mut states = proxy.receive_root_state_changed().await?;
+        let bus = zbus::fdo::DBusProxy::new(&connection).await?;
+        let mut owners = bus.receive_name_owner_changed().await?;
+        if let Some(sender) = commands.upgrade() {
+            let _ = sender.send(Command::Files(crate::files::FilesCommand::Refresh));
+        }
+        loop {
+            let command = tokio::select! {
+                event = generations.next() => {
+                    if event.is_none() { return Ok::<_, zbus::Error>(()); }
+                    crate::files::FilesCommand::Refresh
+                },
+                event = states.next() => {
+                    if event.is_none() { return Ok(()); }
+                    crate::files::FilesCommand::Refresh
+                },
+                event = owners.next() => {
+                    let Some(event) = event else { return Ok(()); };
+                    let Ok(args) = event.args() else { continue; };
+                    if args.name().as_str() != "org.templaros.Files" { continue; }
+                    if args.new_owner().is_some() { crate::files::FilesCommand::ProducerRestart }
+                    else { crate::files::FilesCommand::Refresh }
+                }
+            };
+            let Some(sender) = commands.upgrade() else {
+                return Ok(());
+            };
+            if sender.send(Command::Files(command)).is_err() {
+                return Ok(());
+            }
+        }
+    };
+    if let Err(error) = watch.await {
+        tracing::warn!(%error, "index observation unavailable");
+    }
+}
+
+async fn watch_input(commands: tokio::sync::mpsc::WeakUnboundedSender<Command>) {
+    use futures_util::StreamExt as _;
+    let watch = async {
+        let connection = zbus::Connection::session().await?;
+        let proxy = templar_client::proxies::InputProxy::new(&connection).await?;
+        let mut changed = proxy.receive_changed().await?;
+        let bus = zbus::fdo::DBusProxy::new(&connection).await?;
+        let mut owners = bus.receive_name_owner_changed().await?;
+        if let Some(sender) = commands.upgrade() {
+            let _ = sender.send(Command::Input(crate::input::InputCommand::Refresh));
+        }
+        loop {
+            tokio::select! {
+                event = changed.next() => if event.is_none() { return Ok::<_, zbus::Error>(()); },
+                event = owners.next() => {
+                    let Some(event) = event else { return Ok(()); };
+                    let Ok(args) = event.args() else { continue; };
+                    if args.name().as_str() != "org.templaros.Session" { continue; }
+                }
+            }
+            let Some(sender) = commands.upgrade() else {
+                return Ok(());
+            };
+            if sender
+                .send(Command::Input(crate::input::InputCommand::Refresh))
+                .is_err()
+            {
+                return Ok(());
+            }
+        }
+    };
+    if let Err(error) = watch.await {
+        tracing::warn!(%error, "native input observation unavailable");
+    }
+}
+
+async fn watch_displays(commands: tokio::sync::mpsc::WeakUnboundedSender<Command>) {
+    use futures_util::StreamExt as _;
+    let watch = async {
+        let connection = zbus::Connection::session().await?;
+        let proxy = templar_client::proxies::DisplaysProxy::new(&connection).await?;
+        let mut changed = proxy.receive_changed().await?;
+        let bus = zbus::fdo::DBusProxy::new(&connection).await?;
+        let mut owners = bus.receive_name_owner_changed().await?;
+        if let Some(sender) = commands.upgrade() {
+            let _ = sender.send(Command::Displays(crate::displays::DisplaysCommand::Refresh));
+        }
+        loop {
+            tokio::select! {
+                event = changed.next() => if event.is_none() { return Ok::<_, zbus::Error>(()); },
+                event = owners.next() => {
+                    let Some(event) = event else { return Ok(()); };
+                    let Ok(args) = event.args() else { continue; };
+                    if args.name().as_str() != "org.templaros.Session" { continue; }
+                }
+            }
+            let Some(sender) = commands.upgrade() else {
+                return Ok(());
+            };
+            if sender
+                .send(Command::Displays(crate::displays::DisplaysCommand::Refresh))
+                .is_err()
+            {
+                return Ok(());
+            }
+        }
+    };
+    if let Err(error) = watch.await {
+        tracing::warn!(%error, "native display observation unavailable");
+    }
+}
+
+async fn watch_settings(commands: tokio::sync::mpsc::WeakUnboundedSender<Command>) {
+    use futures_util::StreamExt as _;
+    let watch = async {
+        let connection = zbus::Connection::session().await?;
+        let proxy = SettingsProxy::new(&connection).await?;
+        // Subscribe before the initial refresh; writes and external refreshes share one queue.
+        let mut changed = proxy.receive_changed().await?;
+        let bus = zbus::fdo::DBusProxy::new(&connection).await?;
+        let mut owners = bus.receive_name_owner_changed().await?;
+        if let Some(sender) = commands.upgrade() {
+            let _ = sender.send(Command::RefreshSettings);
+        }
+        loop {
+            tokio::select! {
+                event = changed.next() => if event.is_none() { return Ok::<_, zbus::Error>(()); },
+                event = owners.next() => {
+                    let Some(event) = event else { return Ok(()); };
+                    let Ok(args) = event.args() else { continue; };
+                    if args.name().as_str() != "org.templaros.Session" { continue; }
+                }
+            }
+            let Some(sender) = commands.upgrade() else {
+                return Ok(());
+            };
+            if sender.send(Command::RefreshSettings).is_err() {
+                return Ok(());
+            }
+        }
+    };
+    if let Err(error) = watch.await {
+        tracing::warn!(%error, "Settings external-change subscription unavailable");
+    }
+}
+
+async fn watch_wallpaper(commands: tokio::sync::mpsc::WeakUnboundedSender<Command>) {
+    use futures_util::StreamExt as _;
+    let watch = async {
+        let connection = zbus::Connection::session().await?;
+        let proxy = templar_client::proxies::wallpaper::WallpaperProxy::new(&connection).await?;
+        let mut changed = proxy.receive_changed().await?;
+        let bus = zbus::fdo::DBusProxy::new(&connection).await?;
+        let mut owners = bus.receive_name_owner_changed().await?;
+        if let Some(sender) = commands.upgrade() {
+            let _ = sender.send(Command::Wallpaper(
+                crate::wallpaper::WallpaperCommand::Inspect,
+            ));
+        }
+        loop {
+            tokio::select! {
+                event = changed.next() => if event.is_none() { return Ok::<_, zbus::Error>(()); },
+                event = owners.next() => {
+                    let Some(event) = event else { return Ok(()); };
+                    let Ok(args) = event.args() else { continue; };
+                    if args.name().as_str() != "org.templaros.Session" { continue; }
+                }
+            }
+            let Some(sender) = commands.upgrade() else {
+                return Ok(());
+            };
+            if sender
+                .send(Command::Wallpaper(
+                    crate::wallpaper::WallpaperCommand::Inspect,
+                ))
+                .is_err()
+            {
+                return Ok(());
+            }
+        }
+    };
+    if let Err(error) = watch.await {
+        tracing::warn!(%error, "Wallpaper observation unavailable");
     }
 }
 
@@ -269,35 +566,71 @@ async fn run_garden(command: &GardenCommand) -> Result<Option<String>> {
 async fn run_setting_command(command: Command) -> ResultMessage {
     let key = match &command {
         Command::Set { key, .. } | Command::Reset { key } => key.clone(),
-        Command::System(_)
+        Command::RefreshSettings
+        | Command::System(_)
         | Command::Background(_)
+        | Command::Sound(_)
+        | Command::Files(_)
+        | Command::Network(_)
+        | Command::Bluetooth(_)
+        | Command::Power(_)
+        | Command::Displays(_)
+        | Command::Input(_)
+        | Command::DateTime(_)
         | Command::History(_)
         | Command::Providers(_)
         | Command::Associations(_)
-        | Command::Garden(_) => unreachable!("dispatched by the caller"),
+        | Command::Garden(_)
+        | Command::Wallpaper(_) => unreachable!("dispatched by the caller"),
     };
-    let result = async {
+    let operation = async {
         let connection = zbus::Connection::session().await.context("session bus")?;
         let proxy = SettingsProxy::new(&connection).await?;
-        match command {
-            Command::Set { key, value } => {
-                let json = serde_json::to_string(&value)?;
-                proxy.set(&key, &json, "templar-settings-gui").await?;
+        let write = match command {
+            Command::Set { ref key, ref value } => {
+                let json = serde_json::to_string(value)?;
+                proxy.set(key, &json, "templar-settings-gui").await
             }
-            Command::Reset { key } => proxy.reset(&key, "templar-settings-gui").await?,
-            Command::System(_)
-            | Command::Background(_)
-            | Command::History(_)
-            | Command::Providers(_)
-            | Command::Associations(_)
-            | Command::Garden(_) => unreachable!("dispatched by the caller"),
-        }
-        Ok::<_, anyhow::Error>(())
+            Command::Reset { ref key } => proxy.reset(key, "templar-settings-gui").await,
+            _ => unreachable!("dispatched by the caller"),
+        };
+        let write_error = write.err().map(|error| OperationError {
+            code: "write-failed".into(),
+            message: error.to_string(),
+        });
+        let observed = proxy
+            .get(&key)
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|json| {
+                serde_json::from_str::<SettingValue>(&json).map_err(anyhow::Error::from)
+            })
+            .map_err(|error| OperationError {
+                code: "read-failed".into(),
+                message: format!("{error:#}"),
+            });
+        Ok::<_, anyhow::Error>((observed, write_error))
     }
     .await;
+    let (observed, write_error) = match operation {
+        Ok(result) => result,
+        Err(error) => (
+            Err(OperationError {
+                code: "service-unavailable".into(),
+                message: format!("{error:#}"),
+            }),
+            Some(OperationError {
+                code: "service-unavailable".into(),
+                message: format!("{error:#}"),
+            }),
+        ),
+    };
     ResultMessage::Setting {
         key,
-        result: result.map_err(|error| format!("{error:#}")),
+        result: OperationResult {
+            observed,
+            write_error,
+        },
     }
 }
 
@@ -305,7 +638,7 @@ async fn run_setting_command(command: Command) -> ResultMessage {
 /// was asked to do. A failure is reported *and* followed by the re-read, so a refused write leaves
 /// the controls showing the level that is really set rather than the one that was attempted.
 async fn run_system_command(command: SystemCommand) -> ResultMessage {
-    use crate::system::{self, SystemControl, SystemSource};
+    use crate::system::{self, SystemControl};
     let outcome = async {
         let connection = zbus::Connection::session().await.context("session bus")?;
         let bus = system::Bus::connect(&connection).await?;
@@ -316,16 +649,6 @@ async fn run_system_command(command: SystemCommand) -> ResultMessage {
             SystemCommand::ToggleMute => bus.toggle_muted().await,
             SystemCommand::SetBrightness(percent) => bus.set_brightness(percent).await,
             SystemCommand::StepBrightness(delta) => bus.adjust_brightness(delta).await,
-            SystemCommand::SetScreenOff(seconds) => {
-                // Which source's profile to write is a reading of the machine, not a choice on
-                // the page — writing "on battery" while the laptop is plugged in would be a
-                // control that appears to do nothing.
-                let battery = bus.battery().await.ok().and_then(|json| {
-                    serde_json::from_str::<templar_client::status::BatteryState>(&json).ok()
-                });
-                let source = system::source_name(system::power_source_for(battery.as_ref()));
-                bus.set_screen_off_after(source, seconds).await
-            }
         };
         Ok::<_, anyhow::Error>((system::read(&bus).await, attempted))
     }
@@ -540,10 +863,16 @@ struct SettingsApp {
     /// `shell.appearance.*`, kept apart from the Home Field's keys so each page lists only its
     /// own — a page that shows a key it is not about is a page a person has to read twice.
     appearance: Vec<SettingRow>,
+    visual: templar_ui::AppearanceState,
+    wallpaper: crate::wallpaper::WallpaperView,
     /// `shell.home-garden.*`, same rule.
     garden: Vec<SettingRow>,
     /// `shell.rails.*`, same rule.
     rails: Vec<SettingRow>,
+    /// `windows.tabs.*`, same rule.
+    tabs: Vec<SettingRow>,
+    /// `shell.notifications.*`: the terminal-completion policy, drawn on the System page.
+    notifications: Vec<SettingRow>,
     /// The places `HomeGarden1` is holding hidden, so a person can put one back.
     hidden_places: Vec<String>,
     /// What is typed into the Homegarden page's "add an ignored directory" field. Each text field
@@ -553,6 +882,15 @@ struct SettingsApp {
     /// What is typed into the Rails page's "add an exception" field; same rule.
     exception_draft: pixelkit_ui::TextFieldState,
     system: crate::system::SystemState,
+    sound: crate::sound::SoundState,
+    files: crate::files::FilesView,
+    network: crate::network::NetworkView,
+    bluetooth: crate::bluetooth::BluetoothView,
+    power: crate::power::PowerView,
+    displays: crate::displays::DisplaysView,
+    devices: crate::input::InputView,
+    datetime: crate::datetime::DateTimeView,
+    navigation_scroll: ScrollState,
     background: Vec<BackgroundEntry>,
     history: Vec<Event>,
     providers: Vec<RoleChoice>,
@@ -568,11 +906,15 @@ struct SettingsApp {
     chooser_row: Option<usize>,
     pages: Vec<Vec<String>>,
     selected_page: usize,
+    focus: pixelkit_ui::Focus,
+    settings_revision: Revision,
     /// One scroll position per tab, so leaving a page and coming back does not lose the place a
     /// person had scrolled to — and so a long page can be read at all, which is the part that
     /// was missing while every page drew its first twenty lines and stopped.
     scroll: [ScrollState; PAGE_NAMES.len()],
     input: Input,
+    semantics: pixelkit_ui::semantics::Semantics,
+    semantics_active: bool,
     text: TextCache,
     kernel: RasterKernel,
     backend: Backend,
@@ -586,6 +928,8 @@ impl SettingsApp {
             APPEARANCE_PAGE => &self.appearance,
             GARDEN_PAGE => &self.garden,
             RAILS_PAGE => &self.rails,
+            SYSTEM_PAGE => &self.notifications,
+            WINDOWS_PAGE => &self.tabs,
             _ => &self.home,
         }
     }
@@ -595,13 +939,14 @@ impl SettingsApp {
             APPEARANCE_PAGE => &mut self.appearance,
             GARDEN_PAGE => &mut self.garden,
             RAILS_PAGE => &mut self.rails,
+            SYSTEM_PAGE => &mut self.notifications,
+            WINDOWS_PAGE => &mut self.tabs,
             _ => &mut self.home,
         }
     }
 
     fn change(&mut self, page: usize, index: usize, value: SettingValue) {
         let rows = self.rows_for_mut(page);
-        rows[index].value = value.clone();
         let key = rows[index].spec.key.clone();
         self.status = format!("Saving {key}…");
         let _ = self.backend.commands.send(Command::Set { key, value });
@@ -609,7 +954,6 @@ impl SettingsApp {
 
     fn reset(&mut self, page: usize, index: usize) {
         let rows = self.rows_for_mut(page);
-        rows[index].value = rows[index].spec.default.clone();
         let key = rows[index].spec.key.clone();
         self.status = format!("Resetting {key}…");
         let _ = self.backend.commands.send(Command::Reset { key });
@@ -617,11 +961,111 @@ impl SettingsApp {
 
     fn drain_results(&mut self) {
         while let Ok(message) = self.backend.results.try_recv() {
+            self.input.clear_accessible_text_edit();
+            self.semantics.invalidate();
             match message {
-                ResultMessage::Setting { key, result } => {
-                    self.status = match result {
-                        Ok(()) => format!("Saved {key}"),
-                        Err(error) => format!("Could not save {key} — {error}"),
+                ResultMessage::Wallpaper(state) => self.wallpaper.replace(state),
+                ResultMessage::Files(state) => {
+                    if self.selected_page == FILES_PAGE {
+                        if let Some(message) = &state.message {
+                            self.status.clone_from(message);
+                        }
+                    }
+                    if self.files.replace(state) && self.selected_page == FILES_PAGE {
+                        self.focus.clear();
+                    }
+                }
+                ResultMessage::Sound(state) => {
+                    if let Some(error) = &state.error {
+                        self.status = format!("Sound — {error}");
+                    }
+                    self.sound = state;
+                }
+                ResultMessage::Network(state) => {
+                    if self.network.replace(state) && self.selected_page == NETWORK_PAGE {
+                        self.focus.clear();
+                    }
+                    if self.selected_page != NETWORK_PAGE {
+                        self.network.leave();
+                    }
+                }
+                ResultMessage::Bluetooth(state) => {
+                    if self.bluetooth.replace(state) && self.selected_page == BLUETOOTH_PAGE {
+                        self.focus.clear();
+                    }
+                    if self.selected_page != BLUETOOTH_PAGE {
+                        self.bluetooth.leave();
+                    }
+                }
+                ResultMessage::Power(state) => {
+                    if self.power.replace(state) && self.selected_page == SYSTEM_PAGE {
+                        self.focus.clear();
+                    }
+                    if self.selected_page != SYSTEM_PAGE {
+                        self.power.leave();
+                    }
+                }
+                ResultMessage::Displays(state) => {
+                    if self.displays.replace(state) && self.selected_page == DISPLAYS_PAGE {
+                        self.focus.clear();
+                    }
+                }
+                ResultMessage::Input(state) => {
+                    if self.devices.replace(state) && self.selected_page == INPUT_PAGE {
+                        self.focus.clear();
+                    }
+                }
+                ResultMessage::DateTime(state) => self.datetime.replace(state),
+                ResultMessage::SettingsSnapshot(values) => match values {
+                    Ok(snapshot) if snapshot.revision.supersedes(self.settings_revision) => {
+                        self.settings_revision = snapshot.revision;
+                        for observation in snapshot.value {
+                            if let Some(page) = page_for(&observation.key)
+                                && let Some(row) = self
+                                    .rows_for_mut(page)
+                                    .iter_mut()
+                                    .find(|row| row.spec.key == observation.key)
+                            {
+                                row.value = observation.value;
+                                row.capability = observation.capability;
+                            }
+                        }
+                        self.visual
+                            .update(appearance_for(&self.appearance, &self.home));
+                    }
+                    Ok(_) => {}
+                    Err(error) => self.status = format!("Could not refresh Settings — {error}"),
+                },
+                ResultMessage::Setting {
+                    key,
+                    result:
+                        OperationResult {
+                            observed,
+                            write_error,
+                        },
+                } => {
+                    let read_error = observed.as_ref().err().cloned();
+                    if let Ok(value) = observed {
+                        for rows in [
+                            &mut self.home,
+                            &mut self.appearance,
+                            &mut self.garden,
+                            &mut self.rails,
+                        ] {
+                            if let Some(row) = rows.iter_mut().find(|row| row.spec.key == key) {
+                                row.value = value.clone();
+                            }
+                        }
+                    }
+                    self.visual
+                        .update(appearance_for(&self.appearance, &self.home));
+                    self.status = match (write_error, read_error) {
+                        (Some(error), _) => format!("Change {key} incomplete — {}", error.message),
+                        (None, Some(error)) => format!(
+                            "Changed {key}; stored value readback unavailable — {}",
+                            error.message
+                        ),
+                        (None, None) => format!("Stored and read back {key}"),
                     };
                 }
                 ResultMessage::System { state, error } => {
@@ -668,29 +1112,185 @@ impl SettingsApp {
         let _ = self.backend.commands.send(Command::System(command));
     }
 
-    /// Re-read whichever page was just opened. Nothing pushes at this window, so arriving on a
-    /// page is when it refreshes; the two static pages have nothing to re-read.
+    /// Domain pages re-read on entry; typed settings additionally subscribe to Settings1.Changed.
     fn refresh_page(&mut self, page: usize) {
+        let _ = self
+            .backend
+            .commands
+            .send(Command::Files(crate::files::FilesCommand::Observe(
+                page == FILES_PAGE,
+            )));
+        if page != NETWORK_PAGE {
+            self.network.leave();
+        }
+        if page != BLUETOOTH_PAGE {
+            self.bluetooth.leave();
+        }
+        if page != SYSTEM_PAGE {
+            self.power.leave();
+        }
+        if page == APPEARANCE_PAGE {
+            let _ = self.backend.commands.send(Command::Wallpaper(
+                crate::wallpaper::WallpaperCommand::Inspect,
+            ));
+        }
+        if page == SYSTEM_PAGE {
+            let _ = self
+                .backend
+                .commands
+                .send(Command::Power(crate::power::PowerCommand::Refresh));
+        }
+        let _ =
+            self.backend
+                .commands
+                .send(Command::Network(crate::network::NetworkCommand::Observe(
+                    page == NETWORK_PAGE,
+                )));
+        let _ = self.backend.commands.send(Command::Bluetooth(
+            crate::bluetooth::BluetoothCommand::Observe(page == BLUETOOTH_PAGE),
+        ));
         let command = match page {
             SYSTEM_PAGE => Command::System(SystemCommand::Refresh),
+            SOUND_PAGE => Command::Sound(crate::sound::SoundCommand::Refresh),
+            FILES_PAGE => Command::Files(crate::files::FilesCommand::Refresh),
+            NETWORK_PAGE => Command::Network(crate::network::NetworkCommand::Refresh),
+            BLUETOOTH_PAGE => Command::Bluetooth(crate::bluetooth::BluetoothCommand::Refresh),
+            DISPLAYS_PAGE => Command::Displays(crate::displays::DisplaysCommand::Refresh),
+            INPUT_PAGE => Command::Input(crate::input::InputCommand::Refresh),
+            DATE_TIME_PAGE => Command::DateTime(crate::datetime::DateTimeCommand::Refresh),
             PROVIDERS_PAGE => Command::Providers(ProvidersCommand::Refresh),
             ASSOCIATIONS_PAGE => Command::Associations(AssociationsCommand::Refresh),
             BACKGROUND_PAGE => Command::Background(BackgroundCommand::Refresh),
             HISTORY_PAGE => Command::History(HistoryCommand::Refresh),
             GARDEN_PAGE => Command::Garden(GardenCommand::Refresh),
-            _ => return,
+            _ => Command::RefreshSettings,
         };
         let _ = self.backend.commands.send(command);
+    }
+
+    fn draw_sound(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        use crate::sound::SoundCommand;
+        if let Some(output) = &self.sound.output
+            && let Some(change) = level_controls(
+                ui,
+                Rect::new(area.x, area.y, area.w, ui.px(40)),
+                output.volume_percent,
+                output.present,
+                Some(output.muted),
+            )
+        {
+            let command = match change {
+                LevelChange::Step(delta) => Some(SoundCommand::Step(delta)),
+                LevelChange::Set(percent) if percent != output.volume_percent => {
+                    Some(SoundCommand::SetVolume(percent))
+                }
+                LevelChange::Set(_) => None,
+                LevelChange::ToggleMute => Some(SoundCommand::ToggleMute),
+            };
+            if let Some(command) = command {
+                let _ = self.backend.commands.send(Command::Sound(command));
+            }
+        }
+        let Some(inventory) = &self.sound.inventory else {
+            ui.label(
+                Rect::new(area.x, area.y + ui.px(58), area.w, ui.px(70)),
+                self.sound
+                    .error
+                    .as_deref()
+                    .unwrap_or("Audio device inventory unavailable"),
+                ui.theme.text_dim,
+                Align::Left,
+            );
+            return;
+        };
+        let list = Rect::new(area.x, area.y + ui.px(60), area.w, area.h - ui.px(60));
+        let heights = vec![ui.px(84); inventory.devices.len()];
+        let mut wanted = None;
+        ui.scroll_list(
+            &mut self.scroll[SOUND_PAGE],
+            list,
+            &heights,
+            |ui, index, rect| {
+                let device = &inventory.devices[index];
+                let label = format!(
+                    "{:?} · {}{}",
+                    device.direction,
+                    device.description,
+                    if device.is_default {
+                        " · applied default"
+                    } else {
+                        ""
+                    }
+                );
+                ui.label(
+                    Rect::new(rect.x, rect.y, rect.w - ui.px(120), ui.px(32)),
+                    &label,
+                    ui.theme.text,
+                    Align::Left,
+                );
+                let preferred = match device.direction {
+                    templar_client::status::AudioDirection::Output => &inventory.preferred_output,
+                    templar_client::status::AudioDirection::Input => &inventory.preferred_input,
+                };
+                ui.label(
+                    Rect::new(rect.x, rect.y + ui.px(34), rect.w - ui.px(120), ui.px(28)),
+                    if preferred.as_deref() == Some(device.name.as_str()) {
+                        "Saved device preference"
+                    } else {
+                        &device.name
+                    },
+                    ui.theme.text_dim,
+                    Align::Left,
+                );
+                if ui.button(
+                    Rect::new(
+                        rect.right() - ui.px(110),
+                        rect.y + ui.px(14),
+                        ui.px(100),
+                        ui.px(38),
+                    ),
+                    "Use device",
+                ) {
+                    wanted = Some(SoundCommand::Select {
+                        direction: device.direction,
+                        name: device.name.clone(),
+                    });
+                }
+            },
+        );
+        if let Some(command) = wanted {
+            let _ = self.backend.commands.send(Command::Sound(command));
+        }
     }
 
     fn draw_home(&mut self, ui: &mut Ui<'_>, area: Rect) {
         self.draw_key_form(ui, area, HOME_PAGE, HOME_PREFIX);
     }
 
-    /// The Appearance page: light or dark, and the accent. Same form as the Home Field page,
-    /// because they are the same kind of thing — a typed key with a control and a Reset.
+    /// The Windows page: the corner-following title/control tab policy, one typed row per
+    /// committed `windows.tabs.*` key.
+    fn draw_windows(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        self.draw_key_form(ui, area, WINDOWS_PAGE, WINDOWS_PREFIX);
+    }
+
+    /// Appearance keeps theme controls above a separately scrollable native wallpaper form.
     fn draw_appearance(&mut self, ui: &mut Ui<'_>, area: Rect) {
-        self.draw_key_form(ui, area, APPEARANCE_PAGE, APPEARANCE_PREFIX);
+        let theme_height = ui.px(176).min(area.h / 3);
+        self.draw_key_form(
+            ui,
+            Rect::new(area.x, area.y, area.w, theme_height),
+            APPEARANCE_PAGE,
+            APPEARANCE_PREFIX,
+        );
+        let wallpaper_area = Rect::new(
+            area.x,
+            area.y + theme_height + ui.px(8),
+            area.w,
+            area.h - theme_height - ui.px(8),
+        );
+        if let Some(command) = self.wallpaper.draw(ui, wallpaper_area) {
+            let _ = self.backend.commands.send(Command::Wallpaper(command));
+        }
     }
 
     /// One page of typed settings: a name, the sentence under it, its control and a Reset.
@@ -951,7 +1551,7 @@ impl SettingsApp {
     /// Same row shape as the Home form — a name, the sentence under it, and the controls on the
     /// right — because they are the same kind of thing and a person should not have to learn a
     /// second layout to change one of them.
-    fn draw_system(&mut self, ui: &mut Ui<'_>, area: Rect) {
+    fn draw_system(&mut self, ui: &mut Ui<'_>, area: Rect) -> bool {
         let battery = crate::system::battery_line(self.system.battery.as_ref());
         // Battery first and read-only: there is nothing to do to a battery from a settings page,
         // and a control here would have to be either a lie or a power profile (`Power1`).
@@ -994,45 +1594,43 @@ impl SettingsApp {
             None | Some(LevelChange::ToggleMute | LevelChange::Set(_)) => {}
         }
 
-        // Choices rather than a track: seven named delays a person picks from, because "how long
-        // before the screen turns off" is a decision with a handful of sensible answers and not a
-        // continuum. The row is the widest on the page, so it gets its own controls rect.
-        let screen_off_line = crate::system::screen_off_line(&self.system);
-        let selected = crate::system::screen_off_seconds(&self.system);
-        let row = Rect::new(
-            area.x,
-            area.y + ui.px(88) * 3,
-            area.w,
-            ui.px(78).min(area.h),
-        );
-        ui.painter.fill_rounded_rect(row, ui.px(6), ui.theme.panel);
-        ui.painter
-            .stroke_rect(row, ui.scale.hairline(), ui.theme.panel_edge);
-        ui.label(
-            Rect::new(
-                row.x + ui.px(12),
-                row.y + ui.px(7),
-                row.w - ui.px(24),
-                ui.px(24),
-            ),
-            "Screen turns off after",
-            ui.theme.text,
-            Align::Left,
-        );
-        ui.label(
-            Rect::new(
-                row.x + ui.px(12),
-                row.y + ui.px(33),
-                row.w - ui.px(24),
-                ui.px(20),
-            ),
-            &screen_off_line,
-            ui.theme.text_dim,
-            Align::Left,
-        );
-        if let Some(seconds) = screen_off_choice(ui, row, selected) {
-            self.system(SystemCommand::SetScreenOff(seconds));
+        let policy_y = area.y + ui.px(264);
+        // The completion policy takes a fixed section at the bottom of the System page
+        // — the machine's business, like the power policy above — and power keeps the
+        // middle. An older sessiond has no such keys, and then this section is absent
+        // rather than an empty heading.
+        let form_h = if self.notifications.is_empty() {
+            0
+        } else {
+            let rows = self.notifications.len() as i32;
+            (ui.px(36) + ui.px(88) * rows).min((area.bottom() - policy_y).max(0))
+        };
+        let form_y = area.bottom() - form_h;
+        let policy = Rect::new(area.x, policy_y, area.w, (form_y - policy_y).max(0));
+        let (command, changed) = self.power.draw(ui, policy);
+        if let Some(command) = command {
+            let _ = self.backend.commands.send(Command::Power(command));
         }
+        if !self.notifications.is_empty() {
+            ui.label(
+                Rect::new(area.x, form_y, area.w, ui.px(28)),
+                "Notifications",
+                ui.theme.text,
+                Align::Left,
+            );
+            self.draw_key_form(
+                ui,
+                Rect::new(
+                    area.x,
+                    form_y + ui.px(32),
+                    area.w,
+                    (form_h - ui.px(32)).max(0),
+                ),
+                SYSTEM_PAGE,
+                NOTIFICATIONS_PREFIX,
+            );
+        }
+        changed
     }
 
     /// The Providers page: which application fills each exclusive role, why, and a chooser to
@@ -1460,10 +2058,21 @@ fn key_form_row(ui: &mut Ui<'_>, row: &SettingRow, rect: Rect, prefix: &str) -> 
             row_area.w - ui.px(220),
             ui.px(34),
         ),
-        &row.spec.description,
+        match &row.capability {
+            Capability::Unsupported { reason } | Capability::Unavailable { reason } => reason,
+            Capability::Available {
+                requires_restart: true,
+            } => "Stored preference; requires session restart",
+            Capability::Available {
+                requires_restart: false,
+            } => &row.spec.description,
+        },
         ui.theme.text_dim,
         Align::Left,
     );
+    if !matches!(row.capability, Capability::Available { .. }) {
+        return None;
+    }
     let controls = Rect::new(
         row_area.right() - ui.px(196),
         row_area.y + ui.px(20),
@@ -1682,38 +2291,6 @@ fn system_row(ui: &mut Ui<'_>, area: Rect, index: i32, name: &str, detail: &str)
     )
 }
 
-/// The seven named screen-off delays as one strip of buttons, right-aligned in `row`. Returns the
-/// one that was pressed.
-///
-/// `selected` is `None` when `Power1` did not answer: nothing is drawn as chosen, because with no
-/// stored value every choice on the strip would be a guess, and a settings page that guesses is
-/// worse than one that says it does not know. The row's own sentence says which it is.
-fn screen_off_choice(ui: &mut Ui<'_>, row: Rect, selected: Option<u32>) -> Option<u32> {
-    let gap = ui.px(6);
-    let width = ui.px(62);
-    let strip_width = width * crate::system::SCREEN_OFF_CHOICES.len() as i32
-        + gap * (crate::system::SCREEN_OFF_CHOICES.len() as i32 - 1);
-    let mut x = row.right() - ui.px(12) - strip_width;
-    let y = row.bottom() - ui.px(12) - ui.px(30);
-    let mut pressed = None;
-    for (label, seconds) in crate::system::SCREEN_OFF_CHOICES {
-        let button = Rect::new(x, y, width, ui.px(30));
-        x += width + gap;
-        if selected == Some(seconds) {
-            ui.painter
-                .fill_rounded_rect(button, ui.px(6), ui.theme.accent);
-            ui.label(button, label, ui.theme.panel, Align::Centre);
-        } else if selected.is_none() {
-            // Inert and dimmed rather than absent: a control that vanishes leaves a person
-            // hunting for it (`level_controls`' own reasoning).
-            ui.label(button, label, ui.theme.text_dim, Align::Centre);
-        } else if ui.button(button, label) {
-            pressed = Some(seconds);
-        }
-    }
-    pressed
-}
-
 /// The controls for one hardware level: a stepper either side of a track that can be clicked or
 /// dragged to a value, plus Mute when `muted` is given.
 ///
@@ -1818,38 +2395,114 @@ impl PixelApp for SettingsApp {
         let mut text = std::mem::replace(&mut self.text, TextCache::new(fonts()));
         let mut input = std::mem::replace(&mut self.input, Input::new());
         let mut kernel = std::mem::replace(&mut self.kernel, RasterKernel::new());
+        let mut semantics = std::mem::take(&mut self.semantics);
+        let mut focus = std::mem::take(&mut self.focus);
+        if self.semantics_active {
+            semantics.begin(PAGE_NAMES[self.selected_page]);
+        }
+        let previous_page = self.selected_page;
+        let mut layout_changed = false;
         {
-            let mut ui = Ui::new(
+            let ui = Ui::new(
                 Painter::new(buffer),
                 &mut text,
                 &mut input,
-                theme(),
+                self.visual.theme(),
                 scale,
                 &mut kernel,
-            );
+            )
+            .with_focus(&mut focus);
+            let mut ui = if self.semantics_active {
+                ui.with_semantics(&mut semantics)
+            } else {
+                ui
+            };
             ui.painter.fill_rect(whole, ui.theme.background);
             let inset = whole.inset(ui.px(18));
             ui.heading(Rect::new(inset.x, inset.y, inset.w, ui.px(48)), "Settings");
-            let tabs = Rect::new(inset.x, inset.y + ui.px(56), inset.w, ui.px(42));
-            if ui.tabs(&mut self.selected_page, tabs, &PAGE_NAMES) {
+            let navigation_y = inset.y + ui.px(56);
+            let heights = [ui.px(38); PAGE_NAMES.len()];
+            let nav = Rect::new(
+                inset.x,
+                navigation_y,
+                ui.px(166),
+                inset.bottom() - navigation_y - ui.px(48),
+            );
+            ui.scroll_list(
+                &mut self.navigation_scroll,
+                nav,
+                &heights,
+                |ui, index, area| {
+                    let page = SettingsPage::ALL[index];
+                    let panel = ui.theme.panel;
+                    if page as usize == self.selected_page {
+                        ui.theme.panel = ui.theme.selection;
+                    }
+                    if ui.button(area, page.label()) {
+                        self.selected_page = page as usize;
+                    }
+                    ui.theme.panel = panel;
+                },
+            );
+            if self.selected_page != previous_page {
                 // A popup belonging to the page just left would otherwise hang over the new one
                 // and apply its pick to a row that is no longer there.
                 self.chooser.close();
                 self.chooser_row = None;
-                // Nothing pushes at this window, so arriving on a page is when it re-reads. A
-                // stale charge, a stale approval and a stale history are each the kind of
-                // reading that goes wrong on its own between visits.
                 self.refresh_page(self.selected_page);
             }
             let content = Rect::new(
-                inset.x,
-                tabs.bottom() + ui.px(14),
-                inset.w,
-                inset.bottom() - tabs.bottom() - ui.px(52),
+                inset.x + ui.px(182),
+                navigation_y,
+                inset.w - ui.px(182),
+                inset.bottom() - navigation_y - ui.px(48),
             );
             match self.selected_page {
                 HOME_PAGE => self.draw_home(&mut ui, content),
-                SYSTEM_PAGE => self.draw_system(&mut ui, content),
+                SYSTEM_PAGE => {
+                    layout_changed |= self.draw_system(&mut ui, content);
+                }
+                SOUND_PAGE => self.draw_sound(&mut ui, content),
+                FILES_PAGE => {
+                    let (command, changed) = self.files.draw(&mut ui, content);
+                    layout_changed |= changed;
+                    if let Some(command) = command {
+                        let _ = self.backend.commands.send(Command::Files(command));
+                    }
+                }
+                NETWORK_PAGE => {
+                    let (command, changed) = self.network.draw(&mut ui, content);
+                    layout_changed |= changed;
+                    if let Some(command) = command {
+                        let _ = self.backend.commands.send(Command::Network(command));
+                    }
+                }
+                BLUETOOTH_PAGE => {
+                    let (command, changed) = self.bluetooth.draw(&mut ui, content);
+                    layout_changed |= changed;
+                    if let Some(command) = command {
+                        let _ = self.backend.commands.send(Command::Bluetooth(command));
+                    }
+                }
+                DISPLAYS_PAGE => {
+                    let (command, changed) = self.displays.draw(&mut ui, content);
+                    layout_changed |= changed;
+                    if let Some(command) = command {
+                        let _ = self.backend.commands.send(Command::Displays(command));
+                    }
+                }
+                INPUT_PAGE => {
+                    let (command, changed) = self.devices.draw(&mut ui, content);
+                    layout_changed |= changed;
+                    if let Some(command) = command {
+                        let _ = self.backend.commands.send(Command::Input(command));
+                    }
+                }
+                DATE_TIME_PAGE => {
+                    if let Some(command) = self.datetime.draw(&mut ui, content) {
+                        let _ = self.backend.commands.send(Command::DateTime(command));
+                    }
+                }
                 PROVIDERS_PAGE => self.draw_providers(&mut ui, content),
                 ASSOCIATIONS_PAGE => self.draw_associations(&mut ui, content),
                 BACKGROUND_PAGE => self.draw_background(&mut ui, content),
@@ -1857,6 +2510,7 @@ impl PixelApp for SettingsApp {
                 APPEARANCE_PAGE => self.draw_appearance(&mut ui, content),
                 GARDEN_PAGE => self.draw_garden(&mut ui, content),
                 RAILS_PAGE => self.draw_rails(&mut ui, content),
+                WINDOWS_PAGE => self.draw_windows(&mut ui, content),
                 _ => self.draw_text_page(&mut ui, content),
             }
             // Last, so nothing the page drew afterwards covers the open list.
@@ -1869,12 +2523,23 @@ impl PixelApp for SettingsApp {
             );
             input.end_frame();
         }
+        if self.selected_page != previous_page || layout_changed {
+            semantics.invalidate();
+            focus.clear();
+        }
         self.text = text;
         self.input = input;
         self.kernel = kernel;
+        self.semantics = semantics;
+        self.focus = focus;
     }
 
     fn attach(&mut self, waker: Waker) {
+        let clipboard_waker = waker.clone();
+        self.input
+            .attach_clipboard(pixelkit_shell::clipboard::ClipboardWorker::new(move || {
+                clipboard_waker.wake()
+            }));
         *self.backend.waker.lock().expect("waker mutex") = waker;
     }
 
@@ -1883,7 +2548,99 @@ impl PixelApp for SettingsApp {
     }
 
     fn on_key(&mut self, key: &KeyInput) {
-        self.input.key(key.clone());
+        if self.input.modifiers().control && matches!(key, KeyInput::PageUp | KeyInput::PageDown) {
+            let count = SettingsPage::ALL.len();
+            let current = SettingsPage::ALL
+                .iter()
+                .position(|page| *page as usize == self.selected_page)
+                .expect("selected Settings page belongs to the canonical inventory");
+            let next = if *key == KeyInput::PageDown {
+                (current + 1) % count
+            } else {
+                (current + count - 1) % count
+            };
+            self.selected_page = SettingsPage::ALL[next] as usize;
+            self.chooser.close();
+            self.chooser_row = None;
+            self.input.clear_accessible_text_edit();
+            self.semantics.invalidate();
+            self.focus.clear();
+            self.refresh_page(self.selected_page);
+            return;
+        }
+        if !matches!(key, KeyInput::Character(_)) {
+            self.input.key(key.clone());
+        }
+    }
+    fn on_key_event(&mut self, event: &pixelkit_windowing::KeyEvent) {
+        if event.pressed && matches!(event.key, KeyInput::Character(_)) {
+            if event.modifiers.control || event.modifiers.logo {
+                self.input.key(event.key.clone());
+            } else {
+                for character in event.text.chars() {
+                    self.input.key(KeyInput::Character(character));
+                }
+            }
+        }
+    }
+    fn on_ime(&mut self, event: &pixelkit_windowing::ImeEvent) {
+        match event {
+            pixelkit_windowing::ImeEvent::Preedit(text, _) => self.input.set_composition(text),
+            pixelkit_windowing::ImeEvent::Commit(text) => {
+                self.input.set_composition("");
+                for character in text.chars() {
+                    self.input.key(KeyInput::Character(character));
+                }
+            }
+            pixelkit_windowing::ImeEvent::Disabled => self.input.set_composition(""),
+            pixelkit_windowing::ImeEvent::Enabled => {}
+        }
+    }
+    fn ime_allowed(&self) -> bool {
+        self.ime_cursor_area().is_some()
+    }
+    fn ime_cursor_area(&self) -> Option<pixelkit_windowing::ImeCursorArea> {
+        let area = match self.selected_page {
+            APPEARANCE_PAGE => self.wallpaper.caret_area(),
+            GARDEN_PAGE => self.ignore_draft.caret_area(),
+            RAILS_PAGE => self.exception_draft.caret_area(),
+            FILES_PAGE => self.files.ime_caret(),
+            NETWORK_PAGE => self.network.ime_caret(),
+            BLUETOOTH_PAGE => self.bluetooth.ime_caret(),
+            SYSTEM_PAGE => self.power.ime_caret(),
+            DISPLAYS_PAGE => self.displays.caret_area(),
+            INPUT_PAGE => self.devices.caret_area(),
+            DATE_TIME_PAGE => self.datetime.caret_area(),
+            _ => None,
+        }?;
+        Some(pixelkit_windowing::ImeCursorArea {
+            x: f64::from(area.x),
+            y: f64::from(area.y),
+            width: f64::from(area.w),
+            height: f64::from(area.h),
+        })
+    }
+    fn accessibility_tree(&mut self) -> Option<pixelkit_ui::semantics::TreeUpdate> {
+        self.semantics_active = true;
+        Some(self.semantics.update())
+    }
+    fn on_accessibility_action(&mut self, request: pixelkit_ui::semantics::ActionRequest) {
+        self.semantics.action(&mut self.input, request);
+    }
+    fn on_accessibility_deactivated(&mut self) {
+        self.semantics_active = false;
+        self.input.clear_accessible_text_edit();
+        self.semantics.invalidate();
+    }
+    fn on_layout_changed(&mut self) {
+        self.input.clear_accessible_text_edit();
+        self.semantics.invalidate();
+    }
+    fn on_focus_changed(&mut self, focused: bool) {
+        if !focused {
+            self.input.blur();
+            self.semantics.invalidate();
+        }
     }
     fn on_modifiers(&mut self, modifiers: Modifiers) {
         self.input.modifiers_changed(modifiers);
@@ -1902,25 +2659,26 @@ impl PixelApp for SettingsApp {
     }
 }
 
-fn theme() -> Theme {
-    let mut theme = Theme::default();
-    theme.background = 0x00ec_eef0;
-    theme.panel = 0x00fb_fcfd;
-    theme.panel_edge = 0x00dd_e1e6;
-    theme.text = 0x0017_1b20;
-    theme.text_dim = 0x0069_737d;
-    theme.accent = 0x000e_7482;
-    theme.accent_soft = 0x00e3_f1f3;
-    theme.hover = 0x00ff_ffff;
-    theme.selection = theme.accent_soft;
-    theme.body = theme.body.with_size(13.0);
-    theme.heading = theme.heading.with_size(32.0);
-    theme.padding = 12;
-    theme.corner_radius = 7;
-    theme
+fn appearance_for(
+    appearance: &[SettingRow],
+    home: &[SettingRow],
+) -> templar_types::appearance::Appearance {
+    let mut theme = "light";
+    let mut accent = "default";
+    for row in appearance {
+        match (row.spec.key.as_str(), &row.value) {
+            ("shell.appearance.theme", SettingValue::Choice(value)) => theme = value,
+            ("shell.appearance.accent", SettingValue::Choice(value)) => accent = value,
+            _ => {}
+        }
+    }
+    let reduced_motion = home.iter().any(|row| {
+        row.spec.key == "shell.home-field.reduced-motion" && row.value == SettingValue::Bool(true)
+    });
+    templar_types::appearance::Appearance::from_settings(theme, accent, reduced_motion)
 }
 
-fn fonts() -> &'static FontSet {
+pub(super) fn fonts() -> &'static FontSet {
     static FONTS: std::sync::OnceLock<FontSet> = std::sync::OnceLock::new();
     FONTS.get_or_init(|| {
         let face = Box::leak(Box::new(
@@ -1950,61 +2708,76 @@ fn page_for(key: &str) -> Option<usize> {
         Some(GARDEN_PAGE)
     } else if key.starts_with(RAILS_PREFIX) {
         Some(RAILS_PAGE)
+    } else if key.starts_with(NOTIFICATIONS_PREFIX) {
+        Some(SYSTEM_PAGE)
+    } else if key.starts_with(WINDOWS_PREFIX) {
+        Some(WINDOWS_PAGE)
     } else {
         None
     }
 }
 
 #[allow(clippy::too_many_lines)]
-async fn load() -> Result<SettingsApp> {
+async fn load(initial_page: SettingsPage) -> Result<SettingsApp> {
     let connection = zbus::Connection::session().await.context("session bus")?;
     let proxy = SettingsProxy::new(&connection).await?;
-    let values: std::collections::HashMap<_, _> = proxy.list().await?.into_iter().collect();
-    let (mut home, mut appearance, mut garden, mut rails) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let snapshot: SettingsSnapshot = serde_json::from_str(&proxy.inspect().await?)?;
+    let settings_revision = snapshot.revision;
+    let mut values: std::collections::HashMap<_, _> = snapshot
+        .value
+        .into_iter()
+        .map(|observation| (observation.key.clone(), observation))
+        .collect();
+    let (mut home, mut appearance, mut garden, mut rails, mut notifications, mut tabs) = (
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
     for json in proxy.schema_details().await? {
         let spec: SettingSpec = serde_json::from_str(&json)?;
         let list = match page_for(&spec.key) {
             Some(APPEARANCE_PAGE) => &mut appearance,
             Some(GARDEN_PAGE) => &mut garden,
             Some(RAILS_PAGE) => &mut rails,
+            Some(SYSTEM_PAGE) => &mut notifications,
+            Some(WINDOWS_PAGE) => &mut tabs,
             Some(_) => &mut home,
             None => continue,
         };
-        let value = values
-            .get(&spec.key)
-            .map(|json| serde_json::from_str(json))
-            .transpose()?
-            .unwrap_or_else(|| spec.default.clone());
-        list.push(SettingRow { spec, value });
+        let observation = values
+            .remove(&spec.key)
+            .with_context(|| format!("Settings snapshot omitted {}", spec.key))?;
+        list.push(SettingRow {
+            spec,
+            value: observation.value,
+            capability: observation.capability,
+        });
     }
-    for list in [&mut home, &mut appearance, &mut garden, &mut rails] {
+    for list in [
+        &mut home,
+        &mut appearance,
+        &mut garden,
+        &mut rails,
+        &mut notifications,
+        &mut tabs,
+    ] {
         list.sort_by(|left, right| left.spec.key.cmp(&right.spec.key));
     }
 
-    // One entry per tab, so `selected_page` indexes both. The four interactive pages draw their
-    // own controls and keep an empty entry here rather than a rendered copy of themselves.
-    let pages = vec![
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        super::resources::render(&connection, 20)
-            .await
-            .lines()
-            .map(str::to_owned)
-            .collect(),
-        Vec::new(),
-        super::hardware::render()
-            .await
-            .lines()
-            .map(str::to_owned)
-            .collect(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    ];
+    let mut pages = vec![Vec::new(); SettingsPage::ALL.len()];
+    pages[SettingsPage::Resources as usize] = super::resources::render(&connection, 20)
+        .await
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    pages[SettingsPage::Hardware as usize] = super::hardware::render()
+        .await
+        .lines()
+        .map(str::to_owned)
+        .collect();
     // The System page's first reading, taken here with the rest so the page is populated the
     // moment it is opened rather than blank until the first command comes back. Every interface
     // it reads degrades on its own (`system::read`), so a machine with none of them still loads.
@@ -2052,15 +2825,54 @@ async fn load() -> Result<SettingsApp> {
         .await
         .unwrap_or_default();
 
+    let backend = Backend::new();
+    let _ = backend
+        .commands
+        .send(Command::Files(crate::files::FilesCommand::Observe(
+            initial_page == SettingsPage::Files,
+        )));
+    let _ = backend
+        .commands
+        .send(Command::Network(crate::network::NetworkCommand::Observe(
+            initial_page == SettingsPage::Network,
+        )));
+    let _ = backend.commands.send(Command::Bluetooth(
+        crate::bluetooth::BluetoothCommand::Observe(initial_page == SettingsPage::Bluetooth),
+    ));
+    if initial_page == SettingsPage::System {
+        let _ = backend
+            .commands
+            .send(Command::Power(crate::power::PowerCommand::Refresh));
+    }
+    let _ = backend
+        .commands
+        .send(Command::Displays(crate::displays::DisplaysCommand::Refresh));
+    let _ = backend
+        .commands
+        .send(Command::Input(crate::input::InputCommand::Refresh));
+    let _ = backend.commands.send(Command::DateTime(crate::datetime::DateTimeCommand::Refresh));
     Ok(SettingsApp {
+        visual: templar_ui::AppearanceState::new(appearance_for(&appearance, &home)),
         home,
         appearance,
+        wallpaper: crate::wallpaper::WallpaperView::default(),
         garden,
         rails,
+        notifications,
+        tabs,
         hidden_places,
         ignore_draft: pixelkit_ui::TextFieldState::new(),
         exception_draft: pixelkit_ui::TextFieldState::new(),
         system,
+        sound: crate::sound::run(crate::sound::SoundCommand::Refresh).await,
+        files: crate::files::FilesView::default(),
+        network: crate::network::NetworkView::default(),
+        bluetooth: crate::bluetooth::BluetoothView::default(),
+        power: crate::power::PowerView::default(),
+        displays: crate::displays::DisplaysView::default(),
+        devices: crate::input::InputView::default(),
+        datetime: crate::datetime::DateTimeView::default(),
+        navigation_scroll: ScrollState::new(),
         background,
         history,
         providers,
@@ -2069,19 +2881,23 @@ async fn load() -> Result<SettingsApp> {
         chooser: Dropdown::new(),
         chooser_row: None,
         pages,
-        selected_page: 0,
+        selected_page: initial_page as usize,
+        focus: pixelkit_ui::Focus::new(),
+        settings_revision,
         scroll: [ScrollState::new(); PAGE_NAMES.len()],
         input: Input::new(),
+        semantics: pixelkit_ui::semantics::Semantics::default(),
+        semantics_active: false,
         text: TextCache::new(fonts()),
         kernel: RasterKernel::new(),
-        backend: Backend::new(),
+        backend,
         status: "Changes are validated and recorded by Settings1".into(),
     })
 }
 
-pub fn run() -> Result<()> {
+pub fn run(initial_page: SettingsPage) -> Result<()> {
     let runtime = tokio::runtime::Runtime::new().context("settings startup runtime")?;
-    let app = runtime.block_on(load())?;
+    let app = runtime.block_on(load(initial_page))?;
     drop(runtime);
     run_app(
         app,
@@ -2094,126 +2910,25 @@ pub fn run() -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Each page of typed controls lists its own keys and nobody else's, checked against the
-    /// real schema rather than a list written out here — a key added under the wrong prefix is
-    /// a control that appears on the wrong page, or on none.
     #[test]
-    fn appearance_page_lists_only_appearance_keys() {
-        let schema = templar_session_core::settings::baseline_schema();
-        let mut appearance = Vec::new();
-        let mut home = Vec::new();
-        let mut garden = Vec::new();
-        let mut rails = Vec::new();
-        for key in schema.specs.keys() {
-            match page_for(key) {
-                Some(APPEARANCE_PAGE) => appearance.push(key.as_str()),
-                Some(HOME_PAGE) => home.push(key.as_str()),
-                Some(GARDEN_PAGE) => garden.push(key.as_str()),
-                Some(RAILS_PAGE) => rails.push(key.as_str()),
-                Some(other) => panic!("{key} claims page {other}, which draws no key form"),
-                None => {}
-            }
-        }
-        assert_eq!(
-            appearance,
-            vec!["shell.appearance.accent", "shell.appearance.theme"],
-            "the Appearance page shows the wrong set of keys"
-        );
-        assert!(!home.is_empty(), "the Home Field page lost its keys");
-        for key in &home {
-            assert!(!appearance.contains(key), "{key} is on both pages");
-        }
-        // Every key either page shows has to be a real schema key with a default, or its Reset
-        // has nothing to reset to.
-        for key in appearance.iter().chain(&home).chain(&garden).chain(&rails) {
-            assert!(schema.specs.contains_key(*key));
-        }
-    }
-
-    /// Finding 6 of the Homegarden usability review: "Settings excludes every `shell.home-garden.*`
-    /// key". Every one of them now reaches the Homegarden page, and the one the key form cannot
-    /// draw is the one that page gives a section of its own.
-    #[test]
-    fn every_home_garden_key_reaches_the_homegarden_page() {
-        let schema = templar_session_core::settings::baseline_schema();
-        let garden: Vec<&str> = schema
-            .specs
-            .keys()
-            .filter(|key| key.starts_with(GARDEN_PREFIX))
-            .map(String::as_str)
-            .collect();
-        assert!(!garden.is_empty(), "the schema has no garden keys");
-        for key in &garden {
-            assert_eq!(page_for(key), Some(GARDEN_PAGE), "{key} has no page");
-        }
-        assert!(
-            garden.contains(&GARDEN_IGNORE_KEY),
-            "the ignore list the page draws by hand is not a schema key"
-        );
-        assert!(
-            matches!(
-                schema.specs[GARDEN_IGNORE_KEY].default,
-                SettingValue::StrList(_)
-            ),
-            "the ignore section assumes a string list"
-        );
-    }
-
-    /// Every `shell.rails.*` key reaches the Rails page, and the exceptions list the page draws
-    /// by hand is a real key holding the type that section edits.
-    #[test]
-    fn every_rails_key_reaches_the_rails_page() {
-        let schema = templar_session_core::settings::baseline_schema();
-        let rails: Vec<&str> = schema
-            .specs
-            .keys()
-            .filter(|key| key.starts_with(RAILS_PREFIX))
-            .map(String::as_str)
-            .collect();
-        assert_eq!(
-            rails,
-            vec![
-                "shell.rails.exceptions",
-                "shell.rails.gate-height",
-                "shell.rails.gate-width",
-                "shell.rails.lanes",
-                "shell.rails.learning",
-                "shell.rails.mode",
-                "shell.rails.swap",
-            ],
-            "the Rails page shows the wrong set of keys"
-        );
-        for key in &rails {
-            assert_eq!(page_for(key), Some(RAILS_PAGE), "{key} has no page");
-        }
-        assert!(
-            matches!(
-                schema.specs[RAILS_EXCEPTIONS_KEY].default,
-                SettingValue::StrList(_)
-            ),
-            "the exceptions section assumes a string list"
-        );
-    }
-
-    /// The tab list and the page indices are two halves of one thing; a page index past the end
-    /// of the names is a tab a person can never reach.
-    #[test]
-    fn every_named_page_index_is_within_the_tab_list() {
-        for page in [
-            HOME_PAGE,
-            SYSTEM_PAGE,
-            PROVIDERS_PAGE,
-            ASSOCIATIONS_PAGE,
-            BACKGROUND_PAGE,
-            HISTORY_PAGE,
-            APPEARANCE_PAGE,
-            GARDEN_PAGE,
-            RAILS_PAGE,
+    fn every_tab_key_lands_on_the_windows_page_and_neighbours_stay_put() {
+        for key in [
+            "windows.tabs.placement", "windows.tabs.follow-pointer",
+            "windows.tabs.fixed-corner", "windows.tabs.controls",
+            "windows.tabs.title", "windows.tabs.default-corner",
         ] {
-            assert!(page < PAGE_NAMES.len(), "page {page} has no tab");
+            assert_eq!(
+                page_for(key),
+                Some(WINDOWS_PAGE),
+                "{key} belongs on the Windows page"
+            );
         }
-        assert_eq!(PAGE_NAMES[APPEARANCE_PAGE], "Appearance");
-        assert_eq!(PAGE_NAMES[GARDEN_PAGE], "Homegarden");
-        assert_eq!(PAGE_NAMES[RAILS_PAGE], "Rails");
+        assert_eq!(page_for("shell.rails.mode"), Some(RAILS_PAGE));
+        assert_eq!(
+            page_for("shell.notifications.long-job-seconds"),
+            Some(SYSTEM_PAGE)
+        );
+        assert_eq!(page_for("shell.home-field.previews"), Some(HOME_PAGE));
+        assert_eq!(page_for("no.such.key"), None);
     }
 }

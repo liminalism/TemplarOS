@@ -2,13 +2,10 @@
 //!
 //! `GetAppState` is real: it combines `AppIdentity1.ListInstances` (the running roster) with
 //! `Resources1.Report`'s per-instance `foreground`/`visible` enrichment to classify each
-//! application as Background(0)/Running(1)/Active(2). `NotifyBackground` is real for the common
-//! case too — an application sessiond already launched was already vetted by the autostart
-//! arbiter at login (`crates/templar-session-core::autostart`), so re-litigating that decision here
-//! would be theatre; answering Allow immediately for anything we can already see running is the
-//! honest reflection of a decision this OS already made. An `app_id` we cannot vouch for falls
-//! back to the [`BackgroundUi`] seam, which — with no toolkit yet — refuses rather than silently
-//! granting background permission to an unknown application. `RunningApplicationsChanged` is
+//! application as Background(0)/Running(1)/Active(2). `NotifyBackground`
+//! always requires explicit interactive consent: existence is not permission.
+//! A missing or failing host returns OTHER, never a fabricated allow/deny.
+//! `RunningApplicationsChanged` is
 //! served by a real periodic poll-and-diff task ([`spawn_change_poller`]): `AppIdentity1` has no
 //! changed-signal of its own for this backend to piggyback on, so polling is the honest choice
 //! here rather than a signal that silently never fires.
@@ -16,6 +13,7 @@
 use crate::{
     clients::AppStateClient,
     request::{owned_value, response, with_request},
+    host::{UiError, UiResult},
 };
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc, time::Duration};
@@ -36,46 +34,44 @@ pub mod notify_result {
     pub const ALLOW_INSTANCE: u32 = 2;
 }
 
-/// The interactive consent prompt no toolkit exists to provide yet.
+/// Shared explicit consent seam; process identity is never a permission grant.
 #[async_trait]
 pub trait BackgroundUi: Send + Sync + std::fmt::Debug {
-    async fn ask(&self, app_id: &str, display_name: &str) -> Option<u32>;
+    async fn ask(&self, app_id: &str, display_name: &str) -> UiResult<u32>;
 }
 
-/// Headless default: an application we cannot already vouch for is not silently trusted.
+/// Headless default reports infrastructure failure and grants nothing.
 #[derive(Debug, Default)]
 pub struct NoUiAvailable;
 
 #[async_trait]
 impl BackgroundUi for NoUiAvailable {
-    async fn ask(&self, _app_id: &str, _display_name: &str) -> Option<u32> {
-        None
+    async fn ask(&self, _app_id: &str, _display_name: &str) -> UiResult<u32> {
+        Err(UiError("no graphical display available".into()))
     }
 }
 
 /// Pixelkit consent prompt used for applications sessiond cannot already vouch for.
-#[derive(Debug, Default)]
-pub struct NativeUi;
+#[derive(Debug)]
+pub struct NativeUi(pub crate::host::Client);
 
 #[async_trait]
 impl BackgroundUi for NativeUi {
-    async fn ask(&self, app_id: &str, display_name: &str) -> Option<u32> {
+    async fn ask(&self, app_id: &str, display_name: &str) -> UiResult<u32> {
         let title = "Background access".to_owned();
         let message = format!("Allow {display_name} ({app_id}) to keep running in the background?");
-        tokio::task::spawn_blocking(move || {
-            crate::dialog::choice(title, message, vec!["Forbid".into(), "Allow".into()]).map(
-                |choice| {
-                    if choice == "Allow" {
-                        notify_result::ALLOW
-                    } else {
-                        notify_result::FORBID
-                    }
-                },
-            )
-        })
-        .await
-        .ok()
-        .flatten()
+        match self.0.request(crate::dialog::Spec::Choice {
+            title, message, choices: vec!["Forbid".into(), "Allow".into()],
+            parent: crate::parent::Parent::None, activation_token: None,
+        }).await? {
+            Some(crate::dialog::Answer::Choice(choice)) => Ok(Some(if choice == "Allow" {
+                notify_result::ALLOW
+            } else {
+                notify_result::FORBID
+            })),
+            None => Ok(None),
+            _ => Err(UiError("unexpected graphical answer".into())),
+        }
     }
 }
 
@@ -142,18 +138,17 @@ impl BackgroundApi {
     }
 
     async fn notify(&self, app_id: &str, name: &str) -> (u32, HashMap<String, OwnedValue>) {
-        let running = self.states().await.contains_key(app_id);
-        let result = if running {
-            Some(notify_result::ALLOW)
-        } else {
-            self.ui.ask(app_id, name).await
-        };
-        let mut results = HashMap::new();
-        results.insert(
-            "result".to_owned(),
-            owned_value(result.unwrap_or(notify_result::FORBID)),
-        );
-        (response::SUCCESS, results)
+        // A running process is not evidence of background permission. Always
+        // ask; neither identity nor infrastructure failure grants consent.
+        match self.ui.ask(app_id, name).await {
+            Ok(Some(result)) => {
+                let mut results = HashMap::new();
+                results.insert("result".to_owned(), owned_value(result));
+                (response::SUCCESS, results)
+            }
+            Ok(None) => (response::CANCELLED, HashMap::new()),
+            Err(error) => crate::request::failed(error.0),
+        }
     }
 }
 
@@ -172,11 +167,12 @@ impl BackgroundApi {
     async fn notify_background(
         &self,
         #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         handle: OwnedObjectPath,
         app_id: &str,
         name: &str,
     ) -> zbus::fdo::Result<(u32, HashMap<String, OwnedValue>)> {
-        with_request(connection, &handle, || self.notify(app_id, name)).await
+        with_request(connection, &handle, header.sender(), || self.notify(app_id, name)).await
     }
 
     /// Deprecated upstream ("new versions of xdg-desktop-portal will not call this method");
@@ -343,7 +339,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_currently_running_app_is_allowed_without_asking() {
+    async fn running_identity_does_not_grant_background_permission() {
         let id = instance_id();
         let api = BackgroundApi {
             app_state: Arc::new(FakeAppState {
@@ -358,11 +354,8 @@ mod tests {
             ui: Arc::new(NoUiAvailable),
         };
         let (code, results) = api.notify("org.templaros.Sync", "Sync").await;
-        assert_eq!(code, response::SUCCESS);
-        assert_eq!(
-            u32::try_from(results["result"].clone()).unwrap(),
-            notify_result::ALLOW
-        );
+        assert_eq!(code, response::OTHER);
+        assert!(!results.contains_key("result"));
     }
 
     #[tokio::test]
@@ -372,11 +365,8 @@ mod tests {
             ui: Arc::new(NoUiAvailable),
         };
         let (code, results) = api.notify("org.example.Stranger", "Stranger").await;
-        assert_eq!(code, response::SUCCESS);
-        assert_eq!(
-            u32::try_from(results["result"].clone()).unwrap(),
-            notify_result::FORBID
-        );
+        assert_eq!(code, response::OTHER);
+        assert!(!results.contains_key("result"));
     }
 
     #[test]

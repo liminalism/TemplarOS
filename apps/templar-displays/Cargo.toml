@@ -1,0 +1,42 @@
+[package]
+name = "templar-displays"
+description = "Standalone PixelKit RandR display editor with independent preview rollback ownership"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+templar-display-ui = { workspace = true }
+templar-client = { workspace = true }
+templar-types = { workspace = true }
+templar-ui = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+tempfile = { workspace = true }
+x11rb = { version = "0.13.2", features = ["randr", "render", "shape", "extra-traits"] }
+pixelkit-raster = { workspace = true }
+pixelkit-text = { workspace = true }
+pixelkit-ui = { workspace = true, features = ["accessibility"] }
+pixelkit-shell = { workspace = true }
+pixelkit-windowing = { workspace = true, features = ["accessibility"] }
+
+[lints]
+workspace = true
+
+[package.metadata.deb]
+name = "templaros-displays"
+section = "x11"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["target/release/templar-displays", "usr/bin/templar-displays", "755"],
+    ["org.templaros.Displays.desktop", "usr/share/applications/org.templaros.Displays.desktop", "644"],
+]

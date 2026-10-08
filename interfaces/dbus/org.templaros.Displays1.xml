@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Native only: observations distinguish last-owned layout from actual KMS enabled/disabled/
+     unavailable physical state. Exact timing IDs, stable GPU/connector/EDID identity and explicit
+     capabilities include disabled connected outputs. Validate performs genuine KMS TEST_ONLY.
+     Preview belongs to the compositor, not sessiond/GUI: 5s actual queued-generation presentation
+     deadline, then 15s confirmation on all exact physical frames, independent rollback/readback.
+     Confirm alone persists; reconnect restores only full matching stable identity/mode sets and
+     open/closed panel context. Hidden stored-policy restoration is not a public D-Bus method.
+     Identify/calibration are actual final rendered full-signal scenes. No untrusted KMS socket. -->
+<node name="/org/templaros/Session/Displays">
+  <interface name="org.templaros.Displays1">
+    <method name="Observe"><arg name="observation_json" type="s" direction="out"/></method>
+    <method name="Validate"><arg name="expected" type="s" direction="in"/><arg name="profile" type="s" direction="in"/><arg name="observation_json" type="s" direction="out"/></method>
+    <method name="Preview"><arg name="expected" type="s" direction="in"/><arg name="profile" type="s" direction="in"/><arg name="observation_json" type="s" direction="out"/></method>
+    <method name="Confirm"><arg name="expected" type="s" direction="in"/><arg name="preview_token" type="s" direction="in"/><arg name="observation_json" type="s" direction="out"/></method>
+    <method name="Revert"><arg name="preview_token" type="s" direction="in"/><arg name="observation_json" type="s" direction="out"/></method>
+    <method name="Identify"><arg name="expected" type="s" direction="in"/><arg name="outputs" type="s" direction="in"/><arg name="calibration" type="b" direction="in"/><arg name="observation_json" type="s" direction="out"/></method>
+    <signal name="Changed"/>
+  </interface>
+</node>

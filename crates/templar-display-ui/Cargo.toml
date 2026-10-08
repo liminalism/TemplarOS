@@ -1,0 +1,20 @@
+[package]
+name = "templar-display-ui"
+description = "Shared PixelKit display configuration page and pure layout policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+templar-types = { workspace = true }
+pixelkit-raster = { workspace = true }
+pixelkit-text = { workspace = true }
+pixelkit-ui = { workspace = true, features = ["accessibility"] }
+pixelkit-shell = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

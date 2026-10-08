@@ -1,0 +1,66 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.templaros.Host. Path: /org/templaros/Host.
+     Identity-gated, not polkit: bus PID/UID, installed root-owned compositor inode,
+     exact user session.slice/templar-comp.service cgroup plus active logind seat
+     ownership, or that PID's actual active logind greeter class and seat. The
+     unique bus name, process start and actual logind session bind the lease.
+     No caller-supplied PID, guessed cgroup or device path grants authority.
+     Hostd owns root0700 /run/templaros/display-recovery. A marker survives hostd
+     restart and both greeter/user UIDs; reboot clears the boot-local gate.
+     BeginSecondary durably records pending before driver admission/rearm.
+     Start never clears pending; repeating Start in the same live session is idempotent.
+     A healthy greeter-to-user handoff may retire an older inactive session even
+     while its PID lives; new acquisition waits boundedly for actual old cleanup.
+     Only a current live admission's FirstPresented removes pending, after actual
+     DRM frame_submitted and native timing/routing/depth readback. Message serials
+     reject stale admission, presentation and cleanup after a newer BeginSecondary.
+     Notice is explanatory state, not a diagnosis or hardware qualification. -->
+<node>
+  <interface name="org.templaros.Host.DisplayRecovery1">
+    <method name="Start">
+      <arg name="seat" type="s" direction="in"/>
+      <arg name="lease" type="s" direction="out"/>
+      <arg name="notice" type="s" direction="out"/>
+    </method>
+    <method name="BeginSecondary">
+      <arg name="seat" type="s" direction="in"/>
+      <arg name="lease" type="s" direction="in"/>
+      <arg name="gpu" type="s" direction="in"/>
+    </method>
+    <method name="FirstPresented">
+      <arg name="seat" type="s" direction="in"/>
+      <arg name="lease" type="s" direction="in"/>
+      <arg name="gpu" type="s" direction="in"/>
+    </method>
+    <!-- The GPU ID is resolved against trusted seat sysfs/udev cards; no caller
+         device path or ioctl is accepted. The primary card is never granted.
+         Hostd retains a duplicate for active-seat, unique-name and process-death
+         revocation. One retained driver owner per seat/GPU, at most eight total,
+         handles open, rearm, revocation and close; no spawn_blocking retry pool.
+         Three-second admission/rearm deadlines retire the owner but do NOT cancel
+         kernel work or release its slot before real cleanup returns. Late results
+         cannot publish a descriptor. The returned h keeps a guarded handoff alive
+         through zbus reply serialization/send; unpublished descriptors return to
+         the same driver owner, not last-close on the D-Bus runtime.
+         CloseSecondary also cancels pre-open admission and grants no new authority:
+         the original authenticated PID/start/name lease can clean up after seat
+         deactivation or replacement of the installed binary during an upgrade. -->
+    <method name="AcquireSecondary">
+      <arg name="seat" type="s" direction="in"/>
+      <arg name="lease" type="s" direction="in"/>
+      <arg name="gpu" type="s" direction="in"/>
+      <arg name="descriptor" type="h" direction="out"/>
+    </method>
+    <method name="ResumeSecondary">
+      <arg name="seat" type="s" direction="in"/>
+      <arg name="lease" type="s" direction="in"/>
+      <arg name="gpu" type="s" direction="in"/>
+    </method>
+    <method name="CloseSecondary">
+      <arg name="seat" type="s" direction="in"/>
+      <arg name="lease" type="s" direction="in"/>
+      <arg name="gpu" type="s" direction="in"/>
+    </method>
+  </interface>
+</node>

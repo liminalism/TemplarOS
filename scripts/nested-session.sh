@@ -10,7 +10,10 @@
 # database, and the binaries in target/ rather than the ones in /usr, so a rebuild is picked up by
 # restarting one process and the installed session is never touched.
 #
-#   scripts/nested-session.sh start     compositor, sessiond and shell, in that order
+#   scripts/nested-session.sh start [--no-daemons]
+#                                         compositor, sessiond, filed, portal and shell, in that
+#                                         order; --no-daemons starts only the compositor and the
+#                                         shell, for lanes that bring their own session daemon
 #   scripts/nested-session.sh shell     rebuild and restart just the shell (the hot-swap loop)
 #   scripts/nested-session.sh launch <app-id>
 #   scripts/nested-session.sh apps      what the registry offers
@@ -45,24 +48,64 @@ alive() {
 }
 
 stop_one() {
-    local name=$1 pid
+    local name=$1 pid cmdline
     pid=$(cat "$(pidfile "$name")" 2>/dev/null) || return 0
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        # A stale pidfile after PID reuse must fail closed, not kill a stranger: every daemon
+        # this script starts carries `templar-nested:$name` as its argv[0] (see below).
+        cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || cmdline=""
+        if [[ $cmdline != "templar-nested:$name"* ]]; then
+            echo "  $name pidfile points at pid $pid (${cmdline%% *}) — not this run's $name; leaving it alone" >&2
+        else
+            kill "$pid" 2>/dev/null
+            for _ in $(seq 20); do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.1
+            done
+            kill -9 "$pid" 2>/dev/null
+        fi
+    fi
+    rm -f "$(pidfile "$name")"
+}
+
+# Survivors whose pidfiles went stale (a scratch prune, an overwritten pidfile) keep running
+# past `stop` and hold the bus names and sockets the next `start` wants. The argv[0] marker
+# only this script sets makes them findable without endangering anything else.
+sweep_nested_leftovers() {
+    local pid cmdline name
+    for pid in $(pgrep -f '^templar-nested:' 2>/dev/null); do
+        cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || continue
+        name=${cmdline#templar-nested:}
+        name=${name%% *}
+        echo "  sweep: $name (pid $pid) survived its pidfile — stopping it" >&2
         kill "$pid" 2>/dev/null
         for _ in $(seq 20); do
             kill -0 "$pid" 2>/dev/null || break
             sleep 0.1
         done
         kill -9 "$pid" 2>/dev/null
-    fi
-    rm -f "$(pidfile "$name")"
+    done
+    return 0
 }
 
-# Everything a nested process must NOT inherit from the host desktop, plus the one thing it must.
-# `WAYLAND_DISPLAY` is set per-process by the caller; `DISPLAY` is cleared so winit cannot quietly
-# fall back to the host's X server and connect a "nested" client to the wrong compositor.
-nested_env() {
-    env -u DISPLAY -u WAYLAND_DISPLAY "$@"
+# Run one nested daemon: without the host displays, with the given Wayland socket, and
+# with an argv[0] marker only this script sets, so `stop_one` and the survivor sweep can
+# tell this run's processes from strangers sharing a recycled PID.
+# `WAYLAND_DISPLAY` is set per-process by the caller; `DISPLAY` is cleared so winit cannot
+# quietly fall back to the host's X server and connect a "nested" client to the wrong
+# compositor. Called as `spawn_nested ... &`, the `&` fork runs this function and the
+# function `exec`s the daemon directly — no `( )` subshell, which would fork once more and
+# leave `$!` pointing at an exited middleman instead of the daemon. The unset/export only
+# touch the fork, never the caller's environment.
+spawn_nested() {
+    local name=$1 wayland=$2
+    shift 2
+    if [[ $BASHPID == $$ ]]; then
+        echo "spawn_nested $name must run backgrounded (spawn_nested ... &)" >&2
+        return 1
+    fi
+    unset DISPLAY
+    WAYLAND_DISPLAY="$wayland" RUST_LOG="${RUST_LOG:-info}" exec -a "templar-nested:$name" "$@"
 }
 
 # Wait for the compositor to *say* a socket is ready, not for the socket file to exist. A killed
@@ -89,7 +132,9 @@ start_comp() {
         echo "compositor already running"
         return 0
     fi
-    refuse_over_live_session || return 1
+    if [ -z "${TEMPLAROS_NESTED_NO_DAEMONS:-}" ]; then
+        refuse_over_live_session || return 1
+    fi
     [ -x "$bin/templar-comp" ] || { echo "missing $bin/templar-comp — build it first" >&2; return 1; }
     clear_stale_sockets
     : >"$(logfile comp)"
@@ -107,7 +152,10 @@ start_comp() {
         return 1
     fi
     rm -f "$input_socket"
+    # Same argv[0] marker `spawn_nested` sets (the compositor keeps the host display, so it
+    # cannot use that helper, but `stop` must still find it by the same marker).
     "${host_env[@]}" RUST_LOG="${RUST_LOG:-info}" \
+        bash -c 'exec -a "templar-nested:comp" "$@"' _ \
         "$bin/templar-comp" --backend winit --socket-name "$socket" \
         --test-input-socket "$input_socket" \
         >"$(logfile comp)" 2>&1 &
@@ -146,7 +194,7 @@ start_sessiond() {
     echo "starting sessiond (state $run/session.db)"
     # An app launched from here must reach the nested compositor, not the host's. sessiond passes
     # its own environment down to every transient unit it starts, so this is where that is decided.
-    nested_env WAYLAND_DISPLAY="$socket" RUST_LOG="${RUST_LOG:-info}" \
+    spawn_nested sessiond "$socket" \
         "$bin/templar-sessiond" --state-db "$run/session.db" \
         >"$(logfile sessiond)" 2>&1 &
     echo $! >"$(pidfile sessiond)"
@@ -170,7 +218,7 @@ start_filed() {
         return 0
     fi
     echo "starting filed"
-    nested_env WAYLAND_DISPLAY="$socket" RUST_LOG="${RUST_LOG:-info}" \
+    spawn_nested filed "$socket" \
         "$bin/templar-filed" \
         >"$(logfile filed)" 2>&1 &
     echo $! >"$(pidfile filed)"
@@ -196,7 +244,7 @@ start_portal() {
         return 0
     fi
     echo "starting portal"
-    nested_env WAYLAND_DISPLAY="$socket" RUST_LOG="${RUST_LOG:-info}" \
+    spawn_nested portal "$socket" \
         "$bin/xdg-desktop-portal-templar" \
         >"$(logfile portal)" 2>&1 &
     echo $! >"$(pidfile portal)"
@@ -207,7 +255,7 @@ start_shell() {
     stop_one shell
     [ -x "$bin/templar-shell" ] || { echo "missing $bin/templar-shell" >&2; return 1; }
     echo "starting shell (trusted socket $shell_socket)"
-    nested_env WAYLAND_DISPLAY="$shell_socket" RUST_LOG="${RUST_LOG:-info}" \
+    spawn_nested shell "$shell_socket" \
         "$bin/templar-shell" --surface \
         >"$(logfile shell)" 2>&1 &
     echo $! >"$(pidfile shell)"
@@ -217,8 +265,15 @@ start_shell() {
 
 case "${1:-start}" in
 start)
-    start_comp && start_sessiond && start_filed && start_portal && start_shell \
-        && echo "nested session up — logs in $run"
+    if [ "${2:-}" = "--no-daemons" ]; then
+        # Compositor and shell only, for lanes that bring their own session daemon: nothing
+        # here takes a bus name, so the live-session refusal does not apply either.
+        TEMPLAROS_NESTED_NO_DAEMONS=1 start_comp && start_shell \
+            && echo "nested session up without daemons — logs in $run"
+    else
+        start_comp && start_sessiond && start_filed && start_portal && start_shell \
+            && echo "nested session up — logs in $run"
+    fi
     ;;
 shell)
     # The hot-swap loop rebuilds the native shell; an explicit binary directory is restart-only.
@@ -246,6 +301,7 @@ logs)
     ;;
 stop)
     for name in shell portal filed sessiond comp; do stop_one "$name"; done
+    sweep_nested_leftovers
     clear_stale_sockets
     rm -f "$input_socket"
     echo "nested session stopped"

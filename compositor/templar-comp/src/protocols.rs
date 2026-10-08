@@ -1,5 +1,5 @@
 //! Generated server bindings for our two private protocols
-//! (`interfaces/wayland/templar-shell-v1.xml`, `interfaces/wayland/templar-recovery-v1.xml`).
+//! (`interfaces/wayland/templar-shell-v2.xml`, `interfaces/wayland/templar-recovery-v1.xml`).
 //!
 //! `wayland-scanner` 0.31 (the version compatible with the pinned Smithay revision) dropped the
 //! old build.rs-callable `generate_code` function in favour of `generate_interfaces!` /
@@ -8,7 +8,7 @@
 //! Each protocol gets its own module because `generate_server_code!` expects a fresh
 //! `__interfaces` submodule to already be populated by `generate_interfaces!` before it runs.
 //!
-//! `interfaces/wayland/README.md` (planning doc) requires `templar_shell_manager_v1.layer`'s wire
+//! `interfaces/wayland/README.md` requires `templar_shell_manager_v2.layer`'s wire
 //! values to match `templar_window::Layer`'s `repr(u8)` discriminants exactly; the conversion lives
 //! in `templar_comp_integration::protocol::{layer_to_wire, layer_from_wire}`, not duplicated here.
 
@@ -19,17 +19,17 @@
     clippy::pedantic,
     unused_imports
 )]
-pub mod templar_shell_v1 {
+pub mod templar_shell_v2 {
     use wayland_server;
     use wayland_server::protocol::*;
 
     pub mod __interfaces {
         use wayland_server::protocol::__interfaces::*;
-        wayland_scanner::generate_interfaces!("../../interfaces/wayland/templar-shell-v1.xml");
+        wayland_scanner::generate_interfaces!("../../interfaces/wayland/templar-shell-v2.xml");
     }
     use self::__interfaces::*;
 
-    wayland_scanner::generate_server_code!("../../interfaces/wayland/templar-shell-v1.xml");
+    wayland_scanner::generate_server_code!("../../interfaces/wayland/templar-shell-v2.xml");
 }
 
 #[allow(

@@ -85,6 +85,12 @@ speaking D-Bus directly.
 `templar-filed` resumes unfinished operations at start. That is the whole reason the journal is in
 the service rather than the GUI.
 
+`Actions1.RenderNative(path_b64, form)` is the additive byte-exact clipboard boundary. URI
+percent-encoding preserves arbitrary Unix filename octets; shell-quoted uses existing POSIX
+single quotes for UTF-8 and ANSI-C octal quoting for non-UTF8 (Bash/Ksh/Zsh/POSIX.1-2024).
+Canonical, as-shown, parent-directory and name plain-text results explicitly refuse any
+unrepresentable UTF-8 rather than naming another file. The existing `Render` signature stays.
+
 ## Storage information is unavoidable
 
 `Files.Volumes1` is the one list the sidebar, the Drives drawer and the file chooser all render,
@@ -116,6 +122,44 @@ every drawer searchable and lets a drawer *be* a saved query. Deliberately **not
 indexing: a daemon that reads every file the user owns costs I/O, battery and a far larger
 privacy surface than the drawers need. An empty query matches nothing.
 
+## Shared index freshness and native policy
+
+`Files.Index1` is the typed index boundary. Authoritative policies are keyed by native path bytes
+in session state, independently of the disposable SQLite index cache. Configure/remove uses the
+observed policy hash; reconciliation also carries the observed cache identity. Cache deletion
+does not discard policy or recreate a deliberately removed Home root.
+
+Visible consumers hold an observation token and close replaced search cursors explicitly.
+Paging refuses metadata written after the pinned generation with `SnapshotRequired`.
+Namespace completeness and measured metadata are separate: a policy-change pass can return a
+current namespace with unverified sizes. Size/time/mode/aggregate bulk requests queue metadata
+repair through the daemon's watcher control without blocking or relabelling the captured frame.
+The next frame may be current and measured; an unverified frame remains visibly partial.
+
+Bulk snapshots use fully sealed memfds published read-only. Native private-bus execution covered
+policy CAS, raw-byte root/file paths, cursor mutation rejection, metadata repair, snapshot decoding,
+URI/Bash round-trips, and cache-deletion identity fencing.
+
+Warm daemon startup publishes the previous committed namespace before its asynchronous downtime
+repair finishes; restarting a consumer never synchronously walks a root. Overflow and downtime
+repair must enumerate membership rather than trust a directory's cached mtime/ctime: watcher
+events can refresh that metadata even when dropped child events left the namespace incomplete.
+An incomplete prior namespace also cannot be made complete by timestamp equality or a disjoint
+subtree repair. Known-current namespace-only repairs retain their separate unverified metadata
+axis; pinned cursors still require `SnapshotRequired` after affected rows change.
+
+Native Ubuntu 26.04 private-daemon proof on 2026-10-06 observed real kernel overflow, all 12,000
+created names restored, stale/building/current signals, useful previous-generation searches
+during repair, partial-budget retention, and caller-loss dormancy/reactivation. A separate
+50,001-entry retained-observation sample measured zero watcher schedules/context switches and
+zero process read/write I/O over 60 seconds, with unchanged root generation and scan timestamps.
+The benchmark now propagates apply/source/deadline/coverage failures and runs required
+watch-before-read reconciliation before reporting settled, rather than interpreting empty
+mutation batches as proof. It owns and reaps its private bus and daemon and isolates both bus
+addresses plus HOME/XDG paths. See `docs/measurements/index-baseline-2026-09-04.md` for scope.
+Physical Btrfs downtime delta across reboot and installed desktop acceptance remain unproven;
+these private fixtures do not adopt the proposed checkpoint protocol.
+
 ## Path actions
 
 `Files.Actions1` owns "copy canonical path", "copy URI", "copy shell-escaped path" and "open a
@@ -123,9 +167,16 @@ terminal here" — otherwise a service menu, a downloaded script or a local patc
 manager, each quoting differently. They are small enough to be exact, so every client gets the
 same answer.
 
-The standalone manager's visible Copy path button requests the `as-shown` form and sends that text
-to the compositor clipboard with `wl-copy`; `wl-clipboard` is therefore a runtime dependency, not
-an optional development convenience.
+The standalone manager's visible Copy path button requests the `as-shown` form and hands the
+result to its retained PixelKit native clipboard worker, shared with text fields. Completion
+reports success only after clipboard ownership succeeds; no `wl-copy` subprocess or separate
+Wayland-only clipboard path is used. Paths that cannot be represented as UTF-8 report an error
+rather than copying a lossy filename.
+
+An owned native X11 session on 2026-10-06 copied a pathname containing spaces, café, CJK,
+quotes and `$(touch EXECUTED);` from the real Files window into Chrome via native Ctrl+V.
+The pasted bytes matched the pathname and the command-shaped filename produced no sentinel.
+This proves that private-session path action, not installed-session or physical Wayland acceptance.
 
 ## pcmanfm-qt is the file manager
 
@@ -140,13 +191,63 @@ but it is no longer in `distro/seeds/selection.toml`, in `templaros-desktop`, or
 installed entry, at priority 100 when the executable is `pcmanfm-qt` and 50 otherwise
 (`templar-session-core/src/providers.rs`). Nothing in the shell names an application: Home's folder
 tiles, "Open folder window", the browse pane's door and `project.open-files` all resolve the role.
-`inode/directory` is `pcmanfm-qt.desktop`'s own `MimeType=`, so the association broker seeds it
-with no curated manifest. pcmanfm-qt must never be started with `--desktop`: Home is the desktop.
+`inode/directory` is `pcmanfm-qt.desktop`'s own `MimeType=`, so it is a handler without a
+curated manifest. The vendor `distro/policy/mimeapps/mimeapps.list` separately selects that
+desktop ID as the default: advertising a MIME type alone does not choose it over other handlers.
+On first startup sessiond imports defaults from the XDG configuration and data directories,
+including desktop-specific files, in preference order; user selections win while absent keys
+inherit vendor policy. Later startup uses the stored choices and exports their effective view.
+pcmanfm-qt must never be started with `--desktop`: Home is the desktop.
 
 Qt 6 selects the Wayland platform plugin on its own when `WAYLAND_DISPLAY` is set and
 `qt6-wayland` is installed — verified against the nested compositor, `qt.qpa.wayland` with no
 `QT_QPA_PLATFORM` in the environment — and the compositor forces server-side xdg-decoration, so a
 pcmanfm-qt window wears TemplarOS chrome like any other.
+
+### Terminal and icons
+
+PCManFM-Qt's built-in defaults are `[System] Terminal=xterm` and `FallbackIconThemeName=oxygen`;
+a TemplarOS machine has neither. Nothing in the session gives Qt an icon theme, so PCManFM-Qt
+uses the fallback it names, and with that theme missing every file and folder in the icon view
+is drawn as text alone.
+
+- **Terminal**: `templar-terminal` (shipped by `templaros-cli`; it runs `templar terminal`).
+  It resolves the Terminal provider role through `Providers1.Report` and starts the provider with
+  `Launcher1.Launch`, so the terminal gets its own `app-templaros-<id>@<instance>.service` unit
+  and identity instead of landing in PCManFM-Qt's cgroup. `Launcher1.Launch` takes only an
+  argument vector and every launched unit starts in the home directory, so the folder travels as
+  `--directory DIR` (kitty's spelling, the same form the shell's "Open terminal here" passes the
+  role), followed by `--hold` and `-e CMD ARGS…` when libfm-qt asks to run a command; a provider
+  that spells these differently needs its own form, and none is declared today. libfm-qt starts
+  the terminal command *in* the folder ("Open in Terminal"), so with no `--directory` the
+  current directory is used. Only when `org.templaros.Session` is unreachable (no session bus,
+  or nobody owns the name) is there no role to resolve; then `x-terminal-emulator` is executed
+  directly in the folder, with `-e` and without `--hold`. `templar terminal --dry-run` prints the
+  route, application and arguments without launching.
+- **Running a command in the terminal** ("Execute in Terminal", `Terminal=true` entries) goes
+  through libfm-qt's `expand_terminal`, which only builds `<terminal> -e CMD` for a terminal it
+  has a `terminals.list` group for and otherwise runs `xterm -e CMD` whatever the setting says.
+  `/usr/share/libfm-qt/terminals.list` belongs to `libfm-qt5-common`, so the group
+  (`open_arg=-e`, `noclose_arg=--hold -e`) is added to the per-user
+  `$XDG_DATA_HOME/libfm-qt/terminals.list`; an existing `[templar-terminal]` group is left as the
+  user wrote it.
+- **Icons**: `FallbackIconThemeName` is the first installed of Papirus, Yaru, Adwaita and hicolor.
+  Papirus is what `templaros-desktop` installs and covers every freedesktop name PCManFM-Qt asks
+  for, toolbar actions included; Adwaita on Ubuntu 26.04 ships few full-colour action icons.
+
+A fresh account gets `/etc/xdg/pcmanfm-qt/default/settings.conf` (`Terminal=templar-terminal`,
+`FallbackIconThemeName=Papirus`), which PCManFM-Qt reads only while
+`$XDG_CONFIG_HOME/pcmanfm-qt/default/` does not exist. An existing profile is repaired by
+`templar-sessiond` at startup, before it claims its bus name and so before anything can launch
+PCManFM-Qt (`templar-session-core/src/pcmanfm.rs`): a `Terminal` whose program is not on `PATH`, or
+a `FallbackIconThemeName` with no `<theme>/index.theme` under `$XDG_DATA_HOME/icons`, `~/.icons`
+or `$XDG_DATA_DIRS/icons`, is rewritten to the default; an absent key counts as PCManFM-Qt's
+built-in default. Valid choices (`foot`, `breeze`, …) and every other byte of the file are kept.
+The write is atomic, follows a symlinked file, and is abandoned if the file changes meanwhile
+(PCManFM-Qt saves its settings on exit, so a running copy can write the old values back; the next
+session start repairs them again). `templar pcmanfm repair [--backup]` runs the same repair now,
+`--backup` first copying the original to `settings.conf.templaros-bak` (an existing backup is
+never overwritten).
 
 ### What integrates, and what cannot
 
@@ -157,19 +258,74 @@ distribution from outside:
   `templaros-cli`): "Add to Home" runs `templar home place %f` over `HomeField1.PlaceFolder`, and
   "Create project here" runs `templar project create-here %f` over `Projects1.Create` with the id
   derived from the folder name. Archive actions run locally, as described below.
-- **Bookmarks**: filed is the authority. Every `Files.Bookmarks` mutation rewrites
-  `$XDG_CONFIG_HOME/gtk-3.0/bookmarks`, which is the file libfm-qt's Places sidebar reads. One
-  way, deliberately: importing it would make two writers of one list with no answer to which is
-  right.
+- **Bookmarks**: filed owns Home places only, not PCManFM-Qt's list. `Browse1.SetBookmark` never
+  exports implicitly. `Browse1.ExportBookmarks` / `templar files bookmarks export` explicitly
+  adds missing places to `$XDG_CONFIG_HOME/gtk-3.0/bookmarks`, preserving native labels and
+  unmanaged bytes. A unique durable backup and `bookmarks.templaros-owned.json` record which
+  lines Templar actually added; existing matching URIs are not adopted. Removing a Home bookmark
+  never deletes a GTK entry. Publication is atomic; intervening native writes are detected,
+  restored when possible and retained at the returned conflict recovery path. No import or
+  destructive synchronization is performed.
 - **Trash**: nothing to do. `templar-filed`'s `Trash1` already implements the freedesktop Trash
   specification on the same directories libfm-qt uses — `$XDG_DATA_HOME/Trash`, the administrator
   `$topdir/.Trash/$uid` when it passes the sticky/non-symlink gate, and `$topdir/.Trash-$uid`
   otherwise — so Home's Trash drawer and pcmanfm-qt's Trash are the same trash.
+- **External operations**: PCManFM-Qt create/update/rename/move/trash changes enter the shared
+  index through the native watcher. They do not become fabricated filed journal/undo records.
 - **Recents**: not integrated. pcmanfm-qt writes `recently-used.xbel`; `Files.Recents1` keeps its
   own answer in the state store and does not read xbel. Deferred, not planned: the two answer
   different questions ("what did I open" against "where was I last working").
 - **Search**: cannot integrate. pcmanfm-qt's Find is its own, and there is no route by which it
   could ask `Files.Search1`. Home's search and FSearch remain the indexed answer.
+
+Native Ubuntu 26.04 observation on 2026-10-06 used actual PCManFM-Qt on an owned X11 display
+and private bus. Its `FileManager1` owner PID matched the launched process; `ShowItems`
+visibly selected the fixture `alpha.txt`, and its Places rail showed the original native
+labels alongside the additively exported folder. `ShowFolders` accepted that folder.
+Real `Browse1` calls preserved the backup bytes, retained GTK entries after unbookmarking,
+and preserved an intervening external label without duplicating its URI. These observations
+are not installed-session relogin or external-operation undo claims.
+
+The same actual PCManFM producer subsequently renamed a literal UTF-8/metacharacter file,
+Cut/Pasted it into a folder, and trashed it through native GIO VFS. `Index1.ChangesSince`
+reported entry **2** moving twice (generations 3 and 4), then removal at generation 5;
+search no longer returned it. `Trash1.List` retained the exact original and trashed paths
+and the exact 42-byte payload. The primary store still had zero `file_operations` and
+zero `file_undo` rows: external native operations do not invent Templar undo.
+This fixture required actual GVFS readiness before starting fresh PCManFM. An earlier
+local-VFS-only Delete prompt was canceled, not approved as a permanent deletion or
+reported as Trash success. The observed change stream and payload hash are retained in
+`.agent/scratch/native-external-mutations-20261006.json`.
+
+A further independently owned native X11/private-bus fixture on 2026-10-06 copied the source
+vendor policy into isolated `XDG_CONFIG_DIRS` before starting the native sessiond. The real
+`/usr/share/applications` catalogue selected PCManFM-Qt at priority 100 over Files at 50,
+and `ResolveFile` returned `global-mime-default` for the literal directory
+`literal café 家庭 $(touch EXECUTED); 'literal'`. This exposed and corrected the importer
+ignoring `XDG_CONFIG_DIRS` and stopping at the first preference file instead of inheriting
+missing defaults. The corrected fresh database resolved the vendor desktop ID.
+
+Native `gio open`, explicit desktop-entry launch, and a real PCManFM **Open With →
+PCManFM-Qt File Manager** click opened that directory. `FileManager1.ShowItems` selected its
+literal UTF-8/metacharacter filename; Properties showed its exact name, containing path and
+43-byte size, and byte/hash comparisons preserved the contents. Process arguments contained
+the canonical directory and never `--desktop`; the native breadcrumb address showed the
+literal folder name. No `EXECUTED` sentinel
+appeared. These are actual native application routes, not a verified broker-launch claim.
+The isolated bus had no genuine `org.freedesktop.systemd1` owner and the process had no writable
+delegated cgroup. `Launcher1.Launch` returned an error; no fake manager, live user manager,
+or trust upgrade for a user-owned desktop entry was used. Installed-session broker launch,
+relogin and physical Wayland acceptance remain separate prerequisites.
+
+The same fixture invoked—not merely displayed—the freshly copied source DES-EMA **Add to
+Home** and **Create project here** actions with the native source-built `templar` first on PATH.
+The Home service document gained the exact folder tile and revision, and Projects listed the
+exact root/name with its safely derived project ID. With no Home shell running, the fixture
+first initialized the real primary field through `HomeField1.Get`; it does not claim a visible
+Home tile render. Retained screenshots, service replies, literal payload/archive bytes and
+owned-process teardown are in the AKR-kept `.agent/scratch/native-file-routes-89_fntxv/`;
+the catalogue-only policy result is `.agent/scratch/native-file-catalogue-20261006.json`.
+
 
 ### Archive context menu
 
@@ -225,3 +381,12 @@ non-UTF-8 names, literal backslashes and links escaping the selected trees. The 
 build needs `libarchive-dev` and pkg-config; runtime needs Linux `/proc/self/fd`,
 `C.UTF-8`, libarchive 3.4+ and a filesystem supporting `renameat2(RENAME_NOREPLACE)`.
 The archive command and menu do not change how PCManFM-Qt receives TemplarOS window chrome.
+
+In that owned native fixture, actual PCManFM source DES-EMA **Compress to ZIP** and **Extract
+to smart new folder here** clicks launched the native source helper with the literal selected
+path. ZIP member names and extracted bytes matched the original 43-byte payload; smart
+extraction chose a noncolliding numbered directory instead of replacing the original file.
+Screenshots show the native choices, published outputs and exact selection properties.
+The final runs used owned logfile stdout: an initial harness incorrectly closed the inherited
+GIO stdout pipe, causing a Broken pipe diagnostic after publication, so that contaminated
+run is recorded but is not the clean action proof. Archive behavior was not changed.

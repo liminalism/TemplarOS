@@ -1,0 +1,18 @@
+{
+  "id": "org.liminalview.LiminalView",
+  "display_name": "LiminalView",
+  "categories": ["Graphics", "Viewer"],
+  "primary_desktop_file_id": "org.liminalview.LiminalView.desktop",
+  "executable": "/usr/bin/liminalview",
+  "aliases": {
+    "desktop_file_ids": ["org.liminalview.LiminalView.desktop"],
+    "wayland_app_ids": ["org.liminalview.LiminalView"],
+    "startup_wm_classes": ["org.liminalview.LiminalView"],
+    "flatpak_ids": [],
+    "executable_paths": ["/usr/bin/liminalview"]
+  },
+  "mime_types": ["image/*"],
+  "resource_class": "Interactive",
+  "supports_checkpoint": false,
+  "provides": []
+}

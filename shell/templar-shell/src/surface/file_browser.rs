@@ -221,6 +221,8 @@ pub struct FilesBrowseView {
 pub struct RenameDialog {
     path: PathBuf,
     field: pixelkit_ui::TextFieldState,
+    focused: bool,
+    control: u8,
     /// Why the name typed so far cannot be used. Shown live, so the Rename button being inert is
     /// explained rather than mysterious.
     error: Option<&'static str>,
@@ -231,11 +233,15 @@ impl RenameDialog {
         let name = path
             .file_name()
             .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-        RenameDialog {
+        let mut dialog = RenameDialog {
             path,
             field: pixelkit_ui::TextFieldState::with_text(name),
+            focused: true,
+            control: 0,
             error: None,
-        }
+        };
+        dialog.error = dialog.validated().err();
+        dialog
     }
 
     /// The name as typed, or why it cannot be used.
@@ -243,7 +249,7 @@ impl RenameDialog {
     /// The same rule the service enforces (`templar_client::files::valid_file_name`), checked here
     /// only so the person is told *before* pressing Rename. The service still refuses
     /// independently — this is feedback, not the authority.
-    fn validated(&self) -> Result<String, &'static str> {
+    fn validated(&self) -> Result<&str, &'static str> {
         let typed = self.field.text().trim();
         if typed.is_empty() {
             return Err("A name is required.");
@@ -258,11 +264,24 @@ impl RenameDialog {
         {
             return Err("That is already its name.");
         }
-        Ok(typed.to_owned())
+        Ok(typed)
     }
 }
 
 impl FilesBrowseView {
+    pub fn rename_open(&self) -> bool {
+        self.rename.is_some()
+    }
+    pub fn modal_open(&self) -> bool {
+        self.rename.is_some() || self.menu.is_open()
+    }
+
+    pub fn ime_caret(&self) -> Option<Rect> {
+        self.rename
+            .as_ref()
+            .and_then(|dialog| dialog.field.caret_area())
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn draw(
         &mut self,
@@ -281,6 +300,16 @@ impl FilesBrowseView {
             .pending
             .is_some_and(|(owner, hidden)| *owner == here && hidden == state.show_hidden);
         let searching = matches!(here, FilesLocation::Search { .. });
+        let (roots_area, browser_area) = area.split_left(ui.px(ROOTS_WIDTH).min(area.w / 3));
+        let browser_area = browser_area.inset(ui.px(8));
+        let (toolbar, below_toolbar) = browser_area.split_top(ui.px(TOOLBAR_HEIGHT * 2));
+        let (verbs, below_verbs) = below_toolbar.split_top(ui.px(TOOLBAR_HEIGHT));
+        let (columns, entries_area) = if state.view == ViewMode::List || searching {
+            let (columns, entries) = below_verbs.split_top(ui.px(COLUMNS_HEIGHT));
+            (Some(columns), entries)
+        } else {
+            (None, below_verbs)
+        };
         // A feed location's rows are already rendered text, not entries: nothing to select and
         // nothing to sort, so it takes the simple path and returns early.
         if let Some(drawer) = here.feed() {
@@ -307,7 +336,15 @@ impl FilesBrowseView {
         // is drawn — the same two-step the field's menu follows, and for the same reason: the
         // menu is painted over the listing, so the row beneath would otherwise take the click.
         let menu_directory = listing.map(|listing| listing.directory.clone());
-        let mut action = if self.menu.is_open() {
+        let renaming = self.rename.is_some();
+        let mut action = if renaming {
+            let action =
+                self.update_rename(ui, entries_area, listing.map(|row| row.directory.as_path()));
+            let _ = ui.input.take_click(area);
+            let _ = ui.input.take_context_click(area);
+            let _ = ui.input.take_scroll(area);
+            action
+        } else if self.menu.is_open() {
             self.menu.update(ui, area).and_then(|chosen| {
                 self.run_menu_action(
                     chosen.action,
@@ -322,7 +359,6 @@ impl FilesBrowseView {
 
         // The rename dialogue owns the frame while it is open: it takes the keys, so nothing
         // underneath can act on a keystroke meant for the name being typed.
-        let renaming = self.rename.is_some();
         if action.is_none() && keyboard_enabled && !renaming && !self.menu.is_open() {
             let width = area.w - ui.px(ROOTS_WIDTH).min(area.w / 3) - ui.px(16);
             let columns = if state.view == ViewMode::Thumbnails && !searching {
@@ -334,27 +370,19 @@ impl FilesBrowseView {
         }
 
         ui.panel(area);
-        let (roots_area, browser_area) = area.split_left(ui.px(ROOTS_WIDTH).min(area.w / 3));
         Self::draw_pinned(ui, roots_area, state, data.sources, data.icons, data.home);
 
-        let browser_area = browser_area.inset(ui.px(8));
-        let (toolbar, below_toolbar) = browser_area.split_top(ui.px(TOOLBAR_HEIGHT * 2));
         let toolbar_action = Self::draw_toolbar(ui, toolbar, state, listing, searching);
         if action.is_none() {
             action = toolbar_action;
         }
-        let (verbs, below_verbs) = below_toolbar.split_top(ui.px(TOOLBAR_HEIGHT));
         let verb_action = self.draw_file_verbs(ui, verbs, state, listing);
         if action.is_none() {
             action = verb_action;
         }
-        let entries_area = if state.view == ViewMode::List || searching {
-            let (columns, entries_area) = below_verbs.split_top(ui.px(COLUMNS_HEIGHT));
+        if let Some(columns) = columns {
             Self::draw_columns(ui, columns);
-            entries_area
-        } else {
-            below_verbs
-        };
+        }
 
         let error = data.search_error.or_else(|| {
             data.error
@@ -419,7 +447,7 @@ impl FilesBrowseView {
         // Whatever the rows did not take is the ground between them, and the ground has a menu
         // of its own: New folder, Paste, Select all, Sort by…, Show hidden — the five things
         // that are about the folder rather than about one file in it.
-        if !self.menu.is_open() && ui.input.take_context_click(entries_area) {
+        if !renaming && !self.menu.is_open() && ui.input.take_context_click(entries_area) {
             let target = crate::surface::context_menu::FilesTarget {
                 row: false,
                 directory: state.directory().is_some(),
@@ -432,13 +460,9 @@ impl FilesBrowseView {
         // Painted over everything the object drew this frame; its input was taken at the top.
         self.menu.paint(ui, area);
 
-        // Drawn last so it sits over the listing, and consulted before the automatic load
-        // below: a dialogue waiting for an answer must not be reloaded out from under itself.
-        let directory = listing.map(|listing| listing.directory.as_path());
-        if let Some(renamed) = self.draw_rename(ui, entries_area, state, directory) {
-            return Some(renamed);
-        }
-        if self.rename.is_some() {
+        // The modal claims editing and pointer input before background widgets; paint it once.
+        self.paint_rename(ui, entries_area);
+        if renaming || self.rename.is_some() {
             return action;
         }
 
@@ -464,10 +488,17 @@ impl FilesBrowseView {
         drawer: crate::home_surface::Drawer,
         data: &FileBrowserData<'_>,
     ) -> Option<FileBrowserAction> {
+        let here = state.location().clone();
         let mut action = None;
         ui.panel(area);
         let (roots_area, body) = area.split_left(ui.px(ROOTS_WIDTH).min(area.w / 3));
         Self::draw_pinned(ui, roots_area, state, data.sources, data.icons, data.home);
+        if state.location() != &here {
+            return Some(FileBrowserAction::Load {
+                location: state.location().clone(),
+                show_hidden: state.show_hidden,
+            });
+        }
         let body = body.inset(ui.px(8));
         let feed = data.feeds.get(&drawer);
         let (heading, rows) = body.split_top(ui.px(26));
@@ -801,7 +832,7 @@ impl FilesBrowseView {
         ui.label_styled(
             title,
             "LOCATIONS",
-            TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
+            ui.text_style(TextStyle::tracked(ui.theme.body.face, 11.0, 0.10)),
             ui.theme.text_dim,
             Align::Left,
         );
@@ -844,11 +875,23 @@ impl FilesBrowseView {
                     ui.label_styled(
                         detail_row,
                         &pinned.detail,
-                        TextStyle::new(ui.theme.body.face, 11.0),
+                        ui.text_style(TextStyle::new(ui.theme.body.face, 11.0)),
                         ui.theme.text_dim,
                         Align::Left,
                     );
                 }
+                if ui.input.focus_requested(row) {
+                    state.focus_area = FocusArea::Pinned;
+                    state.pinned_focus = index;
+                }
+                ui.semantic(
+                    pixelkit_ui::semantics::Role::ListBoxOption,
+                    &pinned.label,
+                    row,
+                    focused || ui.input.focus_requested(row),
+                    Some(active),
+                    None,
+                );
                 if ui.input.take_click(row) {
                     chosen = Some(index);
                 }
@@ -1048,40 +1091,93 @@ impl FilesBrowseView {
         }
     }
 
-    /// The rename dialogue: a name field, a refusal, and two buttons.
-    ///
-    /// Returns the confirmed request, and consumes the frame's keys while open so a stray Delete
-    /// aimed at the field cannot trash the item being renamed.
-    fn draw_rename(
-        &mut self,
-        ui: &mut Ui<'_>,
-        area: Rect,
-        _state: &FilesSurfaceState,
-        directory: Option<&Path>,
-    ) -> Option<FileBrowserAction> {
-        let dialog = self.rename.as_mut()?;
-        let keys = ui.input.take_keys();
-        if keys.contains(&KeyInput::Escape) {
-            self.rename = None;
-            return None;
-        }
-        let confirmed = keys.contains(&KeyInput::Enter);
-        dialog.field.apply(&keys);
-        dialog.error = dialog.validated().err();
-
-        // A panel over the listing rather than beside it: the item is not going anywhere and the
-        // question is the only thing to answer.
+    fn rename_rects(ui: &Ui<'_>, area: Rect) -> (Rect, Rect, Rect, Rect, Rect, Rect) {
         let panel = Rect::new(
             area.x + area.w / 2 - ui.px(210),
             area.y + ui.px(40),
             ui.px(420).min(area.w),
             ui.px(150),
         );
+        let (title, rest) = panel.inset(ui.px(14)).split_top(ui.px(24));
+        let (field, rest) = rest.split_top(ui.px(34));
+        let (message, buttons) = rest.split_top(ui.px(24));
+        let (cancel, rest) = buttons.split_right(ui.px(96));
+        let (rename, _) = rest.split_right(ui.px(96));
+        (panel, title, field, message, rename, cancel)
+    }
+
+    fn update_rename(
+        &mut self,
+        ui: &mut Ui<'_>,
+        area: Rect,
+        directory: Option<&Path>,
+    ) -> Option<FileBrowserAction> {
+        let dialog = self.rename.as_mut()?;
+        if ui.input.keys().contains(&KeyInput::Escape) {
+            let _ = ui.input.take_keys();
+            self.rename = None;
+            return None;
+        }
+        let (_, _, field, _, rename, cancel) = Self::rename_rects(ui, area);
+        if ui.input.focus_requested(field) || ui.input.take_click(field) {
+            dialog.control = 0;
+        }
+        if ui.input.focus_requested(rename) {
+            dialog.control = 1;
+        }
+        if ui.input.focus_requested(cancel) {
+            dialog.control = 2;
+        }
+        let tabs = ui
+            .input
+            .keys()
+            .iter()
+            .filter(|key| **key == KeyInput::Tab)
+            .count();
+        if tabs != 0 {
+            for _ in 0..tabs % 3 {
+                dialog.control =
+                    (dialog.control + if ui.input.modifiers().shift { 2 } else { 1 }) % 3;
+            }
+        }
+        let confirmed = ui.input.keys().contains(&KeyInput::Enter);
+        let (_, focused) = ui.text_field_input(
+            &mut dialog.field,
+            field.inset(ui.px(3)),
+            dialog.control == 0,
+            false,
+        );
+        dialog.focused = focused;
+        ui.input.consume_keys(|_| ());
+        dialog.error = dialog.validated().err();
+        if ui.input.take_click(cancel.inset(ui.px(4))) || (confirmed && dialog.control == 2) {
+            self.rename = None;
+            return None;
+        }
+        let pressed = ui.input.take_click(rename.inset(ui.px(4)));
+        if !(pressed || confirmed && dialog.control != 2) {
+            return None;
+        }
+        let new_name = dialog.validated().ok()?.to_owned();
+        let dialog = self.rename.take()?;
+        Some(FileBrowserAction::File(FileRequest {
+            verb: FileVerb::Rename,
+            paths: vec![dialog.path],
+            directory: directory.map(Path::to_path_buf),
+            new_name: Some(new_name),
+            query: None,
+        }))
+    }
+
+    fn paint_rename(&mut self, ui: &mut Ui<'_>, area: Rect) {
+        let Some(dialog) = self.rename.as_mut() else {
+            return;
+        };
+        ui.modal_semantics();
+        let (panel, title, field, message, rename, cancel) = Self::rename_rects(ui, area);
         ui.painter.fill_rect(panel, ui.theme.panel);
         ui.painter
             .stroke_rect(panel, ui.scale.hairline(), ui.theme.panel_edge);
-        let inner = panel.inset(ui.px(14));
-        let (title, rest) = inner.split_top(ui.px(24));
         ui.label(
             title,
             &format!(
@@ -1094,32 +1190,30 @@ impl FilesBrowseView {
             ui.theme.text,
             Align::Left,
         );
-        let (field, rest) = rest.split_top(ui.px(34));
-        ui.text_field(
+        ui.paint_text_field(
             &mut dialog.field,
             field.inset(ui.px(3)),
             "New name",
-            true,
+            dialog.focused,
             false,
         );
-        let (message, buttons) = rest.split_top(ui.px(24));
-        if let Some(error) = dialog.error {
+        if let Some(error) = dialog.error.or_else(|| dialog.field.clipboard_error()) {
             ui.label(message, error, ui.theme.alarm, Align::Left);
         }
-
-        let (cancel, rest) = buttons.split_right(ui.px(96));
-        let (rename, _) = rest.split_right(ui.px(96));
-        let valid = dialog.validated().ok();
-        if ui.button(cancel.inset(ui.px(4)), "Cancel") {
-            self.rename = None;
-            return None;
-        }
-        let pressed = if let Some(new_name) = valid.clone() {
-            let clicked = ui.button(rename.inset(ui.px(4)), "Rename");
-            (clicked || confirmed).then_some(new_name)
+        super::window::paint_modal_button(
+            ui,
+            cancel.inset(ui.px(4)),
+            "Cancel",
+            dialog.control == 2,
+        );
+        if dialog.error.is_none() {
+            super::window::paint_modal_button(
+                ui,
+                rename.inset(ui.px(4)),
+                "Rename",
+                dialog.control == 1,
+            );
         } else {
-            // Inert rather than absent, with the reason above it: a button that vanishes as you
-            // type is a button you cannot learn.
             ui.painter
                 .fill_rounded_rect(rename.inset(ui.px(4)), ui.px(4), ui.theme.panel_alt);
             ui.label(
@@ -1128,18 +1222,7 @@ impl FilesBrowseView {
                 ui.theme.text_dim,
                 Align::Centre,
             );
-            None
-        };
-        let new_name = pressed?;
-        let path = dialog.path.clone();
-        self.rename = None;
-        Some(FileBrowserAction::File(FileRequest {
-            verb: FileVerb::Rename,
-            paths: vec![path],
-            directory: directory.map(Path::to_path_buf),
-            new_name: Some(new_name),
-            query: None,
-        }))
+        }
     }
 
     /// The file verbs as buttons: every action a keyboard can reach here, reachable by pointer.
@@ -1199,7 +1282,7 @@ impl FilesBrowseView {
         ui.painter.fill_rect(area, ui.theme.panel_alt);
         let (modified, rest) = area.split_right(ui.px(150).min(area.w / 3));
         let (size, name) = rest.split_right(ui.px(100).min(rest.w / 3));
-        let style = TextStyle::tracked(ui.theme.body.face, 11.0, 0.08);
+        let style = ui.text_style(TextStyle::tracked(ui.theme.body.face, 11.0, 0.08));
         ui.label_styled(
             name.inset(ui.px(7)),
             "NAME",
@@ -1345,6 +1428,18 @@ impl FilesBrowseView {
                         ui.theme.text,
                         Align::Centre,
                     );
+                    if ui.input.focus_requested(tile) {
+                        state.focus_area = FocusArea::Entries;
+                        state.focus = index;
+                    }
+                    ui.semantic(
+                        pixelkit_ui::semantics::Role::ListBoxOption,
+                        &entry.name,
+                        tile,
+                        state.focus_area == FocusArea::Entries && state.focus == index,
+                        Some(state.selection.contains(&entry.path)),
+                        None,
+                    );
                     if ui.input.take_context_click(tile) {
                         state.focus_area = FocusArea::Entries;
                         state.focus = index;
@@ -1458,9 +1553,21 @@ impl FilesBrowseView {
             ui.label_styled(
                 modified.inset(ui.px(7)),
                 &crate::format::timestamp_ms(entry.mtime_ms),
-                TextStyle::new(ui.theme.body.face, 12.0),
+                ui.text_style(TextStyle::new(ui.theme.body.face, 12.0)),
                 ui.theme.text_dim,
                 Align::Right,
+            );
+            if ui.input.focus_requested(row) {
+                state.focus_area = FocusArea::Entries;
+                state.focus = index;
+            }
+            ui.semantic(
+                pixelkit_ui::semantics::Role::ListBoxOption,
+                &entry.name,
+                row,
+                state.focus_area == FocusArea::Entries && state.focus == index,
+                Some(state.selection.contains(&entry.path)),
+                None,
             );
             // A secondary press is a menu about *this* row, so it selects it first — a menu
             // whose Rename acted on whatever happened to be selected elsewhere would be a menu
@@ -1616,6 +1723,7 @@ mod tests {
         text: pixelkit_text::TextCache,
         input: Input,
         kernel: RasterKernel,
+        semantics: pixelkit_ui::semantics::Semantics,
     }
 
     impl Harness {
@@ -1664,6 +1772,7 @@ mod tests {
                 text: pixelkit_text::TextCache::new(crate::surface::fonts::set()),
                 input: Input::new(),
                 kernel: RasterKernel::new(),
+                semantics: pixelkit_ui::semantics::Semantics::default(),
             }
         }
 
@@ -1672,8 +1781,6 @@ mod tests {
             search_query: Option<&str>,
             search_entries: Option<&[BrowseEntry]>,
         ) -> Option<FileBrowserAction> {
-            let empty_thumbnails = std::collections::HashMap::new();
-            let empty_feeds = std::collections::HashMap::new();
             let here = FilesLocation::Directory(self.listing.directory.clone());
             let searching = search_query.map(|query| FilesLocation::Search {
                 root: self.listing.directory.clone(),
@@ -1684,6 +1791,17 @@ mod tests {
             } else {
                 self.state.replace(here.clone());
             }
+            self.frame_current(search_query, search_entries)
+        }
+
+        fn frame_current(
+            &mut self,
+            search_query: Option<&str>,
+            search_entries: Option<&[BrowseEntry]>,
+        ) -> Option<FileBrowserAction> {
+            let empty_thumbnails = std::collections::HashMap::new();
+            let empty_feeds = std::collections::HashMap::new();
+            let here = FilesLocation::Directory(self.listing.directory.clone());
             let data = FileBrowserData {
                 sources: &self.sources,
                 listing: Some((&here, self.state.show_hidden, &self.listing)),
@@ -1698,6 +1816,7 @@ mod tests {
                 icons: &HashMap::new(),
                 home: None,
             };
+            self.semantics.begin("Home Files");
             let mut ui = Ui::new(
                 Painter::new(&mut self.buffer),
                 &mut self.text,
@@ -1705,7 +1824,8 @@ mod tests {
                 crate::surface::design::theme(),
                 Scale::ONE,
                 &mut self.kernel,
-            );
+            )
+            .with_semantics(&mut self.semantics);
             let action = self.screen.draw(
                 &mut ui,
                 Rect::new(0, 0, 1000, 600),
@@ -1745,6 +1865,92 @@ mod tests {
                 .row(&ui, Rect::new(0, 0, 1000, 600), index)
                 .expect("the menu has that row")
         }
+    }
+
+    #[test]
+    fn home_feed_navigation_loads_a_directory_without_an_extra_input_wake() {
+        let mut h = Harness::new();
+        h.state.go_to(FilesLocation::Recent);
+        h.frame_current(None, None);
+        let tree = h.semantics.update();
+        let bounds = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Downloads"))
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        h.input.cursor_moved(
+            (bounds.x0 + bounds.width() / 2.0) as f32,
+            (bounds.y0 + bounds.height() / 2.0) as f32,
+        );
+        h.input.mouse(MouseButton::Left, true);
+        h.input.mouse(MouseButton::Left, false);
+        assert_eq!(
+            h.frame_current(None, None),
+            Some(FileBrowserAction::Load {
+                location: FilesLocation::Directory(h.listing.directory.clone()),
+                show_hidden: false,
+            })
+        );
+        h.frame_current(None, None);
+        assert!(
+            h.semantics
+                .update()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("paper.pdf"))
+        );
+    }
+
+    #[test]
+    fn home_rename_graph_excludes_background_and_tab_cancel_never_renames() {
+        let mut h = Harness::new();
+        h.frame();
+        let tree = h.semantics.update();
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Downloads"))
+        );
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("paper.pdf"))
+        );
+        h.screen.rename = Some(RenameDialog::new(h.listing.directory.join("paper.pdf")));
+        h.screen
+            .rename
+            .as_mut()
+            .unwrap()
+            .field
+            .set_text("cafe\u{301}-🧑🏽‍💻.pdf");
+        h.frame();
+        let tree = h.semantics.update();
+        let labels: Vec<_> = tree
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| node.label())
+            .collect();
+        assert_eq!(labels, ["New name", "Cancel", "Rename", "Home Files"]);
+        assert!(tree.nodes.last().unwrap().1.is_modal());
+        h.input.key(KeyInput::Tab);
+        h.frame();
+        h.input.key(KeyInput::Tab);
+        h.frame();
+        h.input.key(KeyInput::Enter);
+        assert_eq!(h.frame(), None);
+        assert!(!h.screen.rename_open());
+        assert!(!h.semantics.update().nodes.last().unwrap().1.is_modal());
+        h.screen.rename = Some(RenameDialog::new(h.listing.directory.join("paper.pdf")));
+        h.frame();
+        h.input.key(KeyInput::Tab);
+        h.input.key(KeyInput::Tab);
+        h.input.key(KeyInput::Enter);
+        assert_eq!(h.frame(), None);
+        assert!(!h.screen.rename_open());
+        assert!(!h.semantics.update().nodes.last().unwrap().1.is_modal());
     }
 
     impl Harness {

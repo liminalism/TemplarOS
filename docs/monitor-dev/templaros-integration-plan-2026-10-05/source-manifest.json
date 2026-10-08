@@ -1,0 +1,296 @@
+[
+  {
+    "evidence": "E01",
+    "path": "TemplarOS/ARCHITECTURE.md",
+    "first_line": 24,
+    "last_line": 61,
+    "file_sha256": "5ad757af0d4b67068dab47fa27da5db9a485badddfc4187709deb131d91ff96c"
+  },
+  {
+    "evidence": "E02",
+    "path": "TemplarOS/portals/xdg-desktop-portal-templar/templaros-portals.conf",
+    "first_line": 1,
+    "last_line": 6,
+    "file_sha256": "65c8bdbb6241f77cb7d319bd54c3ac858e0cc1c9f68f9645059e6902c1c6abe3"
+  },
+  {
+    "evidence": "E02",
+    "path": "TemplarOS/portals/xdg-desktop-portal-templar/src/main.rs",
+    "first_line": 1,
+    "last_line": 20,
+    "file_sha256": "ad6e0b5b79c9a95de64f1b1ee2d672e520411a3c96ce69fe5f21ab7a35c21ab2"
+  },
+  {
+    "evidence": "E03",
+    "path": "TemplarOS/portals/xdg-desktop-portal-templar/src/file_chooser.rs",
+    "first_line": 39,
+    "last_line": 89,
+    "file_sha256": "9a3964ec9771ddccf7fdd667ce3ee4c4fbda0a4e17e22bef2350f587be50c951"
+  },
+  {
+    "evidence": "E03",
+    "path": "TemplarOS/portals/xdg-desktop-portal-templar/src/dialog.rs",
+    "first_line": 375,
+    "last_line": 393,
+    "file_sha256": "999329202e7371f752fcce8cf20744f45fd61285aa390b5dee8d292a36078028"
+  },
+  {
+    "evidence": "E04",
+    "path": "PixelKit/crates/pixelkit-windowing/src/host.rs",
+    "first_line": 1134,
+    "last_line": 1200,
+    "file_sha256": "dac7f62a1b85ff3adb128fd2a3846d5fb6bd987e573666f7d757fbc00e05fbb4"
+  },
+  {
+    "evidence": "E05",
+    "path": "TemplarOS/portals/xdg-desktop-portal-templar/src/file_chooser.rs",
+    "first_line": 285,
+    "last_line": 334,
+    "file_sha256": "9a3964ec9771ddccf7fdd667ce3ee4c4fbda0a4e17e22bef2350f587be50c951"
+  },
+  {
+    "evidence": "E06",
+    "path": "TemplarOS/compositor/templar-comp/src/backend/udev.rs",
+    "first_line": 1,
+    "last_line": 18,
+    "file_sha256": "ad6539ff331fceb4584f56bccbdd4cefbb4bb0dc6bc9f6e3b1bafd519431871b"
+  },
+  {
+    "evidence": "E06",
+    "path": "TemplarOS/compositor/templar-comp/src/backend/udev.rs",
+    "first_line": 519,
+    "last_line": 539,
+    "file_sha256": "ad6539ff331fceb4584f56bccbdd4cefbb4bb0dc6bc9f6e3b1bafd519431871b"
+  },
+  {
+    "evidence": "E07",
+    "path": "TemplarOS/compositor/templar-comp/src/backend/udev.rs",
+    "first_line": 693,
+    "last_line": 751,
+    "file_sha256": "ad6539ff331fceb4584f56bccbdd4cefbb4bb0dc6bc9f6e3b1bafd519431871b"
+  },
+  {
+    "evidence": "E07",
+    "path": "TemplarOS/compositor/templar-comp/src/state.rs",
+    "first_line": 372,
+    "last_line": 395,
+    "file_sha256": "4b7ba4a89a5e4c3741aebf3fb601a953794e2ed2ca23632afc976827ee245945"
+  },
+  {
+    "evidence": "E08",
+    "path": "TemplarOS/apps/templar-settings/src/surface.rs",
+    "first_line": 30,
+    "last_line": 65,
+    "file_sha256": "467f32451c9dddd5956ffd71c09c94f025864c0b704583ded0de43c04e69291f"
+  },
+  {
+    "evidence": "E09",
+    "path": "TemplarOS/services/templar-sessiond/src/apis/audio.rs",
+    "first_line": 1,
+    "last_line": 76,
+    "file_sha256": "4682114d00e9746e1a5eeea2abade788d545768556b5f488ac394533ad3c5dbe"
+  },
+  {
+    "evidence": "E10",
+    "path": "TemplarOS/crates/templar-session-core/src/power.rs",
+    "first_line": 1,
+    "last_line": 23,
+    "file_sha256": "5b546b6cae3b1667519c6dbd7d0f22bf2e35a51fb46a850c50492e1aad7b0eed"
+  },
+  {
+    "evidence": "E10",
+    "path": "TemplarOS/services/templar-sessiond/src/apis/lifecycle.rs",
+    "first_line": 425,
+    "last_line": 448,
+    "file_sha256": "de17122eea6ed458cc543c4a9f993a2c5db2d82d551dc422d74978590c559848"
+  },
+  {
+    "evidence": "E11",
+    "path": "TemplarOS/compositor/templar-comp/src/session_lock.rs",
+    "first_line": 33,
+    "last_line": 49,
+    "file_sha256": "d6667b94e1c299e97ca9d1745aa451688a7eb4dd86596b0d576fe175533f2882"
+  },
+  {
+    "evidence": "E12",
+    "path": "PixelKit/crates/pixelkit-shell/src/clipboard.rs",
+    "first_line": 1,
+    "last_line": 59,
+    "file_sha256": "6d91b91d498592dfcb56521e5b33e65313b6b90a99034a28b23eb74d71debc8f"
+  },
+  {
+    "evidence": "E13",
+    "path": "PixelKit/crates/pixelkit-windowing/src/host.rs",
+    "first_line": 248,
+    "last_line": 294,
+    "file_sha256": "dac7f62a1b85ff3adb128fd2a3846d5fb6bd987e573666f7d757fbc00e05fbb4"
+  },
+  {
+    "evidence": "E13",
+    "path": "PixelKit/crates/pixelkit-ui/Cargo.toml",
+    "first_line": 1,
+    "last_line": 21,
+    "file_sha256": "eedf038733c6219f40d6254956036fb508c4637f0f022606c0ca38763d46c273"
+  },
+  {
+    "evidence": "E14",
+    "path": "TemplarOS/crates/templar-session-core/src/providers.rs",
+    "first_line": 152,
+    "last_line": 168,
+    "file_sha256": "24a1fc3fab5b5d4815fde50b01e1d1f1ba248e6b99075caaf673be9565370647"
+  },
+  {
+    "evidence": "E14",
+    "path": "TemplarOS/services/templar-filed/src/bookmarks.rs",
+    "first_line": 1,
+    "last_line": 76,
+    "file_sha256": "5c9490ebbd7d32898791fee51b1f906e3bc90a3f94bfda68e0227693944e0e67"
+  },
+  {
+    "evidence": "E15",
+    "path": "TemplarOS/services/templar-hostd/src/main.rs",
+    "first_line": 43,
+    "last_line": 69,
+    "file_sha256": "ebeabd33db75bb5eced3d7712236d57d5b0aad5c3e1ac8d66a40eba923e31e11"
+  },
+  {
+    "evidence": "E15",
+    "path": "TemplarOS/services/templar-hostd/src/updates.rs",
+    "first_line": 307,
+    "last_line": 335,
+    "file_sha256": "c8cecb062c172f4436e9148326439d121c8be39483dc07718f4a283365854ac6"
+  },
+  {
+    "evidence": "E15",
+    "path": "TemplarOS/services/templar-hostd/src/boot_entries.rs",
+    "first_line": 205,
+    "last_line": 224,
+    "file_sha256": "fee05910d5c6ddaf788a39db371461e11445b39190b292a424d82dc47d4ff415"
+  },
+  {
+    "evidence": "E16",
+    "path": "TemplarOS/distro/deploy/layout.toml",
+    "first_line": 34,
+    "last_line": 51,
+    "file_sha256": "340cbf578cf7748df649ba7e590c3b5838d290d637a22fd1f330d61779657d88"
+  },
+  {
+    "evidence": "E16",
+    "path": "TemplarOS/distro/deploy/layout.toml",
+    "first_line": 93,
+    "last_line": 120,
+    "file_sha256": "340cbf578cf7748df649ba7e590c3b5838d290d637a22fd1f330d61779657d88"
+  },
+  {
+    "evidence": "E16",
+    "path": "TemplarOS/installer/provision.sh",
+    "first_line": 1216,
+    "last_line": 1238,
+    "file_sha256": "7b7778f6ecf2c88ad9648757d1da5b45e3066330080e464ce37d3a550903cbf8"
+  },
+  {
+    "evidence": "E17",
+    "path": "TemplarOS/docs/generated/ACTIVE-WORK.md",
+    "first_line": 82,
+    "last_line": 101,
+    "file_sha256": "530261a5887b125d19356708eb02a2d7309b515aff8baaf6158a0f1b4d20d51c"
+  },
+  {
+    "evidence": "E18",
+    "path": "TemplarOS/docs/generated/ACTIVE-WORK.md",
+    "first_line": 68,
+    "last_line": 80,
+    "file_sha256": "530261a5887b125d19356708eb02a2d7309b515aff8baaf6158a0f1b4d20d51c"
+  },
+  {
+    "evidence": "E19",
+    "path": "TemplarOS/session/templar-session/src/main.rs",
+    "first_line": 20,
+    "last_line": 65,
+    "file_sha256": "bf6e769f88938a6438a43f583b9e1bc411afb948927d1a2c74bd294d38b5724e"
+  },
+  {
+    "evidence": "E19",
+    "path": "TemplarOS/session/templar-session/src/main.rs",
+    "first_line": 107,
+    "last_line": 145,
+    "file_sha256": "bf6e769f88938a6438a43f583b9e1bc411afb948927d1a2c74bd294d38b5724e"
+  },
+  {
+    "evidence": "E20",
+    "path": "TemplarOS/Cargo.toml",
+    "first_line": 45,
+    "last_line": 51,
+    "file_sha256": "4b2cc7be010085bc756f3f1d9e143260e23dd913fd5dd8fbce326ff05c4f6253"
+  },
+  {
+    "evidence": "E20",
+    "path": "TemplarOS/Cargo.toml",
+    "first_line": 75,
+    "last_line": 101,
+    "file_sha256": "4b2cc7be010085bc756f3f1d9e143260e23dd913fd5dd8fbce326ff05c4f6253"
+  },
+  {
+    "evidence": "E20",
+    "path": "PixelKit/__AGENT_PACK_REPORT.md",
+    "first_line": 21,
+    "last_line": 41,
+    "file_sha256": "bba4566e0f867e03ac319c2f896fa010828843b3c91f10521bb5ef04d6270c59"
+  },
+  {
+    "evidence": "E21",
+    "path": "TemplarOS/crates/templar-associationd/src/dbus.rs",
+    "first_line": 43,
+    "last_line": 71,
+    "file_sha256": "65db7c894e67fc4f2da29ea65d47ba2d39e38353a406687cc5c2c9ca48ba227e"
+  },
+  {
+    "evidence": "E21",
+    "path": "TemplarOS/crates/templar-associationd/src/export.rs",
+    "first_line": 15,
+    "last_line": 51,
+    "file_sha256": "90c295728881d40ef7a214896d46e687ee75a8e46fc76e7e2485912adfa47c73"
+  },
+  {
+    "evidence": "E22",
+    "path": "TemplarOS/services/templar-hostd/src/boot_entries.rs",
+    "first_line": 60,
+    "last_line": 91,
+    "file_sha256": "fee05910d5c6ddaf788a39db371461e11445b39190b292a424d82dc47d4ff415"
+  },
+  {
+    "evidence": "E22",
+    "path": "TemplarOS/services/templar-hostd/src/boot_entries.rs",
+    "first_line": 173,
+    "last_line": 194,
+    "file_sha256": "fee05910d5c6ddaf788a39db371461e11445b39190b292a424d82dc47d4ff415"
+  },
+  {
+    "evidence": "E23",
+    "path": "TemplarOS/docs/generated/ACTIVE-WORK.md",
+    "first_line": 1004,
+    "last_line": 1030,
+    "file_sha256": "530261a5887b125d19356708eb02a2d7309b515aff8baaf6158a0f1b4d20d51c"
+  },
+  {
+    "evidence": "E24",
+    "path": "TemplarOS/distro/seeds/selection.toml",
+    "first_line": 326,
+    "last_line": 341,
+    "file_sha256": "bdef8d8110e00bbd0765c11b7d1f78a24e37b18022edaf8a9a671cdc0dd48a1a"
+  },
+  {
+    "evidence": "E24",
+    "path": "TemplarOS/distro/seeds/selection.toml",
+    "first_line": 366,
+    "last_line": 383,
+    "file_sha256": "bdef8d8110e00bbd0765c11b7d1f78a24e37b18022edaf8a9a671cdc0dd48a1a"
+  },
+  {
+    "evidence": "E25",
+    "path": "PixelKit/crates/pixelkit-ui/src/widget.rs",
+    "first_line": 37,
+    "last_line": 86,
+    "file_sha256": "68aec7f2789b77ad8ccebdf655325eca23809ad3629ce6185b5c67f183644857"
+  }
+]

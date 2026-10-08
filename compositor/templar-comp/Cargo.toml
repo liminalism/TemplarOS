@@ -21,14 +21,21 @@ templar-build = { workspace = true }
 templar-window = { workspace = true }
 templar-comp-integration = { workspace = true }
 templar-types = { workspace = true }
+templar-client = { workspace = true }
+templar-wallpaper = { workspace = true, default-features = false }
 anyhow = { workspace = true }
 clap = { workspace = true }
 libc = { workspace = true }
 sd-notify = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
+zbus = { workspace = true }
+uuid = { workspace = true }
+input-sys = { version = "1.19", features = ["libinput_1_23"] }
 
 # The compositor's own chrome renderer (`src/chrome/`): the recovery band/tab, the pressure
 # overlay, the "show every window" labels, the fallback switcher and the lock screen are real
@@ -110,6 +117,6 @@ depends = "$auto, xwayland"
 assets = [
     ["target/release/templar-comp", "usr/bin/templar-comp", "755"],
     ["../../session/units/user/templar-comp.service", "usr/lib/systemd/user/templar-comp.service", "644"],
-    ["../../interfaces/wayland/templar-shell-v1.xml", "usr/share/templaros/protocols/templar-shell-v1.xml", "644"],
+    ["../../interfaces/wayland/templar-shell-v2.xml", "usr/share/templaros/protocols/templar-shell-v2.xml", "644"],
     ["../../interfaces/wayland/templar-recovery-v1.xml", "usr/share/templaros/protocols/templar-recovery-v1.xml", "644"],
 ]

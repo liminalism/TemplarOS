@@ -6,7 +6,7 @@
 //!
 //! It is a pure function over [`ShellToplevel`] rather than a method on [`crate::WindowService`] on
 //! purpose: the compositor holds those records and the shell receives exactly the same ones over
-//! `templar_shell_v1`, so both sides run *this* function on the same bytes instead of keeping two
+//! `templar_shell_v2`, so both sides run *this* function on the same bytes instead of keeping two
 //! models in step. `WindowService::task_units` is one line over it.
 //!
 //! Recency is not recomputed here either. [`ShellToplevel::mru_rank`] is the service's activation
@@ -19,8 +19,9 @@ use std::collections::BTreeMap;
 use crate::{GroupId, ShellToplevel, WindowId};
 use templar_types::AppId;
 
-/// How many windows a unit may have before its chip stops offering a fan and hands over to
-/// Taskfield. A linear strip is intrinsically bad at thirty windows; this is where it admits it.
+/// How many cards a chip's row holds, and how many on-screen windows a unit may have before its
+/// chip stops offering the row and hands over to Taskfield. A linear strip is intrinsically bad
+/// at thirty windows; this is where it admits it.
 pub const FAN_MAX: usize = 4;
 
 /// What one island chip, one Taskfield section and one `` Alt+` `` scope name.
@@ -101,21 +102,28 @@ impl TaskUnit {
 /// What a click or a dwell on a chip does, by how much there is to show.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChipAction {
-    /// Nothing to choose between: activate (unshelving first if that is all there is).
+    /// Nothing to choose between — the unit has one window: activate it (unshelving it first
+    /// when it is parked).
     Direct,
-    /// Few enough to fan out of the chip as preview cards.
+    /// Few enough to lay out above the chip as a row of separate preview cards, parked windows
+    /// included: a terminal parked by the drop-down chord is still one of the unit's windows,
+    /// and a chip that only ever reached the one on screen hid the rest.
     Fan,
-    /// Too many for a strip: hand over to Taskfield, filtered to this unit.
+    /// More on screen than the row holds: hand over to Taskfield, filtered to this unit.
     Taskfield,
 }
 
-/// [`ChipAction`] for a unit, by its visible window count.
+/// [`ChipAction`] for a unit: by every window it has for "is there a choice", and by its
+/// on-screen windows for the Taskfield handover, because Taskfield's unit filter shows exactly
+/// those.
 #[must_use]
 pub fn chip_action(unit: &TaskUnit) -> ChipAction {
-    match unit.visible() {
-        0 | 1 => ChipAction::Direct,
-        n if n <= FAN_MAX => ChipAction::Fan,
-        _ => ChipAction::Taskfield,
+    if unit.windows.len() <= 1 {
+        ChipAction::Direct
+    } else if unit.visible() > FAN_MAX {
+        ChipAction::Taskfield
+    } else {
+        ChipAction::Fan
     }
 }
 
@@ -246,6 +254,7 @@ mod tests {
             geometry: Rect::new(0, 0, 640, 480),
             layer: Layer::Normal,
             group: None,
+            tab_count: None,
         }
     }
 
@@ -349,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn shelved_windows_count_against_the_chip_but_stay_in_the_unit() {
+    fn parked_windows_open_the_row_but_only_on_screen_ones_hand_over() {
         let mut parked = top(2, Some("org.templaros.Files"), 1);
         parked.shelved = true;
         let mut also_parked = top(3, Some("org.templaros.Files"), 2);
@@ -357,17 +366,42 @@ mod tests {
         let mixed = units(&[
             top(1, Some("org.templaros.Files"), 0),
             parked.clone(),
-            also_parked,
+            also_parked.clone(),
         ]);
 
         assert_eq!(mixed[0].windows.len(), 3);
         assert_eq!(mixed[0].visible(), 1);
-        assert_eq!(chip_action(&mixed[0]), ChipAction::Direct);
+        assert_eq!(
+            chip_action(&mixed[0]),
+            ChipAction::Fan,
+            "one window on screen and two parked is still a choice of three"
+        );
         assert!(!mixed[0].all_shelved());
 
-        let all = units(&[parked]);
+        let all = units(&[parked.clone()]);
         assert!(all[0].all_shelved());
         assert_eq!(chip_action(&all[0]), ChipAction::Direct);
+
+        let all_parked = units(&[parked, also_parked]);
+        assert_eq!(chip_action(&all_parked[0]), ChipAction::Fan);
+
+        // Taskfield's unit filter shows on-screen windows only, so parked ones never push a
+        // chip over to it.
+        let mut crowded: Vec<ShellToplevel> = (1..=4)
+            .map(|id| {
+                top(
+                    id,
+                    Some("org.templaros.Files"),
+                    u32::try_from(id).expect("small"),
+                )
+            })
+            .collect();
+        let mut extra = top(5, Some("org.templaros.Files"), 5);
+        extra.shelved = true;
+        crowded.push(extra);
+        assert_eq!(chip_action(&units(&crowded)[0]), ChipAction::Fan);
+        crowded[4].shelved = false;
+        assert_eq!(chip_action(&units(&crowded)[0]), ChipAction::Taskfield);
     }
 
     #[test]

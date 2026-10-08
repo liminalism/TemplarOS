@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 templar-build = { workspace = true }
-templar-file-index = { workspace = true }
+templar-file-index = { workspace = true, features = ["store"] }
 templar-state = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -22,6 +22,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 toml = { workspace = true }
+templar-client = { workspace = true }
+tokio = { workspace = true }
+zbus = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

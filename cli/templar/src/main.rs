@@ -17,8 +17,8 @@ use std::{
     path::{Path, PathBuf},
 };
 use templar::{
-    archive, bus, dev, doctor, files, history, open, power, project, providers, res, settings,
-    update,
+    account, archive, bus, dev, doctor, files, history, notify, open, power, project, providers,
+    res, settings, update,
 };
 use templar_client::proxies::{
     AppIdentityProxy, AssociationsProxy, AudioProxy, BacklightProxy, BatteryProxy,
@@ -39,6 +39,24 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run explicit work in its own sibling cgroup, retaining this terminal and job control.
+    Run {
+        #[arg(long, value_parser = ["interactive", "background-compute"], default_value = "background-compute")]
+        class: String,
+        /// Notify when the command finishes, reusing the owned child's exit. The flag is
+        /// the opt-in: it notifies however short the run, while still suppressing
+        /// canceled runs and shell-hook duplicates by policy.
+        #[arg(long)]
+        notify: bool,
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<std::ffi::OsString>,
+    },
+    #[command(hide = true)]
+    WorkloadGate {
+        socket: PathBuf,
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<std::ffi::OsString>,
+    },
     /// Applications: identity, instances, launching.
     App {
         #[command(subcommand)]
@@ -59,6 +77,17 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Start the Terminal provider role in a directory through `Launcher1`, so the terminal gets
+    /// its own application identity. What `templar-terminal`, PCManFM-Qt's terminal command,
+    /// runs.
+    Terminal(TerminalArgs),
+    /// PCManFM-Qt integration: settings the session repairs.
+    Pcmanfm {
+        #[command(subcommand)]
+        command: PcmanfmCommand,
+        #[arg(long, global = true)]
+        json: bool,
+    },
     /// Resource governor: pressure, stage, victim scores and traces.
     Res {
         #[command(subcommand)]
@@ -77,6 +106,11 @@ enum Command {
     Archive {
         #[command(subcommand)]
         command: ArchiveCommand,
+    },
+    /// Owned account changes, preserving credentials across rollback (run without sudo).
+    Account {
+        #[command(subcommand)]
+        command: AccountCommand,
     },
     /// Volume, display brightness and battery.
     Status {
@@ -120,6 +154,13 @@ enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
+    /// Native wallpaper: desired/applied status, rotation and lossless Settings1 policy.
+    Wallpaper {
+        #[command(subcommand)]
+        command: Option<templar::wallpaper::WallpaperCommand>,
+        #[arg(long, global = true)]
+        json: bool,
+    },
     /// The Home Field.
     Home {
         #[command(subcommand)]
@@ -139,6 +180,13 @@ enum Command {
     Garden {
         #[command(subcommand)]
         command: Option<GardenCommand>,
+        #[arg(long, global = true)]
+        json: bool,
+    },
+    /// Terminal job-completion notifications: the shell hooks' delivery route.
+    Notify {
+        #[command(subcommand)]
+        command: NotifyCommand,
         #[arg(long, global = true)]
         json: bool,
     },
@@ -184,14 +232,65 @@ enum Command {
         /// medium runs before an install, so an image check cannot block one.
         #[arg(long, conflicts_with_all = ["hardware", "check", "profile"])]
         preflight: bool,
-        /// Select one hardware case or built-in check (for example `gpu-mode`).
-        #[arg(long, requires = "hardware")]
+        /// Run one check only: a built-in id (for example `file-index`) on its own, or
+        /// a hardware case (for example `gpu-mode`) together with `--hardware`.
+        #[arg(long)]
         check: Option<String>,
         /// Override hardware profile detection when reviewing a matrix off-device.
         #[arg(long, requires = "hardware")]
         profile: Option<String>,
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AccountCommand {
+    /// Change your password through a sealed FD after hidden terminal confirmation.
+    Password,
+}
+
+#[derive(Debug, clap::Args)]
+struct TerminalArgs {
+    /// Directory to open in (default: the current directory).
+    #[arg(long, short = 'd', visible_alias = "directory")]
+    working_directory: Option<PathBuf>,
+    /// Keep the window open after the command exits.
+    #[arg(long)]
+    hold: bool,
+    /// Resolve the provider and print what would be launched, without launching.
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+    /// Run this program and its arguments instead of a shell. Everything after it is the
+    /// command, so it must come last.
+    #[arg(
+        short = 'e',
+        long = "command",
+        num_args = 1..,
+        allow_hyphen_values = true,
+        value_name = "COMMAND"
+    )]
+    command: Vec<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum PcmanfmCommand {
+    /// Rewrite `[System] Terminal` / `FallbackIconThemeName` when what they name cannot work here
+    /// (not on PATH / not installed); valid choices and every other byte are kept. Also adds the
+    /// `templar-terminal` group to libfm-qt's per-user terminal list. The session does this at
+    /// startup; this runs it now.
+    Repair {
+        /// The settings file (default: `$XDG_CONFIG_HOME/pcmanfm-qt/default/settings.conf`).
+        #[arg(long)]
+        settings: Option<PathBuf>,
+        /// The terminal list (default: `$XDG_DATA_HOME/libfm-qt/terminals.list`).
+        #[arg(long)]
+        terminals_list: Option<PathBuf>,
+        /// Copy the original settings to `<settings>.templaros-bak` first (never overwrites one).
+        #[arg(long)]
+        backup: bool,
     },
 }
 
@@ -400,13 +499,24 @@ enum FilesCommand {
         #[command(subcommand)]
         command: IndexCommand,
     },
+    /// Explicit bookmark interoperability; ordinary Home changes never replace native places.
+    Bookmarks {
+        #[command(subcommand)]
+        command: BookmarksCommand,
+    },
     /// Render a path in one of the canonical forms.
     Path {
-        path: String,
+        path: std::path::PathBuf,
         /// `canonical|as-shown|uri|shell-quoted|parent-directory|name`; omit to list the forms.
         #[arg(long)]
         form: Option<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum BookmarksCommand {
+    /// Add Home places to GTK/libfm-qt bookmarks, preserving native entries and saving a backup.
+    Export,
 }
 
 #[derive(Debug, Subcommand)]
@@ -426,6 +536,27 @@ enum IndexCommand {
     /// Schedule a background repair of the given roots (by id, from `status`), or every
     /// registered root when none are given. Returns immediately; watch `status` for progress.
     Reconcile { roots: Vec<i64> },
+    /// Read an authoritative native-path policy at the observed hash from `status --json`.
+    Policy {
+        path: std::path::PathBuf,
+        #[arg(long)]
+        expected_hash: String,
+    },
+    /// Store a root policy; use --expected-hash absent for add-only registration.
+    Configure {
+        path: std::path::PathBuf,
+        #[arg(long)]
+        expected_hash: String,
+        /// RootPolicy JSON; omitted means the normal Home policy.
+        #[arg(long)]
+        policy_json: Option<String>,
+    },
+    /// Remove a native-path root only if its authoritative policy revision still matches.
+    Remove {
+        path: std::path::PathBuf,
+        #[arg(long)]
+        expected_hash: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -633,6 +764,32 @@ enum ProjectCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum NotifyCommand {
+    /// Report one finished foreground job. The hooks call this only for jobs that pass
+    /// their elapsed prefilter; the completion policy decides whether it notifies.
+    TerminalCompleted {
+        /// How long the job ran, in milliseconds.
+        #[arg(long)]
+        elapsed_ms: u64,
+        /// The job's exit status (130 for Ctrl-C).
+        #[arg(long)]
+        status: i32,
+        /// A safe label: a bare command name, never arguments or redirections.
+        #[arg(long)]
+        label: String,
+        /// The terminal emulator's producer name for native-dedupe matching; empty
+        /// detects from the environment.
+        #[arg(long, default_value = "")]
+        emulator: String,
+        /// Terminal focus: focused, unfocused, unknown, or auto to ask the terminal.
+        #[arg(long, default_value = "auto")]
+        focus: String,
+    },
+    /// Print the hook-prefilter assignment for a new shell to evaluate.
+    PolicySh,
+}
+
+#[derive(Debug, Subcommand)]
 enum GardenCommand {
     /// Every place the ledger knows, with its stage and relevance (the default).
     Contexts,
@@ -644,6 +801,23 @@ enum GardenCommand {
     Tend {
         #[arg(long, default_value = "primary")]
         output: String,
+    },
+    /// Display-only coding/agent sessions (version 1).
+    Sessions,
+    /// Resume a recorded session in a fresh brokered terminal instance.
+    ResumeSession {
+        path: PathBuf,
+        session_id: String,
+    },
+    /// Forward a supported agent's documented stdin JSON callback.
+    AgentHook {
+        #[arg(value_parser = ["claude-code"])]
+        adapter: String,
+    },
+    /// Initialize a private bounded command journal once at interactive shell startup.
+    #[command(hide = true)]
+    JournalInit {
+        pid: u32,
     },
     /// Record a semantic activity source. Used by first-party shell integrations.
     Observe {
@@ -662,7 +836,7 @@ enum GardenCommand {
     Unpin {
         path: PathBuf,
     },
-    /// Pin, and freeze at the tile's current size.
+    /// Keep the project on Home without changing its size or activity state.
     Keep {
         path: PathBuf,
     },
@@ -709,8 +883,21 @@ enum SessionCommand {
     Events,
 }
 
+/// Rust ignores SIGPIPE, so a `templar ... | head` whose reader goes away early dies as a
+/// BrokenPipe panic *after* printing good output. Restore the default disposition first: dying
+/// quietly on a closed pipe is what every other Unix tool does.
+#[allow(unsafe_code)]
+fn restore_sigpipe_default() {
+    // SAFETY: `signal` with `SIG_DFL` only resets this process's own disposition; no handler
+    // runs and no memory is shared.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    restore_sigpipe_default();
     if let Err(error) = run().await {
         // One readable sentence, with the causes that explain it — never a panic or a debug dump.
         eprintln!("templar: {error:#}");
@@ -744,13 +931,107 @@ async fn home_command(command: HomeCommand, json: bool) -> Result<()> {
     )
 }
 
+async fn notify_command(command: NotifyCommand, json: bool) -> Result<()> {
+    use std::str::FromStr as _;
+    match command {
+        NotifyCommand::PolicySh => {
+            println!("{}", notify::policy_sh(&notify::read_policy().await));
+            Ok(())
+        }
+        NotifyCommand::TerminalCompleted {
+            elapsed_ms,
+            status,
+            label,
+            emulator,
+            focus,
+        } => {
+            let focus = notify::FocusRequest::from_str(&focus)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            let emulator = if emulator.is_empty() {
+                notify::detect_emulator()
+            } else {
+                emulator
+            };
+            // Defense in depth: hooks pass a bare command name already, and anything else
+            // is reduced to one here before it can reach a notification body.
+            let label = templar_session_core::notifications::safe_label(&label);
+            let focus = notify::resolve_focus(focus).await;
+            let deps = notify::BusDeps::session().await?;
+            let report = notify::terminal_completed(
+                &deps,
+                &notify::CompletionRequest {
+                    elapsed_ms,
+                    status,
+                    label,
+                    emulator,
+                },
+                focus,
+            )
+            .await?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "notify": report.notify,
+                        "reason": report.reason,
+                        "id": report.id,
+                    })
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
 async fn garden_command(command: GardenCommand, json: bool) -> Result<()> {
+    if let GardenCommand::JournalInit { pid } = &command {
+        println!("{}", templar::garden_session::journal_init(*pid)?.display());
+        return Ok(());
+    }
     let connection = bus::session().await?;
     let proxy = HomeGardenProxy::new(&connection).await?;
     let path_of = |path: &Path| path.to_string_lossy().into_owned();
     let pinned = !matches!(command, GardenCommand::Unpin { .. });
     let hidden = matches!(command, GardenCommand::Hide { .. });
     match command {
+        GardenCommand::Sessions => {
+            let rows: serde_json::Value = serde_json::from_str(&proxy.sessions_v1().await?)?;
+            let mut human = String::new();
+            for row in rows.as_array().into_iter().flatten() {
+                writeln!(
+                    human,
+                    "{} · {} · {} · {}",
+                    row["id"].as_str().unwrap_or("?"),
+                    row["program"].as_str().unwrap_or("shell"),
+                    row["state"].as_str().unwrap_or("unknown"),
+                    row["cwd"].as_str().unwrap_or("")
+                )?;
+            }
+            emit(json, &rows, human.trim_end())
+        }
+        GardenCommand::ResumeSession { path, session_id } => {
+            let root = folder_argument(&path)?;
+            let instance = proxy
+                .resume_session_v1(&path_of(&root), &session_id)
+                .await?;
+            emit(
+                json,
+                &serde_json::json!({"instance_id":instance}),
+                &instance,
+            )
+        }
+        GardenCommand::AgentHook { adapter: _ } => {
+            if let Some(observation) =
+                templar::garden_session::claude_observation(std::io::stdin().lock())?
+            {
+                proxy.observe_session_v1(&observation).await?;
+            }
+            // Never write hook stdout: Claude interprets it as hook decisions/context.
+            Ok(())
+        }
+        GardenCommand::JournalInit { .. } => {
+            unreachable!("handled before connecting to session bus")
+        }
         GardenCommand::Contexts => {
             let contexts: serde_json::Value = serde_json::from_str(&proxy.contexts().await?)?;
             let mut human = String::new();
@@ -853,7 +1134,7 @@ async fn garden_manage(
             emit(
                 json,
                 &serde_json::json!({"root": root, "pinned": true, "kept": true}),
-                &format!("{} kept at its size and place", root.display()),
+                &format!("{} kept on Home", root.display()),
             )
         }
         GardenCommand::Pin { path } | GardenCommand::Unpin { path } => {
@@ -909,6 +1190,10 @@ async fn garden_manage(
             )
         }
         GardenCommand::Contexts
+        | GardenCommand::Sessions
+        | GardenCommand::ResumeSession { .. }
+        | GardenCommand::AgentHook { .. }
+        | GardenCommand::JournalInit { .. }
         | GardenCommand::Why { .. }
         | GardenCommand::Tend { .. }
         | GardenCommand::Observe { .. } => {
@@ -983,6 +1268,20 @@ fn doctor_command(
     };
     let findings = if preflight {
         doctor::preflight::findings(&context)
+    } else if let Some(requested) = check.as_deref() {
+        if let Some(finding) = doctor::run_one_builtin(&context, requested) {
+            vec![finding]
+        } else if hardware {
+            doctor::run_all_with_hardware(
+                &context,
+                &doctor::hardware::HardwareOptions { check, profile },
+            )
+        } else {
+            anyhow::bail!(
+                "unknown check {requested:?}; built-in checks are: {} (hardware cases need --hardware too)",
+                doctor::builtin_ids().join(", ")
+            );
+        }
     } else {
         doctor::run_all_with_hardware(
             &context,
@@ -1032,6 +1331,20 @@ fn doctor_freeze(boot: String, out: Option<PathBuf>, json: bool) -> Result<()> {
 
 async fn run() -> Result<()> {
     match Cli::parse().command {
+        Command::Run {
+            class,
+            notify,
+            command,
+        } => {
+            let class = if class == "interactive" {
+                templar_types::WorkloadClass::Interactive
+            } else {
+                templar_types::WorkloadClass::BackgroundCompute
+            };
+            let status = templar::workload::run(class, command, notify).await?;
+            std::process::exit(status);
+        }
+        Command::WorkloadGate { socket, command } => templar::workload::gate(&socket, &command),
         Command::Dev {
             command,
             repo,
@@ -1064,10 +1377,23 @@ async fn run() -> Result<()> {
             project,
             json,
         } => open_target(&target, explain, &project, json).await,
+        Command::Terminal(args) => terminal_command(args).await,
+        Command::Pcmanfm {
+            command:
+                PcmanfmCommand::Repair {
+                    settings,
+                    terminals_list,
+                    backup,
+                },
+            json,
+        } => pcmanfm_repair(settings, terminals_list, backup, json),
         Command::Res { command, json } => {
             res_command(command.unwrap_or(ResCommand::Status), json).await
         }
         Command::Files { command, json } => files_command(command, json).await,
+        Command::Account {
+            command: AccountCommand::Password,
+        } => account::password().await,
         Command::Archive { command } => match command {
             ArchiveCommand::Compress { output, gui, paths } => {
                 archive::compress(paths, output, gui).await
@@ -1108,10 +1434,18 @@ async fn run() -> Result<()> {
         Command::Settings { command, json } => {
             settings_command(command.unwrap_or(SettingsCommand::List), json).await
         }
+        Command::Wallpaper { command, json } => {
+            templar::wallpaper::run(
+                command.unwrap_or(templar::wallpaper::WallpaperCommand::Inspect),
+                json,
+            )
+            .await
+        }
         Command::Home { command, json } => home_command(command, json).await,
         Command::Garden { command, json } => {
             garden_command(command.unwrap_or(GardenCommand::Contexts), json).await
         }
+        Command::Notify { command, json } => notify_command(command, json).await,
         Command::Project { command, json } => {
             project_command(command.unwrap_or(ProjectCommand::List), json).await
         }
@@ -1279,11 +1613,26 @@ async fn open_target(target: &str, explain: bool, project: &str, json: bool) -> 
     let mut human = open::render_summary(&resolution);
     let mut launched = None;
     if resolution.is_resolved() {
-        let instance = LauncherProxy::new(&connection)
-            .await?
-            .launch(&resolution.app_id, vec![target.to_owned()], "")
-            .await
-            .context("Launcher1.Launch")?;
+        let launcher = LauncherProxy::new(&connection).await?;
+        let instance = if resolution.kind == open::TargetKind::Path {
+            let path = std::fs::canonicalize(target).context("resolving the file launch target")?;
+            launcher
+                .launch_files_v1(
+                    &resolution.app_id,
+                    vec![templar_types::uri_list::encode_path(&path)],
+                    "",
+                )
+                .await
+        } else if templar_types::uri_list::decode_uri(target).is_some() {
+            launcher
+                .launch_files_v1(&resolution.app_id, vec![target.to_owned()], "")
+                .await
+        } else {
+            launcher
+                .launch(&resolution.app_id, vec![target.to_owned()], "")
+                .await
+        }
+        .context("Launcher1 file/URI launch")?;
         let _ = write!(human, "\nlaunched instance {instance}");
         launched = Some(instance);
     }
@@ -1298,33 +1647,183 @@ async fn open_target(target: &str, explain: bool, project: &str, json: bool) -> 
     emit(json, &output, &human)
 }
 
+/// The session connection and the providers report, as one fallible step: any failure here is
+/// judged by [`templar::terminal::session_unreachable`] before it is reported.
+async fn providers_report() -> zbus::Result<(zbus::Connection, Vec<(String, String)>)> {
+    let connection = zbus::Connection::session().await?;
+    let report = ProvidersProxy::new(&connection).await?.report().await?;
+    Ok((connection, report))
+}
+
+async fn terminal_command(args: TerminalArgs) -> Result<()> {
+    use templar::terminal::{self, FALLBACK_TERMINAL, Request};
+    let TerminalArgs {
+        working_directory,
+        hold,
+        dry_run,
+        json,
+        command,
+    } = args;
+    let cwd = std::env::current_dir().context("reading the current directory")?;
+    let request = Request::new(working_directory.as_deref(), &cwd, hold, command)?;
+    let (connection, report) = match providers_report().await {
+        Ok(found) => found,
+        Err(error) if terminal::session_unreachable(&error) => {
+            let arguments = request.fallback_arguments();
+            let value = serde_json::json!({
+                "route": "direct",
+                "reason": error.to_string(),
+                "executable": FALLBACK_TERMINAL,
+                "working_directory": request.directory,
+                "arguments": arguments,
+            });
+            if dry_run {
+                return emit(
+                    json,
+                    &value,
+                    &format!(
+                        "org.templaros.Session is unreachable ({error}); would run {FALLBACK_TERMINAL} {arguments:?} in {}",
+                        request.directory.display()
+                    ),
+                );
+            }
+            eprintln!(
+                "templar: org.templaros.Session is unreachable ({error}); running {FALLBACK_TERMINAL} directly"
+            );
+            let error = std::os::unix::process::CommandExt::exec(
+                std::process::Command::new(FALLBACK_TERMINAL)
+                    .args(&arguments)
+                    .current_dir(&request.directory)
+                    .env("PWD", &request.directory),
+            );
+            return Err(error).with_context(|| format!("running {FALLBACK_TERMINAL}"));
+        }
+        Err(error) => return Err(error).context("Providers1.Report"),
+    };
+    let app_id = terminal::terminal_provider(&report)?;
+    let arguments = request.provider_arguments()?;
+    if dry_run {
+        return emit(
+            json,
+            &serde_json::json!({ "route": "launcher1", "app_id": app_id, "arguments": arguments }),
+            &format!("would launch {app_id} through Launcher1 with {arguments:?}"),
+        );
+    }
+    let instance = LauncherProxy::new(&connection)
+        .await?
+        .launch(&app_id, arguments.clone(), "")
+        .await
+        .context("Launcher1.Launch")?;
+    let unit = app_id
+        .parse::<templar_types::AppId>()
+        .ok()
+        .zip(templar_types::InstanceId::parse(&instance))
+        .map(|(app, instance)| templar_types::unit::unit_name(&app, instance));
+    emit(
+        json,
+        &serde_json::json!({
+            "route": "launcher1",
+            "app_id": app_id,
+            "arguments": arguments,
+            "instance": instance,
+            "unit": unit,
+        }),
+        &format!(
+            "launched {app_id} instance {instance}{}",
+            unit.as_deref()
+                .map(|unit| format!(" ({unit})"))
+                .unwrap_or_default()
+        ),
+    )
+}
+
+fn pcmanfm_repair(
+    settings: Option<PathBuf>,
+    terminals_list: Option<PathBuf>,
+    backup: bool,
+    json: bool,
+) -> Result<()> {
+    use templar_session_core::pcmanfm::{self, Outcome};
+    let xdg = |variable: &str, under_home: &str| {
+        std::env::var_os(variable)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(under_home)))
+            .with_context(|| format!("neither {variable} nor HOME is set"))
+    };
+    let path = match settings {
+        Some(path) => path,
+        None => pcmanfm::settings_path(&xdg("XDG_CONFIG_HOME", ".config")?),
+    };
+    let list = match terminals_list {
+        Some(list) => list,
+        None => pcmanfm::terminals_list_path(&xdg("XDG_DATA_HOME", ".local/share")?),
+    };
+    let backup_path = backup.then(|| {
+        let mut name = path.clone().into_os_string();
+        name.push(".templaros-bak");
+        PathBuf::from(name)
+    });
+    let outcome = pcmanfm::repair_file(&path, &pcmanfm::Host::from_env(), backup_path.as_deref())?;
+    let mut human = match &outcome {
+        Outcome::NoProfile => format!(
+            "{} has no profile directory; PCManFM-Qt uses the system default",
+            path.display()
+        ),
+        Outcome::Unchanged => format!("{}: every setting can work here; unchanged", path.display()),
+        Outcome::Repaired { repairs } => {
+            let mut human = format!("repaired {}", path.display());
+            for repair in repairs {
+                let _ = write!(
+                    human,
+                    "\n  [System] {}: {} -> {}",
+                    repair.key,
+                    repair.before.as_deref().unwrap_or("(absent)"),
+                    repair.after
+                );
+            }
+            if let Some(backup) = &backup_path {
+                let _ = write!(human, "\n  original kept at {}", backup.display());
+            }
+            human
+        }
+    };
+    let added = pcmanfm::ensure_terminal_entry(&list)?;
+    let _ = write!(
+        human,
+        "\n{}: {}",
+        list.display(),
+        if added {
+            "added the templar-terminal group"
+        } else {
+            "templar-terminal group already present"
+        }
+    );
+    emit(
+        json,
+        &serde_json::json!({
+            "settings": { "path": path, "result": outcome },
+            "terminals_list": { "path": list, "added": added },
+        }),
+        &human,
+    )
+}
+
 async fn res_command(command: ResCommand, json: bool) -> Result<()> {
     let connection = bus::session().await?;
     let proxy = ResourcesProxy::new(&connection).await?;
     match command {
         ResCommand::Status => {
-            let report_json = res::ResourcesClient::report(&proxy).await?;
-            match res::parse_report(&report_json) {
-                Ok(report) => emit(json, &report, &res::render_report(&report)),
-                // Before the first sampling tick the daemon answers `{}` rather than a report.
-                Err(_) => emit(
-                    json,
-                    &serde_json::json!({"status": "no-tick-yet"}),
-                    "the governor has not completed a sampling tick yet",
-                ),
-            }
+            let report_json = res::ResourcesClient::targets(&proxy).await?;
+            let report = res::parse_report(&report_json)?;
+            emit(json, &report, &res::render_report(&report))
         }
         ResCommand::Explain { instance_id } => {
             let explanation_json =
-                res::ResourcesClient::explain_instance(&proxy, &instance_id).await?;
-            match serde_json::from_str::<res::Explanation>(&explanation_json) {
-                Ok(explanation) => emit(json, &explanation, &res::render_explanation(&explanation)),
-                Err(_) => emit(
-                    json,
-                    &serde_json::json!({"status": "no-tick-yet", "instance_id": instance_id}),
-                    "the governor has not completed a sampling tick yet",
-                ),
-            }
+                res::ResourcesClient::explain_target(&proxy, &instance_id).await?;
+            let explanation: res::Explanation = serde_json::from_str(&explanation_json)
+                .context("invalid Resources1.ExplainTarget observation")?;
+            emit(json, &explanation, &res::render_explanation(&explanation))
         }
         ResCommand::SetStage { stage } => {
             res::ResourcesClient::set_stage(&proxy, &stage).await?;
@@ -1408,10 +1907,30 @@ async fn files_command(command: FilesCommand, json: bool) -> Result<()> {
             let proxy = FilesIndexProxy::new(&connection).await?;
             files_index_command(&proxy, command, json).await
         }
+        FilesCommand::Bookmarks {
+            command: BookmarksCommand::Export,
+        } => {
+            let proxy = templar_client::proxies::FilesBrowseProxy::new(&connection).await?;
+            let response: templar_filed::bookmarks::ExportResult =
+                serde_json::from_str(&proxy.export_bookmarks().await?)
+                    .context("parsing Files.Browse1.ExportBookmarks JSON")?;
+            let mut detail = format!(
+                "Added {} bookmark(s), {} already present: {}",
+                response.added,
+                response.already_present,
+                response.path.display()
+            );
+            if let Some(backup) = &response.backup {
+                detail.push_str(&format!("\nBackup: {}", backup.display()));
+            }
+            emit(json, &response, &detail)
+        }
         FilesCommand::Path { path, form } => {
             let proxy = FilesActionsProxy::new(&connection).await?;
             if let Some(form) = form {
-                let text = files::ActionsClient::render(&proxy, &path, &form).await?;
+                let text =
+                    templar_client::file_index::render_native_path(&connection, &path, &form)
+                        .await?;
                 emit(json, &text, &text)
             } else {
                 let forms = files::ActionsClient::forms(&proxy).await?;
@@ -1438,10 +1957,43 @@ async fn files_index_command(
             limit,
             print0,
         } => {
-            let query_json = serde_json::json!({ "text": query, "page_size": limit });
-            let (_cursor, _generation, page_json) =
+            let query_json =
+                serde_json::json!({ "text": query, "page_size": limit.clamp(1, 1000) });
+            let (cursor, generation, page_json) =
                 files::IndexClient::search(proxy, &query_json.to_string()).await?;
-            let result = files::parse_index_search(&page_json)?;
+            // Close on parsing, paging and output failures too. A completed CLI invocation is
+            // not a five-minute server cursor or a watch-renewal heartbeat.
+            let collected: Result<_> = async {
+                let mut result = files::parse_index_search(&page_json)?;
+                anyhow::ensure!(
+                    result.cursor == cursor && result.generation == generation,
+                    "Index1.Search returned inconsistent cursor/generation"
+                );
+                let mut offset = u32::try_from(result.hits.len())?;
+                result.hits.truncate(limit as usize);
+                while result.hits.len() < limit as usize {
+                    let count = (limit - u32::try_from(result.hits.len())?).min(1000);
+                    let page: templar_client::file_index::IndexPage = serde_json::from_str(
+                        &files::IndexClient::fetch_page(proxy, &cursor, offset, count).await?,
+                    )?;
+                    result.validate_page(&page, offset, count)?;
+                    let consumed = u32::try_from(page.hits.len())?
+                        .checked_add(page.dropped)
+                        .context("index cursor offset overflow")?;
+                    if consumed == 0 {
+                        break;
+                    }
+                    offset = offset
+                        .checked_add(consumed)
+                        .context("index cursor offset overflow")?;
+                    result.hits.extend(page.hits);
+                }
+                Ok(result)
+            }
+            .await;
+            let closed = files::IndexClient::close_cursor(proxy, &cursor).await;
+            let result = collected?;
+            closed?;
             if print0 {
                 files::print0_index_hits(&result, &mut std::io::stdout())?;
                 Ok(())
@@ -1450,12 +2002,54 @@ async fn files_index_command(
             }
         }
         IndexCommand::Reconcile { roots } => {
-            let request_id =
-                files::IndexClient::reconcile(proxy, &serde_json::to_string(&roots)?).await?;
+            let observed = files::parse_index_roots(&files::IndexClient::roots(proxy).await?)?;
+            let request =
+                serde_json::json!({"cache_identity": observed.cache_identity, "roots": roots});
+            let request_id = files::IndexClient::reconcile(proxy, &request.to_string()).await?;
             emit(
                 json,
                 &serde_json::json!({"request_id": request_id}),
                 &format!("reconcile scheduled ({request_id}); watch `templar files index status`"),
+            )
+        }
+        IndexCommand::Policy {
+            path,
+            expected_hash,
+        } => {
+            let policy =
+                templar_client::file_index::root_policy(proxy, &path, &expected_hash).await?;
+            emit(json, &policy, &serde_json::to_string_pretty(&policy)?)
+        }
+        IndexCommand::Configure {
+            path,
+            expected_hash,
+            policy_json,
+        } => {
+            let policy = policy_json
+                .map(|value| serde_json::from_str::<templar_file_index::RootPolicy>(&value))
+                .transpose()?
+                .unwrap_or_else(templar_file_index::RootPolicy::default_home);
+            let root =
+                templar_client::file_index::configure_root(proxy, &path, &policy, &expected_hash)
+                    .await?;
+            emit(
+                json,
+                &serde_json::json!({"root": root, "path_b64": templar_client::file_index::encode_path(&path)}),
+                &format!(
+                    "policy stored for {}; watch `templar files index status`",
+                    path.display()
+                ),
+            )
+        }
+        IndexCommand::Remove {
+            path,
+            expected_hash,
+        } => {
+            templar_client::file_index::remove_root(proxy, &path, &expected_hash).await?;
+            emit(
+                json,
+                &serde_json::json!({"removed": true, "path_b64": templar_client::file_index::encode_path(&path)}),
+                &format!("removed {}", path.display()),
             )
         }
     }
@@ -2143,15 +2737,47 @@ async fn power_command(command: PowerCommand, json: bool) -> Result<()> {
             let mut profiles = Vec::new();
             let mut human = Vec::new();
             for source in &sources {
-                let profile_json = power::PowerClient::get_profile(&proxy, source).await?;
+                let profile_json = proxy
+                    .get_profile(source)
+                    .await
+                    .context("Power1.GetProfile")?;
                 let profile = power::parse_profile(&profile_json)?;
-                human.push(power::render_profile(source, &profile));
+                if !json {
+                    human.push(power::render_profile(source, &profile));
+                }
                 profiles.push((source.clone(), profile));
             }
-            emit(json, &profiles, &human.join("\n"))
+            let observed: templar_session_core::power::PowerObservation =
+                serde_json::from_str(&proxy.inspect().await.context("Power1.Inspect")?)
+                    .context("parsing native Power1 readback")?;
+            #[derive(serde::Serialize)]
+            struct PowerReport<'a> {
+                stored: &'a [(String, templar_session_core::power::PowerProfile)],
+                observed: &'a templar_session_core::power::PowerObservation,
+            }
+            let display = if json {
+                String::new()
+            } else {
+                format!(
+                    "{}\nobserved native policy:\n{}",
+                    human.join("\n"),
+                    serde_json::to_string_pretty(&observed)?
+                )
+            };
+            emit(
+                json,
+                &PowerReport {
+                    stored: &profiles,
+                    observed: &observed,
+                },
+                &display,
+            )
         }
         PowerCommand::Reset { source } => {
-            power::PowerClient::reset_profile(&proxy, &source).await?;
+            proxy
+                .reset_profile(&source)
+                .await
+                .context("Power1.ResetProfile")?;
             emit(
                 json,
                 &serde_json::json!({"reset": source}),
@@ -2165,6 +2791,16 @@ async fn power_command(command: PowerCommand, json: bool) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn a_closed_stdout_pipe_kills_quietly_instead_of_panicking() {
+        // `signal` returns the previous disposition, so calling it a second time proves the
+        // first call's effect: after the restore the disposition reads back as the default.
+        restore_sigpipe_default();
+        #[allow(unsafe_code)]
+        let current = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+        assert_eq!(current, libc::SIG_DFL);
+    }
 
     /// The verb the shipped prompt hook calls. Its shape is a contract with a shell script
     /// that no compiler checks, so the parse is asserted here rather than discovered on a
@@ -2196,6 +2832,108 @@ mod tests {
         assert_eq!(path, PathBuf::from("/home/dk/src"));
         assert!(app_id.is_empty());
         assert_eq!(role, "terminal");
+    }
+
+    /// The verb the completion hooks call. Same contract rule as the garden hook's: the
+    /// shape is asserted here because no compiler checks the shell scripts.
+    #[test]
+    fn notify_terminal_completed_parses_the_shape_the_hooks_send() {
+        let cli = Cli::parse_from([
+            "templar",
+            "notify",
+            "terminal-completed",
+            "--elapsed-ms",
+            "12034",
+            "--status",
+            "2",
+            "--label",
+            "make",
+        ]);
+        let Command::Notify { command, json } = cli.command else {
+            panic!("not the notify subcommand")
+        };
+        assert!(!json);
+        let NotifyCommand::TerminalCompleted {
+            elapsed_ms,
+            status,
+            label,
+            emulator,
+            focus,
+        } = command
+        else {
+            panic!("not the terminal-completed verb")
+        };
+        assert_eq!((elapsed_ms, status), (12_034, 2));
+        assert_eq!(label, "make");
+        assert!(emulator.is_empty());
+        assert_eq!(focus, "auto");
+
+        let cli = Cli::parse_from(["templar", "notify", "policy-sh"]);
+        let Command::Notify { command, .. } = cli.command else {
+            panic!("not the notify subcommand")
+        };
+        assert!(matches!(command, NotifyCommand::PolicySh));
+
+        // `templar run --notify` keeps its workload after `--`, flag order free.
+        let cli = Cli::parse_from(["templar", "run", "--notify", "--", "make", "world"]);
+        let Command::Run {
+            notify, command, ..
+        } = cli.command
+        else {
+            panic!("not the run subcommand")
+        };
+        assert!(notify);
+        assert_eq!(
+            command,
+            vec![std::ffi::OsString::from("make"), "world".into()]
+        );
+    }
+
+    /// The shapes libfm-qt sends through `templar-terminal`: nothing (open here), and
+    /// `--hold -e CMD ARGS…` with arguments of the command's own that look like our flags.
+    #[test]
+    fn terminal_parses_the_shapes_libfm_qt_sends() {
+        let cli = Cli::parse_from(["templar", "terminal"]);
+        let Command::Terminal(TerminalArgs {
+            working_directory,
+            hold,
+            command,
+            ..
+        }) = cli.command
+        else {
+            panic!("not the terminal subcommand")
+        };
+        assert_eq!(
+            (working_directory, hold, command),
+            (None, false, Vec::new())
+        );
+
+        let cli = Cli::parse_from([
+            "templar",
+            "terminal",
+            "--directory",
+            "/tmp",
+            "--hold",
+            "-e",
+            "ls",
+            "-l",
+            "--hold",
+            "--dry-run",
+        ]);
+        let Command::Terminal(TerminalArgs {
+            working_directory,
+            hold,
+            dry_run,
+            command,
+            ..
+        }) = cli.command
+        else {
+            panic!("not the terminal subcommand")
+        };
+        assert_eq!(working_directory, Some(PathBuf::from("/tmp")));
+        assert!(hold);
+        assert!(!dry_run, "--dry-run after -e belongs to the command");
+        assert_eq!(command, ["ls", "-l", "--hold", "--dry-run"]);
     }
 
     /// The prompt hook itself: it must speak only when the working directory actually changed,
@@ -2331,6 +3069,59 @@ mod tests {
                 "-i",
                 "-c",
                 "declare -F __templaros_garden_prompt",
+            ])
+            .env("XDG_CURRENT_DESKTOP", "TemplarOS")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "an interactive non-login bash reading what the package installs must find the hook"
+        );
+    }
+
+    /// The completion hook's delivery, mirroring the garden test above: the postinst block
+    /// must source `61-templaros-completion.sh` so an interactive, non-login bash defines
+    /// the prompt hook.
+    #[test]
+    fn completion_s_hook_is_loaded_by_the_line_the_package_adds_to_bash_bashrc() {
+        let postinst = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../packaging/templaros-cli/postinst"
+        ))
+        .expect("templaros-cli ships maintainer scripts");
+        let block: String = postinst
+            .lines()
+            .skip_while(|line| line.trim_start() != "# >>> templaros completion hook >>>")
+            .take_while(|line| line.trim_start() != "# <<< templaros completion hook <<<")
+            .map(|line| {
+                line.replace(
+                    "/etc/profile.d/61-templaros-completion.sh",
+                    concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/../../session/profile.d/61-templaros-completion.sh"
+                    ),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            block.contains("61-templaros-completion.sh"),
+            "the postinst block no longer sources the hook: {block}"
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let rcfile = tmp.path().join("bash.bashrc");
+        std::fs::write(&rcfile, block).unwrap();
+        let status = std::process::Command::new("bash")
+            .args([
+                "--noprofile",
+                "--rcfile",
+                &rcfile.to_string_lossy(),
+                "-i",
+                "-c",
+                "declare -F __templaros_completion_precmd",
             ])
             .env("XDG_CURRENT_DESKTOP", "TemplarOS")
             .stdout(std::process::Stdio::null())

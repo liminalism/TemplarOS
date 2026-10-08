@@ -10,3 +10,8 @@ distro/policy/journald/journald.conf.d/60-templaros.conf usr/lib/systemd/journal
 distro/policy/sysctl.d/60-templaros-hang-evidence.conf usr/lib/sysctl.d/
 distro/hardware/profiles/*.toml usr/share/templaros/hardware/profiles/
 interfaces/dbus/org.templaros.Host.*.xml usr/share/dbus-1/interfaces/
+distro/deploy/state-compat.toml usr/share/templaros/
+session/units/system/templar-account-recovery.service usr/lib/systemd/system/
+distro/policy/systemd/greetd.service.d/templaros-account-recovery.conf usr/lib/systemd/system/greetd.service.d/
+distro/policy/systemd/systemd-user-sessions.service.d/templaros-account-recovery.conf usr/lib/systemd/system/systemd-user-sessions.service.d/
+distro/policy/pam-configs/templaros-account-recovery usr/share/pam-configs/

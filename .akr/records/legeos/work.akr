@@ -3336,6 +3336,90 @@ record legeos.work.design-consolidation-roadmap/3 : work {
     }
 }
 
+record legeos.work.desktop-feature-scoping-20261007/1 : work {
+    title "Scope Homegarden previews and tab counts, PixelKit notifications, and corner-following decorations"
+    state completed
+    scope [ path "docs/planning/homegarden-previews-notifications-window-tabs.md" ]
+    intent """
+        Scope the owner's October7 ideas without implementation or subagents: Homegarden-only visible current-work previews and application tab counts; bottom-right timed notifications using PixelKit and terminal completion producers; four-side nearest-corner title/control tabs with same-corner right angles and opposite-corner options. Record source findings, runtime evidence where reachable, implementation boundaries and acceptance gates in Markdown and AKR. Reconcile the older proposed decoration decision/children instead of leaving contradictory plans. No live-session changes.
+        """
+    acceptance {
+        check corners-scoped {
+            statement """
+                Record the final-title-visible/controls-hover interpretation, all four sides/corners, horizontal title/right-angle default/opposite option, safe following/latching and layout migration. Reconcile the old proposed decision and four child acceptance contracts through AKR and retain unresolved prototype choices explicitly.
+                """
+            method observation
+            verified_by [ @legeos.evidence.desktop-feature-scope-recorded-20261007/1 ]
+        }
+        check notifications-scoped {
+            statement """
+                Record current producer/renderer behavior, an isolated service observation, bottom-right3-5-second policy, PixelKit ownership boundary, terminal job producers and proposed acceptance without claiming visual implementation.
+                """
+            method observation
+            verified_by [ @legeos.evidence.desktop-feature-scope-recorded-20261007/1 ]
+        }
+        check previews-scoped {
+            statement """
+                Record existing capture/scheduling paths, strict visible-only/Home-only lifecycle, application tab-count producer/binding prerequisites, compatibility limits and observable acceptance criteria in a Markdown plan and a proposed work record.
+                """
+            method observation
+            verified_by [ @legeos.evidence.desktop-feature-scope-recorded-20261007/1 ]
+        }
+    }
+    author "dk"
+}
+
+record legeos.work.desktop-interaction-fixes-20261007/1 : work {
+    title "Reliable task clicks, native system-menu controls and name-tab stacking"
+    state proposed
+    scope [
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "apps/templar-settings/**",
+        path "compositor/COMPOSITOR.md",
+        path "compositor/templar-comp/**",
+        path "crates/templar-types/**",
+        path "crates/templar-window/**",
+        path "distro/forks/**",
+        path "scripts/build-fork-deb.sh",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Owner reports 2026-10-07: HomeGarden open tasks need 3rd/4th click; right-swipe Network does nothing; calendar has no date/time editor; name tabs lack the three ordinary stacking choices. Repair single-click event/capture root cause without coarse delay tuning; open the intended nm-tray-2 menu through its provider; reach a fully implemented native date/time/timezone/locale editor from the clock; add explicit Always on top, Normal, Always on bottom to the initial name-tab right-click menu and authoritative window ordering. Retain existing primary title gestures, task/drag/file distinctions, calendar and security layering.
+        """
+    note """
+        Parent integrates three independently owned slices. Shared PixelKit input is a sibling checkout dependency and must be included in native regression/runtime evidence. No live desktop restart/deployment, NetworkManager mutations, clock/timezone/locale change or user service management. Actual privileged date/time writes are only allowed inside an owned OS guest/private filesystem authority; unexercised host permissions remain explicitly reported.
+        """
+    acceptance {
+        check date-time-editor {
+            statement """
+                Clock widget opens native editable Date & Time settings; real IANA zone database and installed locale/date formats used; manual date/time, zone and automatic-time policies apply through authorized system owners with honest validation/error states. Actual surface and safe system-service interaction observed, with host mutations prohibited.
+                """
+            method observation
+        }
+        check home-task-click {
+            statement """
+                Single click activates the named running HomeGarden task; coalesced release/new press, alternating tasks, drag and focus cancellation do not lose or inherit an activation. Actual owned native UI journey and deterministic behavioral regression observed.
+                """
+            method observation
+        }
+        check name-tab-stacking {
+            statement """
+                Initial name-tab right-click menu exposes all three mutually exclusive stacking modes and changes actual scene order; Normal reverses either, target remains stable and disappearing windows/dismissal do not trigger unrelated drag or focus authority. Native private UI observed and behavioral regressions pass.
+                """
+            method observation
+        }
+        check network-menu {
+            statement """
+                Right-swipe Network opens the actual nm-tray-2 native menu through the intended installed provider, including repeated invocation. No source-only wiring or ignored --popup flag proof.
+                """
+            method observation
+        }
+    }
+    part_of [ @legeos.work.developer-edition-daily-driver ]
+    author "dk"
+}
+
 record legeos.work.desktop-polish-a1-one-window-language-20261005/1 : work {
     title "a1-one-window-language"
     state active
@@ -4892,7 +4976,7 @@ record legeos.work.event-driven-service-audit/2 : work {
 }
 
 record legeos.work.external-window-tabs-20261002/1 : work {
-    title "External window tabs on any side: the corners resize, one layout drives every consumer, tabs appear on a resting pointer, and a window's side is chosen"
+    title "Corner-following horizontal titles and hover controls: four sides, same-corner right angles, opposite-corner option"
     state proposed
     scope [
         path "apps/templar-settings/**",
@@ -4900,34 +4984,31 @@ record legeos.work.external-window-tabs-20261002/1 : work {
         path "compositor/templar-comp/src/**",
         path "crates/templar-session-core/src/settings.rs",
         path "crates/templar-window/**",
-        path "interfaces/wayland/templar-shell-v1.xml"
+        path "docs/planning/homegarden-previews-notifications-window-tabs.md",
+        path "interfaces/wayland/templar-shell-v2.xml",
+        path "shell/templar-shell/src/settings.rs"
     ]
     intent """
-        Carry @legeos.decision.window-tabs-are-external-revealed-and-stationary in four steps, each landing on its own with its own tests and none needing the owner's eye before the last:
-        1. @legeos.work.window-corner-hit-geometry-20261002 — inside today's bottom-strip model, the visible client corners resize and Close never sits under one. Independent of the rest and worth having even if the redesign stalls.
-        2. @legeos.work.window-tab-layout-model-20261002 — WindowService produces one WindowLayout per window; frame == client; the strip subtraction is deleted; Top and Bottom sides; tabs still always shown.
-        3. @legeos.work.window-tab-hover-reveal-20261002 — hidden by default, revealed by a resting pointer in the exterior band, latched through grabs, occlusion-safe, overlay fallback where there is no exterior room; the windows.tabs.* settings.
-        4. @legeos.work.window-tab-side-choice-20261002 — Left and Right, the per-window choice from the name tag, and the optional follow-resize hint.
-        The headless tests are the gate for 1-3. A nested-session look (scripts/nested-session.sh, which refuses over a live session) is enough for 1-3; the owner's day in the installed session is only asked for at the end of 4.
+        Implement the October7 corner-following title/control proposal in docs/planning/homegarden-previews-notifications-window-tabs.md section3, revising the October2 fixed-side design. Four existing children retain their ordering: (1) window-corner-hit-geometry: exact visible-corner resize safety and reachable control route; (2) window-tab-layout-model: client-space authoritative four-corner layout with same-corner right-angle and opposite-corner arrangements, migrating every consumer; (3) window-tab-hover-reveal: always-visible horizontal title, hover controls, nearest-corner selection/hysteresis and aiming/grab latches, keyboard and occlusion rules; (4) window-tab-side-choice: Settings/protocol integration for arrangement/follow-pointer/fixed fallback/visibility/default corner and real nested interactions. No title text on vertical strips. Every corner supports move/resize/park/maximize/close. Keep input, client size, damage/recovery and shell-absent keyboard safety in scope.
         """
     note """
-        Scoped 2026-10-02 from the owner's request (tabs on all four sides, maybe tied to resizing, perhaps better revealed on mouseover) and the 2026-10-01 advisor. Not in this campaign: the advisor's display-path items (needs_sync, a queued-frame completion deadline, bounded screencopy, one repaint owner per output), which are freeze hardening, not tabs.
+        Scope-only revision requested October7. Final always-visible wording interpreted as title visible and controls hover; exact opposite arrangement/fullscreen policy and dwell feel remain prototype-review points. No deployed feature or completed child is claimed. Legacy external advisor remains provenance only; user direction replaces its stationary-anchor policy. Plan: docs/planning/homegarden-previews-notifications-window-tabs.md.
         """
     acceptance {
         check owner-day {
             statement """
-                After the owner's own deploy, a working day with tabs on hover: no accidental Close, no tab that moved under the pointer, every window reachable for move, resize, park and close; the owner settles the open choices in the decision (default side, reveal dwell, discoverability gesture).
+                After owner-run deployment, using all four corners and both arrangement options remains comfortable: title horizontal/visible, controls discoverable, closest-corner follow stops while aiming/pressing, no accidental close, all move/resize/park/maximize/close routes reachable. Owner confirms wording/fullscreen/opposite-arrangement choices or records the agreed revision.
                 """
             method manual
         }
         check steps-complete {
             statement """
-                The four step records are completed, each against its own checks.
+                All four revised children complete with source-specific behavior evidence and an actual owned nested Wayland/XWayland interaction gate, not merely compiling a layout model.
                 """
             method observation
         }
     }
-    derived_from [ @legeos.observation.close-tag-sits-under-the-client-bottom-right-corner ]
+    derived_from [ @legeos.assessment.desktop-preview-notification-tab-scope-20261007 ]
     implements [ @legeos.decision.window-tabs-are-external-revealed-and-stationary ]
     author "dk"
     source {
@@ -6462,6 +6543,72 @@ record legeos.work.governor-wake-reliability-20260909/3 : work {
     implements [ @legeos.decision.resourced-separate-process ]
     part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
     supersedes [ @legeos.work.governor-wake-reliability-20260909/2 ]
+    author "dk"
+}
+
+record legeos.work.hands-on-fixes-20261007/1 : work {
+    title "Hands-on 2026-10-07: Alt+Tab shown while held, a bar row of separate cards with parked windows, larger chip icons, draggable Home cards, PCManFM-Qt icons and Terminal role"
+    state active
+    scope [
+        path "cli/templar/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-session-core/**",
+        path "crates/templar-window/**",
+        path "debian/**",
+        path "docs/architecture/**",
+        path "services/templar-sessiond/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        User request 2026-10-07 from the installed TemplarOS session. (1) Alt+Tab appeared for one frame and could not be cycled: the shell's Layer::Presentation switcher surface was hidden by WindowService::is_visible outside Taskfield while the compositor's text HUD stood down for any mapped Presentation surface; the walk is now a WindowService state (set_switch_walk) that shows the surface, and the text HUD yields only to a visible one; every switcher row is titled. (2) The bottom bar's second row stacked windows over each other and kitty got no row: the overlapping fan becomes a row of separate titled cards, and a unit's parked windows (terminals put away by the drop-down chord) count toward the row, never toward the Taskfield handover. (3) Bar chip icons 30% larger (26 to 34 px; chips 40 px tall). (4) Homegarden work cards open on release and can be dragged to free cells, kept as an in-memory pin plus the persisted per-folder hint, never a field tile. (5) PCManFM-Qt showed no icons (FallbackIconThemeName=oxygen, not installed) and launched xterm (not installed): templar-terminal launches the Terminal role provider through sessiond in the folder, /etc/xdg default and a sessiond start-up repair rewrite only invalid Terminal/FallbackIconThemeName values. (6) Rebuild every package so the next login runs the new modules.
+        """
+    note """
+        Code, tests, nested and headless proofs are on the uncommitted tree over 7c68786; all TemplarOS debs were rebuilt into target/debian for the owner's scripts/reinstall-templaros-desktop.sh --skip-build (sudo) and next login. The installed-session check stays open until then. The bar's overlapping fan is replaced by a row of separate cards at the owner's request.
+        """
+    acceptance {
+        check alt-tab-walk-shown {
+            statement """
+                In a nested compositor+shell, holding Alt and pressing Tab keeps the shell's Presentation surface in Space for the whole walk, the selection moves with each Tab, and releasing commits and removes it.
+                """
+            method command
+            command "scripts/nested-session.sh start --no-daemons; two kitty clients; scripts/nested-session.sh input key 56 down / key 15 down|up / snapshot"
+            verified_by [ @legeos.evidence.hands-on-20261007-nested-alt-tab/1 ]
+        }
+        check bar-row-and-icons {
+            statement """
+                templar-window and templar-shell tests pass, including the row's non-overlap assertion, the parked-window row/restore test and chip_action's parked/handover rules; the headless open-row render shows separate titled cards.
+                """
+            method command
+            command "scripts/cargo-native.sh test -p templar-window -p templar-shell"
+            verified_by [ @legeos.evidence.hands-on-20261007-tests/1 ]
+        }
+        check home-card-drag {
+            statement """
+                templar-shell tests cover press-release opening, a drag past the lift threshold moving a card to free cells without opening it, the drop surviving window churn, and invalid drops or Escape snapping back.
+                """
+            method command
+            command "scripts/cargo-native.sh test -p templar-shell work_layout field_screen"
+            verified_by [ @legeos.evidence.hands-on-20261007-tests/1 ]
+        }
+        check installed-session {
+            statement """
+                After the owner reinstalls the rebuilt packages and logs in again: Alt+Tab shows the shell switcher while held and cycles; the bar row shows separate cards including parked kitty windows; chip icons are larger; Home cards drag; PCManFM-Qt draws folder icons and opens a kitty terminal in the folder.
+                """
+            method manual
+        }
+        check pcmanfm-terminal-and-icons {
+            statement """
+                templar-session-core pcmanfm repair tests pass; templar terminal launches the Terminal role provider in a given directory through Launcher1; the user's settings.conf names templar-terminal and an installed icon theme.
+                """
+            method command
+            command "scripts/cargo-native.sh test -p templar-session-core pcmanfm && templar terminal --dry-run"
+            verified_by [ @legeos.evidence.hands-on-20261007-pcmanfm-terminal/1 ]
+        }
+    }
+    derived_from [
+        @legeos.observation.shell-switcher-surface-hidden-outside-taskfield-20261007
+    ]
+    part_of [ @legeos.work.desktop-polish-and-test-infrastructure-backlog-20261004 ]
     author "dk"
 }
 
@@ -11414,6 +11561,59 @@ record legeos.work.homegarden-semantic-sources-and-observation-depolling-2026090
     author "dk"
 }
 
+record legeos.work.homegarden-visible-previews-and-tab-counts-20261007/1 : work {
+    title "Home-only visible window previews and truthful per-window application tab counts"
+    state proposed
+    scope [
+        path "compositor/templar-comp/src/backend/**",
+        path "compositor/templar-comp/src/screencopy.rs",
+        path "compositor/templar-comp/src/space_sync.rs",
+        path "crates/templar-client/**",
+        path "crates/templar-session-core/**",
+        path "crates/templar-window/**",
+        path "distro/policy/**",
+        path "docs/planning/homegarden-previews-notifications-window-tabs.md",
+        path "interfaces/**",
+        path "services/templar-sessiond/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Implement Homegarden current-work window previews only where their card wells are visible, and accurate per-OS-window application-tab badges. Plan: docs/planning/homegarden-previews-notifications-window-tabs.md section1. Reuse trusted-shell standard capture; retain existing work-card identity, positions and actions. Default live1fps with off/static options and existing max4fps/512px bounds. Derive demand per output from visible clipped card wells, not all toplevels; stop hidden requests, offscreen rendering/readback and preview deadlines; generation-fence pending work at visibility changes and lock. Add a bounded aggregate memory/work policy, resource reuse, fair visible updates and unchanged-content suppression. Remove preview request and bitmap painting from bar/Alt-Tab/Taskfield while preserving icon/title switching. Do not stop normal application work or misreport previewed parked windows as foreground.
+        Tab counts are separate event-driven metadata, not captured pixels or process/window counts. Bind count/provenance/generation to the exact compositor toplevel using a credential-checked adapter registration. Deliver Kitty and browser candidate integrations only after proving internal-window to compositor-window mapping with identical-title multiple windows. Keep unsupported counts unknown; no fabricated zero/one, unrestricted remote control, URL/terminal-text export, or title heuristics. The interoperability goal includes other terminals/tabbed applications via their actual APIs, not an unsupported claim of universal introspection. Make the badge available on the Home card and horizontal title tab. Native Wayland/XWayland, VLC video and Photoshop-in-Wine/VM compatibility require separate observations; protected content remains protected.
+        """
+    note """
+        Proposed scope, not implemented. Browser extension windowId alone does not identify a Wayland toplevel; reliable per-window binding is a prerequisite, not deferred acceptance. Home-only removes existing preview pixels from other switcher surfaces by user request; switching functionality remains. The proposed16MiB aggregate budget must count all CPU/GPU/SHM copies and be measured. No claim of video-rate thumbnails or Photoshop availability.
+        """
+    acceptance {
+        check hidden-zero-work {
+            statement """
+                After a visibility-generation boundary, Home hide, ordinary-window card occlusion, overflow/zoom/offscreen, lock and output disable cause zero new thumbnail captures/renders/readbacks or preview-only wakeups. Queued stale work is retired without rendering; a running frame cannot reschedule or repaint. Close/reveal races release buffers correctly.
+                """
+            method observation
+        }
+        check home-only-and-bounded {
+            statement """
+                Bar, Alt-Tab and Taskfield retain switching/actions but no preview pixels or captures. Measure steady content and20 changing windows: aggregate bounds include every copy, unchanged pixels are not recaptured, visible cards progress fairly, hidden idle has no recurring preview timer.
+                """
+            method observation
+        }
+        check tab-identity {
+            statement """
+                For two same-app windows with equal titles and different tab counts, each badge remains correct through tab creation/close/detach, split-pane changes, park/restore, window destruction and adapter restart. Prove each supported producer binding; unsupported or disconnected metadata is unknown rather than a made-up count. No URLs/terminal text or excess control privileges are needed.
+                """
+            method observation
+        }
+        check visible-content {
+            statement """
+                Real terminal output and browser content update the correct exposed Home work cards, including parked windows with fresh submitted buffers, without raising them or changing MRU/card placement. Document separate native Wayland, XWayland and media results.
+                """
+            method observation
+        }
+    }
+    derived_from [ @legeos.assessment.desktop-preview-notification-tab-scope-20261007 ]
+    author "dk"
+}
+
 record legeos.work.host-update-transaction/1 : work {
     title "The host daemon: kernel and driver as one resumable transaction, two boot backends, enforced polkit"
     state superseded
@@ -11721,7 +11921,7 @@ record legeos.work.installer-resume-and-autoinstall-20260930/1 : work {
 
 record legeos.work.integration-stabilization-20261005/1 : work {
     title "Integrate and stabilize all S00-S19 desktop and deployment contracts"
-    state active
+    state superseded
     scope [
         path "Cargo.lock",
         path "Cargo.toml",
@@ -12024,6 +12224,323 @@ record legeos.work.integration-stabilization-20261005/1 : work {
         }
     }
     part_of [ @legeos.milestone.developer-edition-0-1 ]
+    author "dk"
+}
+
+record legeos.work.integration-stabilization-20261005/2 : work {
+    title "Integrate and stabilize all S00-S19 desktop and deployment contracts"
+    state blocked
+    scope [
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "apps/**",
+        path "cli/**",
+        path "compositor/**",
+        path "crates/**",
+        path "debian/control",
+        path "distro/**",
+        path "installer/**",
+        path "interfaces/**",
+        path "monitor-dev/**",
+        path "portals/**",
+        path "scripts/**",
+        path "services/**",
+        path "session/**",
+        path "shell/**",
+        path "tests/**",
+        path "tools/**"
+    ]
+    intent "Implement all S00–S19 contracts in the owner-supplied integration pack, reconcile rather than duplicate existing plans, continue shared index work, diagnose the reported post-install doctor failures. Accepted input SHA256 cb40707ee86d4a232ae987bf8c223018a39aa518b055b9ebbc2d64b3eb1dc9dd. Baseline TemplarOS ff18e23b51255cbe5d64bc03e5d96b34d2171012; PixelKit 593e10d10770a28f258085fd1e49f665bd77c8a1; bpg-rs ac004c44a17e1492e334428f45cb0083ea670b35. Keep existing service owners, preserved Home/work behavior and native host validation; no live desktop activation. Physical, owner-privileged and installed-image gates remain unsatisfied until actually exercised."
+    note """
+        2026-10-06 native Ubuntu26.04.1/Rust1.97.1 working-tree implementation and bounded observations are recorded separately from full S00-S19 acceptance. Original criteria remain unchanged; this work is not completed or release-signoff.
+        Observed: current private native workspace all-targets2442 tests pass and sibling PixelKit accessibility consumers345 pass; source ownership14/5/32 and current ABI/provider/package gates pass. Actual native browser/picker/portal/clipboard/PCManFM/bookmarks/Home/settings/greeter/standalone-RandR journeys have scoped screenshots and cleanup evidence. Integrated indexer reachable work is completed with real inotify/native runtime and recorded2M workload, not aggregate test status alone. Reported running-build/file-index doctor faults were corrected without re-running the person's observations or touching live installed services; the ELAN _apt unsandboxed local-file notice is not a failed installation.
+        S17 real native factory/UUID/Btrfs/ESP candidate staging, unchanged firmware candidate boot, actual cmdline Trial reconciliation, native rollback and firmware known-good boot pass in owned unprivileged QEMU/OVMF guests. Native payload/dpkg2.0->1.0, root/dpkg readonly EROFS, Home/profile hashes and candidate document/shared-state persistence observed. Separate actual persisted-Staging interruption and unchanged firmware known-good boot pass; no fabricated journals/defaults/health markers. Hostd stable loader IDs and late bus-name publication were corrected from witnessed failures.
+        Final common build set0.1.0~dev1791268932+g7c68786.dirty contains actual14 native components,8metapackages and selected non-Git LiminalView source package; real isolated apt-ftparchive/OpenPGP publication/signature/index/package-hash verification passes23pins/no problems. Actual packaged optional wallpaper decoder exactly decodes2x2 RGBA colours; viewer runs default formats and generated absolute installed desktop paths. Complete retained source archive reproduces the local viewer; no invented release origin/pin.
+        Still blocked: S08 hybrid-GPU import/scanout/device-loss/resume; S09 protected lock frames presented on every physical output; S10 physical KMS preview/revert/readback/recovery; S12 actual TV/cursor/input/capture equivalence; S18 full installed writer/promotion-health/shared-state-schema upgrade compatibility beyond the minimal real guest; S19 fresh installed image and upgrade from previous supported image plus physical daily-driver journeys. Reference hardware/previous image and permitted installed-session acceptance are absent. No live bus/unit/deploy/logout/PAM/fingerprint or host-device changes were performed.
+        Quality limits: whole-workspace formatting and warning-denying clippy are not clean, with outstanding owned-source diagnostics and concurrent wallpaper changes; existing upstream still265 blend deprecations remain. Passing regressions/source/guest proofs are not a clean full CI claim. No lint suppression, needless boxing, default/catalogue/count repinning, alias shim or unrelated formatting was used to hide these limits. Private owned UI/bus children reaped; disposable private state/scaffolds removed; shared tools-only native-ui-runtime remains for concurrent wallpaper work. No reduction of the original requested scope or permission to enable unaccepted defaults is implied.
+        """
+    acceptance {
+        check s00 {
+            statement """
+                S00 — Freeze the source baseline and make test results truthful
+
+                **Owner:** build/test integration. **Dependency:** none. **Existing parent:** daily-driver and test-infrastructure work.
+
+                Record archive/source revisions, toolchain, selected package snapshot and sibling dependency versions. Restore excluded fonts and required external source inputs from their owning packages/checkouts. Add isolated HOME/XDG/runtime/bus fixtures, explicit checks against contacting the live user service manager, and nonzero-test-count verification. Baseline current portal, settings, Home-card, Alt-Tab and boot-entry tests without editing behavior.
+
+                **Locations:** root Cargo/toolchain files, `distro/base.toml`, package closure tooling, existing nested-session harnesses, checked interface tooling.
+
+                **Gate:** a deliberately misspelled test filter fails the gate; a nested run cannot restart/mask the active user's session; source closure omissions are reported, not hidden.
+                """
+            method observation
+        }
+        check s01 {
+            statement """
+                S01 — Restore browser file dialogs with the supported picker stack
+
+                **Owner:** desktop/portal integration. **Dependency:** S00 testing isolation, not completion of all other baseline tests.
+
+                Add LXQt portal through the seed and package closure. Ship/validate the desktop-specific routing table, preserve user overrides, and verify activation with the actual ready compositor socket. Route FileChooser to LXQt; keep GTK as a selection alternative. Audit AppChooser/Background separately; do not assign unsupported interfaces to GTK. Remove stale implicit assumptions about Cosmic capture.
+
+                **Locations:** `distro/seeds/selection.toml`, `portals/xdg-desktop-portal-templar/templaros-portals.conf`, `session/templar-session/src/main.rs`, portal/user units and packaging rules, existing doctor code.
+
+                **Gate:** fresh installed session; Firefox and Chromium; attach a known local file and verify bytes; cancel; repeat at least three requests; Save As; backend missing/failing gives a diagnosable result. Cover every browser packaging format the release advertises. Do not send personal files to a remote test endpoint.
+                """
+            method observation
+        }
+        check s02 {
+            statement """
+                S02 — Repair the native portal host and its failure semantics
+
+                **Owner:** PixelKit/portal integration. **Dependency:** S00; independent of shipping S01.
+
+                Run one graphical event loop on the process main thread. Forward asynchronous requests into it, support more than one dialog window, and retire per-request `spawn_blocking -> run_app`. Distinguish user cancel, display failure, worker failure and request timeout. Preserve parent handles and activate/position conservatively. Repair FileChooser, AppChooser and Background together because they share the host.
+
+                **Locations:** `portals/xdg-desktop-portal-templar/src/{main,dialog,file_chooser,app_chooser,background}.rs`; PixelKit host API only where genuinely needed; compositor parent/activation protocols.
+
+                **Gate:** repeated/concurrent requests, caller disappearance, cancel, backend restart, missing display, fullscreen parent and moved/unplugged output. Re-enable native interactive Background only after its UI gate. Keep LXQt the default FileChooser while the custom browser journey remains incomplete.
+                """
+            method observation
+        }
+        check s03 {
+            statement """
+                S03 — Finish PCManFM integration without data loss
+
+                **Owner:** file-service/application integration. **Dependency:** S01 for browser journey; other changes can proceed independently.
+
+                Verify provider selection, `inode/directory`, actual desktop-file IDs, Open With, default open, downloads reveal and FileManager1 ownership. Preserve the filtering of LXQt desktop-manager entries. Keep DES-EMA Home/project actions. Replace unconditional full bookmarks rewrite with the explicit preservation/additive-export policy in PLAN. Observe native operations through the shared index without claiming filed undo for external copies.
+
+                **Locations:** `crates/templar-session-core/src/providers.rs`, `crates/templar-appd/src/desktop_entry.rs`, `crates/templar-associationd/src/{dbus,export}.rs`, `services/templar-filed/src/bookmarks.rs`, CLI custom-action packaging and shell open-in-file-manager route.
+
+                **Gate:** no `pcmanfm-qt --desktop` in Templar; old/native bookmarks survive export/relogin; rename/move/trash reflected in search; browser reveal selects the right file; filenames with spaces, Unicode and shell metacharacters are not executed.
+                """
+            method observation
+        }
+        check s04 {
+            statement """
+                S04 — Shared settings contracts and canonical navigation
+
+                **Owner:** session API/settings. **Dependency:** S00; settle interfaces before parallel page implementation.
+
+                Add stable page slugs, aliases and search labels. Define common capability/revision/operation/error data. Put ordinary pages first while retaining advanced functions. Deep-link shell controls through typed actions/provider resolution to one destination. Persist only through owned APIs and show applied versus desired state.
+
+                **Locations:** `apps/templar-settings/src/{main,surface}.rs`, `crates/templar-types`, `crates/templar-client`, `crates/templar-session-core/src/settings.rs`, `interfaces/dbus/`, shell action routing.
+
+                **Gate:** GUI/CLI agree; current advanced pages still work; unsupported row explains why; externally changed state refreshes; incompatible interface changes fail the existing signature checker.
+                """
+            method observation
+        }
+        check s05 {
+            statement """
+                S05 — PixelKit production interaction and design-token foundation
+
+                **Owner:** toolkit/shared UI. **Dependency:** S00; consumes S04 error/capability conventions.
+
+                Add real Linux clipboard behavior, event-loop-compatible asynchronous delivery, text/IME and keyboard-focus tests, semantic accessibility adapters, scalable standard controls and Templar-owned declarative tokens. Keep generic toolkit free of OS policy. Do not introduce winit transitively into the compositor core through pixelkit-ui.
+
+                **Locations:** `PixelKit/crates/pixelkit-shell/src/clipboard.rs`, `PixelKit/crates/pixelkit-windowing/src/host.rs`, `PixelKit/crates/pixelkit-ui/src/`; proposed pure token/shared Templar UI module.
+
+                **Gate:** cross-process copy/paste in a browser and standalone Settings; fake clipboard explicitly test-only; IME and Unicode filenames; screen-reader semantics where supported; 1x/1.25x/1.5x/2x renders and keyboard-only operation. Existing other PixelKit applications retain behavior.
+                """
+            method observation
+        }
+        check s06 {
+            statement """
+                S06 — Network and Bluetooth as effective controls
+
+                **Owner:** device-policy/UI integration. **Dependency:** S04; S05 for new native prompt widgets.
+
+                Keep existing providers until replacement succeeds. Add NetworkManager state/scan/connect/forget and cancellation/secret-agent integration; add BlueZ device/pairing-agent behavior. Use existing authorization and secret-store components with correct session ownership. Limit advanced network configuration to fully supported paths or delegate it visibly.
+
+                **Locations:** new bounded modules under `services/templar-sessiond/src/apis/` as justified, typed interface/client additions, existing providers and Settings pages, seed/service inventory.
+
+                **Gate:** new secured Wi-Fi, wrong password, rfkill, missing firmware, captive network distinction, USB tether; Bluetooth passkey/cancel/reconnect/forget. No secrets in JSON settings or logs, no competing agents silently answering the same request.
+                """
+            method observation
+        }
+        check s07 {
+            statement """
+                S07 — Real audio-device selection
+
+                **Owner:** audio/UI integration. **Dependency:** S04; parallel to graphics.
+
+                Extend Audio1 inventory/default selection and external-change behavior. Harden the existing wpctl runner with timeout/output bounds; choose a supported event/inventory adapter after reviewing its isolation requirements. Support input/output selection, hardware disappearance and persisted stable preference.
+
+                **Locations:** `services/templar-sessiond/src/apis/audio.rs`, `interfaces/dbus/org.templaros.Audio1.xml`, client, Settings sound page, shell sound controls.
+
+                **Gate:** select HDMI sound, Bluetooth and USB headset; remove selected device; mute/volume changed outside Templar appears correctly; failed helper never hangs Settings/sessiond.
+                """
+            method observation
+        }
+        check s08 {
+            statement """
+                S08 — Compositor output inventory and hybrid-GPU foundation
+
+                **Owner:** compositor/backend. **Dependency:** S00; interface design coordinated with S04.
+
+                Replace the primary-only scope with explicit supported render/scanout device relationships. Preserve current render/fence/watchdog improvements. Advertise full mode/capability inventory and stable connector identity. Handle per-device failure, remove/readd and resume without abandoning healthy outputs. Do not merely delete the non-primary guard.
+
+                **Locations:** `compositor/templar-comp/src/backend/udev.rs`, compositor state/output models, integration transport and GPU test fixtures.
+
+                **Gate:** physical reference laptop internal/external topology works, including connectors on separate GPUs; import/copy path verified; unsupported path visibly reported; no whole-session collapse on secondary-device failure. Nested-only evidence is insufficient.
+                """
+            method observation
+        }
+        check s09 {
+            statement """
+                S09 — Lock coverage barrier
+
+                **Owner:** compositor/session security. **Dependency:** current frame-completion machinery; coordinate with S08, do not wait for display UI.
+
+                Replace immediate lock confirmation with a per-output presented-safe-frame barrier. Reconcile pending topology changes and lock-client death. Distinguish LockRequested from actual Locked. Keep trusted unlock/PAM and input-isolation behavior; audit lock manager access policy rather than trusting client-supplied labels.
+
+                **Locations:** `compositor/templar-comp/src/session_lock.rs`, output completion callbacks, `services/templar-sessiond/src/apis/lifecycle.rs`, shell lock bridge.
+
+                **Gate:** no acknowledgment before every active output is covered; no unlocked frame after resume; hotplug while locked stays protected; failed lock client cannot unlock; pointer/keyboard/recovery shortcuts cannot reach hidden session content.
+                """
+            method observation
+        }
+        check s10 {
+            statement """
+                S10 — Compositor-owned display transactions
+
+                **Owner:** compositor and session API. **Dependency:** S08, S04; S09 for lock-aware output changes.
+
+                Implement inspect/validate/preview/confirm/revert with topology generations, one active preview, real backend validation, partial-failure recovery and compositor-owned timers. Keep persistence in the owned preference store; unfinished preview is not the last known good. Implement headless and damaged/closed-panel policy deliberately.
+
+                **Locations:** new pure display-policy module/crate adapted from alpha `model.rs`/`policy.rs` as useful; compositor output manager; client/API definitions; session settings/profile storage.
+
+                **Gate:** timeout, stale request, caller/UI/sessiond crash, disappearing output and partial multi-GPU failure recover. Cross-device atomicity is not claimed. The GUI is not running for the unplug test.
+                """
+            method observation
+        }
+        check s11 {
+            statement """
+                S11 — PixelKit Displays and standalone Lubuntu adapter
+
+                **Owner:** settings/UI and standalone packaging. **Dependency:** S10; S05 controls.
+
+                Deliver visible disabled outputs, layout intents, Identify, exact modes/refresh, scaling/orientation, arrangement and accessible control alternatives. Implement true mirroring. Keep one PixelKit page in Templar and a separate standalone entry on X11, sharing pure policy as practical. Do not run the old alpha helper in Templar.
+
+                **Locations:** Settings display page, reusable display core, separate XRandR transport/package. Retain wlr-randr only for a compositor demonstrably exposing the required protocol, not as an assumed Templar backend.
+
+                **Gate:** TV-only -> confirm -> close Settings -> unplug -> usable fallback; reconnect restores validated profile; keyboard-only arrangement; mixed scale; three-output inventory; X11 regression test remains separate from Wayland.
+                """
+            method observation
+        }
+        check s12 {
+            statement """
+                S12 — TV picture fitting
+
+                **Owner:** compositor/render and display UI. **Dependency:** S10/S11.
+
+                Implement advertised hardware underscan first where it works; otherwise implement explicit compositor output inset. Add full-screen calibration target, symmetric corner controls, numeric adjustment, aspect lock/reset and confirmation. Do not change the HDMI mode to simulate safe margins. Keep capture/cursor/input/lock/direct-scanout behavior consistent.
+
+                **Locations:** display capability/model, final compositor output transform, pointer/input mapping, full-screen calibration surface and Settings controls.
+
+                **Gate:** all corners visible; pointer matches target; full-screen apps cannot bypass fitting; black margins remain safe while locked; cancellation restores image; performance measured with fitting enabled. Independent edge tuning is a follow-on, not required for the symmetric alpha.
+                """
+            method observation
+        }
+        check s13 {
+            statement """
+                S13 — Input and enforced power policy
+
+                **Owner:** compositor input plus session policy. **Dependency:** S04/S05; automatic lock/suspend depends on S09.
+
+                Extend existing tap-to-click to supported per-device controls; implement stored idle/lid policy using actual compositor idle and logind integration. Keep one hardware-key/lid handler, correct inhibitors and fallback when the Templar session exits. Wire backlight dimming, battery/mains policies and saved device overrides without claiming unsupported hibernation.
+
+                **Locations:** compositor input/idle/state, existing Power1/Backlight1/Battery1 APIs, shell/session lifecycle and Settings pages.
+
+                **Gate:** effective settings survive relogin; hotplug defaults; docked and undocked lid behavior; secure lock-before-suspend and resume with changed outputs. No inert control is presented as enabled functionality.
+                """
+            method observation
+        }
+        check s14 {
+            statement """
+                S14 — Application identity and opt-in workloads
+
+                **Owner:** identity/governor integration. **Dependency:** S04 contracts; isolated process/scope tests from S00.
+
+                Finish supported external-launch attribution and association export at startup/catalog change. Add WorkloadId and parent relationship using existing proposal; keep terminal foreground/background semantics and explicit launch classification. Present permission enforcement truthfully for native and sandboxed variants.
+
+                **Locations:** `crates/templar-appd`, `templar-types` identity/unit parsing, session APIs, CLI, resourced's unit discovery, Home/Taskfield shared identity consumers.
+
+                **Gate:** PCManFM/portal launches have trustworthy identity or remain clearly unknown; forged app_id gains no privilege; killing/reclaiming a build scope leaves terminal alive; job control, exit status and signals preserved; no automatic title/process-name identity inference.
+                """
+            method observation
+        }
+        check s15 {
+            statement """
+                S15 — Visual consistency and Home/work regression completion
+
+                **Owner:** shell/settings/UI. **Dependency:** S05; domain pages need not all be complete to begin.
+
+                Apply shared type/spacing/focus/menu/dialog/error patterns across owned surfaces. Align supported GTK/Qt fonts/icons/theme state. Propagate reduced motion. Preserve October 4 card clusters, stable parking, full-screen chrome behavior, shared Alt-Tab/Taskfield identity and diagnostic separation.
+
+                **Locations:** shared token adapter, Settings and shell surfaces, greeter/lock rendering, distro theme defaults; update current planning conflicts.
+
+                **Gate:** screenshots and keyboard journeys in light/dark/mixed scale; no identity/card-position regression; third-party styling uses supported configuration and remains reversible.
+                """
+            method observation
+        }
+        check s16 {
+            statement """
+                S16 — Checked ownership declarations
+
+                **Owner:** system/build. **Dependency:** none beyond S00 tooling safety; parallel to visible UX.
+
+                Add tier/owner/writes/exceptions to layout and components. Implement the existing proposed check-ownership gate. Classify runtime state and Work explicitly; record temporary live-root/developer exceptions with decisions.
+
+                **Locations:** `distro/deploy/{layout,components}.toml`, unit/package metadata, xtask validation, architecture ownership doc.
+
+                **Gate:** injected undeclared Work writes, missing owners, contradictory unit permissions and invalid exceptions fail. The checker does not pretend to be runtime sandbox enforcement.
+                """
+            method observation
+        }
+        check s17 {
+            statement """
+                S17 — Real candidate-to-boot identity
+
+                **Owner:** hostd/deployment. **Dependency:** S16 declaration format; may fix immediate path bug before full checker rollout.
+
+                Separate mounted paths from Btrfs/ESP-relative identities. Derive real candidate mount from layout; preserve UUID root identity and strict boot-entry validation. Exercise the real factory path rather than only hand-built fake deployment structs.
+
+                **Locations:** `services/templar-hostd/src/{main,updates,boot_entries,deploy}.rs` as applicable, configuration types, installer/provisioner layout handling.
+
+                **Gate:** a candidate staged by real config generates a valid entry naming the actual subvolume and boots in a disposable image; known-good entry remains correct; interrupted phase resumes safely. Never weaken validation to accept arbitrary mounted paths.
+                """
+            method observation
+        }
+        check s18 {
+            statement """
+                S18 — Read-only deployments with compatible persistent state
+
+                **Owner:** hostd/installer/system integration. **Dependency:** S16/S17.
+
+                Adopt PLAN's explicit ownership decisions. Keep package databases with root, split persistent runtime mounts, classify `/etc` writers, make ordinary installation and developer deployment use hostd transactions, and gate seal/promotion. Design rollback-compatible shared-state schemas and preserve Work/credentials appropriately.
+
+                **Locations:** layout/components, installer, image build, hostd transaction and boot-health chain, developer deployment/update scripts, settings recovery page.
+
+                **Gate:** read-only runtime boot with no unexplained EROFS failures; update then rollback pairs dpkg with binaries; failed boot recovers; application profiles and documents unchanged; interrupted migration is recoverable. Physical boot/driver evidence required before default promotion.
+                """
+            method observation
+        }
+        check s19 {
+            statement """
+                S19 — Installed daily-driver acceptance
+
+                **Owner:** release/hardware. **Dependency:** select completed slices for an explicit release scope; incomplete optional features labeled unavailable.
+
+                Run the matrix in PLAN §9 on a fresh installed image and an upgrade from the previous supported image. Record actual package/runtime versions, source IDs, tests and hardware. Include visible behavior, not just service status. Verify private tests have not changed the user's live session. Keep a known-good boot and the existing fallback desktop until acceptance is signed off.
+
+                **Gate:** every advertised operation passes its user journey. A failed mandatory portal, display recovery, secure lock or rollback gate prevents the corresponding default from shipping.
+                """
+            method observation
+        }
+    }
+    part_of [ @legeos.milestone.developer-edition-0-1 ]
+    supersedes [ @legeos.work.integration-stabilization-20261005/1 ]
     author "dk"
 }
 
@@ -12506,6 +13023,157 @@ record legeos.work.logical-app-and-variant-identity/3 : work {
     author "dk"
 }
 
+record legeos.work.low-memory-wallpaper-switcher/1 : work {
+    title "Low-memory wallpaper switcher: new policy subcrate, temporary decoder and compositor-owned pixels"
+    state proposed
+    scope [
+        path "apps/templar-settings/**",
+        path "cli/templar/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-wallpaper/**",
+        path "docs/planning/low-memory-wallpaper-switcher.md",
+        path "interfaces/**",
+        path "services/templar-sessiond/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Implement crates/templar-wallpaper in the LegeOS workspace entirely in Rust: feature-light policy hosted by existing templar-sessiond, a temporary Rust-codec worker and compositor-owned static textures. Deliver startup restore, local random/sequential/shuffle selection, timed/manual/paused rotation, six physical sizing modes, per-output configuration and Settings/CLI/History controls, with no decoded cache, fade, preload or additional native resident daemon. Retain source-sized or explicitly reduced textures instead of expanding small sources into full-output wallpaper bitmaps. Deliver independently runnable X11 one-shot, generic layer-shell and portal adapters.
+        Port the substantive recovered WUDB.cpp mathematical WuDP pipeline to dependency-light Rust, not the conceptual wudbquantizer.h placeholder or distinct speed-forked NeuQuant. Preserve LAB conversion, weighted PCA, projection histogram, contiguous dynamic-programming palette and CIEDE2000 mapping, with bounded histogram/scratch, deterministic tie handling and direct indexed output. Remove OpenCV/Eigen/vivid, C/C++ adapters, elastic probing, tolerance-based hash equality, random sampling and unbounded mapping caches. Specify new Rust parameters and simplifications; do not infer numerical results or exact tested source revision from the owner's prior report that WuDP did better. Newly authored Rust follows workspace licensing; preserved external sources have no explicit license notice.
+        The owner's 2026-10-06 instruction supersedes the prior opt-in default: use 256-color WuDP by default if actual load overhead is not egregious, accepting modest additional load time because wallpaper changes are infrequent. Measure optimized full-size inputs; keep explicit null/off configuration and existing opt-outs, finite worker/transition budgets and real R8-plus-palette storage without an RGBA mirror. Document observed lossy banding; neither default selection nor logical texture-byte savings establish a full quality/comparator or physical-GPU/Variety release claim. Rust-only decoder requirement supersedes the earlier optional C/libjpeg adapter; earlier libjpeg measurements are historical, not Rust decoder evidence. Conservative preflight and measured worker peaks must account progressive coefficients and nonstreamable formats. Retain authenticated sealed-FD/generation/overlap and actual-frame presentation contracts. Matched Variety, full quantizer comparison and physical/GPU release gates remain explicit observations to collect, not fabricated from successful compilation or offline indices. See docs/planning/low-memory-wallpaper-switcher.md.
+        """
+    note """
+        Original report preserved as wallpaper-report-export-20260911, SHA256 7b931e593c4584a6ceea84bc74903f6666bb8e4422c1eaf7ec87dec593ee5af9; normalized report as low-memory-background-switcher-20260911, SHA256 541a809a37c9ca1c7c5059aa38c471822fa0336fc93753dccad643086f3a5ad7. Metadata timestamp 2026-09-11T03:02:36.827090Z and backing_conversation_id 6aa36e6a-16b0-83ec-a496-d8d4379c84da do not establish a direct conversation URL/title. Root copy removed only after archive verification.
+        Adopt backend-specific ownership, no decoded cache, temporary decoder, startup/sizing/rotation and separate process/shared/graphics accounting. Native Home needs one alpha-correct presenter rather than retaining old and new presenters. Rust workspace package replaces mandatory standalone C; native compositor textures replace unavailable Templar layer-shell; bounded transactional overlap replaces indefinite buffer-release waits; progressive coefficients remain budgeted despite scanline output; matched Variety gates replace a five-minute completion deadline.
+        Native baseline/progressive JPEG decoder observations are documented in docs/measurements/wallpaper-decoder-20261006.md; no wallpaper/Variety/GPU claim follows. No live session or service was changed.
+        WuDP recovery 2026-10-06: Second/misc loose filename searches and selected source archives found none; 2015.arc could not be listed. New red-drive spelling-adjacent files actually declare WuDPQuantizer. WUDB.cpp has SHA256 2a1cdfbd63a90ef6a9a2a6b5e237d784a703722197e5bb6d48ef3ca2dd5fe191; wudb.h e1cf903d543ca450e6f3fbae1144591d5c06a4a103778a97ef5b849a049d73bb; wudbquantizer.h 1dbc02c572b538deeb20e968e041ec4204d0dc2612689e8d2da0368b58fe3024. All three AKR source copies were byte-compared equal to originals, which remain unchanged. The conceptual wrapper's frequency-sort placeholder is not the substantive algorithm. A native c++ -std=c++17 -fsyntax-only probe of unchanged WUDB.cpp failed at missing WuDPQuantizer.h; header field/constructor differences are also visible in source. This identifies the algorithm family, not the exact previously tested revision. No comparative benchmark rerun.
+        """
+    acceptance {
+        check bounded-memory-lifecycle {
+            statement """
+                One worker and latest pending job, validated sealed-FD transport, no decoded/preload cache, old/new overlap within declared byte limits; all children reaped and obsolete mappings/textures released across 100 changes, cancellation, source errors, output/context loss and owner restart. Progressive JPEG and other nonstreamable sources honor the explicit worker envelope or fail clearly.
+                """
+            method observation
+        }
+        check compatibility-backends {
+            statement """
+                Owned X11 setter exits between changes, checked stripe reuse/root publication does not leak pixmaps or kill unrelated clients; generic layer-shell honors configure/release and cannot indefinitely stall rotation under release starvation; portal reports unsupported sizing/residency controls and owner acceptance honestly. No XWayland-root substitution or live-session deployment.
+                """
+            method observation
+        }
+        check native-visible-behavior {
+            statement """
+                Isolated native session visibly restores startup wallpaper; local rotation, Next/Previous/Pause/Resume and all six sizing modes work, including small JPEG-to-4K and multi-output transforms, with unchanged Home input/occlusion/fullscreen/lock/capture behavior. GUI, CLI, Reset and History share desired/applied state.
+                """
+            method observation
+        }
+        check quantization-disposition {
+            statement """
+                Use the recovered substantive WUDB.cpp WuDP algorithm, with coherent interfaces and established licensing, not the conceptual wrapper placeholder. Run the bounded WuDP-first comparison against distinct speed-forked NeuQuant, reduced/full RGBA and indexed-PNG control, with real indexed rendering where available. Declare K/histogram/probe/sampling/bin parameters, include K below 256 to exercise DP, bound caches/histogram and emit real indices without a full BGR/RGBA mirror. Preserve the owner's qualitative prior result without invented numerical claims or a confirmation rerun. Record actual memory, peak, quality and latency; enable only a measured acceptable indexed winner, or retain quantization off with evidence of why. Keep heavy dependencies in a temporary decoder, not resident policy hosts; do not duplicate a quantizer.
+                """
+            method observation
+        }
+        check reduced-texture {
+            statement """
+                Real native renderer retains small-source/reduced textures without a hidden full-size CPU mirror, actual output quality is inspected, per-context replicas and full-resolution scanout/capture are counted, and reduced mode improves attributable storage under its selected budget.
+                """
+            method observation
+        }
+        check variety-performance-memory {
+            statement """
+                Matched version/backend/process-tree Variety comparison over at least 100 startup/rotation samples: medians no worse than baseline and p95 <=1.10 times baseline; idle aggregate utility incremental PSS <5 MiB and <50% of baseline; publish host totals and separately account shell/shared/graphics/GPU storage and measured worker peaks. Missing GPU measurements are not claimed as whole-system savings.
+                """
+            method observation
+        }
+    }
+    implements [ @legeos.constraint.services-not-indicators ]
+    part_of [ @legeos.work.home-field-settings-gui ]
+    author "dk"
+    source {
+        kind external
+        path "sources/external/low-memory-background-switcher-20260911--541a809a.md"
+        excerpt """
+            Original wallpaper design report, normalized with provenance.
+            """
+    }
+    source {
+        kind external
+        path "sources/external/wallpaper-report-export-20260911--7b931e59.md"
+        excerpt """
+            Complete original JSON export; report preserved before root retirement.
+            """
+    }
+    source {
+        kind external
+        path "sources/external/wudp-conceptual-header-20261006--1dbc02c5.md"
+        excerpt """
+            Recovered wudbquantizer.h: internal WuDPQuantizer name, explicit conceptual wrapper and placeholder.
+            """
+    }
+    source {
+        kind external
+        path "sources/external/wudp-implementation-20261006--2a1cdfbd.md"
+        excerpt """
+            Recovered unchanged WUDB.cpp: WuDPQuantizer, LAB/PCA/projection-bin DP and CIEDE2000 BGR assignment.
+            """
+    }
+    source {
+        kind external
+        path "sources/external/wudp-interface-20261006--e1cf903d.md"
+        excerpt """
+            Recovered wudb.h interface; not equivalent to NeuQuant and not a coherent build with the companion snapshot.
+            """
+    }
+    source {
+        kind internal
+        path "docs/planning/low-memory-wallpaper-switcher.md"
+        excerpt """
+            Complete proposed architecture, memory lifecycle, compatibility, recovered WuDP analysis and release gates.
+            """
+    }
+}
+
+record legeos.work.lxqt-filechooser-restoration-20261007/1 : work {
+    title "Restore supported LXQt FileChooser and defer native PixelKit picker"
+    state proposed
+    scope [
+        path "debian/control",
+        path "distro/image/**",
+        path "distro/metapackages/**",
+        path "distro/seeds/**",
+        path "portals/**",
+        path "session/templar-session/src/main.rs"
+    ]
+    intent """
+        Owner direction 2026-10-07 supersedes the native PixelKit FileChooser cutover after visual review: keep the supported LXQt graphical file picker as vendor FileChooser=lxqt;gtk, wire its package/seed/session activation correctly, preserve PCManFM-Qt and lxqt-policykit-agent, and defer native chooser visual and technical promotion. Preserve higher-priority user overrides and independent Background/capture policies. Verify genuine browser/frontend/document-portal journeys on an owned runtime and build a coherent supported package without installing or restarting the live desktop.
+        """
+    note """
+        Native development fixes and scoped owned-runtime evidence may remain in source; they do not constitute native picker default or visual acceptance. Owner's latest explicit direction restores the S01 supported LXQt route. No live deployment, logout, system time/locale/network/device changes or hardware release signoff.
+        """
+    acceptance {
+        check browsers {
+            statement """
+                Actual Firefox and Chromium on an owned graphical runtime each read known local bytes through the genuine portal at least three times, cancel and complete Save As; observed parenting and failures are documented without remote upload or live desktop mutation.
+                """
+            method observation
+        }
+        check package {
+            statement """
+                Supported portal package is built and inspected, generation/closure and packaging gates run, existing documentation describes LXQt default and native deferral with exact evidence and unexercised installed-session limits.
+                """
+            method observation
+        }
+        check supported-routing {
+            statement """
+                Vendor FileChooser selects LXQt, dependencies and generated composition include its Qt Wayland runtime, PCManFM and policykit remain selected, and previous-display backends are retired only during session startup after activation environment publication. User overrides are not changed.
+                """
+            method observation
+        }
+    }
+    part_of [ @legeos.work.developer-edition-daily-driver ]
+    supersedes [ @legeos.work.native-pixelkit-filechooser-cutover-20261007/1 ]
+    author "dk"
+}
+
 record legeos.work.memory-polling-indexing-effectiveness-20260909/1 : work {
     title "Memory governor, watcher host and file-index effectiveness — the Astra-ranked fix set"
     state superseded
@@ -12623,6 +13291,56 @@ record legeos.work.memory-polling-indexing-effectiveness-20260909/2 : work {
     implements [ @legeos.decision.event-driven-service-authorities ]
     part_of [ @legeos.work.event-driven-service-audit ]
     supersedes [ @legeos.work.memory-polling-indexing-effectiveness-20260909/1 ]
+}
+
+record legeos.work.native-pixelkit-filechooser-cutover-20261007/1 : work {
+    title "Native PixelKit FileChooser replaces LXQt portal; PCManFM and policykit retained"
+    state superseded
+    scope [
+        path "COMPOSITOR.md",
+        path "compositor/templar-comp/src/{xdg_shell,state,xwayland}.rs",
+        path "crates/templar-window/src/service.rs",
+        path "debian/control",
+        path "distro/image/**",
+        path "distro/metapackages/**",
+        path "distro/seeds/**",
+        path "portals/**",
+        path "session/templar-session/src/main.rs"
+    ]
+    intent """
+        Owner request 2026-10-07: replace only the LXQt FileChooser portal with the existing Templar-native PixelKit picker. Preserve PCManFM-Qt as the file manager and lxqt-policykit-agent as the authentication agent. Make Templar the sole vendor FileChooser selection, remove the LXQt portal from package/seed dependencies, preserve higher-priority user portal overrides, retain the freedesktop frontend/document portal and GTK for its unrelated interfaces. Repair concrete native chooser consumer failures discovered while proving the cutover. No live desktop deployment/restart/logout by the agent.
+        """
+    note """
+        This explicit owner direction replaces the earlier S01/S02/default-picker documentation choice to keep FileChooser=lxqt;gtk. It does not claim physical or installed-session release acceptance, and does not change the independent Background/capture policy or broader S00-S19 gates.
+        """
+    acceptance {
+        check browser-wayland {
+            statement """
+                Actual Firefox and Chromium on an owned nested Wayland compositor select and read known local file bytes through the genuine frontend/document portal at least three times each, cancel and complete Save As with byte verification. Native dialog parenting is observed with actual parented browser requests.
+                """
+            method observation
+        }
+        check native-contract {
+            statement """
+                Selected save filter reaches the portal reply; replacing an existing target requires deliberate confirmation; cancellation, simultaneous dialogs and backend restart retain honest request outcomes. Focused portal regressions pass.
+                """
+            method observation
+        }
+        check native-routing {
+            statement """
+                Vendor FileChooser selects Templar only, portal package and generated session/image composition do not require xdg-desktop-portal-lxqt, PCManFM-Qt and lxqt-policykit remain selected. User overrides remain untouched.
+                """
+            method observation
+        }
+        check package-delivery {
+            statement """
+                Updated portal package is built and inspected without installation; package generation/closure and packaging gates run; existing portal documentation describes the native default and records evidence plus unexercised physical limits.
+                """
+            method observation
+        }
+    }
+    part_of [ @legeos.work.developer-edition-daily-driver ]
+    author "dk"
 }
 
 record legeos.work.no-memory-ceiling-on-developer-tooling/1 : work {
@@ -13020,6 +13738,120 @@ record legeos.work.pcmanfm-qt-integration/2 : work {
     implements [ @legeos.decision.pcmanfm-qt-is-the-file-manager ]
     part_of [ @legeos.milestone.developer-edition-0-1 ]
     supersedes [ @legeos.work.pcmanfm-qt-integration/1 ]
+    author "dk"
+}
+
+record legeos.work.pdf-homegarden-hdmi-20261007/1 : work {
+    title "Owner PDF: contained project Home, sessions/Desktop dock and survivable HDMI"
+    state proposed
+    scope [
+        path "Cargo.lock",
+        path "Cargo.toml",
+        path "ci/**",
+        path "cli/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-appd/**",
+        path "crates/templar-build/**",
+        path "crates/templar-client/**",
+        path "crates/templar-field/**",
+        path "crates/templar-session-core/**",
+        path "crates/templar-types/**",
+        path "debian/**",
+        path "docs/**",
+        path "helpers/templar-preview-codecs/**",
+        path "interfaces/**",
+        path "scripts/**",
+        path "services/templar-filed/**",
+        path "services/templar-hostd/**",
+        path "services/templar-sessiond/**",
+        path "session/**",
+        path "shell/templar-shell/**",
+        path "tests/**",
+        path "tools/xtask/**"
+    ]
+    intent """
+        Implement the owner's 2026-10-07 18-page PDF /home/dk/Downloads/Untitled.pdf, LegeOS: Home garden scoping and HDMI review. Parent rendered all pages and viewed proposed Home mock-up page5 and HDMI flow page13. Home: verified project linking, root/HOME-ancestor exclusion, no duplicate child Place, stable path-seeded placement, pin versus manual-resize semantics; one project object contains live/parked windows, coding/agent sessions, recent files/apps and template bodies, everything else in one Loose tray; active/resting/fading light, actionable text, attention-only color, Sessions/Files/Apps, safe Focus/Resume, genuine private shell journals/agent/editor adapters and stronger verified process-directory evidence. Independent live Desktop dock replaces machine-facts Files tile, native cross-client drag/drop and filed journalled copy/move/undo. HDMI: survivable shared session/greeter secondary bring-up recovery, deterministic render/feedback/primary output, TV-safe mode/8-bit formats, hotplug settle and bounded late EDID, bounded fence/capability handling, make-before-break/tolerant readback, primary-output callback pacing, genuine secondary driver/render worker isolation and lazy activation with honest power/suspend gates. Keep preview capture off secondary passes, extended-output semantics explicit, quality/naming/dependency-source closure updated. Preserve earlier Home click, nm-tray2, DateTime and name-tab layer repairs. Six parallel implementation slices use distinct ownership and one server and shell integration owner each; parent runs native isolated verification.
+        """
+    note "Latest owner direction defers native PixelKit picker and restores LXQt; this plan does not re-promote it. The October7 09:33:44UTC installed compositor2339 explicitly self-aborted after a thirty-second watchdog stall. The retained kernel sample shows its thread in uninterruptible folio/Btrfs page wait; global OOM killed the core collector, so this incident has no recovered user stack and must not be described as an observed Mesa glFenceSync stack. The older Mesa evidence and PDF multi-GPU hypothesis are separate incidents/hypotheses. Installed single-GPU behavior, unqualified checkout hardware paths and actual observed failure remain distinct. No live session/device/PAM/user-bus/clock/locale/network mutation or deployment. Physical Intel/NVIDIA/TV/suspend/installed acceptance remains unclaimed until actually observed. Existing service authority and frozen existing wire signatures remain; new capability members use additive versioned APIs. Strong PID/cgroup verification, no title/name privilege grants, no private agent store parsing or raw command/prompt defaults. Latest owner mock-up supersedes prior prohibitions on Home previews/window lists and directory-tree default bodies, not stable geometry/ledger/source/privacy invariants. All new delegated agents, including nested delegates, use Sol per the owner's continuation direction. Owner direction on 2026-10-07 indefinitely defers Code/VS Code integration: experimental sources retained but excluded from both packaging paths, no runtime acceptance claim or further Code work. Independently verified Neovim remains in scope."
+    acceptance {
+        check desktop-dock {
+            statement """
+                Actual Desktop dock updates from filed change feed, preserves migration/order/geometry, opens and previews files, accepts and originates native cross-client file drops, and journalled copy/move/collision/undo work on disposable files without garden growth.
+                """
+            method observation
+            verified_by [
+                @legeos.evidence.desktop-order-authority-regressions-20261007/1,
+                @legeos.evidence.desktop-source-ui-independent-20261007/1,
+                @legeos.evidence.owned-desktop-fileops-20261007/1,
+                @legeos.evidence.owned-desktop-image-preview-20261007/1,
+                @legeos.evidence.owned-desktop-native-image-open-20261007/1,
+                @legeos.evidence.owned-desktop-native-incoming-20261007/1,
+                @legeos.evidence.owned-desktop-native-outgoing-20261007/1,
+                @legeos.evidence.owned-desktop-order-feed-20261007/1,
+                @legeos.evidence.owned-desktop-order-undo-20261007/1,
+                @legeos.evidence.session-boundary-regressions-20261007/1
+            ]
+        }
+        check hdmi-safety {
+            statement """
+                Production secondary driver work is isolated from input/event-loop, admitted fence paths are bounded and unsupported imports honest; recovery/epoch/primary ordering/TV mode/formats/hotplug/reprobe/transactions/readback/callback/lazy-device behavior have focused regression and owned runtime evidence. Physical qualification and power/suspend limits are reported separately, not inferred from software fixtures.
+                """
+            method observation
+        }
+        check integration-delivery {
+            statement """
+                Affected source builds and regressions, actual owned UI/worker journeys, additive ABI/actions/source closure/package gates and coherent packaging are observed; current docs/knowledge match owner direction, unrelated changes/live session remain preserved, AKR validates with diagnostics disclosed.
+                """
+            method observation
+            verified_by [
+                @legeos.evidence.garden-refresh-integration-delivery-20261008/1,
+                @legeos.evidence.garden-refresh-owned-home-20261008/1,
+                @legeos.evidence.garden-refresh-packages-gates-20261008/1,
+                @legeos.evidence.garden-refresh-shell-tests-20261008/1
+            ]
+        }
+        check project-authority {
+            statement """
+                Owned real user-manager launches yield verified window identity and correct project attribution; root/HOME ancestors, child duplication, manual-size versus keep and categorical template hysteresis/override are exercised, forged or unknown identity gains no privilege.
+                """
+            method observation
+            verified_by [
+                @legeos.evidence.identity-delivery-after-20261007/1,
+                @legeos.evidence.managed-startup-directory-20261007/1,
+                @legeos.evidence.owned-resize-keep-unpin-20261008/1,
+                @legeos.evidence.owned-template-hysteresis-20261008/1,
+                @legeos.evidence.real-home-linking-20261007/1,
+                @legeos.evidence.real-kitty-session-20261007/1,
+                @legeos.evidence.session-boundary-regressions-20261007/1
+            ]
+        }
+        check project-surface {
+            statement """
+                Actual PixelKit Home surface implements the page5 containment/light/actionable-text design at its representation rungs with previews on/off, one Loose tray, project drag-link and contained minimize/restore slots; all template/tab/Focus/Resume actions consume genuine data and earlier single-release behavior remains reliable.
+                """
+            method observation
+            verified_by [
+                @legeos.evidence.current-effects-shell-regressions-20261008/2,
+                @legeos.evidence.garden-refresh-owned-home-20261008/1,
+                @legeos.evidence.garden-refresh-plain-recent-open-20261008/1,
+                @legeos.evidence.managed-agent-hook-boundaries-20261007/1,
+                @legeos.evidence.managed-containment-feed-20261007/1,
+                @legeos.evidence.managed-home-single-click-20261007/1,
+                @legeos.evidence.owned-current-home-actions-20261008/1,
+                @legeos.evidence.owned-home-rungs-and-light-20261008/1,
+                @legeos.evidence.owned-template-hysteresis-20261008/1,
+                @legeos.evidence.real-home-linking-20261007/1,
+                @legeos.evidence.real-kitty-session-20261007/1
+            ]
+        }
+        check sessions-and-adapters {
+            statement """
+                Real isolated supported-shell command/pipeline/privacy journeys and actual hook payloads reach verified session rows, foreground collection runs only on tending/activation, safe brokered shell/agent resume works, editor folder hooks are runnable; private stores/raw prompts/arguments do not become default presentation data.
+                """
+            method observation
+        }
+    }
+    part_of [ @legeos.work.developer-edition-daily-driver ]
     author "dk"
 }
 
@@ -15996,6 +16828,202 @@ record legeos.work.trash-that-can-be-seen-and-emptied/2 : work {
     author "dk"
 }
 
+record legeos.work.visible-notifications-pixelkit-20261007/1 : work {
+    title "Visible bottom-right notifications with PixelKit toast cards and real terminal completion producers"
+    state proposed
+    scope [
+        path "apps/templar-settings/**",
+        path "cli/templar/**",
+        path "crates/templar-client/**",
+        path "crates/templar-session-core/**",
+        path "crates/templar-window/src/geometry.rs",
+        path "docs/planning/homegarden-previews-notifications-window-tabs.md",
+        path "interfaces/dbus/**",
+        path "services/templar-sessiond/**",
+        path "session/profile.d/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Make existing notifications reliably visible in a styled bottom-right shell popup using a host-independent PixelKit toast-card extension. Plan: docs/planning/homegarden-previews-notifications-window-tabs.md section2. Preserve sessiond/freedesktop provider authority/history rather than introduce a second server. Publish all committed creation/replacement/close/expiry/dismiss/action changes on correct paths, preserve replacement-generation expiry guards, and reconcile subscriptions/snapshots/service ownership without polling or highest-ID-only inference. Carry full presentation metadata instead of summary alone.
+        Extend sibling ../pixelkit/crates/pixelkit-ui with measured themed card layout, icon/summary/body/actions/dismiss, shared hit geometry, keyboard/accessibility semantics and widget outcomes. Keep D-Bus/history/classification/lifetime policy out of PixelKit; shell hosts a bounded stack and next deadline. Bottom-right placement must clear the nonexclusive bar, machine cluster, gesture/corner controls, remain on chosen output, handle scale/hotplug and never steal focus or enter work cards/MRU. Normal dwell3/4/5s by completion/info/failure-actionable class from first presentation; retain sender server-timeout semantics and history separately. Lock hides content, ordinary fullscreen defers, stale queued messages do not replay. Proposals:3 visible,20 waiting; excess retained in history, not unbounded popup windows.
+        Add an actual terminal job-completion producer rather than assume rendering detects jobs: Bash/zsh/fish hook contracts or explicit owned-command completion, preserving exit/pipeline status, prompt/CWD integration and job control. Foreground and background completion are distinct; suppress canceled/short/focused jobs by proposed policy, avoid raw secret-bearing command lines and duplicate terminal-native notifications. Initial long-job threshold10s is a reviewable default, not an existing setting.
+        """
+    note """
+        Sibling PixelKit source is part of implementation even though repository-local scope globs cannot own it. Existing source has top-right6s toast code and an arrival watcher, but Notify/expiry do not emit its Changed signal; isolated service evidence is recorded, not a visual feature pass. Three-to-five seconds is popup dwell, not deletion of history or contradiction of expire_timeout=0; earlier producer close/expiry cancels presentation. No live desktop deploy during agent validation.
+        """
+    acceptance {
+        check arrival-replacement-lifecycle {
+            statement """
+                Real private-bus producer drives a real shell popup for arrival and same-ID replacement; burst, close, expiry, dismiss and action produce correct once-only lifecycle signals at standard/companion paths. Restart producer/service/shell without losing new events or replaying stale snapshots.
+                """
+            method observation
+        }
+        check duration-idle-privacy {
+            statement """
+                Measure3/4/5-second default class dwell from first presentation with explicit timeout/hover exceptions, separate history retention, bounded burst policy and zero toast redraw/deadline after retirement. Lock exposes no message content and fullscreen deferral cannot replay stale messages.
+                """
+            method observation
+        }
+        check pixelkit-bottom-right {
+            statement """
+                Observe the actual themed PixelKit popup on an owned nested display: bottom-right clear of bar/corners, HiDPI and multi-output/hotplug correct, app/icon/summary/body/action/dismiss usable, no keyboard focus or MRU theft. Only expected input region intercepts clicks.
+                """
+            method observation
+        }
+        check terminal-producers {
+            statement """
+                Run real supported-shell jobs: long success/failure, pipelines, Ctrl-C, background completion and terminal-native duplicate notification. Observe exact completion classification and no changed exit status, prompt/CWD hooks or job control. Record actual Bash/zsh/fish and terminal coverage rather than infer universality.
+                """
+            method observation
+        }
+    }
+    derived_from [ @legeos.assessment.desktop-preview-notification-tab-scope-20261007 ]
+    author "dk"
+}
+
+record legeos.work.wallpaper-default-quantization/1 : work {
+    title "Default 256-color WuDP after measured load-time tradeoff"
+    state completed
+    scope [
+        path "crates/templar-session-core/src/settings.rs",
+        path "crates/templar-types/src/wallpaper.rs",
+        path "crates/templar-wallpaper/src/decode.rs",
+        path "docs/measurements/wallpaper-quantization-default-20261006.json",
+        path "docs/planning/low-memory-wallpaper-switcher.md"
+    ]
+    intent """
+        Make 256-color WuDP the default when measured full-size load overhead is reasonable for infrequent wallpaper changes, as requested by the owner. Preserve explicit null/off configuration rather than overriding persisted user opt-outs. Record actual optimized RGBA/indexed worker timings, texture bytes and visible quality limitations; do not claim unobserved GPU/system savings or completion of the parent's full release gates.
+        """
+    acceptance {
+        check default-and-opt-out {
+            statement """
+                Actual no-options and empty-options decoding emits Indexed8 with a 256-color palette; explicit null emits RGBA8. A private real sessiond/CLI exposes default 256-color policy, retains explicit off through restart, and reset/history restore the intended default versus explicit off settings.
+                """
+            method observation
+            verified_by [ @legeos.evidence.wallpaper-default-quantization/1 ]
+        }
+        check measured-overhead {
+            statement """
+                Three optimized real worker runs per mode on derived 4K photographic wallpapers and a 4K gradient show total indexed decode under one second on this host, with declared 192-MiB worker limit and fourfold logical native source-texture savings. Visual review records banding rather than asserting losslessness.
+                """
+            method observation
+            verified_by [ @legeos.evidence.wallpaper-default-quantization/1 ]
+        }
+    }
+    part_of [ @legeos.work.low-memory-wallpaper-switcher ]
+    author "dk"
+    source {
+        kind internal
+        path "docs/planning/low-memory-wallpaper-switcher.md"
+        excerpt """
+            Owner-approved 256-color default after optimized load measurement; explicit off remains available.
+            """
+    }
+}
+
+record legeos.work.wallpaper-design-and-report-intake-20261006/1 : work {
+    title "Design the low-memory wallpaper switcher and preserve the September 11 report"
+    state completed
+    scope [
+        path "docs/measurements/wallpaper-decoder-20261006.md",
+        path "docs/planning/low-memory-wallpaper-switcher.md",
+        path "sources/**"
+    ]
+    intent "Deliver the owner's low-memory wallpaper-switcher design: read the complete supplied report, preserve source/provenance in an AKR proposed implementation entry, retire its pasted root copy, define the new workspace subcrate/native integration and realistic quantizer evaluation, and record actual research observations without claiming implementation or Variety parity."
+    acceptance {
+        check complete-design {
+            statement """
+                Design names the new workspace subcrate and ownership boundaries, startup/rotation/sizing/small-image handling, transient/graphics memory lifecycle, native Home visibility, compatibility backend constraints, quantizer reuse experiment and quantitative Variety comparison/release gates. Runtime implementation remains explicitly proposed.
+                """
+            method observation
+            verified_by [ @legeos.evidence.wallpaper-design-contract-20261006/1 ]
+        }
+        check decoder-observation {
+            statement """
+                A real owned decoder process was exercised and reaped; durable measurements distinguish baseline/progressive sources, post-exec sampled peaks, inherited launcher high-water memory and graphics/Variety limits.
+                """
+            method observation
+            verified_by [ @legeos.evidence.wallpaper-jpeg-decoder-probe-20261006/1 ]
+        }
+        check source-preserved-retired {
+            statement """
+                Full original JSON export and readable citation-normalized report are registered and hash-verified in AKR; proposed implementation entry cites them, provenance limitations are explicit, and pasted root copy is deleted.
+                """
+            method observation
+            verified_by [ @legeos.evidence.wallpaper-report-preserved-retired-20261006/1 ]
+        }
+    }
+    author "dk"
+    source {
+        kind external
+        path "sources/external/wallpaper-report-export-20260911--7b931e59.md"
+    }
+}
+
+record legeos.work.wallpaper-rust-implementation/1 : work {
+    title "Rust wallpaper implementation and isolated runtime evidence"
+    state completed
+    scope [
+        path "apps/templar-settings/**",
+        path "cli/templar/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-wallpaper/**",
+        path "docs/measurements/wallpaper-rust-20261006.json",
+        path "docs/planning/low-memory-wallpaper-switcher.md",
+        path "services/templar-sessiond/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Deliver the Rust implementation and isolated runtime proof under the low-memory-wallpaper-switcher plan. This child covers implemented Rust policy/decoder/WuDP, native indexed pixels and settings surfaces, observed lifecycle boundaries and compatibility contracts. It does not complete the parent physical-display, matched-Variety or full quantizer-comparison release gates.
+        """
+    acceptance {
+        check compatibility {
+            statement """
+                Real X11 MIT-SHM and RGB565 PutImage fallback display pixels and owned replacements reclaim prior resources. A private real layer-shell owner displays sizing/reduced sources and release starvation stays bounded. Real portal inspection reports owner limitations honestly, and an observed stalled initialization now exits at the declared finite deadline rather than hanging; no owner acceptance is reported as verified presentation.
+                """
+            method observation
+            verified_by [ @legeos.evidence.wallpaper-compat-runtime/1 ]
+        }
+        check controls {
+            statement """
+                Real startup/restart, non-UTF-8 sources, manual controls, opt-in 300-second automatic rotation and actual Appearance controls/readback operate through shared desired/applied policy state on an owned private bus.
+                """
+            method observation
+            verified_by [ @legeos.evidence.wallpaper-native-runtime/1 ]
+        }
+        check lifecycle {
+            statement """
+                Across 100 isolated native changes workers are reaped, source mappings return to zero and descriptor counts remain unchanged; malformed/stale/disconnected or impossible-overlap candidates cannot replace last good pixels. Real protected-session protocol preserves protected pixels, releases explicitly disabled textures and publishes unlock activity without unrelated polling or input.
+                """
+            method observation
+            verified_by [ @legeos.evidence.wallpaper-native-runtime/1 ]
+        }
+        check native-pixels {
+            statement """
+                An isolated native renderer visibly presents RGBA and R8-plus-palette without a full RGBA indexed mirror, all six sizing modes and original geometry on an explicitly reduced texture. Home reveals the applied wallpaper and restores solid theme ground when unavailable/disabled.
+                """
+            method observation
+            verified_by [ @legeos.evidence.wallpaper-native-runtime/1 ]
+        }
+        check rust-core {
+            statement """
+                Substantive recovered WuDP pipeline is implemented in bounded deterministic Rust with direct indexed output; quantization remains opt-in. Actual Rust PNG/JPEG/WebP workers, all eight JPEG orientations in RGBA/indexed form, inadequate budgets and malformed input exercise the real sealed-FD process path.
+                """
+            method observation
+            verified_by [ @legeos.evidence.wallpaper-rust-core/1 ]
+        }
+    }
+    part_of [ @legeos.work.low-memory-wallpaper-switcher ]
+    author "dk"
+    source {
+        kind internal
+        path "docs/planning/low-memory-wallpaper-switcher.md"
+        excerpt """
+            Rust implementation and isolated observations; full release gates remain proposed.
+            """
+    }
+}
+
 record legeos.work.watcher-recovery-durable-and-ordered-20260909/1 : work {
     title "P1 — a failed apply queues a repair, and a repair does not run until the invalidation it answers has settled"
     state superseded
@@ -16139,6 +17167,60 @@ record legeos.work.wayland-clipboard-and-dnd-transport/2 : work {
     author "dk"
 }
 
+record legeos.work.wgsl-effects-library-essence-transition-20261007/1 : work {
+    title "A WGSL effect library: the essence transition (windows flowing through the gaps to their Home card or the Homegarden) and surface materials, tuned in a standalone sandbox"
+    state proposed
+    scope [
+        path "ARCHITECTURE.md",
+        path "Cargo.toml",
+        path "crates/templar-effects/**",
+        path "tools/README.md",
+        path "tools/effects-sandbox/**"
+    ]
+    intent """
+        User request (2026-10-07): a WGSL effect library in LegeOS, starting with an advanced fade for the desktop button, minimize and restore — a window deconstructs to essence and flows toward the Homegarden along the paths of least resistance, through the gaps around the windows that stay and never visibly through them; parts over other windows vanish fast (about 50 ms), parts touching the garden linger so the rest of the essence can reach that gap; the reverse brings a window back; 50-300 ms; cheap enough to happen quickly and repeatedly. Then surface materials for sparing use (notifications, the login screen and its transition, Home's ground): glass, etched glass, stained glass, stone, glassy stone, metal sheen, rough wood. Tested in a standalone sandbox from window rectangles alone, not in a session. Implemented as crates/templar-effects (no dependencies: WGSL sources, the essence planner, noise tile, material uniforms) and tools/effects-sandbox (its own Cargo workspace with wgpu/winit/naga, like helpers/templar-preview-codecs). Planning follows the transferable results of the Bend staged-effects experiments: plan once per trigger on a bounded field, retain, skip idle frames, reuse a small noise lattice rather than a full-resolution basis.
+        """
+    note """
+        Desktop button sends each window into its own Home card by default (H toggles to soaking into the nearest gap): with nothing beneath a window, soaking is a plain in-place dissolve. Not committed (another agent shares the tree). Compositor integration is not started: Smithay custom shaders are GLSL ES 1.00 and naga emits ES 3.00 at minimum; the route is GlesFrame::with_context with the ES 3.00 output after verifying GL_VERSION on both GPUs, or an ES 1.00 port. deps-check purity rule for templar-effects deferred because tools/xtask/src/main.rs carries another agent's uncommitted edits.
+        """
+    acceptance {
+        check automated {
+            statement """
+                templar-effects tests and pedantic clippy pass: covered pieces vanish within the covered time, garden gaps hold until their essence arrives, paths cross a wall only through its gap, card paths land where each piece sits in the card, planning is deterministic and allocation-reusing, the field is bounded at any resolution, a screen with no garden dissolves in place, runs reverse without a jump.
+                """
+            method command
+            command "cargo test -q -p templar-effects && cargo clippy -q -p templar-effects --all-targets -- -D warnings"
+        }
+        check bounded-cost {
+            statement """
+                On the reference laptop a maximized-window plan takes about 1-3 ms at 1080p-4K and the per-frame GPU cost stays a fraction of a frame on both the RTX 4060 and the Iris Xe.
+                """
+            method command
+            command "cargo run --release --manifest-path tools/effects-sandbox/Cargo.toml -- --bench [--size 3840x2160]"
+        }
+        check compositor-integration {
+            statement """
+                In a nested session the compositor draws park/unpark and the desktop button with the essence transition in place of motion.rs, from WindowService::stacking_order and the minimize targets, honouring reduced motion.
+                """
+            method manual
+        }
+        check owner-visual-review {
+            statement """
+                The owner judges the essence transition (minimize, restore, desktop button into cards and soaking, mid-flight reversal, 50-300 ms) and the seven materials acceptable in the interactive sandbox, or names what to change.
+                """
+            method manual
+        }
+        check shader-gate {
+            statement """
+                Every WGSL entry point parses and validates under naga 30 and translates to GLSL ES 3.00 and SPIR-V.
+                """
+            method command
+            command "cargo run --release --manifest-path tools/effects-sandbox/Cargo.toml -- --check"
+        }
+    }
+    author "claude"
+}
+
 record legeos.work.window-controls-and-mouse-parity/1 : work {
     title "Window close and resize, and a pointer path for every action that today has only a chord"
     state superseded
@@ -16190,7 +17272,7 @@ record legeos.work.window-controls-and-mouse-parity/2 : work {
 }
 
 record legeos.work.window-corner-hit-geometry-20261002/1 : work {
-    title "A window's visible corners resize it: Close and the name tag move in from the strip's ends, and no geometry path leaves a corner unreachable"
+    title "All visible client corners resize safely; controls never overlap resize targets"
     state proposed
     scope [
         path "compositor/COMPOSITOR.md",
@@ -16200,46 +17282,32 @@ record legeos.work.window-corner-hit-geometry-20261002/1 : work {
         path "crates/templar-window/src/service.rs"
     ]
     intent """
-        Fix @legeos.observation.close-tag-sits-under-the-client-bottom-right-corner inside today's bottom-strip model, before and independently of the tab redesign.
-        (a) Reserve a resize square at each end of the tag strip (side = a named constant, e.g. CORNER_RESIZE = 16 logical px, kept less than MIN_RECOVERY_WIDTH's spare room): a press there is Affordance::Edge for that bottom corner, decided in templar-window (resize_edges_at or a sibling over the frame) so input.rs keeps one hit-test. chrome::layout::control_tags packs against strip.right() - CORNER_RESIZE and name_tag starts at strip.x + CORNER_RESIZE; drawn rectangles and hit rectangles stay the same function.
-        (b) The visible client corner is the target: the zone that resizes from the bottom-right covers the client's bottom-right pixel neighbourhood (the strip's end square below it and the RESIZE_MARGIN band outside it), so aiming at what you see works.
-        (c) Every path that sets a framed window's geometry keeps each corner's resize zone on some output's usable area: interactive resize ending at an output edge, unmaximize restore, unfullscreen restore, output removal/repair, a client-committed size larger than the output. place_new_window already insets by RESIZE_MARGIN; the others are audited and given the same rule in one helper, not per call site.
-        (d) Hover cursor follows the same zones (press_candidates is already shared by hover and press).
+        Establish the visible-client-corner safety invariant before and throughout the corner-following redesign. Reserve nonoverlapping resize squares around all four client corners and inset name/control targets; press and hover use the same geometry and stacked-window priority. Close can never occupy a resize target. Audit interactive resize, maximize/fullscreen restore, oversized client commits, output changes and geometry repair so each usable corner has a reachable resize/control route. The subsequent WindowLayout cutover must preserve these rules rather than create a new implementation. Plan: docs/planning/homegarden-previews-notifications-window-tabs.md section3.
         """
     note """
-        Throwaway after step 2 only in its constants: the rule it establishes (corners resize, tabs inset from corners, every geometry path keeps corners reachable) is exactly what step 2's WindowLayout must keep, and its tests should be rewritten against WindowLayout rather than deleted. Test names in the checks below are specifications; they must exist and run before completion (see @legeos.work.acceptance-checks-that-cannot-fail).
+        October7 source inspection still finds bottom-strip geometry and control-first hit routing. The older stale observation is historical motivation, not a newly reproduced pointer accident. This child remains proposed; visual/native input proof is required. Existing bottom-strip constants are temporary, not a compatibility path retained after WindowLayout.
         """
     acceptance {
-        check every-geometry-path-keeps-corners-reachable {
+        check reachable-after-transitions {
             statement """
-                For interactive resize to an output edge, unmaximize, unfullscreen, output removal and an oversized committed size, each of the window's four corner zones intersects some output's usable area.
+                Resize to output boundaries, restore from maximize/fullscreen, oversized client configure and output removal leave the window recoverable with usable move/resize/control targets; no corner control goes offscreen without bounded overlay fallback.
                 """
-            method command
-            command "cargo test -p templar-window corners_stay_reachable"
+            method observation
         }
-        check suites-and-lint {
+        check targets-separated {
             statement """
-                The compositor and window crates' suites pass and clippy is clean with warnings denied.
+                Across smallest supported and large windows, resize and visible title/control hit regions do not overlap; all three controls remain reachable by placement or explicit overflow, and hover cursor agrees with press routing.
                 """
-            method command
-            command "cargo test -p templar-comp -p templar-window && cargo clippy -p templar-comp -p templar-window --all-targets -- -D warnings"
-        }
-        check tags-inset-from-corners {
-            statement """
-                For strip widths from MIN_RECOVERY_WIDTH to wide, control tags and the name tag never intersect either end square, Close stays clickable at MIN_RECOVERY_WIDTH, and control_tag_at agrees with control_tags.
-                """
-            method command
-            command "cargo test -p templar-comp chrome::layout"
+            method observation
         }
         check visible-corners-route-to-resize {
             statement """
-                Through press_target_at with the candidates press_candidates builds for a framed window: a press at, just inside the strip below, and just outside each of the four visible client corners yields Affordance::Edge naming that corner; no point within CORNER_RESIZE of the client's bottom-right corner yields Button(Close); a stacked window above still wins its own pixels.
+                Real press/drag around each visible client corner yields the expected resize, never Close/name-drag, while a higher overlapping window retains its own input. Small and negative-coordinate windows obey the same invariant.
                 """
-            method command
-            command "cargo test -p templar-comp visible_corner"
+            method observation
         }
     }
-    derived_from [ @legeos.observation.close-tag-sits-under-the-client-bottom-right-corner ]
+    derived_from [ @legeos.assessment.desktop-preview-notification-tab-scope-20261007 ]
     part_of [ @legeos.work.external-window-tabs-20261002 ]
     author "dk"
 }
@@ -16735,67 +17803,49 @@ record legeos.work.window-perimeter-two-axis-resize/2 : work {
 }
 
 record legeos.work.window-tab-hover-reveal-20261002/1 : work {
-    title "Tabs appear when the pointer rests outside the window on its tab side, stay put while used, and take no input while hidden"
+    title "Always-visible title follows the nearest corner; hover controls latch while aimed at or grabbed"
     state proposed
     scope [
         path "apps/templar-settings/**",
         path "compositor/COMPOSITOR.md",
-        path "compositor/templar-comp/src/chrome/**",
-        path "compositor/templar-comp/src/input.rs",
-        path "compositor/templar-comp/src/space_sync.rs",
+        path "compositor/templar-comp/src/**",
         path "crates/templar-session-core/src/settings.rs",
         path "crates/templar-window/**",
-        path "interfaces/wayland/templar-shell-v1.xml",
+        path "docs/planning/homegarden-previews-notifications-window-tabs.md",
+        path "interfaces/wayland/templar-shell-v2.xml",
         path "shell/templar-shell/src/settings.rs"
     ]
     intent """
-        Add visibility to WindowLayout's tabs, owned by the compositor's input state like covering_chrome and the dwell timers already are.
-        - windows.tabs.reveal = hover (default) | always, and windows.tabs.side, relayed shell -> compositor over templar_shell_v1 the way set_touchpad_tap and set_gesture_gate are (one protocol version bump, settings keys in templar-session-core, a row on the Settings Windows page).
-        - Reveal: the pointer comes to rest (input::DWELL_REST_SLOP) in a window's tab band for a short dwell, and at that point the window is the topmost thing that band belongs to (no higher window, no shell overlay). Entering from inside the client does not reveal; the band is exterior by definition.
-        - While hidden the band takes no press, hover cursor or focus: press_target_at treats it as absent, so the window or Home under it gets the click.
-        - While revealed: tab rectangles take presses, the gaps between them fall through as today; leaving the band and the tabs starts an exit grace; a press on a tab, a name-tag drag, or a resize grab latches visibility and side until the grab ends (the latch is released only from the grab's own end, so a grab that swallows its release cannot strand it: see @legeos.observation.pointer-grab-reentry-deadlocks-the-compositor for why nothing here may touch PointerHandle from inside a grab).
-        - The reveal itself activates nothing: no focus change, no raise, and no control fires on the press that was the reveal.
-        - Overlay placement (no exterior room, maximized, fullscreen) reuses this visibility instead of covering_chrome's separate state; covering_chrome is folded in and deleted, not kept beside it.
-        - Order with the other bottom-edge owners stays explicit: the gesture gate and the peek band own the output's bottom edge; a bottom-side band that meets it is revealed only where they do not claim the point.
-        - Discoverability: the always mode is the fallback; a show-everything gesture waits for the owner's answer to the decision's open choice (c).
+        Implement nearest-corner mouseover selection and hover control reveal over the shared four-corner WindowLayout. The title remains visible while its window is visible; controls default hover. Approach can come from any of four sides, with topmost-point ownership checks. Use deterministic corner ties, hysteresis near boundaries, short reveal/exit grace and retain last corner on leave. Latch position/visibility while pointer aims at a visible title/control, and across press/release, menu, drag and resize; release the latch from the actual grab termination path. No synchronous PointerHandle reentry from grabs.
+        Reveal changes no focus/raise/action; Close requires a fresh press/release on a drawn stationary target. Hidden controls take no input; higher windows/secure surfaces and gesture/peek bands win. Same-corner overlay shares the same state for output edges/maximized/fullscreen; always-visible title policy remains explicit. Keep keyboard reveal/control route and fixed/always fallback, and damage only old/new regions. Use one pending timer per purpose, no motion-created timer pile or hidden polling. Plan: docs/planning/homegarden-previews-notifications-window-tabs.md section3.
         """
     note """
-        Timers: the reveal dwell and the exit grace are the existing calloop timer pattern (dwell_timer_pending), one pending timer per purpose, never one per motion event.
+        This intentionally changes the old hidden-all-tabs and stationary-anchor proposal. It is not a free-running pointer chase: nearest-corner changes stop once the person is aiming at a revealed target. Visibility wording/dwell/fullscreen feel is reviewed with the actual prototype; proposed default follows the owner's final always-visible title wording.
         """
     acceptance {
-        check hidden-tabs-take-nothing {
+        check follow-and-latch {
             statement """
-                press_target_at and the hover cursor over a hidden band return what is beneath it (another window, Home); over a band where a higher window overlaps, the higher window wins whether the tabs are hidden or shown.
-                """
-            method command
-            command "cargo test -p templar-comp hidden_tabs"
-        }
-        check nested-look {
-            statement """
-                In scripts/nested-session.sh: tabs appear on a resting pointer above a window, do not appear while crossing, stay put while aimed at, vanish after leaving, and a hidden band over Home lets the click through to Home.
+                Actual pointer approaches all four sides/corners and selects the nearest corner with stable ties/hysteresis. Crossing midpoints does not jitter, and aiming/pressing/menu/move/resize freezes the target until exit/end; Close does not flee the pointer.
                 """
             method observation
         }
-        check overlay-replaces-covering-chrome {
+        check hidden-controls-take-nothing {
             statement """
-                A maximized and a fullscreen window reveal their tabs as an overlay through the same state; covering_chrome no longer exists; the gesture gate and peek band still win at the output's bottom edge.
+                Hidden controls intercept no click/cursor/focus; always-visible title remains actionable; underlying Home and higher overlapping windows get their expected input. Reveal itself fires nothing and does not raise/focus.
                 """
-            method command
-            command "cargo test -p templar-window -p templar-comp && cargo run -q -p xtask -- check-interfaces"
+            method observation
         }
-        check reveal-is-not-a-click {
+        check nested-look {
             statement """
-                The press that lands on a band whose tabs were hidden fires no control, changes no focus and raises nothing; Close fires only on a press and release on a visible Close.
+                Observe actual native Wayland and XWayland decorations under rapid pointer crossing, small windows, overlaps, groups and fullscreen: visible horizontal title, correct control reveal, no accidental close and no client reconfigure.
                 """
-            method command
-            command "cargo test -p templar-comp reveal_is_not_a_click"
+            method observation
         }
-        check reveal-state-machine {
+        check transition-and-timer-safety {
             statement """
-                Pure tests of the visibility state: rest in the band reveals after the dwell, mere crossing does not, entry from inside the client does not, leaving starts the grace and returning cancels it, a press or grab latches until the grab ends, and the latch is released by a grab that ends without a release event.
+                Leaving hides controls after grace but retains visible title and last corner. Grab cancellation/unmap/lock/output removal cannot strand latches/timers. Reduced motion, keyboard controls, edge overlays and bottom gesture/peek precedence work without pointer-mutex reentry.
                 """
-            method command
-            command "cargo test -p templar-comp tab_reveal"
+            method observation
         }
     }
     after [ @legeos.work.window-tab-layout-model-20261002 ]
@@ -16805,64 +17855,49 @@ record legeos.work.window-tab-hover-reveal-20261002/1 : work {
 }
 
 record legeos.work.window-tab-layout-model-20261002/1 : work {
-    title "One WindowLayout per window from WindowService: the client is the geometry, the tabs are outside it on a Top or Bottom side, and every consumer reads the same rectangles"
+    title "One client-space layout for all four corners, horizontal titles and right-angle or opposite controls"
     state proposed
     scope [
+        path "apps/templar-settings/**",
         path "compositor/COMPOSITOR.md",
-        path "compositor/templar-comp/src/chrome/**",
-        path "compositor/templar-comp/src/input.rs",
-        path "compositor/templar-comp/src/protocols_shell.rs",
-        path "compositor/templar-comp/src/space_sync.rs",
-        path "compositor/templar-comp/src/window_groups.rs",
-        path "compositor/templar-comp/src/xdg_shell.rs",
-        path "compositor/templar-comp/src/xwayland.rs",
-        path "crates/templar-window/**"
+        path "compositor/templar-comp/src/**",
+        path "crates/templar-session-core/src/settings.rs",
+        path "crates/templar-window/**",
+        path "docs/planning/homegarden-previews-notifications-window-tabs.md",
+        path "interfaces/wayland/templar-shell-v2.xml",
+        path "shell/templar-shell/src/settings.rs"
     ]
     intent """
-        Replace the frame-includes-a-bottom-strip model with an authoritative per-window layout, as a clean cutover.
-        - templar-window: TabSide {Top, Bottom, Left, Right} on WindowRecord (Left/Right accepted by the type and laid out as Top until @legeos.work.window-tab-side-choice-20261002); WindowService::layout(id) -> WindowLayout { client, side, tab_band, name_tag, controls: [(ControlTag, Rect)], resize_zones, recovery_target, placement: Exterior | Overlay }. client == window.geometry; the tab band is the TAG_HEIGHT band outside the client on its side, with the end squares left to resize (the rule from @legeos.work.window-corner-hit-geometry-20261002). Placement is Overlay when the output has no exterior room on that side or the window covers the screen; then the band sits inside the client's edge, which is what covering_chrome draws today.
-        - Delete geometry::client_area, frame_around and tag_strip and every caller's use of them (space_sync, xdg_shell, xwayland, protocols_shell, main, input, window_groups: about 40 sites today); ControlTag and the control/name rectangles move from chrome::layout into templar-window so the layout is computed once, and chrome only paints it.
-        - Recovery restated: is_recoverable/repair_window keep MIN_RECOVERY_WIDTH x TAG_HEIGHT of the window's tab band (exterior, or overlay when the exterior is off-output) on a usable area; MIN_WINDOW_HEIGHT is restated against the client alone.
-        - Damage: the tab band is its own damage rectangle; nothing about the client is damaged when the band changes.
-        - Tabs stay always shown in this step; the default side is the windows.tabs.side setting relayed from the shell (default top, see the decision's open choice (a)).
+        Replace bottom-strip geometry with one WindowLayout owned by templar-window. Client rect is authoritative; preserve existing client dimensions on migration. Include Corner{TopLeft,TopRight,BottomLeft,BottomRight}, horizontal title rectangle, fixed-size control geometry, four edge activation regions, resize zones, visible input/damage/recovery bounds and exterior/overlay placement. Same-corner default: title on top/bottom, vertical controls on left/right at a right angle; opposite option: name and horizontal controls at opposite ends of the same top/bottom edge pending prototype confirmation. All four corners are real layouts, never Left/Right aliases to Top.
+        Migrate chrome paint, pointer hover/press, move/resize, groups, xdg_shell/XWayland configure, space sync, output repair and recovery to the same rectangles. Delete obsolete client_area/frame_around/tag_strip relationships and separate covering_chrome policy once replaced. Tabs do not resize the client; geometry transitions only damage old/new decoration regions. No unnecessary per-frame heap collection for three fixed controls. Tiny/output-edge/fullscreen windows retain all controls through bounded overlay/overflow without sacrificing corner resize. Detailed plan: docs/planning/homegarden-previews-notifications-window-tabs.md section3.
         """
     note """
-        Behaviour the owner will notice: every framed window gains 32 px of client height at the same geometry, and with the top default the tags move from below to above. Window geometry is not persisted across sessions (restore_geometry and fullscreen_restore are in-memory), so no migration. The bottom-centre gesture gate and the bottom-edge peek keep priority over a bottom band that meets the output's bottom edge.
+        Replaces the old Top/Bottom-first plan and the accidental32px client-height increase. Changing decoration geometry must preserve client dimensions. Four-side activation and same-corner right angles are required, not a later alias implementation. Titles remain horizontal. This step supplies geometry; following/reveal state is the next child.
         """
     acceptance {
-        check nested-look {
+        check four-corner-shared-layout {
             statement """
-                In scripts/nested-session.sh (refuses over a live session), a kitty and a Files window show their tabs above them, the client fills what used to be the strip, and drag, resize from each corner, park, maximize and close all work.
+                For all four corners and both arrangements, exterior/overlay, small/large/scaled/negative-coordinate windows, actual painted controls/title and pointer targets agree; resize corners stay separate and every control remains reachable.
                 """
             method observation
         }
-        check one-layout-many-consumers {
+        check nested-look {
             statement """
-                Chrome painting, press_target_at, the hover cursor and recovery all read WindowService::layout: a table test over Top and Bottom, exterior and overlay, small and large windows asserts the painted name/control rectangles equal the hit rectangles and the recovery target is the tab band.
+                In an owned nested compositor, native and XWayland windows show horizontal titles plus correct same-corner vertical or opposite-end horizontal controls; all four corners perform move/resize/park/maximize/close.
                 """
-            method command
-            command "cargo test -p templar-window window_layout && cargo test -p templar-comp window_layout"
+            method observation
         }
-        check recoverable-on-every-side {
+        check no-client-reconfigure {
             statement """
-                For Top and Bottom, a window dragged or placed so its tab band would leave every output is repaired so MIN_RECOVERY_WIDTH x TAG_HEIGHT of the band (or its overlay) is on a usable area, and the corners keep the reachability step 1 established.
+                Instrument actual Wayland configure and XWayland resize paths: pure tab relocation/reveal/arrangement changes preserve client rectangle and emit no client resize. The migration preserves existing content dimensions.
                 """
-            method command
-            command "cargo test -p templar-window recoverable"
+            method observation
         }
-        check strip-model-deleted {
+        check recovery-and-consumers {
             statement """
-                No caller of geometry::client_area, frame_around or tag_strip remains; the workspace type-checks.
+                Move, resize, group, park/restore, maximize/fullscreen and output removal use the common layout; no obsolete strip helper or covering-chrome authority remains. Shell-absent keyboard recovery still works.
                 """
-            method command
-            command "cargo check --workspace --all-targets"
-        }
-        check tabs-never-reconfigure {
-            statement """
-                Changing a window's side, or the tabs' placement between Exterior and Overlay, leaves WindowLayout.client unchanged and the compositor sends the client no configure; a test drives the xdg_shell configure path and counts configures.
-                """
-            method command
-            command "cargo test -p templar-comp tabs_never_reconfigure"
+            method observation
         }
     }
     after [ @legeos.work.window-corner-hit-geometry-20261002 ]
@@ -16872,53 +17907,43 @@ record legeos.work.window-tab-layout-model-20261002/1 : work {
 }
 
 record legeos.work.window-tab-side-choice-20261002/1 : work {
-    title "Tabs on the left and right too, a window's side chosen from its name tag, and an optional follow-the-resize hint applied after the grab"
+    title "Settings for same/opposite corners, pointer following and fixed-anchor accessibility fallback"
     state proposed
     scope [
         path "apps/templar-settings/**",
         path "compositor/COMPOSITOR.md",
-        path "compositor/templar-comp/src/chrome/**",
-        path "compositor/templar-comp/src/input.rs",
+        path "compositor/templar-comp/src/**",
         path "crates/templar-session-core/src/settings.rs",
-        path "crates/templar-window/**"
+        path "crates/templar-window/**",
+        path "docs/planning/homegarden-previews-notifications-window-tabs.md",
+        path "interfaces/wayland/templar-shell-v2.xml",
+        path "shell/templar-shell/src/settings.rs"
     ]
     intent """
-        Finish the four sides and the two ways a window's side changes.
-        - Left and Right in WindowLayout: the control tags stack vertically in the side band (same order top to bottom as left to right elsewhere); the name tag stays horizontal (no rotated text) and sits outward from the band's top end. The exact arrangement waits for the owner's answer to the decision's open choice (d); this record starts with a nested-session mock of two arrangements for the owner to pick from.
-        - Explicit choice: the name tag's context menu (secondary click) offers Top, Bottom, Left, Right and Default; the choice is per window and survives park/unpark, maximize/restore and regrouping. Whether it is remembered per application across sessions is the owner's call and stays out of scope until asked.
-        - windows.tabs.follow-resize (default off): when a resize grab ends, the side becomes the latched grab's vertical edge (top or bottom) or, for a pure side grab, that side; computed from the grab's start edges, never from pointer direction during it, and applied once, after the grab's end, so nothing visible moves mid-interaction.
-        - A side with no exterior room falls back to Overlay on that side (step 2's rule), never silently to another side.
+        Expose the October7 options through Settings, committed settings observation and the current interfaces/wayland/templar-shell-v2.xml contract, versioned as needed. Proposed settings: windows.tabs.placement=same-corner|opposite-corners; follow-pointer=true with fixed-corner accessibility fallback; controls=hover|always; default corner proposed top-right; title visibility independently defaults always. Same-corner right-angle layout is default; names never rotate. Define opposite placement precisely (proposed other end of same horizontal edge; diagonal remains prototype choice). Remove the old proposed follow-resize-only owner instead of retaining competing corner selectors.
+        Settings Set/Reset/undo and shell/compositor restart converge on the same policy. Per-window fixed anchor choices survive park/restore/maximize/fullscreen/grouping; output loss reclamps safely. Exercise all four corners and both arrangements with real native/XWayland windows and keyboard recovery. Plan: docs/planning/homegarden-previews-notifications-window-tabs.md section3.
         """
     note """
-        Last step; the owner's day in the installed session belongs to the campaign record, not this one.
+        Historical key side-choice now names arrangement/follow/default-corner options. Four real corners are implemented by the shared-layout child, not deferred to here. Owner review remains for final visibility wording, fullscreen title, exact opposite-corner arrangement and dwell/hysteresis feel; no prior mock choice counts as implementation evidence.
         """
     acceptance {
-        check follow-resize-after-the-grab {
+        check options-and-transitions {
             statement """
-                With follow-resize on, a top-edge resize grab moves the side to Top only at the grab's end; mid-grab the layout's side is unchanged; reversing direction during the grab does not matter; with it off, no grab changes the side.
+                Same-corner right-angle and opposite arrangement both work from every corner. Title stays horizontal and controls accessible through park/restore, maximize/fullscreen, regrouping, scale/output changes and tiny layouts; fixed anchor option stays fixed.
                 """
-            method command
-            command "cargo test -p templar-comp follow_resize"
+            method observation
         }
-        check four-sides-laid-out {
+        check owner-prototype-choices {
             statement """
-                WindowLayout table tests for all four sides: bands outside the client, corner squares left to resize, name tag horizontal, painted equals hit rectangles, overlay fallback on the same side when the exterior is off-output.
-                """
-            method command
-            command "cargo test -p templar-window window_layout"
-        }
-        check owner-picks-the-side-arrangement {
-            statement """
-                The owner chooses between the nested-session mocks of the Left/Right arrangement.
+                Owner reviews actual nested prototype and confirms or revises title-always/controls-hover, fullscreen title, opposite-end versus diagonal opposite-corner geometry and dwell/hysteresis defaults before implementation is marked complete.
                 """
             method manual
         }
-        check side-survives-transitions {
+        check settings-converge {
             statement """
-                A per-window side survives park/unpark, maximize/restore, fullscreen/unfullscreen and joining or leaving a group.
+                Real Settings changes, reset, undo and service/shell/compositor restart produce the same committed arrangement/follow/visibility/default policy. Version skew is explicit; no stale follow-resize anchor logic remains.
                 """
-            method command
-            command "cargo test -p templar-window tab_side"
+            method observation
         }
     }
     after [ @legeos.work.window-tab-hover-reveal-20261002 ]
@@ -17148,5 +18173,37 @@ record legeos.work.window-tags-replace-the-band/4 : work {
     implements [ @legeos.decision.one-persistent-bottom-bar-tags-not-bands ]
     part_of [ @legeos.work.home-surface-usability-next ]
     supersedes [ @legeos.work.window-tags-replace-the-band/3 ]
+    author "dk"
+}
+
+record legeos.work.wudp-source-recovery-20261006/1 : work {
+    title "Recover distinct WuDP sources from red backup and update wallpaper design"
+    state completed
+    scope [
+        path "docs/planning/low-memory-wallpaper-switcher.md",
+        path "sources/external/wudp-conceptual-header-20261006--1dbc02c5.md",
+        path "sources/external/wudp-implementation-20261006--2a1cdfbd.md",
+        path "sources/external/wudp-interface-20261006--e1cf903d.md"
+    ]
+    intent """
+        Locate the owner's distinct WuDP source in specified Second/misc and newly attached red backups, identify the substantive implementation versus conceptual wrappers, preserve unchanged source snapshots and correct the wallpaper design/proposal. Source recovery only: no algorithm restoration, production port, benchmark rerun or runnable switcher claim.
+        """
+    acceptance {
+        check design-updated {
+            statement """
+                Wallpaper design/proposal cite recovered sources and actual BGR API, LAB/PCA/bin-DP structure, worker-only dependency boundary, histogram/cache/output residency risks and K>=256 DP bypass. Preserve the owner's prior qualitative comparison; NeuQuant remains a distinct comparator, not a substitute.
+                """
+            method observation
+            verified_by [ @legeos.evidence.wudp-recovered-source-and-design-20261006/1 ]
+        }
+        check source-recovered {
+            statement """
+                Report exact recovered paths and internal WuDPQuantizer identity, distinguish the conceptual placeholder from substantive WUDB.cpp, preserve byte-identical source copies and leave originals unchanged. State observed build-readiness limits without claiming a runnable restored algorithm or identifying the owner's exact benchmark revision.
+                """
+            method observation
+            verified_by [ @legeos.evidence.wudp-recovered-source-and-design-20261006/1 ]
+        }
+    }
+    part_of [ @legeos.work.low-memory-wallpaper-switcher ]
     author "dk"
 }

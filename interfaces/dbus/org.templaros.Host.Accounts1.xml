@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<node name="/org/templaros/Host">
+  <interface name="org.templaros.Host.Accounts1">
+    <!-- Authenticated caller uid is resolved by the bus, never an input argument.
+         The sealed memfd contains 1..1024 UTF-8 bytes, without NUL/CR/LF.
+         No plaintext is placed in argv, JSON, logs or the recovery journal.
+         Success means current/fallback/staged root-paired credentials changed;
+         failures recover or fail closed, never silently downgrade credentials. -->
+    <method name="ChangeSelfPassword">
+      <arg name="secret" type="h" direction="in"/>
+    </method>
+  </interface>
+</node>

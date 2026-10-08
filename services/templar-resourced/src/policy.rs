@@ -12,7 +12,7 @@ use std::{
     fmt,
     time::{Duration, Instant},
 };
-use templar_types::InstanceId;
+use templar_types::ResourceId;
 
 pub const MIB: u64 = 1024 * 1024;
 pub const GIB: u64 = 1024 * MIB;
@@ -92,7 +92,7 @@ impl fmt::Display for Stage {
 /// One application instance as seen by the governor on this tick.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppSample {
-    pub instance_id: InstanceId,
+    pub instance_id: ResourceId,
     pub memory_current: u64,
     pub memory_growth_per_second: i64,
     pub full_psi_avg10: f64,
@@ -126,26 +126,26 @@ pub struct AppSample {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     TrimCaches {
-        instance_id: InstanceId,
+        instance_id: ResourceId,
     },
     SetMemoryHigh {
-        instance_id: InstanceId,
+        instance_id: ResourceId,
         bytes: u64,
     },
     Reclaim {
-        instance_id: InstanceId,
+        instance_id: ResourceId,
         bytes: u64,
     },
     RequestCheckpoint {
-        instance_id: InstanceId,
+        instance_id: ResourceId,
         deadline: Duration,
     },
     KillCgroup {
-        instance_id: InstanceId,
+        instance_id: ResourceId,
         reason: String,
     },
     RestoreDynamicLimits {
-        instance_id: InstanceId,
+        instance_id: ResourceId,
     },
 }
 
@@ -178,7 +178,7 @@ impl Action {
         }
     }
 
-    pub fn instance_id(&self) -> InstanceId {
+    pub fn instance_id(&self) -> ResourceId {
         match self {
             Self::TrimCaches { instance_id }
             | Self::SetMemoryHigh { instance_id, .. }
@@ -377,7 +377,7 @@ impl Default for GovernorConfig {
 /// why it was chosen.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReclaimStep {
-    pub instance_id: InstanceId,
+    pub instance_id: ResourceId,
     pub actions: Vec<Action>,
     /// A rough estimate, in bytes. Rough is honest: `memory.high` and `memory.reclaim` are
     /// requests to the kernel, not transactions, and what actually comes back depends on what is
@@ -456,7 +456,7 @@ pub struct Governor {
     /// episode instead, it became a countdown the machine was running — and the next instance
     /// selected inherited an expired one and was killed on the first tick it was ever chosen on,
     /// having been asked to save its work in the same breath.
-    critical_since: Option<(InstanceId, Instant)>,
+    critical_since: Option<(ResourceId, Instant)>,
     current_level: PressureLevel,
     /// A raw level below `current_level` seen for `pending.1` consecutive ticks so far.
     pending: Option<(PressureLevel, u32)>,
@@ -1342,7 +1342,7 @@ mod tests {
 
     fn sample(memory_gib: u64) -> AppSample {
         AppSample {
-            instance_id: InstanceId::new(),
+            instance_id: ResourceId::new(),
             memory_current: memory_gib * GIB,
             memory_growth_per_second: 0,
             full_psi_avg10: 0.0,
@@ -1620,7 +1620,7 @@ mod tests {
 
     #[test]
     fn action_minimum_stage_matches_the_ladder() {
-        let instance_id = InstanceId::new();
+        let instance_id = ResourceId::new();
         assert_eq!(
             Action::RestoreDynamicLimits { instance_id }.minimum_stage(),
             Stage::ObserveOnly

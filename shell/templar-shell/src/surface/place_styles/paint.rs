@@ -11,13 +11,28 @@ use templar_treemap::CushionConfig;
 use templar_treemap::garden::{GardenLayout, Item, LayoutKind, Shape};
 
 use super::themes::{self, Grain, Style};
-use crate::surface::design::{self, Palette};
+use templar_types::appearance::Palette;
 
 /// A `width`×`height` buffer of premultiplied `0xAARRGGBB`, composited "over" as shapes land.
 pub(super) struct Canvas {
     width: usize,
     height: usize,
     pixels: Vec<u32>,
+}
+
+/// Plain paper keeps seeded identity without reviving any directory-shaped body.
+pub(super) fn material(
+    width: u32,
+    height: u32,
+    fill: u32,
+    grain: &Grain,
+    seed: u64,
+    scale: f32,
+) -> Bitmap {
+    let mut canvas = Canvas::new(width, height);
+    canvas.pixels.fill(0xff00_0000 | (fill & 0x00ff_ffff));
+    canvas.grain(grain, seed, scale);
+    canvas.into_bitmap()
 }
 
 impl Canvas {
@@ -187,7 +202,7 @@ pub(super) fn max_weight(layout: &GardenLayout) -> f32 {
 
 /// The ink a branch stroke is drawn in: darker than any fill, heavier branches darker still.
 pub(super) fn bark(palette: &Palette, style: &Style, item: &Item, max_weight: f32) -> u32 {
-    design::mix(
+    templar_types::appearance::mix(
         palette.folder_shell,
         themes::ink(palette, style, item.is_dir),
         (style.strength * 1.35 * (0.7 + 0.3 * item.weight / max_weight)).min(0.95),
@@ -220,7 +235,11 @@ pub(super) fn rasterize(
             .get(index + 1)
             .is_some_and(|next| next.depth > item.depth);
         let ink = themes::ink(palette, style, item.is_dir);
-        let tone = design::mix(surface, ink, strength(style, item, max_weight, container));
+        let tone = templar_types::appearance::mix(
+            surface,
+            ink,
+            strength(style, item, max_weight, container),
+        );
         if layout.kind == LayoutKind::Folio {
             sheet(
                 &mut canvas,
@@ -244,7 +263,11 @@ pub(super) fn rasterize(
                     && !item.is_dir
                     && let (Some(&(x, y)), Some(&tip)) = (points.last(), widths.last())
                 {
-                    let leaf = design::mix(surface, themes::ink(palette, style, false), 0.55);
+                    let leaf = templar_types::appearance::mix(
+                        surface,
+                        themes::ink(palette, style, false),
+                        0.55,
+                    );
                     let radius = (tip * 1.6).max(2.4) * scale;
                     path.clear();
                     path.circle(x * scale, y * scale, radius);
@@ -315,8 +338,8 @@ fn sheet(
         canvas.fill(kernel, path, 255, |_, _| tone);
         return;
     };
-    let edge = design::mix(palette.folder_shell, palette.text, 0.28);
-    let paper = design::mix(palette.well_fill, tone, 0.55);
+    let edge = templar_types::appearance::mix(palette.folder_shell, palette.text, 0.28);
+    let paper = templar_types::appearance::mix(palette.well_fill, tone, 0.55);
     let shadow: Vec<(f32, f32)> = points.iter().map(|&(x, y)| (x + 0.6, y + 1.2)).collect();
     path.clear();
     polygon(path, &shadow, scale, (0.0, 0.0));

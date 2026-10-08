@@ -80,4 +80,16 @@ pub const MIGRATIONS: &[Migration] = &[
     );
 ",
     ),
+    Migration::additive(
+        "files-index-root-policy",
+        r"
+        -- Authoritative choices, not derived entries. Native bytes survive cache replacement.
+        CREATE TABLE file_index_roots (
+            path_bytes  BLOB PRIMARY KEY,
+            policy_json TEXT NOT NULL
+        );
+        -- filed initializes this list and schema_meta.file_index_roots_initialized together,
+        -- adopting existing cache policies once. An initialized empty list stays empty.
+        ",
+    ),
 ];

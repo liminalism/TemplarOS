@@ -1,7 +1,6 @@
-//! What the shell knows about Homegarden's places: the `HomeGarden1.Contexts` snapshot the
-//! Folder tile draws its form from (`crate::surface::place_styles`), and the fetches behind the
-//! tending moments (`@templaros.decision.homegarden-activity-grown-places`). The shell owns no garden
-//! state: it observes, asks for a tending, and draws what the daemon reports.
+//! Homegarden's authority snapshots: `Contexts` supplies stable place identity and ledger
+//! geometry; versioned `PresentationV1` supplies actionable sessions, recent files and apps.
+//! The shell observes, requests tending at explicit moments, and renders the reported work.
 
 use std::{collections::HashMap, path::PathBuf};
 use templar_client::proxies::HomeGardenProxy;
@@ -22,25 +21,24 @@ pub struct TreeNode {
 pub struct GardenPlace {
     pub root: PathBuf,
     pub stage: String,
-    /// The form the place draws in — `plain`, `branch`, `shelf`, `folio` — as the ledger settled
-    /// it. A string rather than an enum: the shell draws what the daemon reports and must keep
-    /// working against a daemon that has learned a form this build has never heard of.
+    /// Legacy ledger form retained in the Contexts wire payload. Project bodies use
+    /// `presentation.template`; directory structure is not their default presentation.
     pub form: String,
     pub effective: f32,
     pub roles: Vec<String>,
     /// The place's material identity, deterministic from its root: the theme turns it into the
     /// grain the body is drawn with, so a place looks like itself whenever it regrows. Texture
-    /// only — never a hue, which is state.
+    /// only — never a hue, which is reserved for attention.
     pub material_seed: u64,
     pub tree: Vec<TreeNode>,
     pub pinned: bool,
-    /// Pinned and frozen at its size (`garden.keep`, or the user's own hand).
+    /// Retained for the Contexts wire shape. Pinning does not freeze automatic relevance size;
+    /// only an explicit manual resize freezes it in the field authority.
     pub kept: bool,
     pub hidden: bool,
     pub summary: String,
     pub why: String,
-    /// What arrived here and has not been opened yet — the `2 new` on the state line. A bloom
-    /// is a projection over a place that was already earned; it never grew or moved one.
+    /// Ledger arrivals, available to explanatory tooltips rather than the work state line.
     pub bloom_total: u32,
     /// As many of those arrivals as the body can mark. The count above is the whole of it.
     pub bloomed: Vec<PathBuf>,
@@ -51,13 +49,13 @@ pub struct GardenPlace {
     /// `ShellToplevel.instance_id`, and a value this build cannot parse should fail to match
     /// rather than fail to load the place.
     pub instances: Vec<String>,
+    pub presentation: ProjectPresentation,
 }
 
 impl GardenPlace {
-    /// The live windows that belong to this place, most recently activated first.
-    ///
-    /// A window belongs when its instance is one the place remembers — strong evidence only:
-    /// started here, or started to open a file under here. Never "it was open at the time".
+    /// All live and parked windows that belong to this place, most recently activated first.
+    /// Membership comes from the authority's verified instance set, never proximity,
+    /// recency or an unproven title.
     #[must_use]
     pub fn windows(
         &self,
@@ -68,7 +66,6 @@ impl GardenPlace {
         }
         let mut mine: Vec<&templar_window::ShellToplevel> = toplevels
             .iter()
-            .filter(|top| !top.shelved)
             .filter(|top| {
                 top.instance_id
                     .is_some_and(|id| self.instances.iter().any(|known| *known == id.to_string()))
@@ -77,29 +74,72 @@ impl GardenPlace {
         mine.sort_by_key(|top| (top.mru_rank, top.window_id));
         mine.iter().map(|top| top.window_id).collect()
     }
+}
 
-    /// The one-line state a Small place shows under its name. News first: what arrived is the
-    /// thing that changed since the user last looked.
-    pub fn state_line(&self) -> String {
-        let held = if self.kept {
-            format!("kept · {}", self.summary)
-        } else if self.pinned {
-            format!("pinned · {}", self.summary)
-        } else {
-            self.summary.clone()
-        };
-        match self.bloom_total {
-            0 => held,
-            new => format!("{new} new · {held}"),
-        }
-    }
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct ProjectPresentation {
+    #[serde(with = "templar_types::native_path")]
+    pub root: PathBuf,
+    pub name: String,
+    pub template: String,
+    pub secondary_templates: Vec<String>,
+    pub template_override: Option<String>,
+    pub activity: String,
+    pub attention: String,
+    pub state_line: String,
+    pub instances: Vec<String>,
+    pub sessions: Vec<ProjectSession>,
+    pub recent_files: Vec<ProjectFile>,
+    pub apps: Vec<ProjectApp>,
+}
 
-    /// Whether `path` is one of the arrivals this place has still to show. The body marks these
-    /// rows; the mark itself is the painter's, not this module's.
-    #[must_use]
-    pub fn is_bloomed(&self, path: &std::path::Path) -> bool {
-        self.bloomed.iter().any(|item| item == path)
-    }
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct ProjectSession {
+    pub id: String,
+    pub instance_id: Option<String>,
+    pub kind: String,
+    pub program: String,
+    pub subject: String,
+    pub state: String,
+    pub updated_ms: u64,
+    pub exit_status: Option<i32>,
+    pub commands: Vec<String>,
+    #[serde(with = "templar_types::native_path")]
+    pub cwd: PathBuf,
+    pub resume: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct ProjectFile {
+    #[serde(with = "templar_types::native_path")]
+    pub path: PathBuf,
+    pub name: String,
+    pub category: String,
+    pub app_id: Option<String>,
+    pub modified_ms: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct ProjectApp {
+    pub app_id: String,
+    pub name: String,
+    pub template: String,
+}
+
+#[derive(serde::Deserialize)]
+struct PresentationSnapshot {
+    projects: Vec<ProjectPresentation>,
+}
+
+/// Decode HomeGarden's cwd map without turning native directory identity into display text.
+pub fn decode_working_directories(json: &str) -> serde_json::Result<HashMap<String, PathBuf>> {
+    #[derive(serde::Deserialize)]
+    struct Directories(#[serde(with = "templar_types::native_path::map")] HashMap<String, PathBuf>);
+    serde_json::from_str::<Directories>(json).map(|directories| directories.0)
 }
 
 /// `HomeGarden1.Contexts`, keyed by root. Empty when sessiond is absent or the garden is off.
@@ -113,12 +153,60 @@ pub async fn fetch_places() -> HashMap<PathBuf, GardenPlace> {
     let Ok(json) = proxy.contexts().await else {
         return HashMap::new();
     };
-    serde_json::from_str::<Vec<GardenPlace>>(&json)
+    let mut places: HashMap<PathBuf, GardenPlace> = serde_json::from_str::<Vec<GardenPlace>>(&json)
         .unwrap_or_default()
         .into_iter()
         .filter(|place| !place.hidden)
         .map(|place| (place.root.clone(), place))
-        .collect()
+        .collect();
+    if let Ok(json) = proxy.presentation_v1().await
+        && let Ok(snapshot) = serde_json::from_str::<PresentationSnapshot>(&json)
+    {
+        for presentation in snapshot.projects {
+            if let Some(place) = places.get_mut(&presentation.root) {
+                place.instances.clone_from(&presentation.instances);
+                place.presentation = presentation;
+            }
+        }
+    }
+    places
+}
+
+pub async fn resume_session(path: &std::path::Path, session_id: &str) -> Result<(), String> {
+    let connection = crate::data::session().await?;
+    let proxy = HomeGardenProxy::new(&connection)
+        .await
+        .map_err(|error| format!("garden unavailable: {error}"))?;
+    proxy
+        .resume_session_v1(&path.to_string_lossy(), session_id)
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("resume failed: {error}"))
+}
+
+pub async fn launch_app_in_place(
+    path: &std::path::Path,
+    app: &templar_types::AppId,
+) -> Result<(), String> {
+    let connection = crate::data::session().await?;
+    let proxy = HomeGardenProxy::new(&connection)
+        .await
+        .map_err(|error| format!("garden unavailable: {error}"))?;
+    proxy
+        .launch_app_in_place_v1(&path.to_string_lossy(), &app.to_string())
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("project launch failed: {error}"))
+}
+
+pub async fn activate_instance(instance: templar_types::InstanceId) {
+    let Ok(connection) = crate::data::session().await else {
+        return;
+    };
+    let Ok(proxy) = HomeGardenProxy::new(&connection).await else {
+        return;
+    };
+    let _ = proxy.activate_instance_v1(&instance.to_string()).await;
 }
 
 /// One tending moment for `output`. Returns the daemon's report, or the reason it could not.
@@ -186,6 +274,11 @@ pub async fn manage(id: &str, path: &std::path::Path) -> Result<Option<String>, 
         "garden.hide" => proxy.hide(&root, true).await.map(|()| None),
         "garden.forget" => proxy.forget(&root).await.map(|()| None),
         "garden.forget-all" => proxy.forget_all().await.map(|()| None),
+        "garden.show-coding" => proxy.show_as_v1(&root, "coding").await.map(|()| None),
+        "garden.show-video" => proxy.show_as_v1(&root, "video").await.map(|()| None),
+        "garden.show-images" => proxy.show_as_v1(&root, "images").await.map(|()| None),
+        "garden.show-documents" => proxy.show_as_v1(&root, "documents").await.map(|()| None),
+        "garden.show-plain" => proxy.show_as_v1(&root, "plain").await.map(|()| None),
         "garden.why" => proxy.describe(&root).await.map(|json| {
             let value: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
             Some(match value["why"].as_str() {
@@ -219,25 +312,78 @@ mod tests {
         assert_eq!(place.stage, "tile");
         assert_eq!(place.tree[0].name, "src");
         assert_eq!(place.form, "branch");
-        assert_eq!(place.state_line(), "3 opens, 1 session");
+        assert_eq!(place.summary, "3 opens, 1 session");
     }
 
     #[test]
-    fn a_place_says_what_arrived_before_it_says_what_it_is() {
+    fn presentation_retains_actionable_work_without_replacing_ledger_explanation() {
         let place: GardenPlace = serde_json::from_str(
-            r#"{"root":"/home/dk/Downloads","stage":"expanded","summary":"4 opens, 2 sessions",
-                "pinned":true,"bloom_total":2,
-                "bloomed":["/home/dk/Downloads/a.mp4","/home/dk/Downloads/b.pdf"]}"#,
+            r#"{"root":"/home/dk/work","summary":"4 opens, 2 sessions","pinned":true,
+                "bloom_total":2,"presentation":{"root":"/home/dk/work","template":"coding",
+                "activity":"resting","state_line":"Resume: auth refactor","sessions":[{
+                    "id":"auth","program":"claude","state":"ended","cwd":"/home/dk/work"
+                }]}}"#,
         )
         .unwrap();
-        assert_eq!(place.state_line(), "2 new · pinned · 4 opens, 2 sessions");
-        assert!(place.is_bloomed(std::path::Path::new("/home/dk/Downloads/a.mp4")));
-        assert!(!place.is_bloomed(std::path::Path::new("/home/dk/Downloads/old.mp4")));
+        assert_eq!(place.summary, "4 opens, 2 sessions");
+        assert_eq!(place.presentation.state_line, "Resume: auth refactor");
+        assert_eq!(place.presentation.sessions[0].id, "auth");
+        assert_eq!(
+            place.presentation.sessions[0].cwd,
+            PathBuf::from("/home/dk/work")
+        );
+        assert!(
+            place.presentation.apps.is_empty(),
+            "missing data is not invented"
+        );
+    }
 
-        // Nothing new is the ordinary case, and it says nothing.
-        let quiet: GardenPlace =
-            serde_json::from_str(r#"{"root":"/home/dk/x","summary":"1 open, 1 session"}"#).unwrap();
-        assert_eq!(quiet.state_line(), "1 open, 1 session");
+    #[test]
+    fn anonymous_recents_and_distinct_native_sessions_preserve_the_snapshot() {
+        use std::os::unix::ffi::OsStringExt;
+        #[derive(serde::Serialize)]
+        struct Native<'a>(#[serde(with = "templar_types::native_path")] &'a std::path::Path);
+        let paths: Vec<_> = [0xfe, 0xff]
+            .into_iter()
+            .map(|byte| {
+                let mut bytes = b"/home/dk/work/native-".to_vec();
+                bytes.push(byte);
+                PathBuf::from(std::ffi::OsString::from_vec(bytes))
+            })
+            .collect();
+        let payload = serde_json::json!({"version":1,"projects":[{
+            "root":"/home/dk/work","template":"coding","state_line":"Resume: Terminal session",
+            "sessions":[
+                {"id":"first","cwd":Native(&paths[0]),"kind":"terminal","state":"ended"},
+                {"id":"second","cwd":Native(&paths[1]),"kind":"terminal","state":"ended"}
+            ],
+            "recent_files":[
+                {"path":Native(&paths[0]),"name":"native-�","app_id":null},
+                {"path":"/home/dk/work/notes.txt","name":"notes.txt","app_id":"org.example.Editor"}
+            ],
+            "apps":[{"app_id":"org.example.Terminal","name":"Terminal","template":"coding"}]
+        }]})
+        .to_string();
+        let snapshot: PresentationSnapshot = serde_json::from_str(&payload).unwrap();
+        let project = &snapshot.projects[0];
+        assert_eq!(project.state_line, "Resume: Terminal session");
+        assert_eq!(project.sessions.len(), 2);
+        assert_eq!(project.sessions[0].cwd, paths[0]);
+        assert_eq!(project.sessions[1].cwd, paths[1]);
+        assert_ne!(project.sessions[0].cwd, project.sessions[1].cwd);
+        assert_eq!(project.recent_files.len(), 2);
+        assert_eq!(project.recent_files[0].path, paths[0]);
+        assert_eq!(project.recent_files[0].app_id, None);
+        assert_eq!(
+            project.recent_files[1].app_id.as_deref(),
+            Some("org.example.Editor")
+        );
+        assert_eq!(project.apps[0].app_id, "org.example.Terminal");
+        let cwd_json = serde_json::json!({"first":Native(&paths[0]),"second":Native(&paths[1]),"text":"/home/dk/work"}).to_string();
+        let cwds = decode_working_directories(&cwd_json).unwrap();
+        assert_eq!(cwds["first"], paths[0]);
+        assert_eq!(cwds["second"], paths[1]);
+        assert_eq!(cwds["text"], PathBuf::from("/home/dk/work"));
     }
 
     /// A place's windows are the ones that came out of it, and only those. The daemon vouches
@@ -268,20 +414,21 @@ mod tests {
                 geometry: templar_window::Rect::new(0, 0, 100, 100),
                 layer: templar_window::Layer::Normal,
                 group: None,
+                tab_count: None,
             }
         };
         let toplevels = vec![
             window(1, Some(theirs), false),
             window(2, Some(mine), false),
-            // Parked: still this place's launch, but not a window anyone can be shown.
+            // Parked: still belongs here and must remain reachable in the project's overview.
             window(3, Some(mine), true),
             // No identity at all — the ordinary case for an unbrokered client.
             window(4, None, false),
         ];
         assert_eq!(
             place.windows(&toplevels),
-            vec![templar_window::WindowId(2)],
-            "only the live window this place launched"
+            vec![templar_window::WindowId(2), templar_window::WindowId(3)],
+            "both live and parked verified members remain reachable"
         );
 
         // A place that has launched nothing claims nothing, whatever is on screen.

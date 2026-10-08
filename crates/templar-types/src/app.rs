@@ -85,6 +85,13 @@ impl InstanceId {
     pub fn parse(text: &str) -> Option<Self> {
         Uuid::parse_str(text).ok().map(Self)
     }
+
+    /// Opaque launch identity for resource keys; no re-parsing or allocation.
+    pub const fn uuid(self) -> Uuid {
+        self.0
+    }
+
+    pub const fn from_uuid(uuid: Uuid) -> Self { Self(uuid) }
 }
 
 impl Default for InstanceId {
@@ -190,6 +197,13 @@ pub struct AppManifest {
     /// reads as an unknown origin, and an unknown origin is untrusted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<crate::variant::AppProvenance>,
+
+    /// Exclusive provider roles this application says it can fill (schema: `provides`), each
+    /// with the priority the registry compares. A claim, not a grant: the trust gate in
+    /// session-core's claimed-role pass still decides, and an explicit `Providers1.Declare`
+    /// still outranks it.
+    #[serde(default)]
+    pub provides: Vec<crate::provider::ProviderCapability>,
 }
 
 /// What a client *claims* about itself. Claims are checked, never trusted.
@@ -320,6 +334,10 @@ mod tests {
             keywords: ["pdf".to_owned()].into(),
             no_display: false,
             provenance: None,
+            provides: vec![crate::provider::ProviderCapability {
+                role: crate::provider::ProviderRole::FileChooser,
+                priority: 100,
+            }],
         };
 
         let json = serde_json::to_string(&manifest).unwrap();
@@ -328,6 +346,30 @@ mod tests {
         assert!(back.supports_mime("image/tiff"));
         assert!(back.supports_mime("application/pdf"));
         assert!(!back.supports_mime("text/plain"));
+        assert!(json.contains("\"provides\":[{\"role\":\"file-chooser\",\"priority\":100}]"));
+    }
+
+    #[test]
+    fn a_manifest_provides_claim_survives_json() {
+        // The schema documents `provides` but the struct lacked it, so serde silently dropped
+        // every native claim. A claim that parses must land on the struct, with the schema's
+        // default priority when it names none.
+        let json = r#"{
+            "id": "org.templaros.Tray",
+            "display_name": "Tray",
+            "primary_desktop_file_id": "org.templaros.Tray.desktop",
+            "executable": "/usr/bin/templar-tray",
+            "resource_class": "Background",
+            "provides": [{"role": "network-status-ui"}, {"role": "terminal", "priority": 100}]
+        }"#;
+        let manifest: AppManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(manifest.provides.len(), 2);
+        assert_eq!(
+            manifest.provides[0].role,
+            crate::provider::ProviderRole::NetworkStatusUi
+        );
+        assert_eq!(manifest.provides[0].priority, 50);
+        assert_eq!(manifest.provides[1].priority, 100);
     }
 
     #[test]
@@ -347,6 +389,7 @@ mod tests {
         assert!(manifest.keywords.is_empty());
         assert!(!manifest.no_display, "absent NoDisplay means displayable");
         assert!(manifest.provenance.is_none());
+        assert!(manifest.provides.is_empty());
         assert_eq!(
             manifest.trust(),
             crate::variant::TrustTier::User,
@@ -373,6 +416,7 @@ mod tests {
             keywords: BTreeSet::new(),
             no_display: false,
             provenance: None,
+            provides: Vec::new(),
         };
 
         let claims = WindowClaims {

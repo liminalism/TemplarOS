@@ -10,9 +10,10 @@ use pixelkit_text::Align;
 use pixelkit_ui::Ui;
 
 use crate::surface::design;
+use crate::surface::glyphs::{self, Glyph};
 
 pub(crate) const WIDTH: i32 = 336;
-pub(crate) const HEIGHT: i32 = 374;
+pub(crate) const HEIGHT: i32 = 408;
 const PAD: i32 = 10;
 const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const DAY_LABELS: [&str; 31] = [
@@ -26,6 +27,7 @@ enum Focus {
     Previous,
     Today,
     Next,
+    Settings,
 }
 
 #[derive(Debug)]
@@ -40,6 +42,7 @@ pub(crate) struct Calendar {
     local_date: Option<NaiveDate>,
     clock_label: String,
     date_label: String,
+    settings_requested: bool,
 }
 
 /// All geometry is derived from the actual frame, including on narrow or fractional-scale hosts.
@@ -56,6 +59,7 @@ pub(crate) struct Layout {
     grid: Rect,
     selected: Rect,
     hint: Rect,
+    pub settings: Rect,
 }
 
 impl Layout {
@@ -76,6 +80,7 @@ impl Layout {
         let weekdays = band(24);
         let grid = band(192);
         let selected = band(26);
+        let settings = band(34);
         let hint = Rect::new(inner.x, y, inner.w, inner.bottom() - y);
         let arrow = ui.px(30).min(navigation.w / 8);
         let today_w = ui.px(50).min(navigation.w / 5);
@@ -105,6 +110,7 @@ impl Layout {
             grid,
             selected,
             hint,
+            settings,
         }
     }
 
@@ -133,6 +139,7 @@ impl Calendar {
             local_date: None,
             clock_label: "Local time unavailable".to_owned(),
             date_label: String::new(),
+            settings_requested: false,
         };
         calendar.update_labels();
         calendar
@@ -218,8 +225,9 @@ impl Calendar {
                 self.focus = match (self.focus, shift) {
                     (Focus::Day, false) | (Focus::Today, true) => Focus::Previous,
                     (Focus::Previous, false) | (Focus::Next, true) => Focus::Today,
-                    (Focus::Today, false) | (Focus::Day, true) => Focus::Next,
-                    (Focus::Next, false) | (Focus::Previous, true) => Focus::Day,
+                    (Focus::Today, false) | (Focus::Settings, true) => Focus::Next,
+                    (Focus::Next, false) | (Focus::Day, true) => Focus::Settings,
+                    (Focus::Settings, false) | (Focus::Previous, true) => Focus::Day,
                 };
             }
             KeyInput::Enter | KeyInput::Character(' ') => match self.focus {
@@ -231,6 +239,7 @@ impl Calendar {
                     }
                 }
                 Focus::Day => {}
+                Focus::Settings => self.settings_requested = true,
             },
             KeyInput::Left => {
                 self.focus = Focus::Day;
@@ -292,13 +301,19 @@ impl Calendar {
         }
     }
 
-    pub fn draw(&mut self, ui: &mut Ui<'_>, layout: &Layout, local_now: Option<NaiveDateTime>) {
+    #[allow(clippy::too_many_lines)]
+    pub fn draw(
+        &mut self,
+        ui: &mut Ui<'_>,
+        layout: &Layout,
+        local_now: Option<NaiveDateTime>,
+    ) -> bool {
         self.update_local_clock(local_now);
         let today = self.local_date;
         ui.label_styled(
             layout.clock,
             &self.clock_label,
-            design::title_style(ui).with_size(22.0),
+            ui.text_style(design::title_style(ui).with_size(22.0)),
             design::text(),
             Align::Centre,
         );
@@ -323,8 +338,34 @@ impl Calendar {
             self.focus = Focus::Today;
             self.today(today);
         }
+        // The clock on the bar stays words. The date plate is this popup's own mark, set into
+        // the month row when the row has room for it beside the month's name.
+        let mark = ui.px(18).min(layout.month.h.saturating_sub(2));
+        let month_text = if layout.month.w > mark.saturating_mul(5) {
+            let cell = Rect::new(
+                layout.month.x,
+                layout.month.y + (layout.month.h - mark) / 2,
+                mark,
+                mark,
+            );
+            glyphs::draw(
+                &mut ui.painter,
+                ui.kernel,
+                cell,
+                Glyph::Calendar,
+                design::text(),
+            );
+            Rect::new(
+                layout.month.x + mark + ui.px(4),
+                layout.month.y,
+                layout.month.w - mark - ui.px(4),
+                layout.month.h,
+            )
+        } else {
+            layout.month
+        };
         ui.label_styled(
-            layout.month,
+            month_text,
             &self.month_label,
             design::state_style(ui),
             design::text(),
@@ -381,6 +422,13 @@ impl Calendar {
             design::text_dim(),
             Align::Centre,
         );
+        if ui.button(layout.settings, "Date & Time settings") {
+            self.settings_requested = true;
+        }
+        if self.focus == Focus::Settings {
+            ui.painter
+                .stroke_rect(layout.settings.inset(ui.px(2)), ui.px(1), design::accent());
+        }
         ui.label_styled(
             layout.hint,
             "Arrows: day   PgUp/PgDn: month   Esc: close",
@@ -391,6 +439,7 @@ impl Calendar {
         // The frame's padding and blank cells belong to the popup, not the desktop behind it.
         let _ = ui.input.take_click(layout.frame);
         let _ = ui.input.take_context_click(layout.frame);
+        std::mem::take(&mut self.settings_requested)
     }
 }
 
@@ -439,5 +488,18 @@ mod tests {
         assert_eq!(calendar.month(), date(2024, 2, 1));
         assert_eq!(calendar.selected(), today);
         assert!(calendar.key(&KeyInput::Escape, false, Some(today)));
+    }
+
+    #[test]
+    fn reverse_tab_reaches_settings_without_changing_selected_date() {
+        let today = date(2026, 10, 7);
+        let mut calendar = Calendar::new(today);
+        calendar.key(&KeyInput::Tab, true, Some(today));
+        assert_eq!(calendar.focus, Focus::Settings);
+        calendar.key(&KeyInput::Enter, false, Some(today));
+        assert!(calendar.settings_requested);
+        assert_eq!(calendar.selected(), today);
+        calendar.key(&KeyInput::Tab, false, Some(today));
+        assert_eq!(calendar.focus, Focus::Day);
     }
 }

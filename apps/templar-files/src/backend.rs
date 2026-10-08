@@ -58,7 +58,7 @@ pub enum Update {
     },
     /// A one-line status, nothing to refresh.
     Notice(String),
-    CopiedPath {
+    RenderedPath {
         path: PathBuf,
         result: std::result::Result<String, String>,
     },
@@ -261,11 +261,11 @@ impl Backend {
         });
     }
 
-    pub fn copy_path(&self, path: PathBuf) {
+    pub fn render_path(&self, path: PathBuf) {
         let (tx, waker) = (self.updates_tx.clone(), Arc::clone(&self.waker));
         self.runtime.spawn(async move {
-            let result = copy_path_to_clipboard(&path).await.map_err(error_text);
-            deliver(&tx, &waker, Update::CopiedPath { path, result });
+            let result = render_path(&path).await.map_err(error_text);
+            deliver(&tx, &waker, Update::RenderedPath { path, result });
         });
     }
 
@@ -625,85 +625,16 @@ async fn fetch_preview(path: &Path) -> Result<Option<PreviewSnapshot>> {
     Ok(Some(PreviewSnapshot { metadata, bitmap }))
 }
 
-#[async_trait]
-pub trait PathRenderClient: Send + Sync {
-    async fn render_as_shown(&self, path: &str) -> Result<String>;
-}
-
-#[async_trait]
-impl PathRenderClient for FilesActionsProxy<'_> {
-    async fn render_as_shown(&self, path: &str) -> Result<String> {
-        self.render(path, "as-shown")
-            .await
-            .context("rendering path through Files.Actions1")
-    }
-}
-
-#[async_trait]
-pub trait ClipboardSink: Send + Sync {
-    async fn set_text(&self, text: &str) -> Result<()>;
-}
-
-#[derive(Debug, Default)]
-struct WaylandClipboard;
-
-#[async_trait]
-impl ClipboardSink for WaylandClipboard {
-    async fn set_text(&self, text: &str) -> Result<()> {
-        use tokio::io::AsyncWriteExt as _;
-
-        let mut child = tokio::process::Command::new("wl-copy")
-            .arg("--type")
-            .arg("text/plain;charset=utf-8")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .context("starting wl-copy")?;
-        let mut stdin = child
-            .stdin
-            .take()
-            .context("wl-copy did not expose standard input")?;
-        stdin
-            .write_all(text.as_bytes())
-            .await
-            .context("writing the path to wl-copy")?;
-        stdin.shutdown().await.context("closing wl-copy input")?;
-        drop(stdin);
-        let output = tokio::time::timeout(Duration::from_secs(3), child.wait_with_output())
-            .await
-            .context("wl-copy did not take ownership of the clipboard within 3 seconds")??;
-        if !output.status.success() {
-            bail!(
-                "wl-copy failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        Ok(())
-    }
-}
-
-pub async fn copy_path(
-    renderer: &impl PathRenderClient,
-    clipboard: &impl ClipboardSink,
-    path: &Path,
-) -> Result<String> {
+async fn render_path(path: &Path) -> Result<String> {
     if !path.is_absolute() {
         bail!("file path must be absolute: {}", path.display());
     }
-    let path_text = path.to_string_lossy();
-    let clipboard_text = renderer.render_as_shown(&path_text).await?;
-    clipboard.set_text(&clipboard_text).await?;
-    Ok(clipboard_text)
-}
-
-async fn copy_path_to_clipboard(path: &Path) -> Result<String> {
+    let path_text = path.to_str().context("Path is not UTF-8; it cannot be copied as plain text")?;
     let connection = session().await?;
     let renderer = FilesActionsProxy::new(&connection)
         .await
         .context("Files.Actions1")?;
-    copy_path(&renderer, &WaylandClipboard, path).await
+    renderer.render(path_text, "as-shown").await.context("rendering path through Files.Actions1")
 }
 
 async fn start_operation(
@@ -1015,27 +946,6 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct FakePathRenderer(Mutex<Vec<String>>);
-
-    #[async_trait]
-    impl PathRenderClient for FakePathRenderer {
-        async fn render_as_shown(&self, path: &str) -> Result<String> {
-            self.0.lock().unwrap().push(path.to_owned());
-            Ok(path.to_owned())
-        }
-    }
-
-    #[derive(Default)]
-    struct FakeClipboard(Mutex<Vec<String>>);
-
-    #[async_trait]
-    impl ClipboardSink for FakeClipboard {
-        async fn set_text(&self, text: &str) -> Result<()> {
-            self.0.lock().unwrap().push(text.to_owned());
-            Ok(())
-        }
-    }
 
     /// A project id travels through D-Bus, the CLI and a state database, so it is a slug of the
     /// folder's name — and never empty, whatever the folder is called. The *name* stays the
@@ -1131,30 +1041,4 @@ mod tests {
         assert!(error.to_string().contains("absolute"));
     }
 
-    #[tokio::test]
-    async fn copy_path_uses_the_service_form_and_real_clipboard_boundary() {
-        let renderer = FakePathRenderer::default();
-        let clipboard = FakeClipboard::default();
-        let path = Path::new("/home/u/two words.txt");
-        let copied = copy_path(&renderer, &clipboard, path).await.unwrap();
-        assert_eq!(copied, "/home/u/two words.txt");
-        assert_eq!(
-            renderer.0.lock().unwrap().as_slice(),
-            std::slice::from_ref(&copied)
-        );
-        assert_eq!(clipboard.0.lock().unwrap().as_slice(), [copied]);
-    }
-
-    #[tokio::test]
-    async fn copy_path_refuses_relative_input_before_touching_the_clipboard() {
-        let renderer = FakePathRenderer::default();
-        let clipboard = FakeClipboard::default();
-        assert!(
-            copy_path(&renderer, &clipboard, Path::new("relative.txt"))
-                .await
-                .is_err()
-        );
-        assert!(renderer.0.lock().unwrap().is_empty());
-        assert!(clipboard.0.lock().unwrap().is_empty());
-    }
 }

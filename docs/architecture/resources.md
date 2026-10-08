@@ -42,6 +42,17 @@ through `RecentTraces`, recording pressure episodes and every decision with the 
 that produced it. Idle ticks are not episodes and are not recorded — a ring full of nothing is a
 ring that has rotated away the thing you needed to see.
 
+An owned native pressure run used the real user systemd manager and a private `Resources1`
+producer: a 96 MiB maximum / 32 MiB high / no-swap workload held bounded anonymous memory plus
+4 MiB of owned tmpfs. Kernel readback reported `memory.current=36159488`,
+`memory.stat shmem=4194304`, 188 high events, no OOM/kill, and cgroup PSI `avg10=10.86`.
+The background target was selected; foreground and protected transitions removed it from
+selection. The workload stayed non-disposable, and observe-only left controls unchanged.
+Actual 1 MiB reclaim returned kernel `EAGAIN`; exact owned-unit termination left the parent
+alive in its original cgroup. These observations do not enable a higher containment stage,
+attribute global PSI wholly to this fixture, or establish installed-session acceptance.
+
+
 ## What the governor does not own
 
 Application memory exhaustion is one failure among several, and the others need different

@@ -26,6 +26,9 @@ pub mod session {
     pub const SETTINGS_PATH: &str = "/org/templaros/Session/Settings";
     pub const SETTINGS_IFACE: &str = "org.templaros.Settings1";
 
+    pub const WALLPAPER_PATH: &str = "/org/templaros/Wallpaper";
+    pub const WALLPAPER_IFACE: &str = "org.templaros.Wallpaper1";
+
     pub const PROJECTS_PATH: &str = "/org/templaros/Session/Projects";
     pub const PROJECTS_IFACE: &str = "org.templaros.Projects1";
 

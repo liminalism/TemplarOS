@@ -1,0 +1,47 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!-- Bus: org.templaros.Session. Path: /org/templaros/Session/TabCounts.
+     Count-only metadata. BindWindow verifies the registered sender's bus-credential
+     PID against the authenticated compositor's sole native Wayland window. No public
+     compositor confirmation, claimed PID, focus handshake or X11 PID-property proof.
+     An external Kitty/browser host cannot bind using its application's PID. Exact
+     multi-window native surface mapping is still required for those integrations.
+     Every mutator checks the adapter's unique bus sender. Re-registration, disconnect,
+     compositor owner loss, destruction or loss of the sole-window proof clears counts.
+     Healthy updates are pushed over authenticated compositor control to shell/title.
+     Provenance is an adapter-selected identifier, not a verified application brand. -->
+<node>
+  <interface name="org.templaros.TabCounts1">
+    <method name="RegisterAdapter">
+      <arg name="provenance" type="s" direction="in"/>
+      <arg name="generation" type="t" direction="out"/>
+    </method>
+    <!-- Only an in-process, sole-native-window producer can currently bind. -->
+    <method name="BindWindow">
+      <arg name="provenance" type="s" direction="in"/>
+      <arg name="internal" type="s" direction="in"/>
+      <arg name="window_id" type="t" direction="in"/>
+    </method>
+    <!-- Application tabs, not panes or processes. A positive signed wire integer. -->
+    <method name="ReportTabs">
+      <arg name="provenance" type="s" direction="in"/>
+      <arg name="internal" type="s" direction="in"/>
+      <arg name="count" type="u" direction="in"/>
+    </method>
+    <method name="GetCount">
+      <arg name="window_id" type="t" direction="in"/>
+      <arg name="found" type="b" direction="out"/>
+      <arg name="count" type="u" direction="out"/>
+      <arg name="generation" type="t" direction="out"/>
+      <arg name="provenance" type="s" direction="out"/>
+    </method>
+    <method name="DetachWindow">
+      <arg name="provenance" type="s" direction="in"/>
+      <arg name="internal" type="s" direction="in"/>
+    </method>
+    <!-- Re-read GetCount; unknown is found=false, never a fabricated 0/1 badge. -->
+    <signal name="Changed">
+      <arg name="window_id" type="t"/>
+    </signal>
+  </interface>
+</node>

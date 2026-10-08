@@ -144,6 +144,11 @@ pub const MENU: &[MenuItem] = &[
     MenuItem::new("garden.pin", MenuScope::Place),
     MenuItem::new("garden.unpin", MenuScope::Place),
     MenuItem::new("garden.keep", MenuScope::Place),
+    MenuItem::new("garden.show-coding", MenuScope::Place),
+    MenuItem::new("garden.show-video", MenuScope::Place),
+    MenuItem::new("garden.show-images", MenuScope::Place),
+    MenuItem::new("garden.show-documents", MenuScope::Place),
+    MenuItem::new("garden.show-plain", MenuScope::Place),
     MenuItem::new("garden.hide", MenuScope::Place),
     MenuItem::new("garden.forget", MenuScope::Place),
     MenuItem::new("garden.why", MenuScope::Place),
@@ -530,6 +535,9 @@ impl ContextMenu {
         }
         for index in open.first..(open.first + capacity).min(count) {
             let row = Self::row_rect(body, ui, index - open.first);
+            if ui.input.focus_requested(row) {
+                open.highlighted = Some(index);
+            }
             if ui.input.take_click(row) {
                 picked = Some(index);
             }
@@ -656,6 +664,7 @@ impl ContextMenu {
         let (Some(rect), Some(open)) = (self.rect(ui, area), self.open.as_ref()) else {
             return;
         };
+        ui.modal_semantics();
         Self::paint_shell(ui, rect);
 
         let count = open.rows.len() + open.choices.len();
@@ -700,6 +709,14 @@ impl ContextMenu {
             } else {
                 declaration.label.to_owned()
             };
+            ui.semantic(
+                pixelkit_ui::semantics::Role::MenuItem,
+                &text,
+                row,
+                open.highlighted == Some(index),
+                None,
+                None,
+            );
             ui.label_styled(
                 Rect::new(
                     label.x + ui.px(8),
@@ -725,7 +742,7 @@ impl ContextMenu {
                         accelerator.h,
                     ),
                     &chord.to_string(),
-                    TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
+                    ui.text_style(TextStyle::tracked(ui.theme.body.face, 11.0, 0.10)),
                     design::text_faint(),
                     Align::Right,
                 );
@@ -744,6 +761,14 @@ impl ContextMenu {
             let Some(row) = self.row(ui, area, index) else {
                 continue;
             };
+            ui.semantic(
+                pixelkit_ui::semantics::Role::MenuItem,
+                &choice.label,
+                row,
+                open.highlighted == Some(index),
+                None,
+                None,
+            );
             if ui.input.hovering(row) || open.highlighted == Some(index) {
                 let plate = design::accent_soft();
                 ui.painter
@@ -765,7 +790,7 @@ impl ContextMenu {
             ui.label_styled(
                 Rect::new(detail.x, detail.y, (detail.w - ui.px(8)).max(0), detail.h),
                 &choice.detail,
-                TextStyle::tracked(ui.theme.body.face, 11.0, 0.10),
+                ui.text_style(TextStyle::tracked(ui.theme.body.face, 11.0, 0.10)),
                 design::text_faint(),
                 Align::Right,
             );

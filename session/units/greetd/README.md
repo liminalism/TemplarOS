@@ -195,6 +195,33 @@ A broken greeter means no graphical login at all, on the one VT it occupies. Non
   whole IPC client and state machine are tested against an in-process fake greetd, with no socket file,
   no display and no PAM anywhere near it.
 
+## Keyboard session picker
+
+Tab/Shift-Tab traverse the primary field, session picker and sign-in button. On the closed picker,
+arrow keys cycle sessions and Enter/Space opens its popup. Inside that popup, Up/Down select a row,
+Enter commits it, and Escape or Tab dismisses it. Those popup keys do not submit or cancel
+authentication; dismissal leaves focus on the picker and restores the form's three-slot traversal.
+Escape outside the popup still cancels authentication. Queued opening/navigation/dismissal keys
+are handled in order, including an opening Enter followed by Escape in the same frame.
+
+On 2026-10-06, the qualified greeter regressions
+`screen::tests::keyboard_session_popup_dismisses_without_canceling_authentication` and
+`screen::tests::queued_session_popup_keys_keep_authentication_and_response_intact` each passed,
+and the native greeter binary was rebuilt. The actual 800×600 native window then ran on a separately
+owned authenticated Xvfb display and private session/system buses, with private HOME/XDG state and
+a bubblewrap-private `/var/lib`. Its owned framed-JSON peer could only present an
+authentication-unavailable prompt or deny authentication; it had no PAM or session launcher.
+Native Tab/Enter opened the session popup, Escape dismissed it with the prompt unchanged and no
+authentication request, subsequent Tabs focused the button then field, and Tab/Space plus
+Down/Enter selected LXQt Desktop without submitting a response. Only a later Escape outside the
+popup sent `cancel_session` and restored the username form.
+
+The retained observations, framed requests, screenshots and exact owned-child teardown are under
+`.agent/scratch/greeter-dropdown-focus-20261006/` (`evidence.json`, `greetd-wire.json` and
+`final-native-picker-open.png`/`final-native-picker-dismissed.png`). No password was entered, no real greetd/PAM
+was contacted, and no installed unit or display-manager setting changed. This proves the native
+consumer keyboard path, not physical-seat, biometric, login or deployment acceptance.
+
 ## Remaining boundary
 
 The package ships the account declarations and a safe configuration template. Only the TemplarOS image

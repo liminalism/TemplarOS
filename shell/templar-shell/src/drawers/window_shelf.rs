@@ -4,8 +4,8 @@
 //! It should never silently vanish into an icon, another workspace, or an output that is no
 //! longer attached." This module is the consumer of that list.
 //!
-//! The shelf's data arrives over the private `templar_shell_v1` protocol
-//! (`interfaces/wayland/templar-shell-v1.xml`; `crate::wayland_bridge` is the client side,
+//! The shelf's data arrives over the private `templar_shell_v2` protocol
+//! (`interfaces/wayland/templar-shell-v2.xml`; `crate::wayland_bridge` is the client side,
 //! `compositor/templar-comp/src/protocols_shell.rs` the server). This takes `&[ShellToplevel]`
 //! directly, exactly as [`crate::dock`] does, so the model and its rendering are testable against
 //! fixtures with no connection at all.
@@ -89,6 +89,7 @@ mod tests {
             geometry: templar_window::Rect::new(0, 0, 640, 480),
             layer: Layer::Normal,
             group: None,
+            tab_count: None,
         }
     }
 

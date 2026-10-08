@@ -22,6 +22,11 @@ pub trait Resources {
     /// with their victim scores.
     fn report(&self) -> zbus::Result<String>;
 
+    /// All managed resources; identity.kind distinguishes applications, explicit work and Flatpak.
+    fn targets(&self) -> zbus::Result<String>;
+    fn resolve_pid(&self, pid: u32) -> zbus::Result<String>;
+    fn explain_target(&self, resource_id: &str) -> zbus::Result<String>;
+
     /// Why this instance would (or would not) be chosen next.
     fn explain_instance(&self, instance_id: &str) -> zbus::Result<String>;
 
@@ -79,6 +84,10 @@ pub trait Resources {
 
     /// Recorded observe-only traces, newest first, as JSON lines.
     fn recent_traces(&self, limit: u32) -> zbus::Result<String>;
+
+    /// Membership changed, including the first completed sampling tick.
+    #[zbus(signal)]
+    fn targets_changed(&self) -> zbus::Result<()>;
 
     /// Pressure level changed.
     #[zbus(signal)]

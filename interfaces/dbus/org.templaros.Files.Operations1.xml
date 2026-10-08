@@ -15,6 +15,9 @@
          options_json is an Options (conflict: fail|skip|replace|keep-both,
          verify: size|checksum, override_reserve); an empty string means the defaults.
          Returns immediately with the operation ID; watch Progress and Finished. -->
+    <!-- UTF-8 paths retain their string encoding. Native paths may instead be
+         {"path_b64":"canonical base64 absolute native bytes"} in kinds, steps, skipped
+         paths and undo records. Display strings never name a native file. -->
     <method name="Start">
       <arg name="kind_json" type="s" direction="in"/>
       <arg name="options_json" type="s" direction="in"/>

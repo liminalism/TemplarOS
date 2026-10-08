@@ -20,13 +20,10 @@
 //! window' are keyboard-reachable without the shell" — and a greeter is the one surface with no
 //! shell, no recovery overlay and no fallback switcher to reach if the pointer does not work, so it
 //! must be the least optional of all of them. Tab/Shift-Tab cycle three slots
-//! (primary field → session picker → sign-in button) through [`pixelkit_ui::Focus`], Enter submits
-//! from any of them, and Escape cancels. Two of those three slots need a keyboard escape hatch
-//! `pixelkit-ui` does not build in on its own — see the doc comments on
-//! [`GreeterScreen::draw_session_picker`] and [`GreeterScreen::draw_submit_button`] for exactly
-//! what is missing and how this screen supplies it locally, which is the pattern
-//! `pixelkit_ui::focus`'s own module doc names for exactly this situation ("a widget that wants
-//! arrows to move among its own items only ... is expected to do that itself").
+//! (primary field → session picker → sign-in button) through [`pixelkit_ui::Focus`]. Enter submits
+//! from the field or button; on the session picker it opens the shared dropdown. While that popup
+//! is open, its arrows, Enter and Escape belong to the picker, not authentication. Escape outside
+//! the popup cancels authentication.
 
 use pixelkit_raster::Rect;
 use pixelkit_shell::KeyInput;
@@ -109,10 +106,10 @@ impl GreeterScreen {
         // Read before anything below consumes the frame's keys — `text_field`'s own doc: a
         // focused field takes every key, Enter included, even though its own `apply` does nothing
         // with Enter. `home_screen.rs`'s search field reads Enter the same way, before drawing.
-        let keys = ui.input.keys().to_vec();
-        let enter = keys.contains(&KeyInput::Enter);
-        let escape = keys.contains(&KeyInput::Escape);
-        self.focus.handle_tab(&keys, ui.input.modifiers());
+        let keys = ui.input.keys();
+        let popup_open = self.session_dropdown.is_open();
+        // Even a modal frame must restart registration, but its Tab belongs to the popup.
+        self.focus.handle_tab(if popup_open { &[] } else { keys }, ui.input.modifiers());
 
         // On the very first frame nothing has focus yet, and a keyboard-only user has no pointer
         // to click the username field into focus with — so default the first slot to focused
@@ -120,6 +117,15 @@ impl GreeterScreen {
         if self.focus.current().is_none() {
             self.focus.set(0);
         }
+
+        // A fast Enter/Space then Escape can arrive in one frame. Once the session picker opens,
+        // that Escape dismisses it; it must not also cancel the authentication underneath.
+        let picker_opens_before_escape = self.focus.current() == Some(1)
+            && !data.sessions.is_empty()
+            && keys.iter().take_while(|key| **key != KeyInput::Escape)
+                .any(|key| matches!(key, KeyInput::Enter | KeyInput::Character(' ')));
+        let enter = keys.contains(&KeyInput::Enter) && !popup_open;
+        let escape = keys.contains(&KeyInput::Escape) && !popup_open && !picker_opens_before_escape;
 
         let card = Rect::new(
             area.x + (area.w - ui.px(CARD_WIDTH)).max(0) / 2,
@@ -138,17 +144,17 @@ impl GreeterScreen {
 
         let primary_action = self.draw_primary_field(ui, &mut cursor, area, data, enter);
 
-        let session_action = self.draw_session_picker(ui, &mut cursor, inner, data.sessions, enter);
+        self.draw_session_picker(ui, &mut cursor, inner, data.sessions);
 
         let button_action = self.draw_submit_button(ui, &mut cursor, inner, data, enter);
 
-        Self::draw_status_line(ui, cursor, inner, data);
+        self.draw_status_line(ui, cursor, inner, data);
 
         if escape {
+            self.session_dropdown.close();
             return GreeterAction::Cancel;
         }
         primary_action
-            .or(session_action)
             .or(button_action)
             .unwrap_or(GreeterAction::None)
     }
@@ -169,7 +175,7 @@ impl GreeterScreen {
             ui.px(CARD_WIDTH).min(area.w) - ui.theme.padding * 2,
             ui.px(FIELD_HEIGHT),
         );
-        let focused = self.focus.register();
+        let focused = self.focus.register_at(ui.input, inner) && !self.session_dropdown.is_open();
 
         let action = match data.flow {
             LoginFlow::Idle { .. } => {
@@ -192,7 +198,7 @@ impl GreeterScreen {
                     Align::Left,
                 );
                 if prompt.needs_response {
-                    ui.text_field(&mut self.response, inner, "", focused, prompt.secret);
+                    ui.text_field(&mut self.response, inner, &prompt.message, focused, prompt.secret);
                     let text = self.response.text();
                     (enter && focused)
                         .then_some(GreeterAction::SubmitResponse(Some(text.to_owned())))
@@ -223,27 +229,18 @@ impl GreeterScreen {
         action
     }
 
-    /// Slot 1: which session `start_session` will run. Fully mouse-driven through
-    /// [`pixelkit_ui::Dropdown`] (click to open, click a row to pick) exactly like every other
-    /// `Ui::dropdown` caller — but `Dropdown` itself only ever opens or closes in response to a
-    /// click (`pixelkit-ui/src/dropdown.rs`: `Ui::dropdown` calls `self.input.take_click(area)`
-    /// and nothing else changes `dropdown.open`), so a keyboard-only user could never reach a
-    /// second session at all without a way in from here. Left/Right, while this slot has focus,
-    /// cycle `selected_session` directly on the closed field — never opening the popup — which is
-    /// exactly the escape hatch `pixelkit_ui::focus`'s own module doc describes for "a widget that
-    /// wants arrows to move among its own items only": scoped to this one control's own count, not
-    /// going through `Focus::handle_arrows` (which would make Left/Right mean the same thing for
-    /// every focused control on the screen, including the text fields' own caret movement).
+    /// Slot 1: which session `start_session` will run. The shared dropdown owns both pointer
+    /// and keyboard selection: arrows cycle the closed field, Enter/Space opens the popup,
+    /// and popup Escape dismisses it without canceling authentication.
     fn draw_session_picker(
         &mut self,
         ui: &mut Ui<'_>,
         cursor: &mut i32,
         inner: Rect,
         sessions: &[SessionEntry],
-        _enter: bool,
-    ) -> Option<GreeterAction> {
+    ) {
         let area = Rect::new(inner.x, *cursor, inner.w, ui.px(FIELD_HEIGHT));
-        let focused = self.focus.register();
+        let focused = self.focus.register_at(ui.input, area);
 
         if sessions.is_empty() {
             ui.panel(area);
@@ -257,37 +254,18 @@ impl GreeterScreen {
             self.selected_session = self.selected_session.min(sessions.len() - 1);
             let names: Vec<&str> = sessions.iter().map(|entry| entry.name.as_str()).collect();
 
-            if focused {
-                for key in ui.input.keys() {
-                    match key {
-                        KeyInput::Right | KeyInput::Down => {
-                            self.selected_session = (self.selected_session + 1) % sessions.len();
-                        }
-                        KeyInput::Left | KeyInput::Up => {
-                            self.selected_session =
-                                (self.selected_session + sessions.len() - 1) % sessions.len();
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            if ui.dropdown(
-                &mut self.session_dropdown,
-                area,
-                &names,
-                self.selected_session,
+            if let Some(picked) = ui.dropdown_focused(
+                &mut self.session_dropdown, area, &names, self.selected_session, focused,
             ) {
-                // `Ui::dropdown` already toggled `self.session_dropdown`'s open/closed state.
+                self.selected_session = picked;
             }
         }
 
         *cursor += ui.px(FIELD_HEIGHT) + ui.px(ROW_GAP);
-        None
     }
 
-    /// The popup a mouse click on the session picker opened, if any — drawn last, after
-    /// everything else, per [`Dropdown::draw`]'s own contract. Returns the picked index.
+    /// The session picker's pointer- or keyboard-opened popup, drawn last, after
+    /// everything else, per [`Dropdown::draw`]'s own contract.
     pub fn draw_session_popup(&mut self, ui: &mut Ui<'_>, bounds: Rect) {
         if let Some(picked) = self.session_dropdown.draw(ui, bounds) {
             self.selected_session = picked;
@@ -307,13 +285,13 @@ impl GreeterScreen {
         enter: bool,
     ) -> Option<GreeterAction> {
         let area = Rect::new(inner.x, *cursor, inner.w, ui.px(FIELD_HEIGHT));
-        let focused = self.focus.register();
+        let focused = self.focus.register_at(ui.input, area) && !self.session_dropdown.is_open();
         let label = match data.flow {
             LoginFlow::Authenticating { prompt, .. } if !prompt.needs_response => "Continue",
             LoginFlow::Idle { .. } | LoginFlow::Authenticating { .. } => "Sign in",
             LoginFlow::ReadyToStart { .. } => "Starting…",
         };
-        let clicked = ui.button(area, label);
+        let clicked = ui.button_focused(area, label, focused);
         *cursor += ui.px(FIELD_HEIGHT);
 
         if !(clicked || (enter && focused)) {
@@ -332,12 +310,16 @@ impl GreeterScreen {
         }
     }
 
-    fn draw_status_line(ui: &mut Ui<'_>, cursor: i32, inner: Rect, data: &GreeterData<'_>) {
-        let LoginFlow::Idle { error: Some(error) } = data.flow else {
-            return;
+    fn draw_status_line(&self, ui: &mut Ui<'_>, cursor: i32, inner: Rect, data: &GreeterData<'_>) {
+        let error = match data.flow {
+            LoginFlow::Idle { error } => error.as_deref().or_else(|| self.username.clipboard_error()),
+            LoginFlow::Authenticating { .. } => self.response.clipboard_error(),
+            LoginFlow::ReadyToStart { .. } => None,
         };
-        let area = Rect::new(inner.x, cursor + ui.px(ROW_GAP), inner.w, ui.px(40));
-        ui.label(area, error, ui.theme.alarm, Align::Left);
+        if let Some(error) = error {
+            let area = Rect::new(inner.x, cursor + ui.px(ROW_GAP), inner.w, ui.px(40));
+            ui.label(area, error, ui.theme.alarm, Align::Left);
+        }
     }
 
     /// Clear whatever was typed for the last prompt. `crate::surface::app` calls this once
@@ -384,7 +366,7 @@ mod tests {
                 Painter::new(&mut self.buffer),
                 &mut self.text,
                 &mut self.input,
-                pixelkit_ui::Theme::default(),
+                templar_ui::theme_for(&templar_types::appearance::LIGHT),
                 Scale::ONE,
                 &mut self.kernel,
             );
@@ -669,7 +651,7 @@ mod tests {
         // stays correct if the layout is retuned, rather than a hand-guessed pixel coordinate.
         let card_x = (800 - CARD_WIDTH) / 2;
         let card_y = (600 - CARD_HEIGHT) / 2;
-        let inner_top = card_y + pixelkit_ui::Theme::default().padding;
+        let inner_top = card_y + templar_ui::theme_for(&templar_types::appearance::LIGHT).padding;
         let button_top = inner_top + HEADING_HEIGHT + ROW_GAP + 2 * (FIELD_HEIGHT + ROW_GAP);
         h.input.cursor_moved(
             (card_x + CARD_WIDTH / 2) as f32,
@@ -701,10 +683,107 @@ mod tests {
     }
 
     #[test]
+    fn secret_prompt_has_a_named_semantic_control_but_no_secret_value() {
+        let mut h = Harness::new();
+        let mut screen = GreeterScreen::default();
+        screen.response.set_text("secret-never-export-this");
+        let flow = LoginFlow::Authenticating {
+            username: "alice".to_owned(),
+            prompt: Prompt::new(AuthMessageType::Secret, "Password:".to_owned()),
+        };
+        let data = GreeterData { flow: &flow, sessions: &[] };
+        let mut semantics = pixelkit_ui::semantics::Semantics::default();
+        semantics.begin("Login");
+        let mut ui = Ui::new(Painter::new(&mut h.buffer), &mut h.text, &mut h.input,
+            templar_ui::theme_for(&templar_types::appearance::LIGHT), Scale::ONE, &mut h.kernel)
+            .with_semantics(&mut semantics);
+        screen.draw(&mut ui, area(), &data);
+        drop(ui);
+        let tree = semantics.update();
+        let (_, password) = tree.nodes.iter().find(|(_, node)| node.label() == Some("Password:")).unwrap();
+        assert_eq!(password.value(), None);
+        assert!(tree.nodes.iter().all(|(_, node)| node.value() != Some("secret-never-export-this")));
+    }
+    #[test]
     fn debug_output_still_shows_the_username_which_is_not_secret() {
         let mut screen = GreeterScreen::default();
         screen.username.set_text("alice");
         let debug_output = format!("{screen:?}");
         assert!(debug_output.contains("alice"));
+    }
+
+    #[test]
+    fn keyboard_session_popup_dismisses_without_canceling_authentication() {
+        let mut h = Harness::new();
+        let mut screen = GreeterScreen::default();
+        screen.focus.set(1);
+        let sessions = vec![templaros_session(), cosmic_session()];
+        let flow = LoginFlow::Authenticating {
+            username: "alice".to_owned(),
+            prompt: Prompt::new(AuthMessageType::Secret, "Password:".to_owned()),
+        };
+        let data = GreeterData { flow: &flow, sessions: &sessions };
+        h.input.key(KeyInput::Enter);
+        let action = h.frame(|ui| {
+            let action = screen.draw(ui, area(), &data);
+            screen.draw_session_popup(ui, area());
+            action
+        });
+        assert_eq!(action, GreeterAction::None);
+        assert!(screen.session_dropdown.is_open());
+        h.input.key(KeyInput::Escape);
+        let action = h.frame(|ui| {
+            let action = screen.draw(ui, area(), &data);
+            screen.draw_session_popup(ui, area());
+            action
+        });
+        assert_eq!(action, GreeterAction::None);
+        assert!(!screen.session_dropdown.is_open());
+        assert_eq!(screen.focus.current(), Some(1));
+        h.input.key(KeyInput::Tab);
+        h.frame(|ui| screen.draw(ui, area(), &data));
+        assert_eq!(screen.focus.current(), Some(2), "dismissal restores the form's three-slot traversal");
+        h.input.key(KeyInput::Tab);
+        h.frame(|ui| screen.draw(ui, area(), &data));
+        assert_eq!(screen.focus.current(), Some(0));
+    }
+
+    #[test]
+    fn queued_session_popup_keys_keep_authentication_and_response_intact() {
+        let mut h = Harness::new();
+        let mut screen = GreeterScreen::default();
+        screen.response.set_text("retained-response");
+        let sessions = vec![templaros_session(), cosmic_session()];
+        let flow = LoginFlow::Authenticating {
+            username: "alice".to_owned(),
+            prompt: Prompt::new(AuthMessageType::Secret, "Password:".to_owned()),
+        };
+        let data = GreeterData { flow: &flow, sessions: &sessions };
+        h.frame(|ui| screen.draw(ui, area(), &data));
+        h.input.key(KeyInput::Tab);
+        h.input.key(KeyInput::Enter);
+        h.input.key(KeyInput::Escape);
+        let action = h.frame(|ui| {
+            let action = screen.draw(ui, area(), &data);
+            screen.draw_session_popup(ui, area());
+            action
+        });
+        assert_eq!(action, GreeterAction::None);
+        assert!(!screen.session_dropdown.is_open());
+        assert_eq!(screen.focus.current(), Some(1));
+        assert_eq!(screen.response.text(), "retained-response");
+
+        h.input.key(KeyInput::Enter);
+        h.input.key(KeyInput::Down);
+        h.input.key(KeyInput::Enter);
+        let action = h.frame(|ui| {
+            let action = screen.draw(ui, area(), &data);
+            screen.draw_session_popup(ui, area());
+            action
+        });
+        assert_eq!(action, GreeterAction::None);
+        assert!(!screen.session_dropdown.is_open());
+        assert_eq!(screen.selected_session, 1);
+        assert_eq!(screen.response.text(), "retained-response");
     }
 }

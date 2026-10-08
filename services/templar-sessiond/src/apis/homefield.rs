@@ -64,11 +64,18 @@ fn to_json(doc: &templar_field::FieldDocument) -> fdo::Result<String> {
 
 #[zbus::interface(name = "org.templaros.HomeField1")]
 impl HomeFieldApi {
-    async fn get(&self, output: &str, cols: u16, rows: u16) -> fdo::Result<String> {
+    async fn get(&self, output: &str, cols: u16, rows: u16,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> fdo::Result<String> {
         if output.is_empty() {
             return Err(fdo::Error::InvalidArgs("output must not be empty".into()));
         }
-        let doc = homefield::load_or_create(&self.store, output, cols, rows).map_err(failed)?;
+        self.garden.refresh_desktop_root().await;
+        let mut doc = homefield::load_or_create(&self.store, output, cols, rows).map_err(failed)?;
+        if let Some(desktop) = self.garden.desktop_root()
+            && homefield::migrate_desktop_dock(&self.store, &mut doc, &desktop).map_err(failed)?
+        {
+            let _ = emitter.changed(output.to_owned(), doc.revision).await;
+        }
         to_json(&doc)
     }
 
@@ -78,10 +85,15 @@ impl HomeFieldApi {
         op_json: &str,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<u64> {
-        let doc = homefield::apply_json(&self.store, output, op_json)
+        let op: templar_field::FieldOp = serde_json::from_str(op_json)
             .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
-        let label = serde_json::from_str::<templar_field::FieldOp>(op_json)
-            .map_or("CHANGE", |op| op.label());
+        let mut doc = homefield::apply_op(&self.store, output, &op)
+            .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
+        self.garden.record_manual_resize(&op, &doc);
+        if let Some(desktop) = self.garden.desktop_root() {
+            homefield::migrate_desktop_dock(&self.store, &mut doc, &desktop).map_err(failed)?;
+        }
+        let label = op.label();
         self.record(format!(
             "Home Field on {output}: {} (revision {}).",
             label.to_lowercase(),
@@ -96,8 +108,13 @@ impl HomeFieldApi {
         output: &str,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<String> {
+        self.garden.refresh_desktop_root().await;
         match homefield::undo(&self.store, output).map_err(failed)? {
-            Some(doc) => {
+            Some(mut doc) => {
+                if let Some(desktop) = self.garden.desktop_root() {
+                    homefield::migrate_desktop_dock(&self.store, &mut doc, &desktop).map_err(failed)?;
+                }
+                self.garden.record_manual_resize_undo(&doc);
                 self.record(format!(
                     "Home Field on {output}: change undone (revision {}).",
                     doc.revision
@@ -119,7 +136,11 @@ impl HomeFieldApi {
         if output.is_empty() {
             return Err(fdo::Error::InvalidArgs("output must not be empty".into()));
         }
-        let doc = homefield::reset(&self.store, output, cols, rows).map_err(failed)?;
+        self.garden.refresh_desktop_root().await;
+        let mut doc = homefield::reset(&self.store, output, cols, rows).map_err(failed)?;
+        if let Some(desktop) = self.garden.desktop_root() {
+            homefield::migrate_desktop_dock(&self.store, &mut doc, &desktop).map_err(failed)?;
+        }
         self.record(format!(
             "Home Field on {output}: reset to the default layout."
         ));
@@ -139,11 +160,20 @@ impl HomeFieldApi {
                 "path must be an existing absolute folder".into(),
             ));
         }
-        let doc = homefield::load(&self.store, output)
+        let canonical = path.canonicalize().map_err(failed)?;
+        let path = canonical.as_path();
+        self.garden.refresh_desktop_root().await;
+        let mut doc = homefield::load(&self.store, output)
             .map_err(failed)?
             .ok_or_else(|| {
                 fdo::Error::InvalidArgs(format!("no home field stored for {output:?}"))
             })?;
+        if self.garden.desktop_root().as_deref() == Some(path) {
+            if homefield::migrate_desktop_dock(&self.store, &mut doc, path).map_err(failed)? {
+                let _ = emitter.changed(output.to_owned(), doc.revision).await;
+            }
+            return Ok(doc.revision);
+        }
         // The same key the shell derives (`field_model::folder_tile_id`), so a folder placed here
         // and one opened from Home are one tile, not two.
         let id = templar_field::TileId::for_key(&format!("folder:{}", path.to_string_lossy()));

@@ -1,4 +1,4 @@
-//! Server-side `templar_shell_v1`: the private, authenticated protocol between the compositor core
+//! Server-side `templar_shell_v2`: the private, authenticated protocol between the compositor core
 //! and the one connection accepted as the trusted shell (`src/shell_socket.rs`). The global itself
 //! is filtered to that connection (`ShellManagerGlobalData::can_view`), and every request handler
 //! below checks `client_is_trusted_shell` again — belt and suspenders, since this is the one
@@ -7,10 +7,10 @@
 //! [`sync_toplevels`]/[`sync_foreign_toplevels`] (called from `src/space_sync.rs` after every
 //! `WindowService`-mutating handler) are the only place these objects' state changes: nothing here
 //! sends events synchronously from inside a request handler that touched `WindowService`, matching
-//! COMPOSITOR.md's "never encode/send `templar_shell_v1` events synchronously from the same call site".
+//! COMPOSITOR.md's "never encode/send `templar_shell_v2` events synchronously from the same call site".
 
-use crate::protocols::templar_shell_v1::{
-    templar_shell_manager_v1::{self, TemplarShellManagerV1},
+use crate::protocols::templar_shell_v2::{
+    templar_shell_manager_v2::{self, TemplarShellManagerV2},
     templar_shell_toplevel_list_v1::{self, TemplarShellToplevelListV1},
     templar_shell_toplevel_v1::{self, TemplarShellToplevelV1},
 };
@@ -30,27 +30,28 @@ use templar_window::{
     geometry::{Alignment, Edge, Exclusive, shell_surface_placement},
 };
 
-/// The protocol version this compositor implements (`interfaces/wayland/templar-shell-v1.xml`).
+/// The protocol version this compositor implements (`interfaces/wayland/templar-shell-v2.xml`).
 /// Both peers ship from this repository, so a version bump is a pair of edits, not a
 /// compatibility matrix — but every `since="2"` event below is still guarded on the bound
 /// object's version rather than assumed.
-pub const SHELL_PROTOCOL_VERSION: u32 = 13;
+pub const SHELL_PROTOCOL_VERSION: u32 = 14;
 
-/// The value of `templar_shell_manager_v1.group_cycle_binding` this compositor sends: 0 is
+/// The value of `templar_shell_manager_v2.group_cycle_binding` this compositor sends: 0 is
 /// `Super+Tab`, the only binding there is (planning doc §2.1 — one chord, always the same, no
 /// setting). The event exists so a future setting could move it without a protocol change.
 pub const GROUP_CYCLE_BINDING_SUPER_TAB: u32 = 0;
 
-/// Bookkeeping for currently-bound `templar_shell_v1` objects.
+/// Bookkeeping for currently-bound `templar_shell_v2` objects.
 #[derive(Debug, Default)]
 pub struct ShellProtocolState {
     /// Every bound manager: where `home_revealed` is reported, and whose destruction — the shell
     /// disconnecting — ends a reveal so a dead shell never leaves the user facing a blank backdrop.
-    pub managers: Vec<TemplarShellManagerV1>,
+    pub managers: Vec<TemplarShellManagerV2>,
+    /// The manager that first publishes demand owns it until disconnect. A second
+    /// screenshot/observer manager neither resets nor steals its generation.
+    pub preview_manager: Option<ObjectId>,
     pub toplevel_lists: Vec<TemplarShellToplevelListV1>,
     pub toplevel_objects: HashMap<WindowId, TemplarShellToplevelV1>,
-    /// Toplevel objects that have had their `identifier` event, which is sent exactly once.
-    pub identified: HashSet<WindowId>,
     /// One entry per surface with a live `set_layer_surface` claim.
     pub layer_surfaces: HashMap<ObjectId, (WlSurface, templar_window::Layer)>,
     /// The header text an `open_taskfield` with the `windows` filter carried. The compositor
@@ -61,7 +62,7 @@ pub struct ShellProtocolState {
     /// One entry per surface with a live `set_exclusive_zone` claim: which output it was on, and
     /// the claim itself. A claim of size 0 is a live claim — it anchors the surface to its edge
     /// and reserves nothing. Released only when the surface is destroyed
-    /// (`templar-shell-v1.xml`'s `set_exclusive_zone` doc) — enforced in `on_shell_surface_destroyed`.
+    /// (`templar-shell-v2.xml`'s `set_exclusive_zone` doc) — enforced in `on_shell_surface_destroyed`.
     pub exclusive_zones: HashMap<ObjectId, (String, Exclusive)>,
     /// One entry per surface that has sent `set_edge_alignment`, for the edge it named.
     ///
@@ -77,11 +78,32 @@ pub struct ShellProtocolState {
     pub terminal_app_id: Option<String>,
 }
 
-/// Global-visibility filter: only the trusted-shell connection ever sees `templar_shell_manager_v1`
+/// Identifier delivery belongs to this protocol object, not its semantic window:
+/// a restarted shell gets a new object for the same surviving window.
+#[derive(Debug, Default)]
+pub struct ShellToplevelData {
+    identified: std::sync::atomic::AtomicBool,
+}
+impl ShellToplevelData {
+    fn identify_once(&self) -> bool {
+        !self.identified.swap(true, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PreviewAuthority { Ignore, Continue, Acquire }
+fn preview_authority(owns_home: bool, same_manager: bool, current_alive: bool) -> PreviewAuthority {
+    if !owns_home { PreviewAuthority::Ignore }
+    else if same_manager && current_alive { PreviewAuthority::Continue }
+    else if !current_alive { PreviewAuthority::Acquire }
+    else { PreviewAuthority::Ignore }
+}
+
+/// Global-visibility filter: only the trusted-shell connection ever sees `templar_shell_manager_v2`
 /// exists at all, so an ordinary application cannot even attempt to bind it.
 pub struct ShellManagerGlobalData;
 
-impl<B: Backend + 'static> GlobalDispatch2<TemplarShellManagerV1, TemplarCompState<B>>
+impl<B: Backend + 'static> GlobalDispatch2<TemplarShellManagerV2, TemplarCompState<B>>
     for ShellManagerGlobalData
 {
     fn bind(
@@ -89,10 +111,14 @@ impl<B: Backend + 'static> GlobalDispatch2<TemplarShellManagerV1, TemplarCompSta
         state: &mut TemplarCompState<B>,
         _handle: &DisplayHandle,
         _client: &Client,
-        resource: New<TemplarShellManagerV1>,
+        resource: New<TemplarShellManagerV2>,
         data_init: &mut DataInit<'_, TemplarCompState<B>>,
     ) {
         let manager = data_init.init(resource, ());
+        if state.shell_protocol.preview_manager.is_none() {
+            state.screencopy.retire_all_previews();
+            state.screencopy.demand = Some(crate::screencopy::CaptureDemand::default());
+        }
         if manager.version() >= 2 {
             manager.home_revealed(u32::from(state.window_service.home_revealed()));
         }
@@ -119,7 +145,7 @@ impl<B: Backend + 'static> GlobalDispatch2<TemplarShellManagerV1, TemplarCompSta
     }
 }
 
-impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>> for () {
+impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV2, TemplarCompState<B>> for () {
     // One arm per request of the protocol, each already a call or a few lines; splitting the
     // dispatcher itself would only hide which request goes where.
     #[allow(clippy::too_many_lines)]
@@ -127,8 +153,8 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
         &self,
         state: &mut TemplarCompState<B>,
         client: &Client,
-        _resource: &TemplarShellManagerV1,
-        request: templar_shell_manager_v1::Request,
+        resource: &TemplarShellManagerV2,
+        request: templar_shell_manager_v2::Request,
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, TemplarCompState<B>>,
     ) {
@@ -137,26 +163,26 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
         }
         let ctx = trusted_ctx(state);
         match request {
-            templar_shell_manager_v1::Request::SetReducedMotion { enabled } => {
+            templar_shell_manager_v2::Request::SetReducedMotion { enabled } => {
                 state.motion.set_reduced_motion(enabled != 0);
                 B::request_redraw(state);
             }
-            templar_shell_manager_v1::Request::GetToplevelList { id } => {
+            templar_shell_manager_v2::Request::GetToplevelList { id } => {
                 let list = data_init.init(id, ());
                 for record in state.window_service.shell_toplevels() {
                     send_new_toplevel(state, &list, record.window_id);
                 }
                 state.shell_protocol.toplevel_lists.push(list);
             }
-            templar_shell_manager_v1::Request::ShowAllWindows => {
+            templar_shell_manager_v2::Request::ShowAllWindows => {
                 state.run_recovery_action(crate::keybindings::RecoveryAction::ShowAllWindows);
             }
-            templar_shell_manager_v1::Request::OpenTaskfield {
+            templar_shell_manager_v2::Request::OpenTaskfield {
                 filter,
                 key,
                 windows,
             } => open_taskfield(state, filter, key, &windows),
-            templar_shell_manager_v1::Request::EscapeFullscreenOrModal { toplevel } => {
+            templar_shell_manager_v2::Request::EscapeFullscreenOrModal { toplevel } => {
                 let window_id =
                     toplevel.and_then(|resource| window_id_for_toplevel(state, &resource));
                 if let Ok(templar_window::CommandEffect::Escaped { action }) = state
@@ -171,7 +197,7 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
                     crate::space_sync::sync_after_change(state);
                 }
             }
-            templar_shell_manager_v1::Request::SetLayerSurface { surface, layer } => {
+            templar_shell_manager_v2::Request::SetLayerSurface { surface, layer } => {
                 if let WEnum::Value(layer) = layer {
                     let layer = templar_comp_integration::protocol::layer_from_wire(layer as u32);
                     if let Some(layer) = layer
@@ -189,31 +215,31 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
                     }
                 }
             }
-            templar_shell_manager_v1::Request::SetExclusiveZone {
+            templar_shell_manager_v2::Request::SetExclusiveZone {
                 surface,
                 edge,
                 size,
             } => {
                 handle_set_exclusive_zone(state, &surface, edge, size);
             }
-            templar_shell_manager_v1::Request::SetEdgeAlignment {
+            templar_shell_manager_v2::Request::SetEdgeAlignment {
                 surface,
                 edge,
                 alignment,
             } => {
                 handle_set_edge_alignment(state, &surface, edge, alignment);
             }
-            templar_shell_manager_v1::Request::RevealHome { reveal } => {
+            templar_shell_manager_v2::Request::RevealHome { reveal } => {
                 if let WEnum::Value(reveal) = reveal {
                     let reveal = match reveal {
-                        templar_shell_manager_v1::Reveal::Show => RevealHome::Show,
-                        templar_shell_manager_v1::Reveal::Hide => RevealHome::Hide,
-                        templar_shell_manager_v1::Reveal::Toggle => RevealHome::Toggle,
+                        templar_shell_manager_v2::Reveal::Show => RevealHome::Show,
+                        templar_shell_manager_v2::Reveal::Hide => RevealHome::Hide,
+                        templar_shell_manager_v2::Reveal::Toggle => RevealHome::Toggle,
                     };
                     state.reveal_home(reveal);
                 }
             }
-            templar_shell_manager_v1::Request::ArrangeWindows { preset } => {
+            templar_shell_manager_v2::Request::ArrangeWindows { preset } => {
                 if let WEnum::Value(preset) = preset {
                     crate::xdg_shell::apply_arrangement(
                         state,
@@ -223,18 +249,12 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
                     );
                 }
             }
-            templar_shell_manager_v1::Request::RestoreArrangement => {
+            templar_shell_manager_v2::Request::RestoreArrangement => {
                 crate::xdg_shell::apply_arrangement(state, WindowCommand::RestoreArrangement);
-            }
-            templar_shell_manager_v1::Request::SetIdleTimeout { seconds } => {
-                // Policy in, enforcement here: the number is `Power1`'s `screen_off_after`, which
-                // the shell read and relayed, and this process is the only one that can see the
-                // seat go quiet (`src/idle.rs`).
-                state.set_idle_timeout(seconds);
             }
             // Which application is "the terminal" is a Providers1 choice the shell relays; what
             // the chord does with it is the compositor's (§4.6, `src/keybindings.rs`).
-            templar_shell_manager_v1::Request::SetTerminal { app_id } => {
+            templar_shell_manager_v2::Request::SetTerminal { app_id } => {
                 state.shell_protocol.terminal_app_id =
                     Some(app_id).filter(|app_id| !app_id.is_empty());
                 tracing::info!(
@@ -242,23 +262,85 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
                     "the drop-down terminal's application id"
                 );
             }
-            templar_shell_manager_v1::Request::SetGestureGate {
+            templar_shell_manager_v2::Request::SetGestureGate {
                 enabled,
                 width,
                 height,
                 learning,
                 exceptions,
             } => handle_set_gesture_gate(state, enabled, width, height, learning, &exceptions),
-            templar_shell_manager_v1::Request::CloseRail => {
+            templar_shell_manager_v2::Request::CloseRail => {
                 if state.rail.is_some() {
                     state.close_rail("shell asked");
                 }
             }
-            templar_shell_manager_v1::Request::SetTouchpadTap { enabled } => {
-                state.set_touchpad_tap(enabled != 0);
-            }
-            templar_shell_manager_v1::Request::FocusSurface { surface } => {
+            templar_shell_manager_v2::Request::FocusSurface { surface } => {
                 focus_shell_surface(state, client, surface);
+            }
+            templar_shell_manager_v2::Request::SetPreviewDemand {
+                generation,
+                windows,
+            } => {
+                let owns_home = state.shell_protocol.layer_surfaces.values().any(|(surface, layer)| {
+                    *layer == Layer::HomeSurface && surface.is_alive()
+                        && surface.client().is_some_and(|owner| owner.id() == client.id())
+                });
+                let same_manager = state.shell_protocol.preview_manager.as_ref() == Some(&resource.id());
+                let current_alive = state.shell_protocol.preview_manager.as_ref().is_some_and(|owner| {
+                    state.shell_protocol.managers.iter().any(|manager| manager.id() == *owner && manager.is_alive())
+                });
+                match preview_authority(owns_home, same_manager, current_alive) {
+                    PreviewAuthority::Ignore => {},
+                    PreviewAuthority::Acquire => {
+                        // Reset at acquisition, not merely bind: an earlier manager's
+                        // invalidation may have advanced its serial after this bind.
+                        state.screencopy.retire_all_previews();
+                        state.screencopy.demand = Some(crate::screencopy::CaptureDemand::default());
+                        state.shell_protocol.preview_manager = Some(resource.id());
+                        set_preview_demand(state, generation, &windows);
+                    },
+                    PreviewAuthority::Continue => set_preview_demand(state, generation, &windows),
+                }
+            }
+            templar_shell_manager_v2::Request::SetTabPolicy {
+                placement,
+                follow_pointer,
+                fixed_corner,
+                controls,
+                title,
+                default_corner,
+            } => {
+                let placement = match placement {
+                    WEnum::Value(v) => v as u32,
+                    WEnum::Unknown(raw) => raw,
+                };
+                let fixed_corner = match fixed_corner {
+                    WEnum::Value(v) => v as u32,
+                    WEnum::Unknown(raw) => raw,
+                };
+                let controls = match controls {
+                    WEnum::Value(v) => v as u32,
+                    WEnum::Unknown(raw) => raw,
+                };
+                let title = match title {
+                    WEnum::Value(v) => v as u32,
+                    WEnum::Unknown(raw) => raw,
+                };
+                let default_corner = match default_corner {
+                    WEnum::Value(v) => v as u32,
+                    WEnum::Unknown(raw) => raw,
+                };
+                let policy = templar_window::TabPolicy::from_protocol(
+                    placement,
+                    follow_pointer,
+                    fixed_corner,
+                    controls,
+                    title,
+                    default_corner,
+                );
+                if state.window_service.set_tab_policy(policy) {
+                    B::request_redraw(state);
+                }
             }
         }
     }
@@ -271,8 +353,13 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV1, TemplarCompState<B>>
         &self,
         state: &mut TemplarCompState<B>,
         _client: ClientId,
-        resource: &TemplarShellManagerV1,
+        resource: &TemplarShellManagerV2,
     ) {
+        if state.shell_protocol.preview_manager.as_ref() == Some(&resource.id()) {
+            state.shell_protocol.preview_manager = None;
+            state.screencopy.retire_all_previews();
+            state.screencopy.demand = Some(crate::screencopy::CaptureDemand::default());
+        }
         state
             .shell_protocol
             .managers
@@ -394,28 +481,28 @@ fn handle_set_gesture_gate<B: Backend + 'static>(
 }
 
 /// The wire enum's values match `templar_window::ArrangementPreset`'s declaration order
-/// (`interfaces/wayland/templar-shell-v1.xml`'s `arrangement_preset` doc); a test holds them in
+/// (`interfaces/wayland/templar-shell-v2.xml`'s `arrangement_preset` doc); a test holds them in
 /// agreement.
 pub(crate) fn preset_from_wire(
-    preset: templar_shell_manager_v1::ArrangementPreset,
+    preset: templar_shell_manager_v2::ArrangementPreset,
 ) -> templar_window::ArrangementPreset {
     match preset {
-        templar_shell_manager_v1::ArrangementPreset::Focus => {
+        templar_shell_manager_v2::ArrangementPreset::Focus => {
             templar_window::ArrangementPreset::Focus
         }
-        templar_shell_manager_v1::ArrangementPreset::Halves => {
+        templar_shell_manager_v2::ArrangementPreset::Halves => {
             templar_window::ArrangementPreset::Halves
         }
-        templar_shell_manager_v1::ArrangementPreset::Thirds => {
+        templar_shell_manager_v2::ArrangementPreset::Thirds => {
             templar_window::ArrangementPreset::Thirds
         }
-        templar_shell_manager_v1::ArrangementPreset::Quarters => {
+        templar_shell_manager_v2::ArrangementPreset::Quarters => {
             templar_window::ArrangementPreset::Quarters
         }
-        templar_shell_manager_v1::ArrangementPreset::MainAndStack => {
+        templar_shell_manager_v2::ArrangementPreset::MainAndStack => {
             templar_window::ArrangementPreset::MainAndStack
         }
-        templar_shell_manager_v1::ArrangementPreset::Cushion => {
+        templar_shell_manager_v2::ArrangementPreset::Cushion => {
             templar_window::ArrangementPreset::Cushion
         }
     }
@@ -476,10 +563,27 @@ pub(crate) fn set_minimize_target<B: Backend + 'static>(
     );
 }
 
+/// `set_preview_demand` (version 14): the shell's visible Home card wells, fenced by a
+/// generation. Window ids are validated against the live session — unknown ids are dropped,
+/// never demanded — and a backwards generation is ignored (`screencopy::install_demand`).
+pub(crate) fn set_preview_demand<B: Backend + 'static>(
+    state: &mut TemplarCompState<B>,
+    generation: u32,
+    windows: &[u8],
+) {
+    let windows: Vec<WindowId> = windows
+        .chunks_exact(4)
+        .filter_map(|raw| <[u8; 4]>::try_from(raw).ok())
+        .map(|raw| WindowId(u64::from(u32::from_ne_bytes(raw))))
+        .filter(|id| state.window_service.window(*id).is_some())
+        .collect();
+    state.screencopy.set_shell_demand(generation, windows);
+}
+
 fn handle_set_exclusive_zone<B: Backend + 'static>(
     state: &mut TemplarCompState<B>,
     surface: &WlSurface,
-    edge: WEnum<templar_shell_manager_v1::Edge>,
+    edge: WEnum<templar_shell_manager_v2::Edge>,
     size: u32,
 ) {
     let Some(edge) = wire_edge(edge) else {
@@ -528,7 +632,7 @@ fn handle_set_exclusive_zone<B: Backend + 'static>(
     crate::backend::recompute_outputs(state);
 }
 
-/// Where along its edge an anchored surface sits (`templar-shell-v1.xml`'s `set_edge_alignment`).
+/// Where along its edge an anchored surface sits (`templar-shell-v2.xml`'s `set_edge_alignment`).
 ///
 /// Placement, never reservation: `work_area_for` reads the claim's size and never its alignment,
 /// so a surface sliding along its edge reflows nothing — which is what lets the shell put its
@@ -544,8 +648,8 @@ fn handle_set_exclusive_zone<B: Backend + 'static>(
 fn handle_set_edge_alignment<B: Backend + 'static>(
     state: &mut TemplarCompState<B>,
     surface: &WlSurface,
-    edge: WEnum<templar_shell_manager_v1::Edge>,
-    alignment: WEnum<templar_shell_manager_v1::Alignment>,
+    edge: WEnum<templar_shell_manager_v2::Edge>,
+    alignment: WEnum<templar_shell_manager_v2::Alignment>,
 ) {
     let Some(edge) = wire_edge(edge) else {
         return;
@@ -554,9 +658,9 @@ fn handle_set_edge_alignment<B: Backend + 'static>(
         return;
     };
     let alignment = match alignment {
-        templar_shell_manager_v1::Alignment::Start => Alignment::Start,
-        templar_shell_manager_v1::Alignment::Centre => Alignment::Centre,
-        templar_shell_manager_v1::Alignment::End => Alignment::End,
+        templar_shell_manager_v2::Alignment::Start => Alignment::Start,
+        templar_shell_manager_v2::Alignment::Centre => Alignment::Centre,
+        templar_shell_manager_v2::Alignment::End => Alignment::End,
     };
     let object_id = surface.id();
     state
@@ -577,15 +681,15 @@ fn handle_set_edge_alignment<B: Backend + 'static>(
 
 /// The protocol's `edge` enum as this crate's. `None` for a value this compositor does not know —
 /// a newer shell against an older compositor, which is silently ignored like a refused claim.
-fn wire_edge(edge: WEnum<templar_shell_manager_v1::Edge>) -> Option<Edge> {
+fn wire_edge(edge: WEnum<templar_shell_manager_v2::Edge>) -> Option<Edge> {
     let WEnum::Value(edge) = edge else {
         return None;
     };
     Some(match edge {
-        templar_shell_manager_v1::Edge::Top => Edge::Top,
-        templar_shell_manager_v1::Edge::Bottom => Edge::Bottom,
-        templar_shell_manager_v1::Edge::Left => Edge::Left,
-        templar_shell_manager_v1::Edge::Right => Edge::Right,
+        templar_shell_manager_v2::Edge::Top => Edge::Top,
+        templar_shell_manager_v2::Edge::Bottom => Edge::Bottom,
+        templar_shell_manager_v2::Edge::Left => Edge::Left,
+        templar_shell_manager_v2::Edge::Right => Edge::Right,
     })
 }
 
@@ -617,6 +721,22 @@ pub fn apply_surface_claims<B: Backend + 'static>(
     let layer = claimed_layer
         .or_else(|| state.window_service.layer_of(window_id))
         .unwrap_or(Layer::Normal);
+    // The first map follows active work, or the pointer with no focused app. Later
+    // placements follow the toast's own rectangle, so focus changes cannot move it.
+    // Output removal falls back to the nearest surviving output through the shared policy.
+    let notification_anchor = (layer == Layer::Notification).then(|| {
+        state.window_service.window(window_id)
+            .filter(|record| record.role == WindowRole::Notification)
+            .map(|record| record.geometry)
+            .or_else(|| state.window_service.windows()
+                .find(|record| record.activated && record.role == WindowRole::Application)
+                .map(|record| record.geometry))
+            .or_else(|| state.seat.get_pointer().map(|pointer| {
+                let location = pointer.current_location();
+                Rect::new(location.x.round() as i32, location.y.round() as i32, 1, 1)
+            }))
+            .unwrap_or(requested)
+    });
     if let Err(error) = state
         .window_service
         .set_layer(window_id, layer, ClientKind::TrustedShell)
@@ -637,12 +757,22 @@ pub fn apply_surface_claims<B: Backend + 'static>(
         state.window_service.set_role(window_id, role);
     }
 
-    let preferred_output = exclusive_claim.as_ref().map(|(name, _)| name.as_str());
+    let primary = state.backend_data.primary_output_name();
+    let preferred_output = if layer == Layer::HomeSurface {
+        primary.as_deref()
+    } else {
+        exclusive_claim.as_ref().map(|(name, _)| name.as_str())
+    };
     let output = state
         .window_service
         .outputs()
         .iter()
         .find(|output| preferred_output.is_some_and(|name| output.name == name))
+        .or_else(|| notification_anchor.and_then(|anchor| {
+            let outputs = state.window_service.outputs();
+            (!outputs.is_empty()).then(|| templar_window::geometry::choose_target_output(anchor, outputs))
+        }))
+        .or_else(|| state.window_service.outputs().iter().find(|output| primary.as_ref().is_some_and(|name| output.name == *name)))
         .or_else(|| state.window_service.outputs().first())
         .cloned();
     let Some(output) = output else {
@@ -696,22 +826,6 @@ pub fn apply_surface_claims<B: Backend + 'static>(
     }
 }
 
-/// Whether the trusted shell placed this surface itself — a live `set_layer_surface` or
-/// `set_exclusive_zone` claim. The one definition of "this surface has no frame of its own", so
-/// the map path (`xdg_shell::handle_toplevel_commit`, which must not add a tag strip to what such
-/// a surface asked for) and the claim path here cannot drift apart about which surfaces those are.
-pub fn has_surface_claim<B: Backend + 'static>(
-    state: &TemplarCompState<B>,
-    surface: &WlSurface,
-) -> bool {
-    let object_id = surface.id();
-    state.shell_protocol.layer_surfaces.contains_key(&object_id)
-        || state
-            .shell_protocol
-            .exclusive_zones
-            .contains_key(&object_id)
-}
-
 /// Re-place every surface with a live layer or exclusive-zone claim against the topology as it
 /// now stands. Called from `backend::recompute_outputs`, which is the one entry point for a
 /// topology change (COMPOSITOR.md): an output resized, unplugged or rescaled moves where a bar's
@@ -758,7 +872,7 @@ fn apply_surface_claims_if_mapped<B: Backend + 'static>(
 }
 
 /// A shell surface with a live layer/exclusive-zone claim was destroyed: release both — the
-/// `templar_shell_v1` doc's "reservations are per surface" contract.
+/// `templar_shell_v2` doc's "reservations are per surface" contract.
 pub fn on_shell_surface_destroyed<B: Backend + 'static>(
     state: &mut TemplarCompState<B>,
     surface: &ObjectId,
@@ -800,7 +914,7 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellToplevelListV1, TemplarCompStat
     }
 }
 
-impl<B: Backend + 'static> Dispatch2<TemplarShellToplevelV1, TemplarCompState<B>> for () {
+impl<B: Backend + 'static> Dispatch2<TemplarShellToplevelV1, TemplarCompState<B>> for ShellToplevelData {
     // One arm per request, like the manager's dispatcher above, and for the same reason.
     #[allow(clippy::too_many_lines)]
     fn request(
@@ -948,7 +1062,7 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellToplevelV1, TemplarCompState<B>
 }
 
 /// One toplevel's window-group membership, sent right after `identity` exactly as
-/// `interfaces/wayland/templar-shell-v1.xml` promises: `group_id` 0 for a window in no group, and
+/// `interfaces/wayland/templar-shell-v2.xml` promises: `group_id` 0 for a window in no group, and
 /// then an empty name and no accent. A no-op on an object below version 3.
 ///
 /// Sent on every sync rather than only on change, like every other event here — `sync_toplevels`
@@ -981,14 +1095,10 @@ fn send_v2_toplevel_events<B: Backend + 'static>(
     if object.version() < 2 {
         return;
     }
-    if !state
-        .shell_protocol
-        .identified
-        .contains(&toplevel.window_id)
-        && let Some(identifier) = state.foreign_toplevels.identifier_for(toplevel.window_id)
+    if let Some(identifier) = state.foreign_toplevels.identifier_for(toplevel.window_id)
+        && object.data::<ShellToplevelData>().is_some_and(ShellToplevelData::identify_once)
     {
         object.identifier(identifier.to_owned());
-        state.shell_protocol.identified.insert(toplevel.window_id);
     }
     let geometry = toplevel.geometry;
     object.geometry(geometry.x, geometry.y, geometry.width, geometry.height);
@@ -1001,10 +1111,10 @@ fn send_new_toplevel<B: Backend + 'static>(
     window_id: WindowId,
 ) {
     let Some(client) = list.client() else { return };
-    let Ok(toplevel) = client.create_resource::<TemplarShellToplevelV1, (), TemplarCompState<B>>(
+    let Ok(toplevel) = client.create_resource::<TemplarShellToplevelV1, ShellToplevelData, TemplarCompState<B>>(
         &state.display_handle,
         list.version(),
-        (),
+        ShellToplevelData::default(),
     ) else {
         return;
     };
@@ -1068,6 +1178,16 @@ pub fn sync_toplevels<B: Backend + 'static>(
             object.claimed_app_id(claim);
         }
         send_group(&object, toplevel);
+        if object.version() >= 14 {
+            match &toplevel.tab_count {
+                Some(count) => object.tab_count(
+                    i32::try_from(count.count).unwrap_or(i32::MAX),
+                    u32::try_from(count.generation).unwrap_or(u32::MAX),
+                    count.provenance.clone(),
+                ),
+                None => object.tab_count(-1, 0, String::new()),
+            }
+        }
         object.title(toplevel.title.clone());
         let shelf_rank = snapshot
             .shelf
@@ -1101,10 +1221,6 @@ pub fn sync_toplevels<B: Backend + 'static>(
                 false
             }
         });
-    state
-        .shell_protocol
-        .identified
-        .retain(|window_id| live.contains(window_id));
 
     // Read live rather than from `snapshot`: the peek is a pointer state the compositor changes
     // between snapshots, and every change publishes another one, so the last sync wins either way.
@@ -1130,21 +1246,21 @@ pub fn sync_toplevels<B: Backend + 'static>(
 /// `taskfield_state` because it is the one string of the mode `WindowService` cannot derive.
 fn open_taskfield<B: Backend + 'static>(
     state: &mut TemplarCompState<B>,
-    filter: WEnum<templar_shell_manager_v1::TaskfieldFilter>,
+    filter: WEnum<templar_shell_manager_v2::TaskfieldFilter>,
     key: String,
     windows: &[u8],
 ) {
     let filter = match filter.into_result() {
-        Ok(templar_shell_manager_v1::TaskfieldFilter::All) => TaskFilter::All,
-        Ok(templar_shell_manager_v1::TaskfieldFilter::Shelved) => TaskFilter::Shelved,
-        Ok(templar_shell_manager_v1::TaskfieldFilter::Windows) => TaskFilter::Windows(
+        Ok(templar_shell_manager_v2::TaskfieldFilter::All) => TaskFilter::All,
+        Ok(templar_shell_manager_v2::TaskfieldFilter::Shelved) => TaskFilter::Shelved,
+        Ok(templar_shell_manager_v2::TaskfieldFilter::Windows) => TaskFilter::Windows(
             windows
                 .chunks_exact(4)
                 .filter_map(|raw| <[u8; 4]>::try_from(raw).ok())
                 .map(|raw| WindowId(u64::from(u32::from_ne_bytes(raw))))
                 .collect(),
         ),
-        Ok(templar_shell_manager_v1::TaskfieldFilter::Unit) => {
+        Ok(templar_shell_manager_v2::TaskfieldFilter::Unit) => {
             match templar_window::TaskKey::from_wire(&key) {
                 Some(unit) => TaskFilter::Unit(unit),
                 None => return,
@@ -1166,7 +1282,7 @@ fn taskfield_wire<B: Backend + 'static>(
     state: &TemplarCompState<B>,
 ) -> (
     u32,
-    templar_shell_manager_v1::TaskfieldFilter,
+    templar_shell_manager_v2::TaskfieldFilter,
     String,
     String,
     u32,
@@ -1175,7 +1291,7 @@ fn taskfield_wire<B: Backend + 'static>(
     else {
         return (
             0,
-            templar_shell_manager_v1::TaskfieldFilter::All,
+            templar_shell_manager_v2::TaskfieldFilter::All,
             String::new(),
             String::new(),
             0,
@@ -1183,18 +1299,18 @@ fn taskfield_wire<B: Backend + 'static>(
     };
     let (filter, key) = match &taskfield.filter {
         TaskFilter::All => (
-            templar_shell_manager_v1::TaskfieldFilter::All,
+            templar_shell_manager_v2::TaskfieldFilter::All,
             String::new(),
         ),
         TaskFilter::Shelved => (
-            templar_shell_manager_v1::TaskfieldFilter::Shelved,
+            templar_shell_manager_v2::TaskfieldFilter::Shelved,
             String::new(),
         ),
         TaskFilter::Windows(_) => (
-            templar_shell_manager_v1::TaskfieldFilter::Windows,
+            templar_shell_manager_v2::TaskfieldFilter::Windows,
             state.shell_protocol.taskfield_key.clone(),
         ),
-        TaskFilter::Unit(unit) => (templar_shell_manager_v1::TaskfieldFilter::Unit, unit.wire()),
+        TaskFilter::Unit(unit) => (templar_shell_manager_v2::TaskfieldFilter::Unit, unit.wire()),
     };
     (
         1,
@@ -1209,7 +1325,7 @@ fn taskfield_wire<B: Backend + 'static>(
 
 /// Tell the shell what the overview is doing. Called on entry, on every query or selection
 /// change, and on leave — the shell's whole view of the mode, since no card geometry crosses the
-/// wire (`templar-shell-v1.xml`'s `taskfield_state`).
+/// wire (`templar-shell-v2.xml`'s `taskfield_state`).
 pub fn send_taskfield_state<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
     let (active, filter, key, query, selected) = taskfield_wire(state);
     for manager in &state.shell_protocol.managers {
@@ -1220,7 +1336,7 @@ pub fn send_taskfield_state<B: Backend + 'static>(state: &mut TemplarCompState<B
 }
 
 /// `Super+Space`: Home is already revealed; arm its Apps bar. One launcher object, one more route
-/// into it (`templar-shell-v1.xml`'s `launcher_focus`).
+/// into it (`templar-shell-v2.xml`'s `launcher_focus`).
 pub fn send_launcher_focus<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
     for manager in &state.shell_protocol.managers {
         if manager.version() >= 8 {
@@ -1232,16 +1348,16 @@ pub fn send_launcher_focus<B: Backend + 'static>(state: &mut TemplarCompState<B>
 /// `rail`'s arguments for what is open right now: the output and side, or `""` and `none`.
 fn rail_wire<B: Backend + 'static>(
     state: &TemplarCompState<B>,
-) -> (String, templar_shell_manager_v1::RailSide) {
+) -> (String, templar_shell_manager_v2::RailSide) {
     match &state.rail {
         Some((output, side)) => (
             output.clone(),
             match side {
-                crate::gesture_gate::Side::Left => templar_shell_manager_v1::RailSide::Left,
-                crate::gesture_gate::Side::Right => templar_shell_manager_v1::RailSide::Right,
+                crate::gesture_gate::Side::Left => templar_shell_manager_v2::RailSide::Left,
+                crate::gesture_gate::Side::Right => templar_shell_manager_v2::RailSide::Right,
             },
         ),
-        None => (String::new(), templar_shell_manager_v1::RailSide::None),
+        None => (String::new(), templar_shell_manager_v2::RailSide::None),
     }
 }
 
@@ -1274,21 +1390,21 @@ fn peeked_output<B: Backend + 'static>(state: &TemplarCompState<B>) -> String {
         .to_owned()
 }
 
-/// `templar_window::Layer`'s wire mapping is fixed by `templar-shell-v1.xml`'s `layer` enum
+/// `templar_window::Layer`'s wire mapping is fixed by `templar-shell-v2.xml`'s `layer` enum
 /// (`interfaces/wayland/README.md`); `templar_comp_integration::protocol::layer_to_wire` gives the
 /// numeric discriminant, matched here against the wayland-scanner-generated enum's own variants
 /// once rather than trusted to line up by transmute.
-fn wire_layer(layer: Layer) -> templar_shell_manager_v1::Layer {
+fn wire_layer(layer: Layer) -> templar_shell_manager_v2::Layer {
     match layer {
-        Layer::SecureLock => templar_shell_manager_v1::Layer::SecureLock,
-        Layer::Recovery => templar_shell_manager_v1::Layer::Recovery,
-        Layer::SystemModal => templar_shell_manager_v1::Layer::SystemModal,
-        Layer::ShellOverlay => templar_shell_manager_v1::Layer::ShellOverlay,
-        Layer::Presentation => templar_shell_manager_v1::Layer::Presentation,
-        Layer::Notification => templar_shell_manager_v1::Layer::Notification,
-        Layer::AppOnTop => templar_shell_manager_v1::Layer::AppOnTop,
-        Layer::Normal => templar_shell_manager_v1::Layer::Normal,
-        Layer::HomeSurface => templar_shell_manager_v1::Layer::HomeSurface,
+        Layer::SecureLock => templar_shell_manager_v2::Layer::SecureLock,
+        Layer::Recovery => templar_shell_manager_v2::Layer::Recovery,
+        Layer::SystemModal => templar_shell_manager_v2::Layer::SystemModal,
+        Layer::ShellOverlay => templar_shell_manager_v2::Layer::ShellOverlay,
+        Layer::Presentation => templar_shell_manager_v2::Layer::Presentation,
+        Layer::Notification => templar_shell_manager_v2::Layer::Notification,
+        Layer::AppOnTop => templar_shell_manager_v2::Layer::AppOnTop,
+        Layer::Normal => templar_shell_manager_v2::Layer::Normal,
+        Layer::HomeSurface => templar_shell_manager_v2::Layer::HomeSurface,
     }
 }
 
@@ -1330,6 +1446,32 @@ mod tests {
     use templar_types::WindowClaims;
     use templar_window::{ClientKind, Output, WindowService};
 
+    #[test]
+    fn recreated_toplevel_resends_identifier_once_per_resource() {
+        let old = ShellToplevelData::default();
+        assert!(old.identify_once());
+        assert!(!old.identify_once());
+        let restarted = ShellToplevelData::default();
+        assert!(restarted.identify_once());
+        assert!(!old.identify_once());
+        assert!(!restarted.identify_once());
+    }
+
+    #[test]
+    fn home_owner_takeover_resets_retired_generation_without_observer_theft() {
+        assert_eq!(preview_authority(false, false, true), PreviewAuthority::Ignore);
+        assert_eq!(preview_authority(false, false, false), PreviewAuthority::Ignore);
+        assert_eq!(preview_authority(true, false, true), PreviewAuthority::Ignore);
+        assert_eq!(preview_authority(true, true, true), PreviewAuthority::Continue);
+        assert_eq!(preview_authority(true, false, false), PreviewAuthority::Acquire);
+        let mut demand = None;
+        assert!(crate::screencopy::install_demand(&mut demand, 8, vec![WindowId(1)]));
+        // Acquisition has its own reset, independent of bind/destruction ordering.
+        demand = Some(crate::screencopy::CaptureDemand::default());
+        assert!(crate::screencopy::install_demand(&mut demand, 1, vec![WindowId(1)]));
+        assert_eq!(demand.as_ref().unwrap().generation(), 1);
+    }
+
     struct NullCache;
     impl templar_window::IdentityCache for NullCache {
         fn resolve_cached(
@@ -1365,32 +1507,6 @@ mod tests {
             trusted_shell: true,
             now_monotonic_ns: 0,
         }
-    }
-
-    /// The protocol enum's wire values follow `templar_window::ArrangementPreset`'s declaration
-    /// order, as `interfaces/wayland/templar-shell-v1.xml` promises.
-    #[test]
-    fn arrangement_wire_values_match_the_window_service_presets() {
-        for (index, preset) in templar_window::ArrangementPreset::ALL
-            .into_iter()
-            .enumerate()
-        {
-            let wire = templar_shell_manager_v1::ArrangementPreset::try_from(
-                u32::try_from(index).unwrap(),
-            )
-            .expect("every preset has a wire value");
-            assert_eq!(preset_from_wire(wire), preset);
-        }
-    }
-
-    /// A list creates each child at the list object's negotiated version. If the list's maximum
-    /// version falls behind the child interface, newer child events silently become unreachable.
-    #[test]
-    fn toplevel_list_can_create_the_latest_toplevel_version() {
-        assert!(
-            TemplarShellToplevelListV1::interface().version
-                >= TemplarShellToplevelV1::interface().version
-        );
     }
 
     /// `dynamic-window-set` as the compositor drives it: a closed window is ignored, a newly

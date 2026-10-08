@@ -164,6 +164,8 @@ pub trait IndexClient {
     async fn roots(&self) -> Result<String>;
     async fn search(&self, query_json: &str) -> Result<(String, u64, String)>;
     async fn reconcile(&self, roots_json: &str) -> Result<String>;
+    async fn fetch_page(&self, cursor: &str, offset: u32, count: u32) -> Result<String>;
+    async fn close_cursor(&self, cursor: &str) -> Result<()>;
 }
 
 #[async_trait]
@@ -178,6 +180,12 @@ impl IndexClient for templar_client::proxies::FilesIndexProxy<'_> {
         self.reconcile(roots_json)
             .await
             .context("Files.Index1.Reconcile")
+    }
+    async fn fetch_page(&self, cursor: &str, offset: u32, count: u32) -> Result<String> {
+        self.fetch_page(cursor, offset, count).await.context("Files.Index1.FetchPage")
+    }
+    async fn close_cursor(&self, cursor: &str) -> Result<()> {
+        self.close_cursor(cursor).await.context("Files.Index1.CloseCursor")
     }
 }
 
@@ -428,62 +436,13 @@ pub fn render_suggestion(suggestion: &Suggestion) -> String {
     }
 }
 
-/// A native path as `Index1` carries it: authoritative bytes (base64), beside a lossy display
-/// string. Mirrors `templar_filed::index_host::wire_path`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct IndexWirePath {
-    pub bytes_b64: String,
-    pub display: String,
-}
+use templar_client::file_index::{IndexRoots, IndexSearch};
 
-impl IndexWirePath {
-    /// The path exactly as the filesystem has it, decoded from its base64 bytes rather than the
-    /// lossy `display` string — what `--print0` writes, so a consumer never opens the wrong file.
-    #[must_use]
-    pub fn native_bytes(&self) -> Vec<u8> {
-        decode_base64(&self.bytes_b64)
-    }
-}
-
-/// Mirrors `templar_filed::index_host::wire_root_status`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct IndexRootStatus {
-    pub root: i64,
-    pub path_b64: String,
-    pub display: String,
-    pub state: String,
-    #[serde(default)]
-    pub reason: Option<String>,
-    pub generation: u64,
-    pub complete: bool,
-    pub entry_count: u64,
-    #[serde(default)]
-    pub last_error: Option<String>,
-}
-
-/// Mirrors `templar_file_index::Diagnostics`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct IndexDiagnostics {
-    pub schema_version: u32,
-    pub generation: u64,
-    pub planner: String,
-    pub fts_available: bool,
-    pub change_seq_floor: u64,
-    pub change_seq_head: u64,
-    pub cursor_count: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct IndexRootsResponse {
-    pub roots: Vec<IndexRootStatus>,
-    pub diagnostics: IndexDiagnostics,
-}
-
-pub fn parse_index_roots(roots_json: &str) -> Result<IndexRootsResponse> {
+pub fn parse_index_roots(roots_json: &str) -> Result<IndexRoots> {
     serde_json::from_str(roots_json).context("parsing Files.Index1.Roots JSON")
 }
 
-pub fn render_index_roots(response: &IndexRootsResponse) -> String {
+pub fn render_index_roots(response: &IndexRoots) -> String {
     if response.roots.is_empty() {
         return "no indexed roots".to_owned();
     }
@@ -516,46 +475,12 @@ pub fn render_index_roots(response: &IndexRootsResponse) -> String {
     lines.join("\n")
 }
 
-/// Mirrors `templar_filed::index_host::wire_entry_row`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct IndexEntryRow {
-    pub entry_id: i64,
-    pub root: i64,
-    pub path: IndexWirePath,
-    pub name: IndexWirePath,
-    pub display: String,
-    pub size_bytes: u64,
-    #[serde(default)]
-    pub mime: Option<String>,
-}
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct IndexHit {
-    pub row: IndexEntryRow,
-    pub rank: String,
-    pub present: bool,
-}
-
-/// Mirrors `templar_filed::index_host::wire_search_result` (the `page_json` `Files.Index1.Search`
-/// returns).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct IndexSearchResult {
-    pub cursor: String,
-    pub generation: u64,
-    pub total: Option<u64>,
-    pub truncated: bool,
-    pub strategy: String,
-    pub hits: Vec<IndexHit>,
-}
-
-pub fn parse_index_search(page_json: &str) -> Result<IndexSearchResult> {
+pub fn parse_index_search(page_json: &str) -> Result<IndexSearch> {
     serde_json::from_str(page_json).context("parsing Files.Index1.Search page JSON")
 }
 
-pub fn render_index_hits(result: &IndexSearchResult) -> String {
-    if result.hits.is_empty() {
-        return "no matches".to_owned();
-    }
+pub fn render_index_hits(result: &IndexSearch) -> String {
     let mut lines: Vec<String> = result
         .hits
         .iter()
@@ -568,6 +493,15 @@ pub fn render_index_hits(result: &IndexSearchResult) -> String {
             )
         })
         .collect();
+    if lines.is_empty() { lines.push("no matches".to_owned()); }
+    let freshness = result.roots.iter().map(|root| format!(
+        "{}: {}{}; metadata {}{}", root.display, root.state,
+        root.reason.as_ref().map(|reason| format!(" ({reason})")).unwrap_or_default(),
+        root.metadata, if root.complete { "" } else { "; incomplete" },
+    )).collect::<Vec<_>>();
+    lines.push(format!("generation {} — {}", result.generation,
+        if freshness.is_empty() { "no indexed coverage".to_owned() } else { freshness.join(", ") }));
+    if result.truncated { lines.push("cursor truncated; narrow the query for remaining matches".to_owned()); }
     if let Some(total) = result.total
         && total > result.hits.len() as u64
     {
@@ -578,38 +512,15 @@ pub fn render_index_hits(result: &IndexSearchResult) -> String {
 
 /// NUL-delimited native paths, byte-exact — decoded from `bytes_b64`, never the lossy `display`
 /// string — so a consumer piping this into `xargs -0` opens exactly the file that matched.
-pub fn print0_index_hits(result: &IndexSearchResult, out: &mut impl std::io::Write) -> Result<()> {
-    for hit in &result.hits {
-        out.write_all(&hit.row.path.native_bytes())?;
+pub fn print0_index_hits(result: &IndexSearch, out: &mut impl std::io::Write) -> Result<()> {
+    for hit in result.hits.iter().filter(|hit| hit.present) {
+        let bytes = templar_client::file_index::decode_path(&hit.row.path.bytes_b64)?;
+        out.write_all(&bytes)?;
         out.write_all(b"\0")?;
     }
     Ok(())
 }
 
-/// A small, dependency-free base64 decoder — the inverse of `templar_file_index::query::base64`,
-/// kept local rather than pulling the whole index crate into the CLI for one function.
-fn decode_base64(text: &str) -> Vec<u8> {
-    let mut bits = 0u32;
-    let mut held = 0u32;
-    let mut out = Vec::with_capacity(text.len() / 4 * 3);
-    for byte in text.bytes() {
-        let value = match byte {
-            b'A'..=b'Z' => u32::from(byte - b'A'),
-            b'a'..=b'z' => u32::from(byte - b'a') + 26,
-            b'0'..=b'9' => u32::from(byte - b'0') + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => continue,
-        };
-        bits = (bits << 6) | value;
-        held += 6;
-        if held >= 8 {
-            held -= 8;
-            out.push(((bits >> held) & 0xff) as u8);
-        }
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {
@@ -706,7 +617,9 @@ mod tests {
     fn index_roots_render_state_and_diagnostics() {
         let response = parse_index_roots(
             r#"{"roots":[{"root":1,"path_b64":"L2hvbWUvdQ==","display":"/home/u","state":"current",
-                 "reason":null,"generation":4,"complete":true,"entry_count":120,"last_error":null}],
+                 "reason":null,"metadata":"verified","policy_hash":"p","watch":null,
+                 "generation":4,"complete":true,"entry_count":120,"last_error":null}],
+                "cache_identity":"fixture-cache",
                 "diagnostics":{"schema_version":1,"generation":4,"planner":"fts5-trigram",
                  "fts_available":true,"change_seq_floor":0,"change_seq_head":12,"cursor_count":0}}"#,
         )
@@ -722,7 +635,8 @@ mod tests {
         let response = parse_index_roots(
             r#"{"roots":[{"root":2,"path_b64":"L21udA==","display":"/mnt","state":"stale",
                  "reason":"budget:entries","generation":1,"complete":false,"entry_count":5,
-                 "last_error":null}],
+                 "metadata":"verified","policy_hash":"p","watch":null,"last_error":null}],
+                "cache_identity":"fixture-cache",
                 "diagnostics":{"schema_version":1,"generation":1,"planner":"like-fallback",
                  "fts_available":false,"change_seq_floor":0,"change_seq_head":0,"cursor_count":0}}"#,
         )
@@ -737,10 +651,12 @@ mod tests {
         // "L2hvbWUvdQ==" / "dQ==" are the base64 of "/home/u" and "u".
         let result = parse_index_search(
             r#"{"cursor":"c1","generation":4,"total":1,"truncated":false,"strategy":"fts5-trigram",
+                "roots":[],"stale_metadata_roots":[],
                 "hits":[{"row":{"entry_id":1,"root":1,
                   "path":{"bytes_b64":"L2hvbWUvdQ==","display":"/home/u"},
                   "name":{"bytes_b64":"dQ==","display":"u"},
-                  "display":"u","size_bytes":0,"mime":null},
+                  "display":"u","parent":null,"kind":1,"hidden":false,"size_bytes":0,"mtime_ns":0,
+                  "mime":null,"written_generation":4,"deleted_generation":null},
                   "rank":"exact","present":true}]}"#,
         )
         .unwrap();

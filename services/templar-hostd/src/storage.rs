@@ -175,7 +175,7 @@ pub trait TrimAction: Send + Sync + std::fmt::Debug {
     fn target(&self) -> TrimTarget;
     /// Bytes this action believes it could free, without freeing them.
     fn estimate(&self, root: &Path) -> Result<u64>;
-    /// Free as much as fits under `root`, returning bytes actually freed.
+    /// Logical bytes unlinked; CoW/shared extents may reclaim fewer physical bytes.
     fn trim(&self, root: &Path) -> Result<u64>;
 }
 
@@ -203,10 +203,12 @@ impl TrimAction for DeleteFilesUnder {
     fn trim(&self, root: &Path) -> Result<u64> {
         let mut freed = 0u64;
         for path in walk_files(&root.join(self.relative)) {
-            if let Ok(metadata) = path.metadata() {
-                freed += metadata.len();
+            let bytes = fs::symlink_metadata(&path)?.len();
+            match fs::remove_file(&path) {
+                Ok(()) => freed += bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).with_context(|| format!("deleting {}", path.display())),
             }
-            let _ = fs::remove_file(&path);
         }
         Ok(freed)
     }
@@ -216,12 +218,13 @@ fn walk_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
+        if !fs::symlink_metadata(&d).is_ok_and(|metadata| metadata.is_dir()) { continue; }
         let Ok(entries) = fs::read_dir(&d) else {
             continue;
         };
         for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
-            if path.is_dir() {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 stack.push(path);
             } else {
                 out.push(path);
@@ -264,12 +267,12 @@ impl TrimAction for JournalVacuum {
 /// Deletes the oldest deployment that is not the running one and not known-good, via the
 /// snapshotter — the last resort in the trim order because it gives up rollback headroom.
 #[derive(Debug)]
-struct OldDeployments {
+struct OldDeployments<'a> {
     snapshotter: Arc<dyn Snapshotter>,
-    candidates: Vec<(String, u64)>,
+    candidates: &'a [(String, u64)],
 }
 
-impl TrimAction for OldDeployments {
+impl TrimAction for OldDeployments<'_> {
     fn target(&self) -> TrimTarget {
         TrimTarget::OldDeployments
     }
@@ -280,7 +283,7 @@ impl TrimAction for OldDeployments {
 
     fn trim(&self, _root: &Path) -> Result<u64> {
         let mut freed = 0;
-        for (path, size) in &self.candidates {
+        for (path, size) in self.candidates {
             self.snapshotter.delete(Path::new(path))?;
             freed += size;
         }
@@ -302,10 +305,11 @@ pub fn enforce(
     root: &Path,
     commands: Arc<dyn CommandRunner>,
     snapshotter: Arc<dyn Snapshotter>,
-    old_deployments: Vec<(String, u64)>,
+    old_deployments: &[(String, u64)],
     mut usage: VolumeUsage,
+    root_read_only: bool,
 ) -> Result<Vec<TrimReport>> {
-    let actions: Vec<Box<dyn TrimAction>> = vec![
+    let actions: Vec<Box<dyn TrimAction + '_>> = vec![
         Box::new(DeleteFilesUnder {
             target: TrimTarget::AptCache,
             relative: "var/cache/apt/archives",
@@ -329,6 +333,7 @@ pub fn enforce(
         if usage.status() == ReserveStatus::Ok {
             break;
         }
+        if root_read_only && action.target() == TrimTarget::AptCache { continue; }
         let freed = action
             .trim(root)
             .with_context(|| format!("{:?}", action.target()))?;
@@ -404,7 +409,7 @@ mod tests {
             free_bytes: 5,
             reserved_bytes: 10,
         };
-        let reports = enforce(dir.path(), commands, snapshotter, vec![], breached).unwrap();
+        let reports = enforce(dir.path(), commands, snapshotter, &[], breached, false).unwrap();
         // AptCache alone frees 20 bytes, bringing free_bytes to 25 — comfortably past 2x the
         // 10-byte reserve — so nothing past the first action should have run.
         assert_eq!(reports.len(), 1);
@@ -429,8 +434,9 @@ mod tests {
             dir.path(),
             commands,
             snapshotter.clone(),
-            vec![(dep_dir.display().to_string(), 100)],
+            &[(dep_dir.display().to_string(), 100)],
             breached,
+            false,
         )
         .unwrap();
         assert!(

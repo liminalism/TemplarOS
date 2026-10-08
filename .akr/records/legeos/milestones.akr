@@ -408,10 +408,10 @@ record legeos.milestone.m2-session-runs/1 : milestone {
         }
         check protocol-surface {
             statement """
-                A real Wayland client connecting over the compositor's socket sees every protocol LegeOS's documents promise, and the private lege_shell_v1/lege_recovery_v1 globals are visible only to a client that connected on the trusted-shell socket.
+                A real Wayland client connecting over the compositor's socket sees every protocol LegeOS's documents promise, and the private templar_shell/templar_recovery globals are visible only to a client that connected on the trusted-shell socket.
                 """
             method command
-            command "cargo test -p lege-comp a_client_connects_and_sees_every_advertised_protocol"
+            command "cargo test -p templar-comp public_socket_conceals_protected_globals_private_socket_exposes_them"
         }
         check recovery-without-shell {
             statement """
@@ -427,10 +427,10 @@ record legeos.milestone.m2-session-runs/1 : milestone {
         }
         check structural-checks {
             statement """
-                Every xtask structural check passes; in particular deps-check still shows lege-window free of async runtimes and D-Bus, which is the invariant most at risk once a compositor links it, and check-packaging now ties every unit's ExecStart to a binary some package installs.
+                Every xtask structural check passes; in particular deps-check still shows templar-window free of async runtimes and D-Bus, which is the invariant most at risk once a compositor links it, and check-packaging now ties every unit's ExecStart to a binary some package installs.
                 """
             method command
-            command "cargo run -q -p xtask -- tree-check deps-check check-interfaces check-proxies check-packaging check-assets"
+            command "for check in tree-check deps-check check-interfaces check-proxies check-packaging check-assets; do cargo run -q -p xtask -- $check || exit 1; done"
         }
         check windows-cannot-be-lost {
             statement """

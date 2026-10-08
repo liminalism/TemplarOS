@@ -11,6 +11,7 @@ use std::process::{Command, Output};
 /// cannot wedge a transaction forever.
 pub trait CommandRunner: Send + Sync + std::fmt::Debug {
     fn run(&self, program: &str, args: &[&str]) -> Result<Output>;
+    fn run_with_stdin(&self, program: &str, args: &[&str], input: std::fs::File) -> Result<Output>;
 }
 
 /// Spawns real processes with a timeout. `unsafe_code` is not needed: `Command` and `try_wait`
@@ -28,33 +29,38 @@ impl Default for RealCommandRunner {
     }
 }
 
-impl CommandRunner for RealCommandRunner {
-    fn run(&self, program: &str, args: &[&str]) -> Result<Output> {
+fn drain(mut pipe: impl std::io::Read) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    pipe.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+impl RealCommandRunner {
+    fn capture(&self, program: &str, args: &[&str], input: std::process::Stdio) -> Result<Output> {
         let mut child = Command::new(program)
             .args(args)
-            .stdin(std::process::Stdio::null())
+            .stdin(input)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .with_context(|| format!("spawning {program}"))?;
-
+        // apt can fill either pipe long before it exits; drain both concurrently.
+        let stdout = child.stdout.take().context("missing stdout pipe")?;
+        let stderr = child.stderr.take().context("missing stderr pipe")?;
+        let stdout = std::thread::spawn(move || drain(stdout));
+        let stderr = std::thread::spawn(move || drain(stderr));
         let deadline = std::time::Instant::now() + self.timeout;
         loop {
             if let Some(status) = child.try_wait().context("polling child status")? {
-                use std::io::Read;
-                let mut stdout = Vec::new();
-                let mut stderr = Vec::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_end(&mut stdout);
-                }
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_end(&mut stderr);
-                }
-                return Ok(Output {
+                let output = Output {
                     status,
-                    stdout,
-                    stderr,
-                });
+                    stdout: stdout.join().map_err(|_| anyhow::anyhow!("stdout reader panicked"))??,
+                    stderr: stderr.join().map_err(|_| anyhow::anyhow!("stderr reader panicked"))??,
+                };
+                if !output.status.success() {
+                    anyhow::bail!("{program} exited {status}: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+                }
+                return Ok(output);
             }
             if std::time::Instant::now() >= deadline {
                 let _ = child.kill();
@@ -63,6 +69,15 @@ impl CommandRunner for RealCommandRunner {
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+    }
+}
+
+impl CommandRunner for RealCommandRunner {
+    fn run(&self, program: &str, args: &[&str]) -> Result<Output> {
+        self.capture(program, args, std::process::Stdio::null())
+    }
+    fn run_with_stdin(&self, program: &str, args: &[&str], input: std::fs::File) -> Result<Output> {
+        self.capture(program, args, input.into())
     }
 }
 
@@ -112,6 +127,9 @@ impl FakeCommandRunner {
 
 #[cfg(test)]
 impl CommandRunner for FakeCommandRunner {
+    fn run_with_stdin(&self, program: &str, args: &[&str], _input: std::fs::File) -> Result<Output> {
+        self.run(program, args)
+    }
     fn run(&self, program: &str, args: &[&str]) -> Result<Output> {
         // TemplarOS targets Linux only (ARCHITECTURE.md); a real exit status is unavailable
         // without actually spawning a process, so synthesize a successful one directly.

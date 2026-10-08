@@ -1,21 +1,41 @@
 #!/bin/sh
-# TemplarOS deployment entries (ADR-0004, contract C3).
-#
-# Installed as /etc/grub.d/09_templaros by installer/provision.sh. It runs at grub-mkconfig time and
-# emits ONE line into grub.cfg: a `source` of the file templar-hostd generates.
-#
-# The indirection is the point. templar-hostd rewrites its entries on every stage, promotion and
-# rollback; if those entries lived directly in grub.cfg, each rewrite would mean running
-# grub-mkconfig, which reruns Ubuntu's own generators and would put a privileged daemon in the
-# business of owning the whole boot menu. Sourcing one generated file leaves Ubuntu's entries
-# exactly as they are, and a rewrite takes effect at the next boot with no regeneration at all.
-#
-# 09_ places these before Ubuntu's own 10_linux entries, so the TemplarOS known-good deployment is
-# what GRUB_DEFAULT=saved resolves against first. Ubuntu's entries stay in the menu underneath as
-# the last-resort route into a working kernel.
+# TemplarOS owns only its generated entries. Ubuntu's generators remain unchanged.
+# Sealed roots keep the mutable GRUB environment and entries in the owned ESP namespace.
 set -e
-cat <<'EOF'
+esp_uuid=$(/usr/bin/python3 -I -c '
+import pathlib,re,tomllib
+path=pathlib.Path("/etc/templaros/install.toml")
+if path.exists():
+    data=tomllib.loads(path.read_text())
+    mode=data.get("read_only",False)
+    if not isinstance(mode,bool): raise RuntimeError("invalid root policy")
+    if mode:
+        uuid=data.get("esp_uuid","")
+        if not re.fullmatch(r"[0-9A-Fa-f-]+",uuid): raise RuntimeError("sealed root requires ESP UUID")
+        print(uuid)
+')
+if [ -n "$esp_uuid" ]; then
+    printf 'search --no-floppy --fs-uuid --set=templaros_esp %s\n' "$esp_uuid"
+    cat <<'EOF'
+if [ -f ($templaros_esp)/EFI/templaros/grub/grubenv ]; then
+    load_env -f ($templaros_esp)/EFI/templaros/grub/grubenv next_entry saved_entry
+    if [ "${next_entry}" ]; then
+        set default="${next_entry}"
+        set next_entry=
+        save_env -f ($templaros_esp)/EFI/templaros/grub/grubenv next_entry
+        set boot_once=true
+    elif [ "${saved_entry}" ]; then
+        set default="${saved_entry}"
+    fi
+fi
+if [ -f ($templaros_esp)/EFI/templaros/grub/templaros-entries.cfg ]; then
+    source ($templaros_esp)/EFI/templaros/grub/templaros-entries.cfg
+fi
+EOF
+else
+    cat <<'EOF'
 if [ -f ${prefix}/templaros-entries.cfg ]; then
     source ${prefix}/templaros-entries.cfg
 fi
 EOF
+fi

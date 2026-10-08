@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- BlueZ remains the effect/authorization authority. AcquireUi registers an application agent
+     on the SAME system connection used by Pair; RequestDefaultAgent is never invoked.
+     Inventory has applied adapter/device/rfkill state and metadata only, not PIN/passkey values.
+     DisplaySecret and AnswerSecret use bounded fully sealed descriptors; replies require the
+     exact UI caller and unguessable pending token. Caller loss/page leave rejects prompts and
+     attempts bounded cleanup of owned discovery/pairing/agent registration only. Unconfirmed
+     cleanup remains owned and is reported, never represented as successful cancellation.
+     Upstream: https://bluez.readthedocs.io/en/latest/agent-api/ -->
+<node name="/org/templaros/Session/Bluetooth">
+  <interface name="org.templaros.Bluetooth1">
+    <method name="Inventory"><arg name="observation_json" type="s" direction="out"/></method>
+    <method name="AcquireUi"/>
+    <method name="ReleaseUi"/>
+    <method name="SetPowered"><arg name="adapter" type="s" direction="in"/><arg name="powered" type="b" direction="in"/></method>
+    <method name="Discover"><arg name="adapter" type="s" direction="in"/><arg name="enabled" type="b" direction="in"/></method>
+    <method name="Pair"><arg name="device" type="s" direction="in"/></method>
+    <method name="Cancel"/>
+    <method name="Connect"><arg name="device" type="s" direction="in"/></method>
+    <method name="Disconnect"><arg name="device" type="s" direction="in"/></method>
+    <method name="Forget"><arg name="device" type="s" direction="in"/></method>
+    <method name="SetTrusted"><arg name="device" type="s" direction="in"/><arg name="trusted" type="b" direction="in"/></method>
+    <method name="Answer"><arg name="token" type="s" direction="in"/><arg name="approved" type="b" direction="in"/></method>
+    <method name="AnswerSecret"><arg name="token" type="s" direction="in"/><arg name="secret" type="h" direction="in"/></method>
+    <method name="DisplaySecret"><arg name="token" type="s" direction="in"/><arg name="secret" type="h" direction="out"/></method>
+    <signal name="Changed"><arg name="revision_json" type="s"/></signal>
+  </interface>
+</node>

@@ -202,6 +202,32 @@ pub const MIGRATIONS: &[Migration] = &[
         CREATE INDEX entry_aggregates_root ON entry_aggregates (root_id);
         ",
     },
+    Migration {
+        name: "0006-parent-identity",
+        // Repair links left unset by old take-on-trust passes before indexed child lookups are
+        // used on a warm store. Native paths and names are BLOBs: SQLite length/substr count bytes.
+        sql: r"
+        UPDATE entries AS e SET parent_id = (
+            SELECT p.entry_id FROM entries AS p
+             WHERE p.root_id = e.root_id AND p.deleted_generation IS NULL
+               AND p.path_bytes = CASE
+                   WHEN length(e.path_bytes) - length(e.name_bytes) = 1 THEN X'2F'
+                   ELSE substr(e.path_bytes, 1, length(e.path_bytes) - length(e.name_bytes) - 1)
+               END
+               AND p.entry_id <> e.entry_id
+        );
+        DROP INDEX entries_parent;
+        CREATE INDEX entries_parent ON entries (root_id, parent_id, path_bytes)
+            WHERE deleted_generation IS NULL;
+        ",
+    },
+    Migration {
+        name: "0007-cache-lineage",
+        // A cache lineage fences replacement; monotonic IDs also fence remove/add in one cache.
+        sql: "INSERT INTO index_meta (key, value) VALUES ('cache_identity', lower(hex(randomblob(16))));
+              INSERT INTO index_meta (key, value)
+              SELECT 'next_root_id', CAST(COALESCE(MAX(root_id),0)+1 AS TEXT) FROM roots;",
+    },
 ];
 
 /// The FTS5 accelerator, created separately: it is the one part of the schema that can legitimately

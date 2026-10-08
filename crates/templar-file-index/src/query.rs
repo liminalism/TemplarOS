@@ -17,17 +17,9 @@
 //! behind [`QueryPlanner`], so a measured need can replace the accelerator without touching the
 //! IPC contract.
 
-use crate::{
-    ENTRY_COLUMNS, IndexError, Result,
-    arrays::SearchArrays,
-    entry_row_from_row,
-    generation::fold,
-    model::{
-        Coverage, EntryKind, EntryRow, Generation, MetadataFreshness, NativePath, RootId,
-        RootStatus,
-    },
-};
+use crate::model::{Coverage, EntryKind, EntryRow, Generation, NativePath, RootId, RootStatus};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "store")]
 use std::{
     collections::HashMap,
     fmt::Write as _,
@@ -214,6 +206,7 @@ impl Query {
         self
     }
 
+    #[cfg(feature = "store")]
     fn effective_page_size(&self) -> usize {
         if self.page_size == 0 {
             100
@@ -267,6 +260,17 @@ pub struct SearchResult {
 }
 
 pub type CursorId = String;
+
+#[cfg(feature = "store")]
+pub use store::{Cursor, Fts5TrigramPlanner, PlannedQuery, QueryPlanner};
+#[cfg(feature = "store")]
+pub(crate) use store::CursorStore;
+
+#[cfg(feature = "store")]
+mod store {
+use super::*;
+use crate::{ENTRY_COLUMNS, IndexError, Result, arrays::SearchArrays, entry_row_from_row,
+    generation::fold, model::MetadataFreshness};
 
 /// A pinned, ordered result set.
 #[derive(Clone, Debug)]
@@ -599,9 +603,11 @@ impl crate::Index {
         planner: Option<&dyn QueryPlanner>,
         query: &Query,
     ) -> Result<SearchResult> {
+        self.with_read(|connection| {
+        let view = connection.unchecked_transaction()?;
         let needle = fold(query.text.trim());
-        let generation = self.generation()?;
-        let all_roots = self.roots()?;
+        let generation = crate::read_generation(&view)?;
+        let all_roots = crate::read_roots(&view)?;
         let root_ids: Vec<RootId> = all_roots.iter().map(|status| status.root).collect();
         let roots = scoped_roots(query, all_roots);
         let stale_metadata_roots = self.flag_stale_metadata(query, &roots);
@@ -624,7 +630,7 @@ impl crate::Index {
         let keep = self.config().max_cursor_rows;
         let page_size = query.effective_page_size();
         let from_arrays = if planner.is_none() && self.config().search_arrays {
-            self.search_arrays(query, &needle, generation, &root_ids, keep, page_size)?
+            self.search_arrays(&view, query, &needle, generation, &root_ids, keep, page_size)?
         } else {
             None
         };
@@ -633,9 +639,7 @@ impl crate::Index {
         } else {
             let planner = planner.unwrap_or(&Fts5TrigramPlanner);
             let plan = planner.plan(query, &needle, self.fts_available());
-            let answer = self.with_read(|connection| {
-                ranked_matches(connection, &plan, query, &needle, keep, page_size)
-            })?;
+            let answer = ranked_matches(&view, &plan, query, &needle, keep, page_size)?;
             (answer, plan.strategy)
         };
         // The cursor holds the best `keep` rows of `total`, never an arbitrary `keep`: the order
@@ -675,6 +679,7 @@ impl crate::Index {
             stale_metadata_roots,
             hits,
         })
+        })
     }
 
     /// The arrays' answer, or `None` when they cannot give one: not built for this generation and
@@ -682,6 +687,7 @@ impl crate::Index {
     /// names a path, or a `within` directory they do not hold.
     fn search_arrays(
         &self,
+        connection: &rusqlite::Connection,
         query: &Query,
         needle: &str,
         generation: Generation,
@@ -693,15 +699,13 @@ impl crate::Index {
             self.request_arrays();
             return Ok(None);
         };
-        self.with_read(|connection| {
-            let within_ids = resolve_within(connection, &query.within)?;
-            let Some(answer) = arrays.search(query, needle, &within_ids, keep) else {
-                return Ok(None);
-            };
-            let first = answer.ids.len().min(page_size);
-            let (hits, _) = materialize(connection, &answer.ids[..first], &answer.ranks[..first])?;
-            Ok(Some((answer.ids, answer.ranks, answer.total, hits)))
-        })
+        let within_ids = resolve_within(connection, &query.within)?;
+        let Some(answer) = arrays.search(query, needle, &within_ids, keep) else {
+            return Ok(None);
+        };
+        let first = answer.ids.len().min(page_size);
+        let (hits, _) = materialize(connection, &answer.ids[..first], &answer.ranks[..first])?;
+        Ok(Some((answer.ids, answer.ranks, answer.total, hits)))
     }
 
     /// Starts one background build of the arrays, unless one is already running.
@@ -778,8 +782,14 @@ impl crate::Index {
             (cursor.generation, slice, ranks, cursor.total)
         };
 
-        let (hits, dropped) =
-            self.with_read(|connection| materialize(connection, &slice, &ranks))?;
+        let (hits, dropped) = self.with_read(|connection| {
+            let view = connection.unchecked_transaction()?;
+            let (hits, dropped) = materialize(&view, &slice, &ranks)?;
+            if hits.iter().any(|hit| hit.row.written_generation > generation) {
+                return Err(IndexError::SnapshotRequired { reason: "cursor row changed; search again" });
+            }
+            Ok((hits, dropped))
+        })?;
 
         Ok(Page {
             cursor: cursor_id.to_owned(),
@@ -835,17 +845,16 @@ fn resolve_within(
 type RankedMatches = (Vec<crate::EntryId>, Vec<Rank>, u64, Vec<Hit>);
 
 fn ranked_matches(
-    connection: &rusqlite::Connection,
+    transaction: &rusqlite::Connection,
     plan: &PlannedQuery,
     query: &Query,
     needle: &str,
     keep: usize,
     page_size: usize,
 ) -> Result<RankedMatches> {
-    let transaction = connection.unchecked_transaction()?;
     let mut binds = plan.binds.clone();
     let mut candidates = plan.candidates_sql.clone();
-    if let Some(ranges) = directory_ranges(&transaction, plan)? {
+    if let Some(ranges) = directory_ranges(transaction, plan)? {
         binds.push(rusqlite::types::Value::Text(ranges));
         let _ = write!(
             candidates,
@@ -901,7 +910,7 @@ fn ranked_matches(
         )? as u64
     };
     let first = ids.len().min(page_size);
-    let (hits, _) = materialize(&transaction, &ids[..first], &ranks[..first])?;
+    let (hits, _) = materialize(transaction, &ids[..first], &ranks[..first])?;
     Ok((ids, ranks, total, hits))
 }
 
@@ -960,6 +969,8 @@ fn escape_like(value: &str) -> String {
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
+}
+
 }
 
 /// The compatibility shape the existing `Files.Search1` clients already parse.

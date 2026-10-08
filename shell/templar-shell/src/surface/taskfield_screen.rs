@@ -98,7 +98,6 @@ impl TaskfieldScreen {
         status: &crate::wayland_bridge::SwitcherStatus,
         toplevels: &[ShellToplevel],
         icons: &HashMap<String, Bitmap>,
-        previews: &HashMap<String, Bitmap>,
     ) {
         self.opaque.clear();
         ui.painter.fill_rect(area, design::ground());
@@ -132,16 +131,10 @@ impl TaskfieldScreen {
             );
             let inner = row.inset(ui.px(6));
             let (picture, label) = inner.split_left((inner.w / 3).max(1));
+            // Window-pixel previews are Home-only: the switcher row wears the window's
+            // application icon large, with its icon and title beside it.
             ui.painter.fill_rect(picture, design::well_fill());
-            if let Some(preview) =
-                previews.get(&crate::field_model::session_identifier(window, None))
-            {
-                ui.painter.blit(
-                    preview,
-                    super::window_visual::letterbox(picture, preview.width, preview.height),
-                    ScaleFilter::Bilinear,
-                );
-            }
+            super::window_visual::icon(ui, picture.inset(ui.px(8)), window.icon_app_id(), icons);
             let side = ui.px(24).min(label.h);
             super::window_visual::icon(
                 ui,
@@ -149,20 +142,24 @@ impl TaskfieldScreen {
                 window.icon_app_id(),
                 icons,
             );
-            if Some(*id) == status.selected {
-                ui.label_styled(
-                    Rect::new(
-                        label.x + ui.px(8),
-                        label.y + side,
-                        (label.w - ui.px(16)).max(0),
-                        (label.h - side).max(0),
-                    ),
-                    title_of(window),
-                    design::state_style(ui),
-                    design::text(),
-                    Align::Left,
-                );
-            }
+            // Every row is named, the selection in full ink: two windows of one application wear
+            // the same icon, and their titles are how a person tells them apart mid-walk.
+            ui.label_styled(
+                Rect::new(
+                    label.x + ui.px(8),
+                    label.y + side,
+                    (label.w - ui.px(16)).max(0),
+                    (label.h - side).max(0),
+                ),
+                title_of(window),
+                design::state_style(ui),
+                if Some(*id) == status.selected {
+                    design::text()
+                } else {
+                    design::text_faint()
+                },
+                Align::Left,
+            );
             super::window_visual::marks(
                 ui,
                 row,
@@ -416,6 +413,7 @@ mod tests {
             geometry: templar_window::Rect::new(0, 0, 800, 600),
             layer: Layer::Normal,
             group: None,
+            tab_count: None,
         }
     }
 

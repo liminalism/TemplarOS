@@ -18,6 +18,34 @@
       <arg name="roots_json" type="s" direction="out"/>
     </method>
 
+    <!-- Explicit observing token, scoped to caller unique name. True is idempotent per token;
+         false releases ONLY that token; disconnect releases all. No renewal polling.
+         Old tokens cannot detach overlapping views or reacquired observations after restart. -->
+    <method name="Observe">
+      <arg name="observing" type="b" direction="in"/>
+      <arg name="observation" type="t" direction="in"/>
+    </method>
+    <!-- The existing RootPolicy JSON: coverage/excludes, mount boundary and monitoring.
+         Configure persists authoritative policy and queues repair; no synchronous tree walk.
+         A disabled monitor preserves results and reports unwatched after explicit rebuild. -->
+    <!-- Native policy access and mutation compare the authoritative revision in one transaction.
+         expected_hash is the observed policy_hash; ConfigureRoot accepts "absent" for add-only. -->
+    <method name="RootPolicy">
+      <arg name="path_b64" type="s" direction="in"/>
+      <arg name="expected_hash" type="s" direction="in"/>
+      <arg name="policy_json" type="s" direction="out"/>
+    </method>
+    <method name="ConfigureRoot">
+      <arg name="path_b64" type="s" direction="in"/>
+      <arg name="policy_json" type="s" direction="in"/>
+      <arg name="expected_hash" type="s" direction="in"/>
+      <arg name="root_id" type="x" direction="out"/>
+    </method>
+    <method name="RemoveRoot">
+      <arg name="path_b64" type="s" direction="in"/>
+      <arg name="expected_hash" type="s" direction="in"/>
+    </method>
+
     <!-- One JSON argument (a Query) so filters/sort/field-mask can grow without a signature
          change. Returns a server-side cursor id, the generation it was produced at, and the
          first page as JSON. -->
@@ -60,10 +88,10 @@
       <arg name="batch_json" type="s" direction="out"/>
     </method>
 
-    <!-- Schedules a background repair of the given roots (a JSON array of root ids; empty means
-         every registered root) and returns immediately with an opaque request id. Progress is
-         observed through Roots and the signals below, not through this id. Replaces the old
-         Search1.IndexRoot behaviour of walking synchronously on the calling thread. -->
+    <!-- Schedules repair for {cache_identity, roots:[id,...]} from the observed Roots JSON.
+         Empty roots means every registered root. A replaced cache requires SnapshotRequired.
+         Returns immediately with an opaque request id; progress is observed through Roots and
+         signals. Replaces the synchronous Search1.IndexRoot walk. -->
     <method name="Reconcile">
       <arg name="roots_json" type="s" direction="in"/>
       <arg name="request_id" type="s" direction="out"/>

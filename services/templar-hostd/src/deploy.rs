@@ -31,6 +31,8 @@ pub struct Deployment {
     pub kernel: Option<String>,
     pub nvidia_modules: Option<String>,
     pub known_good: bool,
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 /// What every backend must provide.
@@ -65,6 +67,7 @@ pub trait BootManager: Send + Sync + std::fmt::Debug {
 /// Copy a candidate deployment's kernel image and initramfs from its snapshot into the
 /// hostd-owned ESP directory. Ubuntu-signed kernels only (Type #1 entries, no self-built UKI).
 pub fn place_boot_files(candidate_root: &Path, esp_root: &Path, id: &str) -> Result<PathBuf> {
+    if !crate::boot_entries::is_valid_deployment_id(id) { bail!("unsafe deployment id"); }
     let dest = esp_root.join("EFI/templaros").join(id);
     fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
     let boot = candidate_root.join("boot");
@@ -85,22 +88,41 @@ pub fn has_bootable_files(dir: &Path) -> bool {
     matching_kernel_pair(dir).is_some()
 }
 
-fn matching_kernel_pair(dir: &Path) -> Option<(PathBuf, PathBuf)> {
-    let mut pairs = fs::read_dir(dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            let name = path.file_name()?.to_str()?;
-            let version = name.strip_prefix("vmlinuz-")?;
-            let initrd = dir.join(format!("initrd.img-{version}"));
-            initrd
-                .is_file()
-                .then_some((version.to_owned(), path, initrd))
-        })
-        .collect::<Vec<_>>();
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    pairs.pop().map(|(_, kernel, initrd)| (kernel, initrd))
+pub(crate) fn matching_kernel_pair(dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    fs::read_dir(dir).ok()?.filter_map(Result::ok).filter_map(|entry| {
+        let path = entry.path();
+        let version = path.file_name()?.to_str()?.strip_prefix("vmlinuz-")?;
+        let initrd = dir.join(format!("initrd.img-{version}"));
+        initrd.is_file().then_some((path, initrd))
+    }).max_by(|(left, _), (right, _)| {
+        kernel_version_cmp(left.file_name().unwrap().to_str().unwrap(), right.file_name().unwrap().to_str().unwrap())
+    })
+}
+
+fn kernel_version_cmp(mut left: &str, mut right: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    while !left.is_empty() && !right.is_empty() {
+        let a = left.as_bytes()[0];
+        let b = right.as_bytes()[0];
+        if a.is_ascii_digit() && b.is_ascii_digit() {
+            let a_end = left.bytes().take_while(u8::is_ascii_digit).count();
+            let b_end = right.bytes().take_while(u8::is_ascii_digit).count();
+            let a_number = left[..a_end].trim_start_matches('0');
+            let b_number = right[..b_end].trim_start_matches('0');
+            let order = a_number.len().cmp(&b_number.len()).then_with(|| a_number.cmp(b_number));
+            if order != Ordering::Equal { return order; }
+            left = &left[a_end..];
+            right = &right[b_end..];
+        } else {
+            let a = left.chars().next().unwrap();
+            let b = right.chars().next().unwrap();
+            let order = a.cmp(&b);
+            if order != Ordering::Equal { return order; }
+            left = &left[a.len_utf8()..];
+            right = &right[b.len_utf8()..];
+        }
+    }
+    left.len().cmp(&right.len())
 }
 
 /// systemd-boot backend: Boot Loader Spec "automatic boot assessment" — the entry filename
@@ -110,6 +132,7 @@ fn matching_kernel_pair(dir: &Path) -> Option<(PathBuf, PathBuf)> {
 pub struct SystemdBoot {
     pub commands: Arc<dyn CommandRunner>,
     pub esp_root: PathBuf,
+    pub sysroot: PathBuf,
 }
 
 impl SystemdBoot {
@@ -124,52 +147,47 @@ impl SystemdBoot {
 
 impl BootManager for SystemdBoot {
     fn stage_candidate(&self, candidate: &Deployment, tries: u8) -> Result<()> {
+        if !crate::boot_entries::is_valid_deployment_id(&candidate.id)
+            || !crate::layout::safe_subvolume(&candidate.subvolume) { bail!("unsafe boot identity"); }
         let entry = self.entry_path(&candidate.id, Some(tries));
         if let Some(parent) = entry.parent() {
             fs::create_dir_all(parent)?;
         }
-        // `templaros.deployment=` is what lets userspace answer "which deployment am I running?"
-        // after the fact — the question `HostdState::reconcile_boot` has to answer to decide
-        // whether a staged candidate ever booted. Nothing else on the command line carries it:
-        // the root filesystem label is the same for every deployment by construction.
-        //
-        // The label rather than the UUID `boot_entries::RootSpec` prefers, deliberately: this
-        // backend is selected only when systemd-boot's loader is present, which on every machine
-        // we produce means an mkosi image. Those are built by `systemd-repart` and carry no
-        // `/etc/templaros/install.toml`, so reading one would find nothing and fall back to exactly
-        // this string. If a *provisioned* machine ever runs systemd-boot, this needs the same
-        // `RootSpec::read(&self.sysroot)` the GRUB backend does, and `SystemdBoot` needs a
-        // `sysroot` to read it from.
+        let root = crate::boot_entries::RootSpec::read(&self.sysroot).cmdline_arg();
         let mut body = format!(
-            "title TemplarOS ({id})\nlinux /EFI/templaros/{id}/vmlinuz\ninitrd /EFI/templaros/{id}/initrd.img\noptions root=LABEL=templaros-root rootflags=subvol={subvolume} rw templaros.deployment={id}\n",
+            "title TemplarOS ({id})\nlinux /EFI/templaros/{id}/vmlinuz\ninitrd /EFI/templaros/{id}/initrd.img\noptions {root} rootflags=subvol={subvolume} {mode} templaros.deployment={id}\n",
             id = candidate.id,
             subvolume = candidate.subvolume,
+            mode = if candidate.read_only { "ro" } else { "rw" },
         );
         if let Some(modules) = &candidate.nvidia_modules {
             use std::fmt::Write as _;
             let _ = writeln!(body, "# nvidia-modules {modules}");
         }
-        fs::write(&entry, body).with_context(|| format!("writing {}", entry.display()))?;
-        let file_name = entry
-            .file_name()
-            .and_then(|n| n.to_str())
-            .context("entry path has no file name")?;
-        self.commands.run("bootctl", &["set-default", file_name])?;
+        write_atomically(&entry, body.as_bytes()).with_context(|| format!("writing {}", entry.display()))?;
+        // systemd-boot normalizes boot counters out of the selectable entry ID.
+        // Keep +tries in the file name, but select the stable ID the loader advertises.
+        let stable_id = format!("templaros-{}.conf", candidate.id);
+        let esp = format!("--esp-path={}", self.esp_root.display());
+        self.commands.run("bootctl", &[&esp, "set-default", &stable_id])?;
         Ok(())
     }
 
     fn mark_good(&self) -> Result<()> {
-        self.commands.run("systemd-bless-boot", &["good"])?;
+        self.commands.run("/usr/lib/systemd/systemd-bless-boot", &["good"])?;
         Ok(())
     }
 
     fn rollback(&self, previous: &Deployment) -> Result<()> {
+        if !crate::boot_entries::is_valid_deployment_id(&previous.id)
+            || !crate::layout::safe_subvolume(&previous.subvolume) { bail!("unsafe rollback boot identity"); }
         let entry = self.entry_path(&previous.id, None);
         let file_name = entry
             .file_name()
             .and_then(|n| n.to_str())
             .context("entry path has no file name")?;
-        self.commands.run("bootctl", &["set-default", file_name])?;
+        let esp = format!("--esp-path={}", self.esp_root.display());
+        self.commands.run("bootctl", &[&esp, "set-default", file_name])?;
         Ok(())
     }
 
@@ -194,6 +212,11 @@ pub struct Grub {
 }
 
 impl Grub {
+    fn select_entry(&self, command: &str, id: &str) -> Result<()> {
+        let directory = format!("--boot-directory={}", self.boot_root.display());
+        self.commands.run(command, &[&directory, id])?;
+        Ok(())
+    }
     fn counter_path(&self) -> PathBuf {
         self.state_dir.join("grub-tries")
     }
@@ -226,9 +249,11 @@ impl Grub {
             bail!("no candidate is staged");
         };
         let remaining = tries.saturating_sub(1);
-        fs::write(self.counter_path(), format!("{id}\n{remaining}\n"))?;
+        let text = fs::read_to_string(self.counter_path())?;
+        let identity = text.lines().skip(2).collect::<Vec<_>>().join("\n");
+        write_atomically(&self.counter_path(), format!("{id}\n{remaining}\n{identity}\n").as_bytes())?;
         if remaining > 0 {
-            self.commands.run("grub-reboot", &[&id])?;
+            self.select_entry("grub-reboot", &id)?;
         }
         Ok(remaining)
     }
@@ -237,21 +262,23 @@ impl Grub {
 impl BootManager for Grub {
     fn stage_candidate(&self, candidate: &Deployment, tries: u8) -> Result<()> {
         fs::create_dir_all(&self.state_dir)?;
-        fs::write(
-            self.counter_path(),
-            format!("{}\n{}\n{}\n", candidate.id, tries, candidate.subvolume),
-        )?;
+        write_atomically(&self.counter_path(),
+            format!("{}\n{}\n{}\n{}\n", candidate.id, tries, candidate.subvolume, candidate.read_only).as_bytes())?;
         // The entries have to exist before `grub-reboot` names one of them: `GRUB_DEFAULT=saved`
         // selects a menu entry by id, and an id GRUB cannot find is a boot into whatever the
         // firmware picks instead. Written whole, so the known-good entry (which
         // `refresh_entries` reads from this backend's own record) survives every restage.
         self.refresh_entries(Some(candidate))?;
-        self.commands.run("grub-reboot", &[&candidate.id])?;
+        self.select_entry("grub-reboot", &candidate.id)?;
         Ok(())
     }
 
     fn mark_good(&self) -> Result<()> {
         let Some((id, _)) = self.staged()? else {
+            let booted = fs::read_to_string(self.sysroot.join("proc/cmdline"))?;
+            if self.known_good_entry()?.is_some_and(|entry| {
+                booted.split_whitespace().any(|word| word.strip_prefix("templaros.deployment=") == Some(entry.id.as_str()))
+            }) { return Ok(()); }
             bail!("no candidate is staged to promote");
         };
         let subvolume = fs::read_to_string(self.counter_path())?
@@ -266,10 +293,15 @@ impl BootManager for Grub {
             kernel: None,
             nvidia_modules: None,
             known_good: true,
+            read_only: fs::read_to_string(self.counter_path())?.lines().nth(3) == Some("true"),
         })?;
         self.refresh_entries(None)?;
-        self.commands.run("grub-set-default", &[&id])?;
-        let _ = fs::remove_file(self.counter_path());
+        self.select_entry("grub-set-default", &id)?;
+        match fs::remove_file(self.counter_path()) {
+            Ok(()) => crate::persistence::sync_parent(&self.counter_path())?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         Ok(())
     }
 
@@ -278,8 +310,12 @@ impl BootManager for Grub {
         // person at the console to hand-pick the deployment that just failed its health gate.
         self.record_known_good(previous)?;
         self.refresh_entries(None)?;
-        self.commands.run("grub-set-default", &[&previous.id])?;
-        let _ = fs::remove_file(self.counter_path());
+        self.select_entry("grub-set-default", &previous.id)?;
+        match fs::remove_file(self.counter_path()) {
+            Ok(()) => crate::persistence::sync_parent(&self.counter_path())?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         Ok(())
     }
 
@@ -304,8 +340,10 @@ impl BootManager for Grub {
 /// facts about this installation's history — which deployment the update engine last promoted,
 /// and which one it displaced — and nothing on disk remembers them once the transaction journal's
 /// entry ages out. `/proc/cmdline` says what booted, never what the alternative was.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeploymentRegistry {
+    #[serde(default = "crate::persistence::schema", deserialize_with = "crate::persistence::supported_schema")]
+    pub schema: u32,
     #[serde(default)]
     pub deployments: Vec<Deployment>,
     /// The deployment most recently promoted — what a healthy machine is running.
@@ -317,6 +355,13 @@ pub struct DeploymentRegistry {
     /// The deployment that has passed boot-health and may always be returned to.
     #[serde(default)]
     pub known_good: Option<String>,
+}
+
+impl Default for DeploymentRegistry {
+    fn default() -> Self {
+        Self { schema: crate::persistence::SCHEMA, deployments: Vec::new(),
+            current: None, previous: None, known_good: None }
+    }
 }
 
 /// Either shape `deployments.json` can have on disk: the object written since the identities
@@ -419,6 +464,7 @@ pub fn load_registry(path: &Path) -> Result<DeploymentRegistry> {
                         .find(|d| d.known_good)
                         .map(|d| d.id.clone());
                     DeploymentRegistry {
+                        schema: crate::persistence::SCHEMA,
                         deployments,
                         current: None,
                         previous: None,
@@ -434,6 +480,10 @@ pub fn load_registry(path: &Path) -> Result<DeploymentRegistry> {
 
 /// Persist the registry atomically (write-temp-then-rename, matching the transaction journal).
 pub fn save_registry(path: &Path, registry: &DeploymentRegistry) -> Result<()> {
+    if registry.schema != crate::persistence::SCHEMA { bail!("refusing unsupported registry schema"); }
+    // Reading first rejects a newer file even if a caller supplies an older in-memory value.
+    load_registry(path)?;
+    crate::persistence::backup_before_write(path)?;
     write_atomically(path, &serde_json::to_vec_pretty(registry)?)
 }
 
@@ -444,27 +494,19 @@ pub fn save_deployments(path: &Path, deployments: &[Deployment]) -> Result<()> {
     write_atomically(path, &serde_json::to_vec_pretty(deployments)?)
 }
 
-fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path)
-        .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))
-}
-
-/// Where the ESP is mounted under `root` — `boot/efi` on Ubuntu's default layout, `efi` on a
-/// minimal mkosi image. The one place this is decided, so [`detect_backend`] and the transaction
-/// engine's boot-file placement can never disagree about it.
-pub fn esp_root(root: &Path) -> PathBuf {
-    for candidate in ["boot/efi", "efi"] {
-        let esp = root.join(candidate);
-        if esp.join("loader/loader.conf").exists() {
-            return esp;
-        }
+    {
+        use std::io::Write;
+        let mut file = fs::File::create(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
     }
-    root.join("boot/efi")
+    fs::rename(&tmp, path).with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
+    crate::persistence::sync_parent(path)
 }
 
 /// Select the backend for this installation (ADR-0004). systemd-boot when its loader is present
@@ -473,18 +515,20 @@ pub fn detect_backend(
     root: &Path,
     commands: Arc<dyn CommandRunner>,
     state_dir: PathBuf,
+    read_only: bool,
+    esp: PathBuf,
 ) -> Box<dyn BootManager> {
-    let esp = esp_root(root);
     if esp.join("loader/loader.conf").exists() {
         Box::new(SystemdBoot {
             commands,
             esp_root: esp,
+            sysroot: root.to_path_buf(),
         })
     } else {
         Box::new(Grub {
             commands,
             state_dir,
-            boot_root: root.join("boot"),
+            boot_root: if read_only { esp.join("EFI/templaros") } else { root.join("boot") },
             sysroot: root.to_path_buf(),
         })
     }
@@ -503,6 +547,7 @@ mod tests {
             kernel: Some("linux-image-7.2.0-generic".into()),
             nvidia_modules: Some("linux-modules-nvidia-580-open-generic".into()),
             known_good: false,
+            read_only: true,
         }
     }
 
@@ -512,7 +557,8 @@ mod tests {
         fs::create_dir_all(dir.path().join("boot/efi/loader")).unwrap();
         fs::write(dir.path().join("boot/efi/loader/loader.conf"), "").unwrap();
         let commands = Arc::new(FakeCommandRunner::default());
-        let backend = detect_backend(dir.path(), commands, dir.path().join("state"));
+        let layout = crate::layout::DeploymentLayout::read(dir.path()).unwrap();
+        let backend = detect_backend(dir.path(), commands, dir.path().join("state"), layout.read_only, layout.mounted_esp);
         assert_eq!(backend.name(), "systemd-boot");
     }
 
@@ -520,57 +566,11 @@ mod tests {
     fn detect_backend_falls_back_to_grub() {
         let dir = tempfile::tempdir().unwrap();
         let commands = Arc::new(FakeCommandRunner::default());
-        let backend = detect_backend(dir.path(), commands, dir.path().join("state"));
+        let layout = crate::layout::DeploymentLayout::read(dir.path()).unwrap();
+        let backend = detect_backend(dir.path(), commands, dir.path().join("state"), layout.read_only, layout.mounted_esp);
         assert_eq!(backend.name(), "grub");
     }
 
-    #[test]
-    fn esp_root_agrees_with_detect_backend_on_a_minimal_efi_layout() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("efi/loader")).unwrap();
-        fs::write(dir.path().join("efi/loader/loader.conf"), "").unwrap();
-
-        assert_eq!(esp_root(dir.path()), dir.path().join("efi"));
-
-        let commands = Arc::new(FakeCommandRunner::default());
-        let backend = detect_backend(dir.path(), commands, dir.path().join("state"));
-        assert_eq!(backend.name(), "systemd-boot");
-    }
-
-    #[test]
-    fn esp_root_defaults_to_boot_efi_when_nothing_is_detected() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(esp_root(dir.path()), dir.path().join("boot/efi"));
-    }
-
-    #[test]
-    fn systemd_boot_writes_a_tries_suffixed_entry_and_sets_default() {
-        let dir = tempfile::tempdir().unwrap();
-        let commands = Arc::new(FakeCommandRunner::default());
-        let backend = SystemdBoot {
-            commands: commands.clone(),
-            esp_root: dir.path().to_path_buf(),
-        };
-        backend.stage_candidate(&deployment("cand1"), 3).unwrap();
-        let entry = dir.path().join("loader/entries/templaros-cand1+3.conf");
-        assert!(entry.exists());
-        let body = fs::read_to_string(&entry).unwrap();
-        assert!(body.contains("linux /EFI/templaros/cand1/vmlinuz"));
-        assert!(body.contains("rootflags=subvol=@deployments/cand1"));
-
-        let calls = commands.calls();
-        assert_eq!(calls[0].program, "bootctl");
-        assert_eq!(calls[0].args, ["set-default", "templaros-cand1+3.conf"]);
-
-        backend.mark_good().unwrap();
-        assert_eq!(commands.calls()[1].program, "systemd-bless-boot");
-
-        backend.rollback(&deployment("prev1")).unwrap();
-        assert_eq!(
-            commands.calls()[2].args,
-            ["set-default", "templaros-prev1.conf"]
-        );
-    }
 
     #[test]
     fn grub_owns_its_own_tries_counter() {
@@ -584,7 +584,7 @@ mod tests {
         };
         backend.stage_candidate(&deployment("cand1"), 3).unwrap();
         assert_eq!(backend.staged().unwrap(), Some(("cand1".to_owned(), 3)));
-        assert_eq!(commands.calls()[0].args, ["cand1"]);
+        assert_eq!(commands.calls()[0].args, [format!("--boot-directory={}", dir.path().join("boot").display()), "cand1".into()]);
 
         assert_eq!(backend.decrement().unwrap(), 2);
         assert_eq!(backend.staged().unwrap(), Some(("cand1".to_owned(), 2)));
@@ -609,7 +609,7 @@ mod tests {
         assert!(backend.staged().unwrap().is_none());
         assert_eq!(
             commands.calls().last().unwrap().args,
-            vec!["prev1".to_owned()]
+            vec![format!("--boot-directory={}", dir.path().join("boot").display()), "prev1".to_owned()]
         );
     }
 
@@ -687,5 +687,30 @@ mod tests {
         // And the object form round-trips whole.
         save_registry(&path, &registry).unwrap();
         assert_eq!(load_registry(&path).unwrap(), registry);
+    }
+
+    #[test]
+    fn future_registry_is_not_overwritten_and_legacy_upgrade_keeps_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployments.json");
+        let future = br#"{"schema":2,"deployments":[]}"#;
+        fs::write(&path, future).unwrap();
+        assert!(load_registry(&path).is_err());
+        assert!(save_registry(&path, &DeploymentRegistry::default()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), future);
+        fs::write(&path, b"[]").unwrap();
+        save_registry(&path, &load_registry(&path).unwrap()).unwrap();
+        assert_eq!(fs::read(path.with_extension("pre-schema-1")).unwrap(), b"[]");
+    }
+
+    #[test]
+    fn boot_pair_uses_numeric_kernel_order_and_requires_matching_initrd() {
+        let dir = tempfile::tempdir().unwrap();
+        for version in ["7.2.0-9", "7.2.0-10"] {
+            fs::write(dir.path().join(format!("vmlinuz-{version}")), b"kernel").unwrap();
+            fs::write(dir.path().join(format!("initrd.img-{version}")), b"initrd").unwrap();
+        }
+        fs::write(dir.path().join("vmlinuz-99.0"), b"unpaired").unwrap();
+        assert_eq!(matching_kernel_pair(dir.path()).unwrap().0.file_name().unwrap(), "vmlinuz-7.2.0-10");
     }
 }

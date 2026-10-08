@@ -1,0 +1,5 @@
+# Readers and account recovery implementation shipped by templaros-hostd.
+# A newer deployment may not advance shared state beyond its valid fallback's range.
+minimum = 1
+maximum = 1
+account_writer = 1

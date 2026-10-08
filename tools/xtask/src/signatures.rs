@@ -199,6 +199,25 @@ fn attribute(element: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<S
     })
 }
 
+/// What freezing `current` over `previous` actually records, as the parenthetical the freeze
+/// message prints: the headline count is the new total, so without the delta a run that adds
+/// two members reads as though it froze the pre-existing 170 and the addition was not frozen.
+pub fn summarise_freeze(
+    previous: Option<&BTreeMap<String, InterfaceSignatures>>,
+    current: &BTreeMap<String, InterfaceSignatures>,
+) -> String {
+    let Some(previous) = previous else {
+        return "no previous baseline; everything frozen is new".to_owned();
+    };
+    let changes = diff(previous, current);
+    let breaking = changes.iter().filter(|c| c.is_breaking()).count();
+    let additions = changes.len() - breaking;
+    match (additions, breaking) {
+        (0, 0) => "nothing changed since the last freeze".to_owned(),
+        _ => format!("{additions} new, {breaking} changed-or-removed since the last freeze"),
+    }
+}
+
 /// `cargo xtask interface-baseline` — freeze today's signatures.
 ///
 /// # Errors
@@ -209,16 +228,20 @@ pub fn write_baseline(root: &Path) -> Result<()> {
         .values()
         .map(|i| i.methods.len() + i.signals.len() + i.properties.len())
         .sum();
+    let path = root.join(BASELINE);
+    let previous: Option<Baseline> = std::fs::read(&path)
+        .ok()
+        .and_then(|body| serde_json::from_slice(&body).ok());
+    let summary = summarise_freeze(previous.as_ref().map(|b| &b.interfaces), &interfaces);
     let baseline = Baseline {
         version: 1,
         interfaces,
     };
-    let path = root.join(BASELINE);
     let mut json = serde_json::to_string_pretty(&baseline)?;
     json.push('\n');
     std::fs::write(&path, json).with_context(|| format!("writing {}", path.display()))?;
     println!(
-        "interface-baseline: froze {} member(s) across {} interface(s) in {BASELINE}",
+        "interface-baseline: froze {} member(s) across {} interface(s) in {BASELINE} ({summary})",
         members,
         baseline.interfaces.len()
     );
@@ -429,5 +452,37 @@ mod tests {
                 "{name} parsed to no members at all"
             );
         }
+    }
+
+    #[test]
+    fn the_freeze_message_says_what_changed_not_just_the_total() {
+        let current = parsed();
+        assert!(summarise_freeze(None, &current).contains("everything frozen is new"));
+        assert!(summarise_freeze(Some(&current), &current).contains("nothing changed"));
+        // The run that added two members to a 170-member baseline used to print "froze 170
+        // member(s)", which reads as though the addition was not frozen.
+        let mut before = current.clone();
+        let test = before.get_mut("org.templaros.Test1").unwrap();
+        test.methods.remove("SetHints");
+        test.signals.remove("Changed");
+        assert_eq!(
+            summarise_freeze(Some(&before), &current),
+            "2 new, 0 changed-or-removed since the last freeze"
+        );
+    }
+
+    #[test]
+    fn the_freeze_message_counts_changed_or_removed_members() {
+        let before = parsed();
+        let mut current = before.clone();
+        current
+            .get_mut("org.templaros.Test1")
+            .unwrap()
+            .methods
+            .remove("SetHints");
+        assert_eq!(
+            summarise_freeze(Some(&before), &current),
+            "0 new, 1 changed-or-removed since the last freeze"
+        );
     }
 }

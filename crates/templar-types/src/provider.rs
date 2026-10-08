@@ -89,8 +89,14 @@ impl fmt::Display for ProviderRole {
 pub struct ProviderCapability {
     pub role: ProviderRole,
     /// Higher wins when the user has not chosen; distribution defaults use 100, third parties 50.
-    #[serde(default)]
+    #[serde(default = "default_capability_priority")]
     pub priority: u32,
+}
+
+/// The capability schema's default: a claim that names no priority is a third-party
+/// nomination at 50, not a zero that loses to everything including nothing.
+fn default_capability_priority() -> u32 {
+    50
 }
 
 #[cfg(test)]
@@ -134,5 +140,12 @@ mod tests {
             serde_json::to_string(&capability).expect("serialises"),
             json
         );
+    }
+
+    #[test]
+    fn a_capability_without_a_priority_is_a_third_party_nomination() {
+        let capability: ProviderCapability =
+            serde_json::from_str(r#"{"role":"terminal"}"#).expect("parses");
+        assert_eq!(capability.priority, 50);
     }
 }

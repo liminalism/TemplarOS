@@ -3,6 +3,8 @@ Description=TemplarOS host daemon (staged updates, deployments, driver authority
 Documentation=https://templaros.org/docs/host
 After=dbus.service network-online.target
 Wants=network-online.target
+Requires=templar-account-recovery.service
+After=templar-account-recovery.service
 
 [Service]
 Type=dbus
@@ -13,6 +15,7 @@ Environment=RUST_BACKTRACE=1 RUST_LIB_BACKTRACE=0
 Restart=on-failure
 StateDirectory=templaros/hostd
 RuntimeDirectory=templaros
+RuntimeDirectoryPreserve=yes
 # apt runs as a child transient unit, so hostd itself can be confined. What confines it is the
 # AppArmor profile (distro/policy/apparmor/usr.libexec.templar-hostd), which says what this daemon
 # may touch directly; that is the confinement the design asks for and it is unaffected by

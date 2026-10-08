@@ -310,6 +310,10 @@ name = "templaros-cli"
 reason = "`templar` — doctor, dev, update; the CLI parity half of every declared action"
 
 [[layer.package]]
+name = "liminalview"
+reason = "the owner-selected native image viewer; its executable and Linux desktop entry are built from the registered closed local source archive (distro/forks/manifest.toml)"
+
+[[layer.package]]
 name = "templaros-greeter"
 reason = "the login surface; a session with no greeter is a session nobody can reach"
 role = "greeter"
@@ -329,6 +333,10 @@ reason = "fingerprint-first greetd PAM authentication, with the normal login pas
 [[layer.package]]
 name = "xdg-desktop-portal"
 reason = "the portal frontend every sandboxed app talks to; backends are chosen behind it"
+
+[[layer.package]]
+name = "xdg-desktop-portal-lxqt"
+reason = "the supported graphical FileChooser for browsers and sandboxed apps; native PixelKit selection is deferred"
 
 [[layer.package]]
 name = "xdg-desktop-portal-gtk"
@@ -376,6 +384,22 @@ role = "file-manager"
 [[layer.package]]
 name = "qt6-wayland"
 reason = "the Qt 6 Wayland platform plugin pcmanfm-qt needs; without it a Qt application in this session falls back to xcb or refuses to start"
+
+[[layer.package]]
+name = "qt5-gtk-platformtheme"
+reason = "supported Qt 5 gtk3 platform-theme plugin: Templar session-scoped gtk3 uses GTK fonts/icons without forcing a Qt 6-only plugin on existing Qt 5 providers"
+
+[[layer.package]]
+name = "qt6-gtk-platformtheme"
+reason = "supported Qt 6 gtk3 platform-theme plugin for the same shared GTK fonts/icons and palette configuration used by Qt 5"
+
+[[layer.package]]
+name = "gnome-themes-extra-data"
+reason = "supported Adwaita light/dark GTK theme assets for opt-in reversible appearance configuration and the Qt gtk3 bridge"
+
+[[layer.package]]
+name = "fonts-dejavu-core"
+reason = "the DejaVu Sans family embedded in owned PixelKit surfaces, also selected in supported GTK and Qt gtk3 font configuration"
 
 [[layer.package]]
 name = "kitty"

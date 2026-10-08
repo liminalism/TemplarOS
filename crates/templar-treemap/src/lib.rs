@@ -39,7 +39,7 @@ pub mod tree;
 pub use colors::{AppColor, ColorMode, ColorSettings};
 pub use cushion::{CushionConfig, rasterize_argb, rasterize_cushions};
 pub use layout::{Layout, LayoutConfig, LayoutRect, compute_layout_in_rect};
-pub use scan::{RawEntry, ScanLimits, scan};
+pub use scan::{RawEntry, ScanLimits, ScanOutcome, scan};
 pub use tree::arena::{FileNode, FileTree, NodeId};
 pub use tree::build_tree;
 pub use tree::extensions::{CATEGORY_COUNT, FileCategory, categorize_extension, classify_path};

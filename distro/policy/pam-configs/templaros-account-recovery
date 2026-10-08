@@ -1,0 +1,8 @@
+Name: TemplarOS root-paired account maintenance gate
+Default: yes
+Priority: 1024
+Account-Type: Primary
+Account:
+	requisite	pam_exec.so quiet /usr/libexec/templaros-account-login-gate
+Account-Initial:
+	requisite	pam_exec.so quiet /usr/libexec/templaros-account-login-gate

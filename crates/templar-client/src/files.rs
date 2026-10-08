@@ -176,28 +176,51 @@ pub struct OperationOptions {
     pub override_reserve: bool,
 }
 
+/// Exact native root mapping retained by a committed transfer for journal undo.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TransferMapping {
+    #[serde(with = "templar_types::native_path")]
+    pub source: PathBuf,
+    #[serde(with = "templar_types::native_path")]
+    pub destination: PathBuf,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum OperationRequest {
     Copy {
+        #[serde(with = "templar_types::native_path::many")]
         sources: Vec<PathBuf>,
+        #[serde(with = "templar_types::native_path")]
         destination_dir: PathBuf,
     },
     Move {
+        #[serde(with = "templar_types::native_path::many")]
         sources: Vec<PathBuf>,
+        #[serde(with = "templar_types::native_path")]
         destination_dir: PathBuf,
     },
+    RestoreMoveV1 {
+        entries: Vec<TransferMapping>,
+    },
+    UndoCopyV1 {
+        original_operation: String,
+    },
     Rename {
+        #[serde(with = "templar_types::native_path")]
         path: PathBuf,
         new_name: String,
     },
     Trash {
+        #[serde(with = "templar_types::native_path::many")]
         paths: Vec<PathBuf>,
     },
     RestoreFromTrash {
+        #[serde(with = "templar_types::native_path::many")]
         paths: Vec<PathBuf>,
     },
     Delete {
+        #[serde(with = "templar_types::native_path::many")]
         paths: Vec<PathBuf>,
     },
 }
@@ -223,6 +246,8 @@ impl OperationRequest {
                 sources,
                 destination_dir,
             } => format!("Move {} to {}", names(sources), destination_dir.display()),
+            Self::RestoreMoveV1 { entries } => format!("Restore {} moved items to their original locations", entries.len()),
+            Self::UndoCopyV1 { .. } => "Undo copy (move created files to Trash)".to_owned(),
             Self::Rename { path, new_name } => {
                 format!("Rename {} to {new_name}", names(std::slice::from_ref(path)))
             }
@@ -243,12 +268,16 @@ impl OperationRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TrashEntry {
     pub name: String,
+    #[serde(with = "templar_types::native_path")]
     pub trashed_path: PathBuf,
+    #[serde(with = "templar_types::native_path")]
     pub info_path: PathBuf,
+    #[serde(with = "templar_types::native_path")]
     pub original_path: PathBuf,
     /// Local time, `YYYY-MM-DDThh:mm:ss`.
     pub deletion_date: String,
     /// The trash holding it: the home trash, or a volume's.
+    #[serde(with = "templar_types::native_path")]
     pub trash_root: PathBuf,
     pub is_directory: bool,
     /// The item's own size, not a directory's recursive total.
@@ -297,7 +326,7 @@ pub struct OperationRecord {
     pub total_items: u64,
     pub done_bytes: u64,
     pub done_items: u64,
-    #[serde(default)]
+    #[serde(default, with = "templar_types::native_path::many")]
     pub skipped: Vec<PathBuf>,
     #[serde(default)]
     pub error: Option<String>,
@@ -379,6 +408,21 @@ mod tests {
         assert!(valid_file_name("report 2.txt"));
         for unsafe_name in ["", ".", "..", "../escape", "sub/name", "/absolute"] {
             assert!(!valid_file_name(unsafe_name), "{unsafe_name:?}");
+        }
+    }
+
+    #[test]
+    fn native_operation_and_additive_inverse_wire_models_do_not_use_display_names() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        let source = PathBuf::from(OsString::from_vec(b"/from/name-\xff.pdf".to_vec()));
+        let destination = PathBuf::from(OsString::from_vec(b"/Desktop/name-\xff (2).pdf".to_vec()));
+        for request in [
+            OperationRequest::Copy { sources: vec![source.clone()], destination_dir: "/Desktop".into() },
+            OperationRequest::RestoreMoveV1 { entries: vec![TransferMapping { source: destination, destination: source }] },
+            OperationRequest::UndoCopyV1 { original_operation: "11111111-1111-4111-8111-111111111111".into() },
+        ] {
+            let json = serde_json::to_string(&request).unwrap();
+            assert_eq!(serde_json::from_str::<OperationRequest>(&json).unwrap(), request);
         }
     }
 }

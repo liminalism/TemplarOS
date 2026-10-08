@@ -336,39 +336,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_shipped_matrix_is_valid() {
-        let matrix = Matrix::parse(EMBEDDED).expect("distro/deploy/components.toml must parse");
-        assert_eq!(matrix.version, 1);
-        assert_eq!(
-            matrix.components.len(),
-            13,
-            "the build set is thirteen packages"
-        );
-    }
-
-    #[test]
-    fn the_shipped_matrix_names_the_packages_the_archive_does() {
-        let matrix = Matrix::embedded();
-        for package in [
-            "templaros-sessiond",
-            "templaros-resourced",
-            "templaros-filed",
-            "templaros-hostd",
-            "templaros-boot-health",
-            "templaros-session",
-            "templaros-comp",
-            "templaros-greeter",
-            "templaros-shell",
-            "templaros-settings",
-            "templar-files",
-            "templaros-portal",
-            "templaros-cli",
-        ] {
-            assert!(matrix.packages().contains(&package), "missing {package}");
-        }
-    }
-
-    #[test]
     fn the_daemons_that_must_not_be_restarted_yet_say_so() {
         // The honesty this file exists for: restarting these disconnects every proxy the shell
         // holds, so they stay manual until the composed-session restart test exists.

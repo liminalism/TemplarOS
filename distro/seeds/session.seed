@@ -11,11 +11,13 @@ templaros-nm-tray
 templaros-comp
 templaros-portal
 templaros-cli
+liminalview
 templaros-greeter
 greetd
 fprintd
 libpam-fprintd
 xdg-desktop-portal
+xdg-desktop-portal-lxqt
 xdg-desktop-portal-gtk
 xwayland
 polkitd

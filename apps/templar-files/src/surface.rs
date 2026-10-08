@@ -3,7 +3,7 @@
 use pixelkit_raster::{Painter, RasterKernel, Rect, ScaleFilter, WindowBuffer};
 use pixelkit_shell::{Input, KeyInput, Scale};
 use pixelkit_text::{Align, TextCache, TextStyle};
-use pixelkit_ui::{ScrollState, Theme, Ui};
+use pixelkit_ui::{ScrollState, Ui};
 use templar_client::files::{EntryKind, FolderSummary, RootKind, VolumeInfo};
 
 use crate::{
@@ -21,20 +21,6 @@ const ROOT_ROW_HEIGHT: i32 = 58;
 const ENTRY_ROW_HEIGHT: i32 = 38;
 const COLUMN_HEIGHT: i32 = 28;
 
-const GROUND: u32 = 0x00ec_eef0;
-const PANEL: u32 = 0x00fb_fcfd;
-const PANEL_ALT: u32 = 0x00f3_f5f7;
-const EDGE: u32 = 0x00d5_dae0;
-const TEXT: u32 = 0x0017_1b20;
-const TEXT_DIM: u32 = 0x0069_737d;
-const ACCENT: u32 = 0x000e_7482;
-const ACCENT_SOFT: u32 = 0x00e3_f1f3;
-const DANGER: u32 = 0x00b3_261e;
-const GOOD: u32 = 0x001f_8f60;
-/// The Home Field's folder material (`design::FOLDER_SHELL`/`FOLDER_EDGE`), so a folder reads
-/// as the same warm paper in both surfaces.
-const FOLDER_PLATE: u32 = 0x00fb_f8f1;
-const FOLDER_PLATE_EDGE: u32 = 0x00e2_dbc9;
 
 fn draw_place_icon(ui: &mut Ui<'_>, area: Rect, drive: bool) {
     let side = ui.px(20);
@@ -43,13 +29,13 @@ fn draw_place_icon(ui: &mut Ui<'_>, area: Rect, drive: bool) {
         ui.painter.fill_rounded_rect(
             Rect::new(icon.x, icon.y, side / 2, ui.px(6)),
             ui.px(2),
-            ACCENT,
+            ui.theme.accent,
         );
     }
     ui.painter.fill_rounded_rect(
         Rect::new(icon.x, icon.y + ui.px(4), side, ui.px(12)),
         ui.px(2),
-        if drive { TEXT_DIM } else { ACCENT },
+        if drive { ui.theme.text_dim } else { ui.theme.accent },
     );
 }
 
@@ -57,6 +43,7 @@ fn draw_place_icon(ui: &mut Ui<'_>, area: Rect, drive: bool) {
 struct FileMenu {
     at: (i32, i32),
     rows: Vec<(&'static str, Command)>,
+    selected: usize,
 }
 
 impl FileMenu {
@@ -130,7 +117,7 @@ impl FileMenu {
                 }
             }
         }
-        Self { at, rows }
+        Self { at, rows, selected: 0 }
     }
 
     fn rect(&self, ui: &Ui<'_>, bounds: Rect) -> Rect {
@@ -144,11 +131,21 @@ impl FileMenu {
         )
     }
 
-    fn update(&self, ui: &mut Ui<'_>, bounds: Rect) -> (Option<Command>, bool) {
-        let escape = ui.input.take_keys().contains(&KeyInput::Escape);
+    fn update(&mut self, ui: &mut Ui<'_>, bounds: Rect) -> (Option<Command>, bool) {
+        let keys = ui.input.take_keys();
+        let escape = keys.contains(&KeyInput::Escape);
+        for key in &keys {
+            match key {
+                KeyInput::Down if !self.rows.is_empty() => self.selected = (self.selected + 1) % self.rows.len(),
+                KeyInput::Up if !self.rows.is_empty() => self.selected = (self.selected + self.rows.len() - 1) % self.rows.len(),
+                KeyInput::Enter if !escape => return (self.rows.get(self.selected).map(|(_, command)| command.clone()), true),
+                _ => {}
+            }
+        }
         let rect = self.rect(ui, bounds);
         for (index, (_, command)) in self.rows.iter().enumerate() {
             let row = Rect::new(rect.x, rect.y + index as i32 * ui.px(32), rect.w, ui.px(32));
+            if ui.input.focus_requested(row) { self.selected = index; }
             if ui.input.take_click(row) {
                 return (Some(command.clone()), true);
             }
@@ -161,22 +158,23 @@ impl FileMenu {
 
     fn paint(&self, ui: &mut Ui<'_>, bounds: Rect) {
         let rect = self.rect(ui, bounds);
-        ui.painter.fill_rect(rect, PANEL);
-        ui.painter.stroke_rect(rect, ui.scale.hairline(), EDGE);
+        ui.painter.fill_rect(rect, ui.theme.panel);
+        ui.painter.stroke_rect(rect, ui.scale.hairline(), ui.theme.panel_edge);
         for (index, (label, _)) in self.rows.iter().enumerate() {
             let row = Rect::new(rect.x, rect.y + index as i32 * ui.px(32), rect.w, ui.px(32));
-            if ui.input.hovering(row) {
-                ui.painter.fill_rect(row.inset(1), ACCENT_SOFT);
+            ui.semantic(pixelkit_ui::semantics::Role::MenuItem, label, row, index == self.selected, None, None);
+            if ui.input.hovering(row) || index == self.selected {
+                ui.painter.fill_rect(row.inset(1), ui.theme.accent_soft);
             }
-            ui.label(row.inset(ui.px(6)), label, TEXT, Align::Left);
+            ui.label(row.inset(ui.px(6)), label, ui.theme.text, Align::Left);
         }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 enum Dialog {
-    Rename { text: String, error: Option<String> },
-    Location { text: String, error: Option<String> },
+    Rename { text: pixelkit_ui::TextFieldState, error: Option<String> },
+    Location { text: pixelkit_ui::TextFieldState, error: Option<String> },
 }
 
 pub struct FileSurface {
@@ -187,6 +185,10 @@ pub struct FileSurface {
     entries_scroll: ScrollState,
     dialog: Option<Dialog>,
     menu: Option<FileMenu>,
+    appearance: templar_ui::AppearanceState,
+    dialog_focus: pixelkit_ui::Focus,
+    semantics: pixelkit_ui::semantics::Semantics,
+    semantics_active: bool,
 }
 
 impl std::fmt::Debug for FileSurface {
@@ -208,26 +210,64 @@ impl Default for FileSurface {
             entries_scroll: ScrollState::new(),
             dialog: None,
             menu: None,
+            appearance: templar_ui::AppearanceState::default(),
+            dialog_focus: pixelkit_ui::Focus::new(),
+            semantics: Default::default(),
+            semantics_active: false,
         }
     }
 }
 
 impl FileSurface {
+    pub fn invalidate_semantics(&mut self) {
+        self.input.clear_accessible_text_edit();
+        self.semantics.invalidate();
+    }
+    pub fn accessibility_tree(&mut self) -> pixelkit_ui::semantics::TreeUpdate {
+        self.semantics_active = true;
+        self.semantics.update()
+    }
+    pub fn accessibility_action(&mut self, request: pixelkit_ui::semantics::ActionRequest) {
+        self.semantics.action(&mut self.input, request);
+    }
+    pub fn accessibility_deactivated(&mut self) {
+        self.semantics_active = false;
+        self.invalidate_semantics();
+    }
+    pub fn update_appearance(&mut self, appearance: templar_types::appearance::Appearance) {
+        self.appearance.update(appearance);
+    }
+    pub fn ime_caret(&self) -> Option<Rect> {
+        match &self.dialog {
+            Some(Dialog::Rename { text, .. } | Dialog::Location { text, .. }) => text.caret_area(),
+            None => None,
+        }
+    }
     pub fn begin_rename(&mut self, current_name: String) {
+        self.invalidate_semantics();
+        self.input.set_composition("");
+        self.dialog_focus.clear();
+        self.dialog_focus.set(0);
         self.dialog = Some(Dialog::Rename {
-            text: current_name,
+            text: pixelkit_ui::TextFieldState::with_text(current_name),
             error: None,
         });
     }
 
     pub fn begin_location(&mut self, current: String) {
+        self.invalidate_semantics();
+        self.input.set_composition("");
+        self.dialog_focus.clear();
+        self.dialog_focus.set(0);
         self.dialog = Some(Dialog::Location {
-            text: current,
+            text: pixelkit_ui::TextFieldState::with_text(current),
             error: None,
         });
     }
 
     pub fn dismiss_dialog(&mut self) {
+        self.invalidate_semantics();
+        self.input.set_composition("");
         self.dialog = None;
     }
 
@@ -247,24 +287,32 @@ impl FileSurface {
         scale: Scale,
         model: &BrowserModel,
     ) -> Vec<Command> {
-        let mut ui = Ui::new(
+        if self.semantics_active {
+            self.semantics.begin_scoped(if self.menu.is_some() { "Files menu" } else if self.dialog.is_some() { "Files dialog" } else { "Files" }, 0);
+        }
+        let ui = Ui::new(
             Painter::new(buffer),
             &mut self.text,
             &mut self.input,
-            theme(),
+            self.appearance.theme(),
             scale,
             &mut self.kernel,
         );
-        ui.painter.clear(GROUND);
+        let ui = if self.dialog.is_some() { ui.with_focus(&mut self.dialog_focus) } else { ui };
+        let mut ui = if self.semantics_active { ui.with_semantics(&mut self.semantics) } else { ui };
+        ui.painter.clear(ui.theme.background);
         let whole = Rect::new(0, 0, ui.painter.width(), ui.painter.height());
-        let mut commands = if let Some(menu) = &mut self.menu {
+        if let Some(dialog) = &mut self.dialog {
+            let commands = draw_dialog(&mut ui, whole, dialog);
+            ui.input.end_frame();
+            return commands;
+        }
+        let mut commands: Vec<Command> = if let Some(menu) = &mut self.menu {
             let (chosen, close) = menu.update(&mut ui, whole);
             if close {
                 self.menu = None;
             }
             chosen.into_iter().collect()
-        } else if let Some(dialog) = &mut self.dialog {
-            handle_dialog_keys(&mut ui, dialog)
         } else {
             let modifiers = ui.input.modifiers();
             ui.input
@@ -303,6 +351,7 @@ impl FileSurface {
             entries,
             model,
             &mut self.entries_scroll,
+            self.appearance.appearance().palette,
         ));
         if !model.in_trash() && ui.input.take_context_click(entries) {
             commands.push(Command::ContextMenu {
@@ -313,9 +362,6 @@ impl FileSurface {
         draw_properties(&mut ui, properties, model);
         commands.extend(draw_status(&mut ui, status, model));
 
-        if let Some(dialog) = &mut self.dialog {
-            commands.extend(draw_dialog(&mut ui, whole, dialog));
-        }
         commands.retain(|command| {
             if let Command::ContextMenu { at, target } = command {
                 self.menu = Some(FileMenu::new(*at, target, model));
@@ -325,6 +371,7 @@ impl FileSurface {
             }
         });
         if let Some(menu) = &self.menu {
+            ui.modal_semantics();
             menu.paint(&mut ui, whole);
         }
         ui.input.end_frame();
@@ -332,29 +379,9 @@ impl FileSurface {
     }
 }
 
-fn theme() -> Theme {
-    let mut theme = Theme::default();
-    theme.background = GROUND;
-    theme.panel = PANEL;
-    theme.panel_alt = PANEL_ALT;
-    theme.panel_edge = EDGE;
-    theme.text = TEXT;
-    theme.text_dim = TEXT_DIM;
-    theme.accent = ACCENT;
-    theme.accent_soft = ACCENT_SOFT;
-    theme.selection = ACCENT_SOFT;
-    theme.hover = 0x00ff_ffff;
-    theme.alarm = DANGER;
-    theme.good = GOOD;
-    theme.body = theme.body.with_size(13.0);
-    theme.heading = theme.heading.with_size(24.0);
-    theme.padding = 10;
-    theme.corner_radius = 6;
-    theme
-}
 
 fn draw_header(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) {
-    ui.painter.fill_rect(area, PANEL);
+    ui.painter.fill_rect(area, ui.theme.panel);
     ui.painter.fill_rect(
         Rect::new(
             area.x,
@@ -362,14 +389,14 @@ fn draw_header(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) {
             area.w,
             ui.scale.hairline(),
         ),
-        EDGE,
+        ui.theme.panel_edge,
     );
     let (title, detail) = area.inset(ui.px(12)).split_left(ui.px(180));
     ui.label_styled(
         title,
         "FILES",
-        TextStyle::tracked(fonts::BODY, 20.0, 0.10),
-        TEXT,
+        ui.text_style(TextStyle::tracked(fonts::BODY, 20.0, 0.10)),
+        ui.theme.text,
         Align::Left,
     );
     let path = model.pending_path().or_else(|| model.directory());
@@ -396,13 +423,13 @@ fn draw_header(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) {
             ),
             volume.map_or_else(String::new, |volume| format!("   ·   {volume}"))
         ),
-        TEXT_DIM,
+        ui.theme.text_dim,
         Align::Left,
     );
 }
 
 fn draw_navigation(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) -> Vec<Command> {
-    ui.painter.fill_rect(area, PANEL_ALT);
+    ui.painter.fill_rect(area, ui.theme.panel_alt);
     let mut commands = Vec::new();
     let mut cursor = area.inset(ui.px(4));
     for (label, action, width) in [
@@ -444,7 +471,7 @@ fn draw_navigation(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) -> Vec<Com
                     |path| path.display().to_string(),
                 )
         },
-        TEXT,
+        ui.theme.text,
         Align::Left,
     );
     if ui.button(
@@ -464,7 +491,7 @@ fn draw_navigation(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) -> Vec<Com
 }
 
 fn draw_operations(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) -> Vec<Command> {
-    ui.painter.fill_rect(area, PANEL);
+    ui.painter.fill_rect(area, ui.theme.panel);
     let mut commands = Vec::new();
     let mut cursor = area.inset(ui.px(4));
     // The trash is a place, not a folder, so it gets its own toolbar: there is no paste into
@@ -503,7 +530,7 @@ fn draw_operations(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) -> Vec<Com
     ui.label(
         cursor.inset(ui.px(8)),
         &selection_summary(model),
-        TEXT_DIM,
+        ui.theme.text_dim,
         Align::Right,
     );
     commands
@@ -534,13 +561,13 @@ fn draw_roots(
     model: &BrowserModel,
     scroll: &mut ScrollState,
 ) -> Vec<Command> {
-    ui.painter.fill_rect(area, PANEL_ALT);
+    ui.painter.fill_rect(area, ui.theme.panel_alt);
     let (title, body) = area.inset(ui.px(6)).split_top(ui.px(30));
     ui.label_styled(
         title,
         "PLACES & DRIVES",
-        TextStyle::tracked(fonts::BODY, 11.0, 0.12),
-        TEXT_DIM,
+        ui.text_style(TextStyle::tracked(fonts::BODY, 11.0, 0.12)),
+        ui.theme.text_dim,
         Align::Left,
     );
     // The trash sits above the drives as its own place, because that is what it is: not a folder
@@ -548,13 +575,13 @@ fn draw_roots(
     let (trash_row, body) = body.split_top(ui.px(ROOT_ROW_HEIGHT));
     let mut commands = Vec::new();
     if model.in_trash() {
-        ui.painter.fill_rect(trash_row, ACCENT_SOFT);
+        ui.painter.fill_rect(trash_row, ui.theme.accent_soft);
     } else if ui.input.hovering(trash_row) {
         ui.painter.fill_rect(trash_row, 0x00ff_ffff);
     }
     {
         let (label, detail) = trash_row.inset(ui.px(6)).split_top(ui.px(22));
-        ui.label(label, "Trash", TEXT, Align::Left);
+        ui.label(label, "Trash", ui.theme.text, Align::Left);
         ui.label_styled(
             detail,
             &match model.trash.as_ref() {
@@ -562,8 +589,8 @@ fn draw_roots(
                 Some(view) => format!("{} item(s)", view.entries.len()),
                 None => "Deleted items".to_owned(),
             },
-            TextStyle::new(fonts::BODY, 11.0),
-            TEXT_DIM,
+            ui.text_style(TextStyle::new(fonts::BODY, 11.0)),
+            ui.theme.text_dim,
             Align::Left,
         );
         if ui.input.take_click(trash_row) {
@@ -583,7 +610,7 @@ fn draw_roots(
                 .directory()
                 .is_some_and(|directory| directory == root.path);
         if active {
-            ui.painter.fill_rect(row, ACCENT_SOFT);
+            ui.painter.fill_rect(row, ui.theme.accent_soft);
         } else if ui.input.hovering(row) && root.available {
             ui.painter.fill_rect(row, 0x00ff_ffff);
         }
@@ -597,7 +624,7 @@ fn draw_roots(
         ui.label(
             label,
             &root.label,
-            if root.available { TEXT } else { TEXT_DIM },
+            if root.available { ui.theme.text } else { ui.theme.text_dim },
             Align::Left,
         );
         let detail_text = root.volume.as_ref().map_or_else(
@@ -621,8 +648,8 @@ fn draw_roots(
         ui.label_styled(
             detail,
             &detail_text,
-            TextStyle::new(fonts::BODY, 11.0),
-            TEXT_DIM,
+            ui.text_style(TextStyle::new(fonts::BODY, 11.0)),
+            ui.theme.text_dim,
             Align::Left,
         );
         if root.key.starts_with("bookmark:") && ui.input.take_context_click(row) {
@@ -675,15 +702,16 @@ fn draw_entries(
     area: Rect,
     model: &BrowserModel,
     scroll: &mut ScrollState,
+    palette: templar_types::appearance::Palette,
 ) -> Vec<Command> {
-    ui.painter.fill_rect(area, PANEL);
+    ui.painter.fill_rect(area, ui.theme.panel);
     let (columns, body) = area.split_top(ui.px(COLUMN_HEIGHT));
     if model.in_trash() {
         draw_trash_columns(ui, columns);
         return draw_trash_entries(ui, body, model, scroll);
     }
     if model.view == templar_types::file_sort::ViewMode::Thumbnails {
-        return draw_thumbnail_grid(ui, area, model, scroll);
+        return draw_thumbnail_grid(ui, area, model, scroll, palette);
     }
     draw_columns(ui, columns);
     draw_directory_entries(ui, body, model, scroll)
@@ -698,12 +726,13 @@ fn draw_thumbnail_grid(
     area: Rect,
     model: &BrowserModel,
     scroll: &mut ScrollState,
+    palette: templar_types::appearance::Palette,
 ) -> Vec<Command> {
     let Some(listing) = &model.listing else {
         ui.label(
             area.inset(ui.px(14)),
             "Loading folder contents…",
-            TEXT_DIM,
+            ui.theme.text_dim,
             Align::Left,
         );
         return Vec::new();
@@ -712,7 +741,7 @@ fn draw_thumbnail_grid(
         ui.label(
             area.inset(ui.px(14)),
             "This folder is empty.",
-            TEXT_DIM,
+            ui.theme.text_dim,
             Align::Left,
         );
         return Vec::new();
@@ -736,16 +765,20 @@ fn draw_thumbnail_grid(
             let slot_i = i32::try_from(slot).unwrap_or(0);
             let tile = Rect::new(row.x + slot_i * cell, row.y, cell, row.h).inset(ui.px(4));
             let selected = model.selected.contains(&entry.path);
+            ui.semantic(pixelkit_ui::semantics::Role::ListBoxOption, &entry.name, tile, index == model.focus, Some(selected), None);
+            if ui.input.focus_requested(tile) && ui.input.press_position().is_none() {
+                commands.push(Command::Select { index, modifiers: SelectionModifiers::default(), activate_if_selected: false });
+            }
             if selected {
-                ui.painter.fill_rect(tile, ACCENT_SOFT);
+                ui.painter.fill_rect(tile, ui.theme.accent_soft);
             } else if ui.input.hovering(tile) {
-                ui.painter.fill_rect(tile, 0x00f7_f9fa);
+                ui.painter.fill_rect(tile, ui.theme.hover);
             } else {
-                ui.painter.fill_rect(tile, PANEL_ALT);
+                ui.painter.fill_rect(tile, ui.theme.panel_alt);
             }
             if index == model.focus {
                 ui.painter
-                    .fill_rect(Rect::new(tile.x, tile.y, ui.px(3), tile.h), ACCENT);
+                    .fill_rect(Rect::new(tile.x, tile.y, ui.px(3), tile.h), ui.theme.accent);
             }
             let (image, caption) = tile.split_bottom(ui.px(20));
             if let Some(bitmap) = model.thumbnails.get(&entry.path) {
@@ -758,9 +791,9 @@ fn draw_thumbnail_grid(
                 // Folder-ness is shown, not spelled: the warm folder plate Home uses for
                 // folder objects, with no text repeating what the shape already says.
                 let plate = image.inset(ui.px(6));
-                ui.painter.fill_rounded_rect(plate, ui.px(6), FOLDER_PLATE);
+                ui.painter.fill_rounded_rect(plate, ui.px(6), palette.folder_shell);
                 ui.painter
-                    .stroke_rect(plate, ui.scale.hairline(), FOLDER_PLATE_EDGE);
+                    .stroke_rect(plate, ui.scale.hairline(), palette.folder_edge);
             } else {
                 // A file's extension names it once; one without shows nothing.
                 let chip = entry
@@ -768,9 +801,9 @@ fn draw_thumbnail_grid(
                     .extension()
                     .and_then(|extension| extension.to_str())
                     .map_or_else(String::new, str::to_uppercase);
-                ui.label(image, &chip, TEXT_DIM, Align::Centre);
+                ui.label(image, &chip, ui.theme.text_dim, Align::Centre);
             }
-            ui.label(caption.inset(ui.px(2)), &entry.name, TEXT, Align::Left);
+            ui.label(caption.inset(ui.px(2)), &entry.name, ui.theme.text, Align::Left);
             if ui.input.take_context_click(tile) {
                 commands.extend(entry_menu(ui, tile, index, model));
             }
@@ -804,7 +837,7 @@ fn draw_directory_entries(
         ui.label(
             body.inset(ui.px(14)),
             "Loading folder contents…",
-            TEXT_DIM,
+            ui.theme.text_dim,
             Align::Left,
         );
         return Vec::new();
@@ -813,7 +846,7 @@ fn draw_directory_entries(
         ui.label(
             body.inset(ui.px(14)),
             "This folder is empty.",
-            TEXT_DIM,
+            ui.theme.text_dim,
             Align::Left,
         );
         return Vec::new();
@@ -823,16 +856,20 @@ fn draw_directory_entries(
     ui.scroll_list(scroll, body, &heights, |ui, index, row| {
         let entry = &listing.entries[index];
         let selected = model.selected.contains(&entry.path);
+        ui.semantic(pixelkit_ui::semantics::Role::ListBoxOption, &entry.name, row, index == model.focus, Some(selected), None);
+        if ui.input.focus_requested(row) && ui.input.press_position().is_none() {
+            commands.push(Command::Select { index, modifiers: SelectionModifiers::default(), activate_if_selected: false });
+        }
         if selected {
-            ui.painter.fill_rect(row, ACCENT_SOFT);
+            ui.painter.fill_rect(row, ui.theme.accent_soft);
             if index == model.focus {
                 ui.painter
-                    .fill_rect(Rect::new(row.x, row.y, ui.px(3), row.h), ACCENT);
+                    .fill_rect(Rect::new(row.x, row.y, ui.px(3), row.h), ui.theme.accent);
             }
         } else if ui.input.hovering(row) {
-            ui.painter.fill_rect(row, 0x00f7_f9fa);
+            ui.painter.fill_rect(row, ui.theme.hover);
         } else if index % 2 == 1 {
-            ui.painter.fill_rect(row, PANEL_ALT);
+            ui.painter.fill_rect(row, ui.theme.panel_alt);
         }
         let (modified, rest) = row.split_right(ui.px(130).min(row.w / 3));
         let (size, name) = rest.split_right(ui.px(90).min(rest.w / 3));
@@ -850,7 +887,7 @@ fn draw_directory_entries(
                 entry.name,
                 if entry.is_symlink { " →" } else { "" },
             ),
-            TEXT,
+            ui.theme.text,
             Align::Left,
         );
         ui.label(
@@ -860,14 +897,14 @@ fn draw_directory_entries(
             } else {
                 format::bytes(entry.size_bytes)
             },
-            TEXT_DIM,
+            ui.theme.text_dim,
             Align::Right,
         );
         ui.label_styled(
             modified.inset(ui.px(7)),
             &format::timestamp_ms(entry.mtime_ms),
-            TextStyle::new(fonts::BODY, 11.0),
-            TEXT_DIM,
+            ui.text_style(TextStyle::new(fonts::BODY, 11.0)),
+            ui.theme.text_dim,
             Align::Right,
         );
         if ui.input.take_click(row) {
@@ -886,11 +923,11 @@ fn draw_directory_entries(
     });
     if listing.truncated {
         let note = Rect::new(body.x, body.bottom() - ui.px(24), body.w, ui.px(24));
-        ui.painter.fill_rect(note, PANEL_ALT);
+        ui.painter.fill_rect(note, ui.theme.panel_alt);
         ui.label(
             note.inset(ui.px(5)),
             "Listing capped at 500 entries.",
-            TEXT_DIM,
+            ui.theme.text_dim,
             Align::Right,
         );
     }
@@ -901,23 +938,23 @@ fn draw_directory_entries(
 /// when it went and, above all, where it came from — a modified time and a size answer neither
 /// "is this the one I meant" nor "where will Restore put it back".
 fn draw_trash_columns(ui: &mut Ui<'_>, area: Rect) {
-    ui.painter.fill_rect(area, PANEL_ALT);
+    ui.painter.fill_rect(area, ui.theme.panel_alt);
     let (deleted, rest) = area.split_right(ui.px(150).min(area.w / 3));
     let (origin, name) = rest.split_right(ui.px(240).min(rest.w / 2));
-    let style = TextStyle::tracked(fonts::BODY, 10.0, 0.10);
-    ui.label_styled(name.inset(ui.px(7)), "NAME", style, TEXT_DIM, Align::Left);
+    let style = ui.text_style(TextStyle::tracked(fonts::BODY, 10.0, 0.10));
+    ui.label_styled(name.inset(ui.px(7)), "NAME", style, ui.theme.text_dim, Align::Left);
     ui.label_styled(
         origin.inset(ui.px(7)),
         "ORIGINAL LOCATION",
         style,
-        TEXT_DIM,
+        ui.theme.text_dim,
         Align::Left,
     );
     ui.label_styled(
         deleted.inset(ui.px(7)),
         "DELETED",
         style,
-        TEXT_DIM,
+        ui.theme.text_dim,
         Align::Right,
     );
 }
@@ -938,7 +975,7 @@ fn draw_trash_entries(
                 Some(view) if view.error.is_some() => "The trash could not be read.",
                 _ => "The trash is empty.",
             },
-            TEXT_DIM,
+            ui.theme.text_dim,
             Align::Left,
         );
         return Vec::new();
@@ -948,16 +985,20 @@ fn draw_trash_entries(
     ui.scroll_list(scroll, body, &heights, |ui, index, row| {
         let entry = &entries[index];
         let selected = model.selected.contains(&entry.trashed_path);
+        ui.semantic(pixelkit_ui::semantics::Role::ListBoxOption, &entry.name, row, index == model.focus, Some(selected), None);
+        if ui.input.focus_requested(row) && ui.input.press_position().is_none() {
+            commands.push(Command::Select { index, modifiers: SelectionModifiers::default(), activate_if_selected: false });
+        }
         if selected {
-            ui.painter.fill_rect(row, ACCENT_SOFT);
+            ui.painter.fill_rect(row, ui.theme.accent_soft);
             if index == model.focus {
                 ui.painter
-                    .fill_rect(Rect::new(row.x, row.y, ui.px(3), row.h), ACCENT);
+                    .fill_rect(Rect::new(row.x, row.y, ui.px(3), row.h), ui.theme.accent);
             }
         } else if ui.input.hovering(row) {
-            ui.painter.fill_rect(row, 0x00f7_f9fa);
+            ui.painter.fill_rect(row, ui.theme.hover);
         } else if index % 2 == 1 {
-            ui.painter.fill_rect(row, PANEL_ALT);
+            ui.painter.fill_rect(row, ui.theme.panel_alt);
         }
         let (deleted, rest) = row.split_right(ui.px(150).min(row.w / 3));
         let (origin, name) = rest.split_right(ui.px(240).min(rest.w / 2));
@@ -968,21 +1009,21 @@ fn draw_trash_entries(
                 if entry.is_directory { "FOLDER" } else { "FILE" },
                 entry.name
             ),
-            TEXT,
+            ui.theme.text,
             Align::Left,
         );
         ui.label_styled(
             origin.inset(ui.px(7)),
             &entry.original_location(),
-            TextStyle::new(fonts::BODY, 11.0),
-            TEXT_DIM,
+            ui.text_style(TextStyle::new(fonts::BODY, 11.0)),
+            ui.theme.text_dim,
             Align::Left,
         );
         ui.label_styled(
             deleted.inset(ui.px(7)),
             &entry.deletion_date.replace('T', "  "),
-            TextStyle::new(fonts::BODY, 11.0),
-            TEXT_DIM,
+            ui.text_style(TextStyle::new(fonts::BODY, 11.0)),
+            ui.theme.text_dim,
             Align::Right,
         );
         // Selecting only. Double-clicking a trashed item must not open it: opening would take
@@ -1004,35 +1045,35 @@ fn draw_trash_entries(
 }
 
 fn draw_columns(ui: &mut Ui<'_>, area: Rect) {
-    ui.painter.fill_rect(area, PANEL_ALT);
+    ui.painter.fill_rect(area, ui.theme.panel_alt);
     let (modified, rest) = area.split_right(ui.px(130).min(area.w / 3));
     let (size, name) = rest.split_right(ui.px(90).min(rest.w / 3));
-    let style = TextStyle::tracked(fonts::BODY, 10.0, 0.10);
-    ui.label_styled(name.inset(ui.px(7)), "NAME", style, TEXT_DIM, Align::Left);
-    ui.label_styled(size.inset(ui.px(7)), "SIZE", style, TEXT_DIM, Align::Right);
+    let style = ui.text_style(TextStyle::tracked(fonts::BODY, 10.0, 0.10));
+    ui.label_styled(name.inset(ui.px(7)), "NAME", style, ui.theme.text_dim, Align::Left);
+    ui.label_styled(size.inset(ui.px(7)), "SIZE", style, ui.theme.text_dim, Align::Right);
     ui.label_styled(
         modified.inset(ui.px(7)),
         "MODIFIED",
         style,
-        TEXT_DIM,
+        ui.theme.text_dim,
         Align::Right,
     );
 }
 
 #[allow(clippy::too_many_lines)]
 fn draw_properties(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) {
-    ui.painter.fill_rect(area, PANEL_ALT);
+    ui.painter.fill_rect(area, ui.theme.panel_alt);
     let mut y = area.y + ui.px(10);
-    property_line(ui, area, &mut y, "PROPERTIES", TEXT, true);
+    property_line(ui, area, &mut y, "PROPERTIES", ui.theme.text, true);
     match model.selected.len() {
         0 => {
-            property_line(ui, area, &mut y, "No item selected", TEXT_DIM, false);
+            property_line(ui, area, &mut y, "No item selected", ui.theme.text_dim, false);
             if let Some(volume) = &model.volume {
                 y += ui.px(8);
                 draw_volume_properties(ui, area, &mut y, volume);
             }
             y += ui.px(8);
-            property_line(ui, area, &mut y, "SHORTCUTS", TEXT, true);
+            property_line(ui, area, &mut y, "SHORTCUTS", ui.theme.text, true);
             for line in [
                 "Enter · open",
                 "F2 · rename",
@@ -1044,7 +1085,7 @@ fn draw_properties(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) {
                 "Alt+Left / Right · history",
                 "Ctrl+L · location",
             ] {
-                property_line(ui, area, &mut y, line, TEXT_DIM, false);
+                property_line(ui, area, &mut y, line, ui.theme.text_dim, false);
             }
         }
         count if count > 1 => {
@@ -1053,7 +1094,7 @@ fn draw_properties(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) {
                 area,
                 &mut y,
                 &format!("{count} items selected"),
-                TEXT,
+                ui.theme.text,
                 false,
             );
             property_line(
@@ -1061,14 +1102,14 @@ fn draw_properties(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) {
                 area,
                 &mut y,
                 "Copy, move or Trash them together.",
-                TEXT_DIM,
+                ui.theme.text_dim,
                 false,
             );
         }
         _ => match (&model.properties, &model.properties_error) {
             (Some(properties), _) => {
                 let info = &properties.info;
-                property_line(ui, area, &mut y, &info.name, TEXT, false);
+                property_line(ui, area, &mut y, &info.name, ui.theme.text, false);
                 property_line(
                     ui,
                     area,
@@ -1078,7 +1119,7 @@ fn draw_properties(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) {
                         EntryKind::File => "File",
                         EntryKind::Other => "Special item",
                     },
-                    TEXT_DIM,
+                    ui.theme.text_dim,
                     false,
                 );
                 property_line(
@@ -1086,18 +1127,18 @@ fn draw_properties(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) {
                     area,
                     &mut y,
                     &info.path.display().to_string(),
-                    TEXT_DIM,
+                    ui.theme.text_dim,
                     false,
                 );
                 draw_selected_preview(ui, area, &mut y, model);
                 y += ui.px(8);
-                property_line(ui, area, &mut y, "SIZE", TEXT, true);
+                property_line(ui, area, &mut y, "SIZE", ui.theme.text, true);
                 if let Some(folder) = &info.folder {
                     let (counts, sizes, warning) = folder_summary_text(folder);
-                    property_line(ui, area, &mut y, &counts, TEXT_DIM, false);
-                    property_line(ui, area, &mut y, &sizes, TEXT_DIM, false);
+                    property_line(ui, area, &mut y, &counts, ui.theme.text_dim, false);
+                    property_line(ui, area, &mut y, &sizes, ui.theme.text_dim, false);
                     if let Some(warning) = warning {
-                        property_line(ui, area, &mut y, &warning, DANGER, false);
+                        property_line(ui, area, &mut y, &warning, ui.theme.alarm, false);
                     }
                 } else {
                     property_line(
@@ -1109,20 +1150,20 @@ fn draw_properties(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) {
                             format::bytes(info.size_bytes),
                             format::bytes(info.allocated_bytes)
                         ),
-                        TEXT_DIM,
+                        ui.theme.text_dim,
                         false,
                     );
                 }
-                property_line(ui, area, &mut y, "MODIFIED", TEXT, true);
+                property_line(ui, area, &mut y, "MODIFIED", ui.theme.text, true);
                 property_line(
                     ui,
                     area,
                     &mut y,
                     &format::timestamp_ms(info.modified_ms),
-                    TEXT_DIM,
+                    ui.theme.text_dim,
                     false,
                 );
-                property_line(ui, area, &mut y, "PERMISSIONS", TEXT, true);
+                property_line(ui, area, &mut y, "PERMISSIONS", ui.theme.text, true);
                 property_line(
                     ui,
                     area,
@@ -1133,24 +1174,24 @@ fn draw_properties(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) {
                         info.uid,
                         info.gid
                     ),
-                    TEXT_DIM,
+                    ui.theme.text_dim,
                     false,
                 );
                 if let Some(target) = &info.symlink_target {
-                    property_line(ui, area, &mut y, "LINK TARGET", TEXT, true);
+                    property_line(ui, area, &mut y, "LINK TARGET", ui.theme.text, true);
                     property_line(
                         ui,
                         area,
                         &mut y,
                         &target.display().to_string(),
-                        TEXT_DIM,
+                        ui.theme.text_dim,
                         false,
                     );
                 }
                 y += ui.px(8);
                 draw_volume_properties(ui, area, &mut y, &properties.volume);
             }
-            (_, Some(error)) => property_line(ui, area, &mut y, error, DANGER, false),
+            (_, Some(error)) => property_line(ui, area, &mut y, error, ui.theme.alarm, false),
             _ => {
                 draw_selected_preview(ui, area, &mut y, model);
                 property_line(
@@ -1158,7 +1199,7 @@ fn draw_properties(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) {
                     area,
                     &mut y,
                     "Choose Properties or press Alt+Enter.",
-                    TEXT_DIM,
+                    ui.theme.text_dim,
                     false,
                 );
             }
@@ -1190,12 +1231,12 @@ fn folder_summary_text(folder: &FolderSummary) -> (String, String, Option<String
 fn draw_selected_preview(ui: &mut Ui<'_>, area: Rect, y: &mut i32, model: &BrowserModel) {
     let Some(preview) = &model.preview else {
         if let Some(error) = &model.preview_error {
-            property_line(ui, area, y, "PREVIEW", TEXT, true);
-            property_line(ui, area, y, error, DANGER, false);
+            property_line(ui, area, y, "PREVIEW", ui.theme.text, true);
+            property_line(ui, area, y, error, ui.theme.alarm, false);
         }
         return;
     };
-    property_line(ui, area, y, "PREVIEW", TEXT, true);
+    property_line(ui, area, y, "PREVIEW", ui.theme.text, true);
     let available_width = (area.w - ui.px(20)).max(1);
     let available_height = ui.px(160);
     let width_scale = f64::from(available_width) / f64::from(preview.bitmap.width.max(1));
@@ -1204,7 +1245,7 @@ fn draw_selected_preview(ui: &mut Ui<'_>, area: Rect, y: &mut i32, model: &Brows
     let width = (f64::from(preview.bitmap.width) * scale).round().max(1.0) as i32;
     let height = (f64::from(preview.bitmap.height) * scale).round().max(1.0) as i32;
     let preview_area = Rect::new(area.x + (area.w - width) / 2, *y, width, height);
-    ui.painter.fill_rect(preview_area, PANEL);
+    ui.painter.fill_rect(preview_area, ui.theme.panel);
     ui.painter
         .blit(&preview.bitmap, preview_area, ScaleFilter::Bilinear);
     *y += height + ui.px(4);
@@ -1216,7 +1257,7 @@ fn draw_selected_preview(ui: &mut Ui<'_>, area: Rect, y: &mut i32, model: &Brows
             "{}×{} · {}",
             preview.metadata.width, preview.metadata.height, preview.metadata.renderer
         ),
-        TEXT_DIM,
+        ui.theme.text_dim,
         false,
     );
 }
@@ -1226,11 +1267,11 @@ fn property_line(ui: &mut Ui<'_>, area: Rect, y: &mut i32, text: &str, colour: u
     ui.label_styled(
         Rect::new(area.x + ui.px(10), *y, area.w - ui.px(20), height),
         text,
-        if heading {
+        ui.text_style(if heading {
             TextStyle::tracked(fonts::BODY, 10.0, 0.11)
         } else {
             TextStyle::new(fonts::BODY, 12.0)
-        },
+        }),
         colour,
         Align::Left,
     );
@@ -1238,13 +1279,13 @@ fn property_line(ui: &mut Ui<'_>, area: Rect, y: &mut i32, text: &str, colour: u
 }
 
 fn draw_volume_properties(ui: &mut Ui<'_>, area: Rect, y: &mut i32, volume: &VolumeInfo) {
-    property_line(ui, area, y, "CONTAINING DRIVE", TEXT, true);
+    property_line(ui, area, y, "CONTAINING DRIVE", ui.theme.text, true);
     property_line(
         ui,
         area,
         y,
         &volume.mount_point.display().to_string(),
-        TEXT_DIM,
+        ui.theme.text_dim,
         false,
     );
     property_line(
@@ -1256,7 +1297,7 @@ fn draw_volume_properties(ui: &mut Ui<'_>, area: Rect, y: &mut i32, volume: &Vol
             volume.fs_type,
             format::bytes(volume.free_bytes)
         ),
-        TEXT_DIM,
+        ui.theme.text_dim,
         false,
     );
     property_line(
@@ -1267,16 +1308,16 @@ fn draw_volume_properties(ui: &mut Ui<'_>, area: Rect, y: &mut i32, volume: &Vol
             "{} reserved for recovery",
             format::bytes(volume.reserved_bytes)
         ),
-        TEXT_DIM,
+        ui.theme.text_dim,
         false,
     );
     if volume.read_only {
-        property_line(ui, area, y, "READ-ONLY", DANGER, true);
+        property_line(ui, area, y, "READ-ONLY", ui.theme.alarm, true);
     }
 }
 
 fn draw_status(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) -> Vec<Command> {
-    ui.painter.fill_rect(area, PANEL);
+    ui.painter.fill_rect(area, ui.theme.panel);
     let message = model
         .error
         .as_deref()
@@ -1286,9 +1327,9 @@ fn draw_status(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) -> Vec<Command
         area.inset(ui.px(8)),
         message,
         if model.error.is_some() {
-            DANGER
+            ui.theme.alarm
         } else {
-            TEXT_DIM
+            ui.theme.text_dim
         },
         Align::Left,
     );
@@ -1300,7 +1341,7 @@ fn draw_status(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) -> Vec<Command
             width,
             ui.px(8),
         );
-        ui.painter.fill_rect(track, EDGE);
+        ui.painter.fill_rect(track, ui.theme.panel_edge);
         ui.painter.fill_rect(
             Rect::new(
                 track.x,
@@ -1309,43 +1350,19 @@ fn draw_status(ui: &mut Ui<'_>, area: Rect, model: &BrowserModel) -> Vec<Command
                 track.h,
             ),
             if operation.state.terminal() {
-                GOOD
+                ui.theme.good
             } else {
-                ACCENT
+                ui.theme.accent
             },
         );
     }
     Vec::new()
 }
 
-fn handle_dialog_keys(ui: &mut Ui<'_>, dialog: &mut Dialog) -> Vec<Command> {
-    let modifiers = ui.input.modifiers();
-    let mut commands = Vec::new();
-    for key in ui.input.take_keys() {
-        let (text, error) = match dialog {
-            Dialog::Rename { text, error } | Dialog::Location { text, error } => (text, error),
-        };
-        match key {
-            KeyInput::Character(character) if !modifiers.control && !modifiers.alt => {
-                text.push(character);
-                *error = None;
-            }
-            KeyInput::Backspace => {
-                text.pop();
-                *error = None;
-            }
-            KeyInput::Escape => commands.push(Command::DismissDialog),
-            KeyInput::Enter => commands.push(match dialog {
-                Dialog::Rename { text, .. } => Command::ConfirmRename(text.clone()),
-                Dialog::Location { text, .. } => Command::ConfirmLocation(text.clone()),
-            }),
-            _ => {}
-        }
-    }
-    commands
-}
 
 fn draw_dialog(ui: &mut Ui<'_>, whole: Rect, dialog: &mut Dialog) -> Vec<Command> {
+    let accept_requested = ui.input.keys().contains(&KeyInput::Enter);
+    let cancel_requested = ui.input.keys().contains(&KeyInput::Escape);
     ui.painter.blend_rect(whole, 0x0017_1b20, 88);
     let width = ui.px(520).min(whole.w - ui.px(30));
     let height = ui.px(178).min(whole.h - ui.px(30));
@@ -1355,8 +1372,8 @@ fn draw_dialog(ui: &mut Ui<'_>, whole: Rect, dialog: &mut Dialog) -> Vec<Command
         width,
         height,
     );
-    ui.painter.fill_rect(panel, PANEL);
-    ui.painter.stroke_rect(panel, ui.scale.hairline(), EDGE);
+    ui.painter.fill_rect(panel, ui.theme.panel);
+    ui.painter.stroke_rect(panel, ui.scale.hairline(), ui.theme.panel_edge);
     let (title, text, error, buttons) = match dialog {
         Dialog::Rename { text, error } => ("RENAME", text, error.as_deref(), "Rename"),
         Dialog::Location { text, error } => ("OPEN LOCATION", text, error.as_deref(), "Open"),
@@ -1369,8 +1386,8 @@ fn draw_dialog(ui: &mut Ui<'_>, whole: Rect, dialog: &mut Dialog) -> Vec<Command
             ui.px(28),
         ),
         title,
-        TextStyle::tracked(fonts::BODY, 12.0, 0.12),
-        TEXT,
+        ui.text_style(TextStyle::tracked(fonts::BODY, 12.0, 0.12)),
+        ui.theme.text,
         Align::Left,
     );
     let field = Rect::new(
@@ -1379,10 +1396,8 @@ fn draw_dialog(ui: &mut Ui<'_>, whole: Rect, dialog: &mut Dialog) -> Vec<Command
         panel.w - ui.px(28),
         ui.px(40),
     );
-    ui.painter.fill_rect(field, 0x00ff_ffff);
-    ui.painter.stroke_rect(field, ui.px(2), ACCENT);
-    ui.label(field.inset(ui.px(8)), text, TEXT, Align::Left);
-    if let Some(error) = error {
+    ui.text_field(text, field, title, true, false);
+    if let Some(error) = error.or_else(|| text.clipboard_error()) {
         ui.label(
             Rect::new(
                 panel.x + ui.px(14),
@@ -1391,7 +1406,7 @@ fn draw_dialog(ui: &mut Ui<'_>, whole: Rect, dialog: &mut Dialog) -> Vec<Command
                 ui.px(24),
             ),
             error,
-            DANGER,
+            ui.theme.alarm,
             Align::Left,
         );
     }
@@ -1403,13 +1418,14 @@ fn draw_dialog(ui: &mut Ui<'_>, whole: Rect, dialog: &mut Dialog) -> Vec<Command
     );
     let cancel = Rect::new(apply.x - ui.px(92), apply.y, ui.px(82), apply.h);
     let mut commands = Vec::new();
-    if ui.button(cancel, "Cancel") {
+    let canceled = ui.button(cancel, "Cancel") || cancel_requested;
+    if canceled {
         commands.push(Command::DismissDialog);
     }
-    if ui.button(apply, buttons) {
+    if (ui.button(apply, buttons) || accept_requested) && !canceled {
         commands.push(match dialog {
-            Dialog::Rename { text, .. } => Command::ConfirmRename(text.clone()),
-            Dialog::Location { text, .. } => Command::ConfirmLocation(text.clone()),
+            Dialog::Rename { text, .. } => Command::ConfirmRename(text.text().to_owned()),
+            Dialog::Location { text, .. } => Command::ConfirmLocation(text.text().to_owned()),
         });
     }
     commands
@@ -1487,12 +1503,40 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_cancel_in_modal_never_also_submits_a_rename() {
+        let model = rendered_model();
+        let mut surface = FileSurface::default();
+        let mut buffer = WindowBuffer::new(1180, 760);
+        surface.begin_rename("unchanged.txt".into());
+        surface.draw(&mut buffer, Scale::ONE, &model);
+        surface.input.key(KeyInput::Tab);
+        surface.draw(&mut buffer, Scale::ONE, &model);
+        surface.input.key(KeyInput::Enter);
+        let commands = surface.draw(&mut buffer, Scale::ONE, &model);
+        assert!(matches!(commands.as_slice(), [Command::DismissDialog]), "{commands:?}");
+    }
+
+    #[test]
+    fn committed_unicode_survives_live_theme_change_and_rename_submission() {
+        let model = rendered_model();
+        let mut surface = FileSurface::default();
+        let mut buffer = WindowBuffer::new(1180, 760);
+        surface.begin_rename(String::new());
+        surface.draw(&mut buffer, Scale::ONE, &model);
+        for character in "เอกสาร😀漢字.txt".chars() { surface.input.key(KeyInput::Character(character)); }
+        surface.draw(&mut buffer, Scale::ONE, &model);
+        surface.update_appearance(templar_types::appearance::Appearance::from_settings("dark", "blue", true));
+        surface.input.key(KeyInput::Enter);
+        let commands = surface.draw(&mut buffer, Scale::ONE, &model);
+        assert!(matches!(commands.as_slice(), [Command::ConfirmRename(name)] if name == "เอกสาร😀漢字.txt"), "{commands:?}");
+    }
+    #[test]
     fn browser_surface_renders_real_rows_and_pointer_selects_them() {
         let model = rendered_model();
         let mut surface = FileSurface::default();
         let mut buffer = WindowBuffer::new(1180, 760);
         assert!(surface.draw(&mut buffer, Scale::ONE, &model).is_empty());
-        assert!(buffer.pixels.iter().any(|pixel| *pixel != GROUND));
+        assert!(buffer.pixels.iter().any(|pixel| *pixel != templar_types::appearance::LIGHT.ground));
 
         // Entries begin to the right of the 224 px roots rail and below 54 + 42 + 42 + 28 px.
         surface.input.cursor_moved(300.0, 180.0);

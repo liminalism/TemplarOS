@@ -21,6 +21,9 @@ pub mod execute;
 pub mod index_host;
 pub mod journal;
 pub mod lastdir;
+#[cfg(test)]
+mod native_path;
+pub mod native_fs;
 pub mod observer;
 pub mod operations;
 pub mod preview;
@@ -28,6 +31,7 @@ pub mod recents;
 pub mod search;
 pub mod storage;
 pub mod trash;
+pub mod transfer_undo;
 pub mod watcher;
 
 pub use browse::{BrowseEntry, DirectoryListing, EntryKind, list_directory};

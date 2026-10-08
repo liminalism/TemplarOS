@@ -3,40 +3,24 @@
 //! **The compositor is the only honest idle source on a Wayland session.** logind's `IdleHint` is
 //! not driven by anything here, and no client can see the seat's input; `templar-comp` sees every
 //! keyboard, pointer and touch event there is, so this is where "nothing has happened for a
-//! while" can be known rather than guessed. `org.templaros.Power1` records the policy
-//! (`crates/templar-session-core/src/power.rs`'s `screen_off_after`) and says in as many words that
-//! it does not enforce it; this module is the enforcer for the screen-off half of it, and only
-//! that half.
+//! while" can be known rather than guessed. Sessiond owns `Power1` policy and schedules its
+//! dim/lock/suspend decisions from native samples; this module enforces native screen blanking.
 //!
 //! What this does **not** do, deliberately:
 //!
-//! * **Dimming.** A dim is a backlight ramp before the blank, and the backlight is
-//!   `org.templaros.Backlight1` — a system-bus service this process does not talk to. It would
-//!   attach at [`IdleState::expire`]: a first timer at `dim_after` that asks `Backlight1` to drop
-//!   the level and remembers the old one, and [`IdleState::wake`] restoring it. That needs a
-//!   D-Bus channel out of the render thread (the `templar-comp-integration` pattern: a background
-//!   tokio task, never a blocking call here), which is why it is not folded in as a "small
-//!   addition".
-//! * **Locking.** `screen_off_after` and `lock_after` are separate intervals in the same profile
-//!   and mean different things. Locking would attach at the same place, by driving
-//!   `ext-session-lock-v1` (`src/session_lock.rs`) — but `Session.Lifecycle1.Lock` is still a
-//!   `NotSupported` stub for want of a lock-manager client, so a lock timer here would fire into
-//!   nothing. A screen that turns off is not a screen that is locked, and this module never
-//!   claims otherwise.
+//! * **Dimming.** Sessiond conditionally owns a Backlight1 raw target and restores only if actual
+//!   device/scale/raw readback still belongs to that owner. The render thread does not call D-Bus.
+//! * **Locking.** Screen-off and lock intervals are separate policies. Sessiond/logind owns
+//!   lock/dim/suspend decisions; this module owns their monotonic seat-activity/inhibitor
+//!   epoch. Secure lock completion remains the exact presented-generation barrier in
+//!   `src/session_lock.rs`, never a blanked-screen observation.
 //!
 //! The timing policy itself is pure and tested below; the wiring (a calloop timer, the backend's
 //! DPMS call) is in `src/state.rs` and `src/backend/`.
 
 use smithay::reexports::calloop::{RegistrationToken, timer::Timer};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// The screen-off delay, from a setting in seconds.
-///
-/// Zero is "never", which is a setting and not an absence — a person who has turned idle blanking
-/// off has said something, and the shell sends that as deliberately as any other value.
-pub fn timeout_from_seconds(seconds: u32) -> Option<Duration> {
-    (seconds > 0).then(|| Duration::from_secs(u64::from(seconds)))
-}
 
 /// How long to wait before blanking, given the configured timeout and what is going on.
 ///
@@ -58,15 +42,29 @@ pub fn delay_before_blanking(
 
 /// The idle watcher's whole state: the configured delay, the timer currently armed (if any),
 /// whether the outputs are off right now, and how many `zwp_idle_inhibitor_v1` objects are alive.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct IdleState {
     timeout: Option<Duration>,
     timer: Option<RegistrationToken>,
     blanked: bool,
     inhibitors: usize,
+    last_activity: Instant,
+    activity_serial: u64,
+}
+impl Default for IdleState {
+    fn default() -> Self { Self { timeout: None, timer: None, blanked: false, inhibitors: 0, last_activity: Instant::now(), activity_serial: 0 } }
 }
 
 impl IdleState {
+    /// Advances for actual seat events, including input while already unblanked.
+    pub fn note_activity(&mut self) {
+        self.activity_serial = self.activity_serial.checked_add(1).expect("seat activity serial exhausted");
+        self.last_activity = Instant::now();
+    }
+    pub fn activity_serial(&self) -> u64 { self.activity_serial }
+    pub fn idle_elapsed_ms(&self, now: Instant) -> u64 {
+        now.saturating_duration_since(self.last_activity).as_millis().min(u128::from(u64::MAX)) as u64
+    }
     /// Whether the outputs are currently off.
     pub fn blanked(&self) -> bool {
         self.blanked
@@ -82,10 +80,11 @@ impl IdleState {
         self.inhibitors > 0
     }
 
-    /// Apply a new setting. Returns whether the timer needs re-arming (it always does; the return
-    /// exists so the caller cannot forget).
+    /// Applying an effective source/profile policy begins a fresh idle epoch even if its blank
+    /// timeout is unchanged. This never advances the real-seat activity serial.
     #[must_use]
     pub fn set_timeout(&mut self, timeout: Option<Duration>) -> bool {
+        self.last_activity = Instant::now();
         self.timeout = timeout;
         true
     }
@@ -100,6 +99,7 @@ impl IdleState {
     /// bug into a screen that never blanks again.
     pub fn remove_inhibitor(&mut self) {
         self.inhibitors = self.inhibitors.saturating_sub(1);
+        self.last_activity = Instant::now();
     }
 
     /// Mark the screen off. Returns whether it was on before, so the caller only reaches for the
@@ -119,7 +119,10 @@ impl IdleState {
 
     /// The delay to arm right now, or `None` for "arm nothing".
     pub fn next_delay(&self) -> Option<Duration> {
-        delay_before_blanking(self.timeout, self.inhibited(), self.blanked)
+        self.next_delay_at(Instant::now())
+    }
+    fn next_delay_at(&self, now: Instant) -> Option<Duration> {
+        delay_before_blanking(self.timeout, self.inhibited(), self.blanked).map(|timeout| timeout.saturating_sub(now.saturating_duration_since(self.last_activity)))
     }
 
     /// Take the armed timer's registration token, if there is one, so the caller can remove it.
@@ -145,10 +148,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn zero_seconds_is_never_rather_than_immediately() {
-        assert_eq!(timeout_from_seconds(0), None);
-        assert_eq!(timeout_from_seconds(60), Some(Duration::from_secs(60)));
+    fn reapplying_equal_policy_starts_a_new_epoch_without_seat_activity() {
+        let mut idle = IdleState::default();
+        let timeout = Some(Duration::from_secs(60));
+        let _ = idle.set_timeout(timeout);
+        idle.last_activity -= Duration::from_secs(10);
+        let old_epoch = idle.last_activity;
+        let serial = idle.activity_serial();
+        let _ = idle.set_timeout(timeout);
+        assert!(idle.last_activity > old_epoch);
+        assert_eq!(idle.activity_serial(), serial);
+        assert_eq!(idle.next_delay_at(idle.last_activity), timeout);
     }
+
 
     #[test]
     fn an_inhibitor_arms_no_timer_at_all() {
@@ -178,10 +190,10 @@ mod tests {
         idle.remove_inhibitor();
         assert_eq!(idle.next_delay(), None);
         idle.remove_inhibitor();
-        assert_eq!(idle.next_delay(), Some(Duration::from_secs(300)));
+        assert_eq!(idle.next_delay_at(idle.last_activity), Some(Duration::from_secs(300)));
         // An unbalanced destroy must not underflow into "inhibited forever".
         idle.remove_inhibitor();
-        assert_eq!(idle.next_delay(), Some(Duration::from_secs(300)));
+        assert_eq!(idle.next_delay_at(idle.last_activity), Some(Duration::from_secs(300)));
     }
 
     /// Blanking and waking each report whether they changed anything, so the backend's DPMS call
@@ -204,8 +216,27 @@ mod tests {
     #[test]
     fn a_timeout_of_never_arms_nothing_however_idle_the_session_is() {
         let mut idle = IdleState::default();
-        let _ = idle.set_timeout(timeout_from_seconds(0));
+        let _ = idle.set_timeout(None);
         assert_eq!(idle.next_delay(), None);
         assert!(idle.timeout().is_none());
+    }
+
+    #[test]
+    fn real_activity_and_inhibitor_removal_share_one_monotonic_epoch() {
+        let mut idle = IdleState::default();
+        let _ = idle.set_timeout(Some(Duration::from_secs(300)));
+        let baseline = idle.last_activity;
+        assert_eq!(idle.idle_elapsed_ms(baseline + Duration::from_secs(20)), 20_000);
+        assert_eq!(idle.next_delay_at(baseline + Duration::from_secs(20)), Some(Duration::from_secs(280)));
+        idle.note_activity();
+        assert_eq!(idle.activity_serial(), 1);
+        assert!(!idle.wake());
+        idle.note_activity();
+        assert_eq!(idle.activity_serial(), 2);
+        idle.add_inhibitor();
+        idle.remove_inhibitor();
+        assert_eq!(idle.activity_serial(), 2, "inhibitor lifecycle is not invented seat input");
+        assert_eq!(idle.idle_elapsed_ms(idle.last_activity), 0);
+        assert_eq!(idle.next_delay_at(idle.last_activity), Some(Duration::from_secs(300)));
     }
 }

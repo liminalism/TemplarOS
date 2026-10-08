@@ -1,6 +1,6 @@
 [package]
 name = "templar-settings"
-description = "TemplarOS Settings: typed settings schema, providers, background applications, associations, history and first-run conflicts in one place (skeleton)"
+description = "TemplarOS Settings: typed policy, native device readback, providers, background applications, associations, history and first-run conflicts"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,21 +14,27 @@ path = "src/main.rs"
 
 [dependencies]
 templar-client = { workspace = true }
+templar-file-index = { workspace = true }
 templar-session-core = { workspace = true }
 templar-types = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 zbus = { workspace = true }
+jiff = { version = "0.2.35", default-features = false, features = ["std", "tzdb-zoneinfo"] }
+zeroize = { workspace = true }
 pixelkit-raster = { workspace = true }
 pixelkit-text = { workspace = true }
-pixelkit-ui = { workspace = true }
+pixelkit-ui = { workspace = true, features = ["accessibility"] }
 pixelkit-shell = { workspace = true }
-pixelkit-windowing = { workspace = true }
+pixelkit-windowing = { workspace = true, features = ["accessibility"] }
+templar-ui = { workspace = true }
+templar-display-ui = { workspace = true }
 
 [lints]
 workspace = true
@@ -37,7 +43,7 @@ workspace = true
 name = "templaros-settings"
 section = "x11"
 priority = "optional"
-depends = "$auto, templaros-sessiond"
+depends = "$auto, templaros-sessiond, templaros-filed"
 assets = [
     ["target/release/templar-settings", "usr/bin/templar-settings", "755"],
     ["org.templaros.Settings.desktop", "usr/share/applications/org.templaros.Settings.desktop", "644"],

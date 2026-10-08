@@ -17,6 +17,9 @@ while IFS= read -r line; do
   if [[ "$line" =~ ^([a-z_]+)[[:space:]]*=[[:space:]]*\"(.*)\"$ ]]; then
     key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
     case "$key" in fork) fork="$val";; branch) branch="$val";; pin) pin="$val";; esac
+    if [[ "$key" == "source_kind" && "$val" == "local" ]]; then
+      echo "local source $name: not fetched (no release origin/pin); use scripts/build-fork-deb.sh $name --source DIR" >&2
+    fi
     if [[ "$key" == "depends_on" || "$key" == "package" ]]; then :; fi
   fi
   if [[ -n "$name" && -n "${fork:-}" && -n "${branch:-}" && "$key" == "pin" ]]; then

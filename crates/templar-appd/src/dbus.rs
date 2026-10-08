@@ -258,7 +258,16 @@ impl IdentityApi {
 /// The instance is passed because it is the only thing that ties the launch to the *window* it
 /// eventually produces: `ShellToplevel.instance_id` is the same value, and a place that knows
 /// which instances came out of it knows which windows are its own.
-pub type LaunchObserver = Box<dyn Fn(&AppId, &[String], InstanceId) + Send + Sync>;
+#[derive(Clone, Debug)]
+pub struct LaunchEvent {
+    pub app_id: AppId,
+    pub arguments: Vec<String>,
+    pub instance: InstanceId,
+    /// The actual canonical process cwd, never a synthetic argv entry.
+    pub directory: Option<std::path::PathBuf>,
+}
+
+pub type LaunchObserver = Box<dyn Fn(LaunchEvent) + Send + Sync>;
 
 /// `org.templaros.Launcher1`
 pub struct LauncherApi {
@@ -299,21 +308,32 @@ impl LauncherApi {
         self.observer = Some(observer);
         self
     }
+
 }
 
 /// Both launch paths end here, so neither can grow a route that is unobserved.
 ///
 /// Free rather than a method so a test can exercise it without a bus connection, which
 /// `LauncherApi` needs only in order to actually launch something.
-fn observed(
-    observer: Option<&LaunchObserver>,
-    app_id: &AppId,
-    arguments: &[String],
-    instance: InstanceId,
-) {
+fn observed(observer: Option<&LaunchObserver>, event: LaunchEvent) {
     if let Some(observer) = observer {
-        observer(app_id, arguments, instance);
+        observer(event);
     }
+}
+
+/// Frozen string wire accepts a UTF-8 absolute pathname or a local file URI whose
+/// percent decoding preserves Unix bytes. Both forms validate and resolve the same cwd.
+fn launch_directory(directory: &str) -> fdo::Result<std::path::PathBuf> {
+    let directory = if directory.starts_with('/') {
+        std::borrow::Cow::Borrowed(std::path::Path::new(directory))
+    } else {
+        std::borrow::Cow::Owned(templar_types::uri_list::decode_uri(directory)
+            .ok_or_else(|| fdo::Error::InvalidArgs("launch directory must be an absolute pathname or local file URI".into()))?)
+    };
+    if !directory.is_absolute() || !directory.is_dir() {
+        return Err(fdo::Error::InvalidArgs("launch directory must be an existing absolute directory".into()));
+    }
+    directory.canonicalize().map_err(|error| fdo::Error::InvalidArgs(error.to_string()))
 }
 
 #[zbus::interface(name = "org.templaros.Launcher1")]
@@ -344,7 +364,45 @@ impl LauncherApi {
         .await
         .map_err(|error| fdo::Error::Failed(error.to_string()))?;
 
-        observed(self.observer.as_ref(), &app_id, &arguments, record.id);
+        observed(self.observer.as_ref(), LaunchEvent { app_id, arguments, instance: record.id, directory: None });
+        Ok(record.id.to_string())
+    }
+
+    /// A real canonical process cwd from an absolute UTF-8 pathname or local file URI.
+    async fn launch_in_directory_v1(
+        &self,
+        app_id: &str,
+        arguments: Vec<String>,
+        directory: &str,
+        activation_token: &str,
+    ) -> fdo::Result<String> {
+        let app_id: AppId = app_id.parse().map_err(|error: templar_types::AppIdError| fdo::Error::InvalidArgs(error.to_string()))?;
+        let directory = launch_directory(directory)?;
+        let manifest = self.registry.manifest(&app_id)
+            .ok_or_else(|| fdo::Error::FileNotFound(format!("no manifest for {app_id}")))?;
+        let record = launcher::launch_in_directory(
+            self.registry.clone(), manifest, &arguments, nonempty(activation_token).as_deref(),
+            self.backend, Some(&self.connection), Some(&directory),
+        ).await.map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        observed(self.observer.as_ref(), LaunchEvent { app_id, arguments, instance: record.id, directory: Some(directory) });
+        Ok(record.id.to_string())
+    }
+
+    /// Local file targets use the registered desktop template, never a raw URI argv guess.
+    async fn launch_files_v1(
+        &self,
+        app_id: &str,
+        file_uris: Vec<String>,
+        activation_token: &str,
+    ) -> fdo::Result<String> {
+        let app_id: AppId = app_id.parse().map_err(|error: templar_types::AppIdError| fdo::Error::InvalidArgs(error.to_string()))?;
+        let manifest = self.registry.manifest(&app_id)
+            .ok_or_else(|| fdo::Error::FileNotFound(format!("no manifest for {app_id}")))?;
+        let record = launcher::launch_files(
+            self.registry.clone(), manifest, &file_uris, nonempty(activation_token).as_deref(),
+            self.backend, Some(&self.connection),
+        ).await.map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        observed(self.observer.as_ref(), LaunchEvent { app_id, arguments: file_uris, instance: record.id, directory: None });
         Ok(record.id.to_string())
     }
 
@@ -410,7 +468,7 @@ impl LauncherApi {
         .map_err(|error| fdo::Error::Failed(error.to_string()))?;
         // The resolved variant, not the logical id: what actually started is what an observer
         // has to be told, or it cannot tell two copies of Firefox apart.
-        observed(self.observer.as_ref(), &chosen, &arguments, record.id);
+        observed(self.observer.as_ref(), LaunchEvent { app_id: chosen, arguments, instance: record.id, directory: None });
         Ok(record.id.to_string())
     }
 }
@@ -428,6 +486,32 @@ mod tests {
         path::PathBuf,
     };
     use templar_types::{AppAliases, AppManifest, AppOriginKind, AppProvenance, ResourceClass};
+
+    #[test]
+    fn launch_directory_accepts_path_and_local_uri_and_preserves_canonical_native_bytes() {
+        use std::{ffi::OsString, os::unix::{ffi::OsStringExt, fs::symlink}};
+        let temp = tempfile::tempdir().unwrap();
+        let native = temp.path().join(OsString::from_vec(b"project-\xff-${HOME}-$VAR-$$".to_vec()));
+        std::fs::create_dir(&native).unwrap();
+        let alias = temp.path().join("UTF-8 alias");
+        symlink(&native, &alias).unwrap();
+        let canonical = native.canonicalize().unwrap();
+        assert_eq!(launch_directory(alias.to_str().unwrap()).unwrap(), canonical);
+        assert_eq!(launch_directory(&templar_types::uri_list::encode_path(&alias)).unwrap(), canonical);
+        let uri = templar_types::uri_list::encode_path(&native);
+        assert_eq!(launch_directory(&uri).unwrap(), canonical);
+        assert_eq!(launch_directory(&uri.replacen("file://", "file://localhost", 1)).unwrap(), canonical);
+        let file = temp.path().join("not-a-directory");
+        std::fs::write(&file, "fixture").unwrap();
+        for invalid in [
+            "relative/path".to_owned(), "https://example.com/".to_owned(),
+            "file://remote/tmp".to_owned(), "file:relative".to_owned(),
+            file.to_str().unwrap().to_owned(), templar_types::uri_list::encode_path(&file),
+            temp.path().join("missing").to_str().unwrap().to_owned(),
+        ] {
+            assert!(matches!(launch_directory(&invalid), Err(fdo::Error::InvalidArgs(_))));
+        }
+    }
 
     /// A registry holding the two Firefoxes a real machine can end up with: Debian's package and
     /// Flathub's build. They agree on neither id, desktop entry, nor executable.
@@ -450,6 +534,7 @@ mod tests {
             keywords: BTreeSet::default(),
             no_display: false,
             provenance: Some(AppProvenance::from_origin(AppOriginKind::DistroPackage)),
+            provides: Vec::new(),
         });
         registry.insert_manifest(AppManifest {
             id: "flatpak.org.mozilla.firefox".parse().unwrap(),
@@ -469,6 +554,7 @@ mod tests {
             keywords: BTreeSet::default(),
             no_display: false,
             provenance: Some(AppProvenance::from_origin(AppOriginKind::Flatpak)),
+            provides: Vec::new(),
         });
         registry.regroup(&BTreeMap::new());
         registry
@@ -516,51 +602,6 @@ mod tests {
         );
     }
 
-    /// The observer sees the resolved id and the arguments verbatim — a `--directory` is what
-    /// makes a launch mean "here", and it must survive the trip.
-    #[test]
-    fn an_observer_is_told_the_resolved_id_and_the_arguments() {
-        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
-        let observer: LaunchObserver = Box::new({
-            let seen = Arc::clone(&seen);
-            move |app_id: &AppId, arguments: &[String], instance: InstanceId| {
-                seen.lock()
-                    .unwrap()
-                    .push(format!("{app_id} {arguments:?} {instance}"));
-            }
-        });
-
-        let files: AppId = "org.templaros.Files".parse().unwrap();
-        let instance = InstanceId::new();
-        observed(
-            Some(&observer),
-            &files,
-            &["--directory".to_owned(), "/tmp/x".to_owned()],
-            instance,
-        );
-        assert_eq!(
-            *seen.lock().unwrap(),
-            [format!(
-                r#"org.templaros.Files ["--directory", "/tmp/x"] {instance}"#
-            )]
-        );
-    }
-
-    /// A launch reaches `systemd-run --user`, so no test can drive one end to end here. What can
-    /// be checked is that neither launch path forgets to report: an unobserved route would be a
-    /// launch the garden never learns about, and it would fail silently and for ever.
-    #[test]
-    fn both_launch_paths_report_to_the_observer() {
-        let source = include_str!("dbus.rs");
-        // Split so this assertion's own text is not one of the matches it counts.
-        let call = concat!("observed(self.observer.as", "_ref(), &");
-        assert_eq!(
-            source.matches(call).count(),
-            2,
-            "Launcher1 has a launch path that does not tell the observer"
-        );
-    }
-
     #[tokio::test]
     async fn asking_for_a_variant_of_something_else_is_refused_not_launched() {
         let registry = two_firefoxes();
@@ -578,6 +619,7 @@ mod tests {
             keywords: BTreeSet::default(),
             no_display: false,
             provenance: Some(AppProvenance::from_origin(AppOriginKind::DistroPackage)),
+            provides: Vec::new(),
         });
         registry.regroup(&BTreeMap::new());
 

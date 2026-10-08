@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::{future::pending, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 use templar_filed::{
     ExecutorConfig, SqliteJournal,
     dbus::{
@@ -49,8 +49,7 @@ struct Cli {
     #[arg(long)]
     index_max_entries: Option<u64>,
 
-    /// Reserved for a future byte-budgeted scan; accepted now so the CLI surface does not have to
-    /// change again when it is wired up.
+    /// Optional staged-byte budget. A trip is reported incomplete; there is no hidden default cap.
     #[arg(long)]
     index_budget_bytes: Option<u64>,
 
@@ -73,10 +72,13 @@ fn default_index_db_path() -> PathBuf {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
+    use std::io::IsTerminal as _;
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
+        // No ANSI under the journal: journald stores coloured MESSAGE fields as byte arrays.
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
     let cli = Cli::parse();
 
@@ -88,48 +90,37 @@ async fn main() -> Result<()> {
         .with_context(|| format!("opening state db {}", db_path.display()))?;
     tracing::info!(path = %db_path.display(), "state store ready");
 
-    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+    let home = std::env::var_os("HOME").map(PathBuf::from)
+        .context("HOME is required; refusing to index the filesystem root as a fallback")?;
     let index_db_path = cli.index_db.clone().unwrap_or_else(default_index_db_path);
-    let mut index = Index::with_index_db(
+    let index = Index::with_index_db(
         store.clone(),
         &index_db_path,
         templar_file_index::IndexConfig {
             // Broad type-ahead searches over a whole home are answered from memory once a search
             // has had the arrays built; until then, and after every commit, SQL answers.
             search_arrays: true,
+            scan_budget: templar_file_index::ScanBudget {
+                max_entries: cli.index_max_entries,
+                max_bytes: cli.index_budget_bytes,
+                ..templar_file_index::ScanBudget::unlimited()
+            },
             ..templar_file_index::IndexConfig::default()
         },
     )
     .with_context(|| format!("opening file index {}", index_db_path.display()))?;
-    if let Some(max_entries) = cli.index_max_entries {
-        index.max_entries = max_entries as usize;
-    }
-    // `--index-budget-bytes` is accepted but not yet wired to a byte-budgeted scan; recorded so
-    // the flag surface does not have to change again once it is.
-    if let Some(budget_bytes) = cli.index_budget_bytes {
-        tracing::debug!(
-            budget_bytes,
-            "a byte scan budget was requested but is not yet enforced"
-        );
-    }
     tracing::info!(path = %index_db_path.display(), "file index ready");
 
-    // Registering is cheap (an insert, not a walk); the roots that need indexing are indexed by
-    // the watcher after the bus name is claimed, never here.
-    let index_roots: Vec<PathBuf> = if cli.index_roots.is_empty() {
-        vec![home.clone()]
-    } else {
-        cli.index_roots.clone()
-    };
-    let core = index.core().clone();
-    for root in &index_roots {
-        if let Err(error) = core.add_root(
-            &templar_file_index::NativePath::from_path(root),
-            templar_file_index::RootPolicy::default_home(),
-        ) {
-            tracing::warn!(root = %root.display(), %error, "could not register index root");
-        }
+    // Persisted choices survive cache deletion and an intentionally empty root list survives
+    // restart. Registration is cheap; only the watcher walks after the bus name is claimed.
+    index.restore_configured_roots(std::slice::from_ref(&home))?;
+    for path in &cli.index_roots {
+        let native = templar_file_index::NativePath::from_path(path);
+        let existing = index.configured_policy(&native)?;
+        let expected = existing.as_ref().map_or_else(|| "absent".to_owned(), templar_file_index::RootPolicy::hash);
+        index.configure_root(&native, existing.unwrap_or_default(), &expected)?;
     }
+    let core = index.core().clone();
 
     let service = FileService::new(
         Arc::new(SqliteJournal::new(store.clone())),
@@ -191,7 +182,6 @@ async fn main() -> Result<()> {
         tracing::warn!(%error, "could not write the build stamp");
     }
     let connection = connection::Builder::session()?
-        .name(names::BUS_NAME)?
         .serve_at(
             names::ROOT_PATH,
             VolumesApi {
@@ -214,7 +204,7 @@ async fn main() -> Result<()> {
         .serve_at(names::ROOT_PATH, ActionsApi)?
         .build()
         .await
-        .context("claiming org.templaros.Files")?;
+        .context("connecting and hosting the file service interfaces")?;
     service.attach(connection.clone());
 
     // Make the change signals real. `Index1Signals` has existed since F1 and was wired into
@@ -240,51 +230,40 @@ async fn main() -> Result<()> {
     // and a root that already has a committed generation is served from it immediately (the
     // warm-start policy) rather than rescanned synchronously.
     let watcher_plan = classify_roots(&core)?;
-    // The btrfs delta backend, when there is a privileged daemon to ask. `$STATE_DIRECTORY` is
-    // set by the unit; without it there is nowhere durable to remember the baseline checkpoint,
-    // so the backend is simply not offered and every repair walks the tree as it always has.
-    let delta = std::env::var_os("STATE_DIRECTORY").map(|dir| templar_filed::watcher::DeltaSetup {
+    // Default downtime acceleration on supported btrfs roots with a privileged checkpoint
+    // authority. The pointer belongs beside authoritative session state, including runs outside
+    // a systemd unit; lack of STATE_DIRECTORY must not silently disable the default path.
+    let delta = Some(templar_filed::watcher::DeltaSetup {
         handle: tokio::runtime::Handle::current(),
-        state_path: std::path::PathBuf::from(dir)
-            .join("templaros")
-            .join("delta-checkpoint.json"),
+        state_path: db_path.with_file_name("delta-checkpoint.json"),
     });
     let watcher_handle = templar_filed::watcher::spawn(core, watcher_plan, delta)
         .context("starting the index watcher")?;
     observer::register(watcher_handle.control());
-    tokio::spawn(watch_for_departing_consumers(connection.clone()));
+    let departures = watch_for_departing_consumers(&connection).await?;
+    connection.request_name(names::BUS_NAME).await.context("claiming org.templaros.Files after observation readiness")?;
 
     tracing::info!(name = names::BUS_NAME, "templar-filed ready");
-    pending::<()>().await;
-    Ok(())
+    departures.await.context("joining the index consumer-loss bridge")?;
+    anyhow::bail!("index consumer-loss subscription ended; refusing unobservable lifetime pins");
 }
 
 /// A client that held the index open has gone.
 ///
-/// The lease TTL would catch this eventually; `NameOwnerChanged` catches it at once, which is the
-/// difference between "the tree stays armed for five minutes after the last window closed" and
-/// "it stays armed for the grace window". Failing to subscribe is not fatal — it costs latency,
-/// not correctness — so this logs and returns rather than taking the daemon down with it.
-async fn watch_for_departing_consumers(connection: zbus::Connection) {
+/// Explicit observations have no renewal timer. Install the unique-name-loss subscription
+/// before claiming the public name, and terminate if it ends rather than keeping immortal pins.
+async fn watch_for_departing_consumers(connection: &zbus::Connection) -> Result<tokio::task::JoinHandle<()>> {
     use futures_util::StreamExt as _;
-
-    let proxy = match zbus::fdo::DBusProxy::new(&connection).await {
-        Ok(proxy) => proxy,
-        Err(error) => {
-            tracing::warn!(%error, "no NameOwnerChanged: consumer leases will expire on their TTL");
-            return;
+    let proxy = zbus::fdo::DBusProxy::new(connection).await.context("connecting the consumer-loss bridge")?;
+    let mut changes = proxy.receive_name_owner_changed().await.context("subscribing to consumer name loss")?;
+    Ok(tokio::spawn(async move {
+        while let Some(signal) = changes.next().await {
+            let Ok(args) = signal.args() else { continue };
+            if args.name().starts_with(':') && args.new_owner().is_none() {
+                observer::forget_consumer(args.name());
+            }
         }
-    };
-    let Ok(mut changes) = proxy.receive_name_owner_changed().await else {
-        tracing::warn!("no NameOwnerChanged: consumer leases will expire on their TTL");
-        return;
-    };
-    while let Some(signal) = changes.next().await {
-        let Ok(args) = signal.args() else { continue };
-        if args.new_owner().is_none() {
-            observer::forget_consumer(args.name());
-        }
-    }
+    }))
 }
 
 /// What the watcher must serve immediately, scan for the first time, or repair in the

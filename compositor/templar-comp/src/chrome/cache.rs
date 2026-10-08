@@ -21,7 +21,7 @@ use smithay::{
                 Kind,
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             },
-            gles::GlesRenderer,
+            ImportMem,
         },
     },
     utils::{Physical, Point, Rectangle, Size, Transform},
@@ -42,6 +42,7 @@ pub struct WidgetKey {
     /// uses bit 0 for "pinned", which changes the face it is drawn in and nothing else, so
     /// without this the upright bitmap would stay cached across the toggle.
     pub flags: u32,
+    pub tab_count: Option<u32>,
 }
 
 impl WidgetKey {
@@ -52,6 +53,7 @@ impl WidgetKey {
             background,
             variant: 0,
             flags: 0,
+            tab_count: None,
         }
     }
 
@@ -83,17 +85,13 @@ pub struct CachedWidget {
     key: Option<WidgetKey>,
     logical_size: (i32, i32),
     buffer_scale: i32,
+    format: Fourcc,
     buffer: MemoryRenderBuffer,
 }
 
 impl Default for CachedWidget {
     fn default() -> Self {
-        Self {
-            key: None,
-            logical_size: (0, 0),
-            buffer_scale: 1,
-            buffer: MemoryRenderBuffer::new(Fourcc::Xrgb8888, (1, 1), 1, Transform::Normal, None),
-        }
+        Self::with_format(Fourcc::Xrgb8888)
     }
 }
 
@@ -101,6 +99,17 @@ impl CachedWidget {
     pub fn new() -> Self {
         Self::default()
     }
+    pub fn new_transparent() -> Self {
+        Self::with_format(Fourcc::Argb8888)
+    }
+    fn with_format(format: Fourcc) -> Self {
+        Self { key: None, logical_size: (0, 0), buffer_scale: 1, format, buffer: MemoryRenderBuffer::new(format, (1, 1), 1, Transform::Normal, None) }
+    }
+    /// Keep the imported buffer allocation, but repaint it under the new shared appearance.
+    pub fn invalidate(&mut self) {
+        self.key = None;
+    }
+
 
     /// Repaint only if `key`, `logical_size` or `output_scale` differ from the last call's, then
     /// return a render element positioned at `location` (physical pixels). `paint` receives a
@@ -114,16 +123,16 @@ impl CachedWidget {
     /// (e.g. an unsupported format on unusual hardware) is logged and skipped rather than
     /// propagated: a missing chrome element for one frame is recoverable, a panicked render
     /// thread is not.
-    pub fn ensure(
+    pub fn ensure<R: ImportMem>(
         &mut self,
         key: WidgetKey,
         logical_size: (i32, i32),
         output_scale: f64,
         location: Point<f64, Physical>,
         scratch: &mut WindowBuffer,
-        renderer: &mut GlesRenderer,
+        renderer: &mut R,
         paint: impl FnOnce(&mut Painter<'_>, i32, i32),
-    ) -> Option<MemoryRenderBufferRenderElement<GlesRenderer>> {
+    ) -> Option<MemoryRenderBufferRenderElement<R>> where R::TextureId: Clone + Send + 'static {
         if logical_size.0 <= 0 || logical_size.1 <= 0 {
             return None;
         }
@@ -173,65 +182,83 @@ impl CachedWidget {
             paint(&mut painter, pixel_w, pixel_h);
         }
 
-        self.buffer = MemoryRenderBuffer::from_slice(
-            &xrgb_pixels_to_bytes(scratch),
-            Fourcc::Xrgb8888,
-            (pixel_w, pixel_h),
-            buffer_scale,
-            Transform::Normal,
-            // Every chrome widget is drawn fully opaque by design (`chrome/paint.rs`'s module
-            // doc: legibility over client content it may sit above must never depend on alpha
-            // blending against unknown pixels) — declaring the whole buffer opaque up front is
-            // both correct and a real hint to the renderer's damage/occlusion tracking.
-            Some(vec![Rectangle::from_size(Size::from((pixel_w, pixel_h)))]),
-        );
+        // Scale is immutable buffer metadata; appearance and size changes keep its identity.
+        if self.buffer_scale != buffer_scale {
+            self.buffer = MemoryRenderBuffer::new(self.format, (pixel_w, pixel_h), buffer_scale, Transform::Normal, None);
+        }
+        let mut context = self.buffer.render();
+        if self.buffer_scale == buffer_scale && self.logical_size != logical_size {
+            context.resize((pixel_w, pixel_h));
+        }
+        let whole = Rectangle::from_size(Size::from((pixel_w, pixel_h)));
+        context.draw(|bytes| {
+            for (destination, pixel) in bytes.chunks_exact_mut(4).zip(&scratch.pixels) {
+                destination.copy_from_slice(&pixel.to_le_bytes());
+            }
+            Ok::<_, std::convert::Infallible>(vec![whole])
+        }).unwrap();
+        // Calibration is ARGB and must not occlude the scene behind its transparent center.
+        context.update_opaque_regions((self.format == Fourcc::Xrgb8888).then(|| vec![whole]));
     }
-}
-
-/// `WindowBuffer`'s pixels are `u32` `0x00RRGGBB` (native-endian) — the exact in-memory byte
-/// layout DRM's `Fourcc::Xrgb8888` names on the little-endian hardware this compositor targets
-/// (every desktop/laptop TemplarOS runs on): `to_le_bytes()` on each pixel gives `[B, G, R, X]`,
-/// which is precisely what `GlesRenderer::import_memory` expects for that format
-/// (`gles/format.rs`'s `fourcc_to_gl_formats`: `Xrgb8888` imports via `GL_BGRA`/`UNSIGNED_BYTE`).
-/// No `unsafe` reinterpretation needed — this is a plain, safe byte-order conversion.
-fn xrgb_pixels_to_bytes(buffer: &WindowBuffer) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(buffer.pixels.len() * 4);
-    for &pixel in &buffer.pixels {
-        bytes.extend_from_slice(&pixel.to_le_bytes());
-    }
-    bytes
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smithay::backend::renderer::{
+        damage::OutputDamageTracker, element::{Element, Id}, pixman::PixmanRenderer,
+        Bind, ExportMem, Offscreen,
+    };
 
-    #[test]
-    fn xrgb_conversion_preserves_channel_order_for_bgra_upload() {
-        let mut buffer = WindowBuffer::new(2, 1);
-        buffer.pixels[0] = 0x00_11_22_33; // R=0x11 G=0x22 B=0x33
-        buffer.pixels[1] = 0x00_AA_BB_CC;
-        let bytes = xrgb_pixels_to_bytes(&buffer);
-        assert_eq!(bytes, vec![0x33, 0x22, 0x11, 0x00, 0xCC, 0xBB, 0xAA, 0x00]);
+    fn draw_calibration(
+        cache: &mut CachedWidget,
+        renderer: &mut PixmanRenderer,
+        size: (i32, i32),
+        palette: &templar_types::appearance::Palette,
+    ) -> (u32, u32, Id) {
+        let mut scratch = WindowBuffer::new(size.0 as u32, size.1 as u32);
+        let element = cache.ensure(
+            WidgetKey::new("calibration", super::super::paint::opaque(palette.text)),
+            size, 1.0, (0.0, 0.0).into(), &mut scratch, renderer,
+            |painter, width, height| super::super::identification::paint(
+                painter, width, height, 1, "", true,
+                templar_types::display::Insets::symmetric(20, 10), None, palette,
+            ),
+        ).expect("native Pixman import");
+        let id = element.id().clone();
+        let mut target = renderer.create_buffer(Fourcc::Argb8888, size.into()).unwrap();
+        let mut framebuffer = renderer.bind(&mut target).unwrap();
+        let mut tracker = OutputDamageTracker::new(size, 1.0, Transform::Normal);
+        tracker.render_output(
+            renderer, &mut framebuffer, 0, &[element], [0.0, 0.0, 1.0, 1.0],
+        ).unwrap();
+        let mapping = renderer.copy_framebuffer(
+            &framebuffer, Rectangle::from_size(size.into()), Fourcc::Argb8888,
+        ).unwrap();
+        let bytes = renderer.map_texture(&mapping).unwrap();
+        let pixel = |x: usize, y: usize| {
+            let offset = (y * size.0 as usize + x) * 4;
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        (pixel(80, 100), pixel(20, 10), id)
     }
 
     #[test]
-    fn widget_key_builder_round_trips_fields() {
-        let key = WidgetKey::new("Waterfox", 0x00_20_20_20)
-            .with_secondary("waterfox")
-            .with_variant(2);
-        assert_eq!(key.text, "Waterfox");
-        assert_eq!(key.secondary, "waterfox");
-        assert_eq!(key.background, 0x00_20_20_20);
-        assert_eq!(key.variant, 2);
-    }
-
-    #[test]
-    fn identical_keys_are_equal_and_distinct_keys_are_not() {
-        let a = WidgetKey::new("Same", 1);
-        let b = WidgetKey::new("Same", 1);
-        let c = WidgetKey::new("Different", 1);
-        assert_eq!(a, b);
-        assert_ne!(a, c);
+    fn calibration_cache_preserves_scene_and_visible_marks_across_appearance_and_resize() {
+        let mut renderer = PixmanRenderer::new().unwrap();
+        let mut cache = CachedWidget::new_transparent();
+        let mut first_id = None;
+        for (size, palette) in [
+            ((320, 200), &templar_types::appearance::LIGHT),
+            ((320, 200), &templar_types::appearance::DARK),
+            ((400, 240), &templar_types::appearance::DARK),
+        ] {
+            let (scene, mark, id) = draw_calibration(&mut cache, &mut renderer, size, palette);
+            assert_eq!(scene, 0xff00_00ff, "transparent calibration must preserve the scene");
+            assert_eq!(mark >> 24, 0xff, "calibration marks must remain opaque");
+            assert_ne!(mark, scene, "a corner mark must be visible over the scene");
+            assert_eq!(&id, first_id.get_or_insert(id.clone()), "appearance and resize must retain the imported buffer");
+        }
     }
 }
+

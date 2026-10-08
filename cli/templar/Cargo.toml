@@ -23,7 +23,7 @@ templar-client = { workspace = true }
 templar-hwdetect = { workspace = true }
 templar-appd = { workspace = true }
 templar-associationd = { workspace = true }
-templar-file-index = { workspace = true }
+templar-file-index = { workspace = true, features = ["store"] }
 templar-filed = { workspace = true }
 templar-resourced = { workspace = true }
 templar-session-core = { workspace = true }
@@ -36,9 +36,12 @@ clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 futures-util = { workspace = true }
+libc = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
 zbus = { workspace = true }
+rustix = { version = "1.1", features = ["fs", "process", "termios", "net"] }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -58,6 +61,10 @@ maintainer-scripts = "../../packaging/templaros-cli"
 assets = [
     ["target/release/templar", "usr/bin/templar", "755"],
     ["actions/*.desktop", "usr/share/file-manager/actions/", "644"],
+    # PCManFM-Qt's terminal command and the defaults a fresh account starts with
+    # (docs/architecture/files.md, "Terminal and icons").
+    ["pcmanfm/templar-terminal", "usr/bin/templar-terminal", "755"],
+    ["pcmanfm/settings.conf", "etc/xdg/pcmanfm-qt/default/settings.conf", "644"],
     # The component matrix travels with the tool that reads it.
     # cargo-deb resolves asset paths relative to this crate's directory.
     ["../../distro/deploy/components.toml", "usr/share/templaros/components.toml", "644"],
@@ -71,4 +78,15 @@ assets = [
     ["../../installer/README.md", "usr/share/doc/templaros-cli/provision.md", "644"],
     ["../../installer/CHECKLIST.md", "usr/share/doc/templaros-cli/CHECKLIST.md", "644"],
     ["../../session/profile.d/60-templaros-garden.sh", "etc/profile.d/60-templaros-garden.sh", "644"],
+    # The foreground-completion hook beside it; its /etc/bash.bashrc delivery block in
+    # the maintainer scripts must mirror the garden one (packaging-owned).
+    ["../../session/profile.d/61-templaros-completion.sh", "etc/profile.d/61-templaros-completion.sh", "644"],
+    ["../../session/profile.d/59-templaros-journal.sh", "etc/profile.d/59-templaros-journal.sh", "644"],
+    ["../../session/profile.d/60-templaros-garden.zsh", "usr/share/templaros/shell-hooks/60-templaros-garden.zsh", "644"],
+    ["../../session/profile.d/61-templaros-completion.zsh", "usr/share/templaros/shell-hooks/61-templaros-completion.zsh", "644"],
+    ["../../session/profile.d/60-templaros-garden.fish", "etc/fish/conf.d/60-templaros-garden.fish", "644"],
+    ["../../session/profile.d/61-templaros-completion.fish", "etc/fish/conf.d/61-templaros-completion.fish", "644"],
+    ["../../session/integrations/claude-code/.claude-plugin/plugin.json", "usr/share/templaros/integrations/claude-code/.claude-plugin/plugin.json", "644"],
+    ["../../session/integrations/claude-code/hooks/hooks.json", "usr/share/templaros/integrations/claude-code/hooks/hooks.json", "644"],
+    ["../../session/integrations/neovim/templaros-garden.lua", "usr/share/templaros/integrations/neovim/templaros-garden.lua", "644"],
 ]

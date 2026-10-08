@@ -3,7 +3,9 @@ Section: admin
 Priority: optional
 Maintainer: TemplarOS contributors <dev@templaros.org>
 Rules-Requires-Root: no
-Build-Depends: debhelper-compat (= 13), cargo (>= 1.97), rustc (>= 1.97), pkgconf, libsqlite3-dev, libarchive-dev, just, libpam0g-dev, libclang-dev
+Build-Depends: debhelper-compat (= 13), cargo (>= 1.97), rustc (>= 1.97), pkgconf, libsqlite3-dev, libarchive-dev, just, libpam0g-dev, libclang-dev, dbus-daemon,
+ libinput-dev (>= 1.23), libudev-dev, libseat-dev, libgbm-dev, libpixman-1-dev,
+ libdisplay-info-dev, libxkbcommon-dev, libxkbcommon-x11-0, libwayland-dev, xkb-data, rustup, python3
 Standards-Version: 4.7.0
 Homepage: https://templaros.org
 Vcs-Git: https://github.com/templaros/templaros.git
@@ -11,7 +13,7 @@ Vcs-Browser: https://github.com/templaros/templaros
 
 Package: templaros-sessiond
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, xdg-utils
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, xdg-utils, wireplumber, pipewire-bin
 Description: TemplarOS session policy daemon
  One user-session daemon hosting application identity and launching (appd), the association
  broker, provider/autostart arbitration, history, notifications, typed settings, projects,
@@ -34,7 +36,7 @@ Description: TemplarOS file service
 
 Package: templaros-hostd
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, apt, polkitd, systemd-coredump
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd, apt, polkitd, systemd-coredump, python3, util-linux, btrfs-progs, passwd, libpam-runtime, libpam-modules, templaros-cli
 Description: TemplarOS host daemon
  Staged kernel/driver update transactions, boot deployments and rollback, driver authority and
  GPU mode, storage reserve and hardware profile on the system bus (org.templaros.Host).
@@ -78,20 +80,27 @@ Description: TemplarOS shell
 
 Package: templaros-settings
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, templaros-sessiond
+Depends: ${shlibs:Depends}, ${misc:Depends}, templaros-sessiond, templaros-filed
 Description: TemplarOS Settings
  Settings over the typed schema, providers, background applications, associations and history.
 
+Package: templaros-displays
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: TemplarOS standalone X11 display editor
+ PixelKit RandR display controls with separately owned preview rollback deadlines,
+ effective native readback and click-through monitor identification.
+
 Package: templar-files
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, templaros-sessiond, templaros-filed, wl-clipboard
+Depends: ${shlibs:Depends}, ${misc:Depends}, templaros-sessiond, templaros-filed
 Description: TemplarOS standalone file manager
  Pixelkit file manager over the TemplarOS browsing, storage, journalled-operation, association and
  launcher services. Closing the window never interrupts an accepted copy or move.
 
 Package: templaros-portal
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, xdg-desktop-portal, templaros-sessiond, templaros-filed
+Depends: ${shlibs:Depends}, ${misc:Depends}, xdg-desktop-portal, xdg-desktop-portal-lxqt, qt6-wayland, xdg-desktop-portal-gtk, templaros-sessiond, templaros-filed
 Provides: xdg-desktop-portal-backend
 Description: TemplarOS xdg-desktop-portal backend
  One backend for FileChooser, AppChooser, Background and Settings, all clients of the same services.

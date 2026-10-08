@@ -5,8 +5,8 @@ set -euo pipefail
 # (`scripts/reinstall-templaros-desktop.sh`): that path overlays TemplarOS packages onto an
 # Ubuntu/Lubuntu host and must keep that host's session, display manager and kernel.
 # This script refuses to run there, refuses the live ISO (casper is ephemeral), and
-# installs a newly built native set through `templar dev deploy` onto a TemplarOS
-# root (btrfs snapshot, one pinned apt transaction, previous set retained).
+# queues a newly built native set through hostd (`templar dev deploy`): the live root,
+# session and application profiles stay in place until a verified trial boot.
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "$script_dir/.." && pwd -P)"
@@ -14,8 +14,6 @@ repo_root="$(cd -- "$script_dir/.." && pwd -P)"
 skip_build=0
 dry_run=0
 check_host=0
-auto_rollback=0
-snapshot_state=1
 
 os_release_path="${TEMPLAROS_OS_RELEASE:-/etc/os-release}"
 casper_path="${TEMPLAROS_CASPER:-/etc/casper.conf}"
@@ -23,15 +21,13 @@ archive_root="${TEMPLAROS_DEVREPO:-/var/lib/templaros/devrepo}"
 
 usage() {
     cat <<'EOF'
-Build the native TemplarOS package set and install it onto this operating system.
+Build the native TemplarOS package set and queue a hostd boot candidate.
 
 Usage:
   scripts/update-templaros.sh [OPTIONS]
 
 Options:
   --skip-build       Reuse target/debian from a previous `just deb`.
-  --auto-rollback    Put the previous set back if a health gate fails.
-  --no-snapshot      Do not copy session state stores before installing.
   --dry-run          Identity checks, then print the deploy plan; change nothing.
   --check-host       Only verify this is an installed TemplarOS, then exit.
   -h, --help         Show this help.
@@ -41,12 +37,12 @@ This script refuses:
     scripts/reinstall-templaros-desktop.sh on Lubuntu)
   - the live installation medium (casper); install first, then hotfix
 
-Kernel, NVIDIA modules and inherited Ubuntu packages are not this script.
-Use `sudo apt-get update && sudo apt-get upgrade` for inherited packages and
-`templar update` for kernel/driver transactions.
+Every native package change, including inherited Ubuntu packages, goes through
+`templar update` or this script's hostd candidate. Never run live-root apt upgrade.
 
-Run as your desktop user; sudo is asked only for the deploy. Log out to
-activate the compositor; reboot only for kernel or driver changes.
+Run as your desktop user; sudo is asked only for publishing/queuing the set.
+Inspect `templar update status` / `templar update history`; reboot only after the
+transaction reaches awaiting-reboot. The existing desktop is never restarted.
 EOF
 }
 
@@ -103,12 +99,6 @@ while (($# > 0)); do
         --skip-build)
             skip_build=1
             ;;
-        --auto-rollback)
-            auto_rollback=1
-            ;;
-        --no-snapshot)
-            snapshot_state=0
-            ;;
         --dry-run)
             dry_run=1
             ;;
@@ -139,7 +129,6 @@ fi
     die "could not locate the TemplarOS repository from $script_dir"
 
 require_command sudo
-require_command apt-get
 
 if ((skip_build == 0)); then
     require_command cargo
@@ -174,14 +163,8 @@ fi
 [[ -n "$templar_bin" ]] || die "templar CLI not found; just deb should have built $CARGO_TARGET_DIR/release/templar"
 
 deploy_args=(dev --repo "$archive_root" deploy --build-set "$build_set")
-if ((snapshot_state == 1)); then
-    deploy_args+=(--snapshot-state)
-fi
-if ((auto_rollback == 1)); then
-    deploy_args+=(--auto-rollback)
-fi
 
-section "Deploy the set onto this operating system"
+section "Queue the signed set as a native boot candidate"
 if ((dry_run == 1)); then
     printf '+ %q' sudo "$templar_bin"
     printf ' %q' "${deploy_args[@]}" --dry-run
@@ -195,9 +178,6 @@ if ((dry_run == 1)); then
 else
     run sudo -v
     run sudo "$templar_bin" "${deploy_args[@]}"
-    if ! run /usr/bin/templar doctor --root /; then
-        die "the installed doctor check failed; do not log out until its failures are fixed"
-    fi
 fi
 
 if ((dry_run == 1)); then
@@ -205,11 +185,11 @@ if ((dry_run == 1)); then
 else
     cat <<'EOF'
 
-TemplarOS native set installed.
-The compositor was deliberately left running (Restart=no). Log out and back in
-to activate a new templar-comp. Shell and most daemons restart as part of
-deploy; kernel and NVIDIA changes are not this script — reboot after those.
+TemplarOS native set queued, not yet installed or promoted.
+The running root and desktop were preserved. Inspect `templar update status`
+and `templar update history` for staging failures; reboot only after awaiting-reboot.
+Boot-health validates the trial and owns promotion/automatic rollback.
 
-Roll back this set with: sudo templar dev rollback
+For a boot-side rollback, inspect `templar update deployments`, then use `templar update rollback ID`.
 EOF
 fi

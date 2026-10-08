@@ -1,5 +1,6 @@
 //! Shared window marks and aspect-preserving previews; identity is display data, never grouping.
 use super::design;
+use super::glyphs;
 use pixelkit_raster::{Bitmap, Rect, ScaleFilter};
 use pixelkit_text::Align;
 use pixelkit_ui::Ui;
@@ -24,6 +25,8 @@ pub fn icon(ui: &mut Ui<'_>, rect: Rect, app: Option<&str>, icons: &HashMap<Stri
             letterbox(rect, bitmap.width, bitmap.height),
             ScaleFilter::Bilinear,
         );
+    } else if let Some(glyph) = app.and_then(glyphs::glyph_for_app) {
+        glyphs::draw(&mut ui.painter, ui.kernel, rect, glyph, design::TAG_INK);
     } else {
         ui.painter
             .fill_rounded_rect(rect, ui.px(design::CHIP_RADIUS), design::accent_soft());

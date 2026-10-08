@@ -3,9 +3,18 @@
 *Planning document, 2026-09-07. Extrapolated from `garden.md` (a design conversation between
 the user and an external reviewer, to be registered as an AKR source beside
 `homefield-design-advice--1f62a430.md` and
-`design-review-home-and-platform-20260901--63db09f6.md`). This is a proposal: nothing in it is
-decided until it is recorded in the ledger, and §3 lists every recorded decision it would have
-to revise. The authoritative form, once accepted, is the AKR records named in §12.*
+`design-review-home-and-platform-20260901--63db09f6.md`). The September proposal below is
+retained as historical design rationale, not the current acceptance contract. Current
+authority is `legeos.decision.homegarden-activity-grown-places/3` in AKR.*
+
+**October 7 owner revision:** the approved PDF puts live/parked windows, sessions, files and
+apps inside project containers, with one Loose tray and an independent native Desktop dock.
+It replaces the directory-tree default body and the prohibition on Home window lists/previews.
+Keep protects retention; explicit resize owns geometry. Root/HOME ancestors are excluded,
+child Places are not duplicated, and verified context is not a privilege or an inferred
+compositor group. Stable placement, the Garden Clock, genuine activity and privacy remain.
+Current implementation acceptance is tracked by `legeos.work.pdf-homegarden-hdmi-20261007`;
+the historical phases and open questions below do not defer that approved scope.
 
 ---
 

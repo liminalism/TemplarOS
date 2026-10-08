@@ -1,6 +1,10 @@
 target/release/templar-sessiond usr/libexec/
+target/release/templar-wallpaper-decode usr/libexec/
+target/release/templar-app-exec usr/libexec/templaros/
+interfaces/dbus/org.templaros.Wallpaper1.xml usr/share/dbus-1/interfaces/
 session/units/user/templar-sessiond.service usr/lib/systemd/user/
 distro/app-manifests/*.json usr/share/templaros/apps/
+distro/policy/mimeapps/mimeapps.list etc/xdg/mimeapps.list
 interfaces/dbus/org.templaros.AppIdentity1.xml usr/share/dbus-1/interfaces/
 interfaces/dbus/org.templaros.Launcher1.xml usr/share/dbus-1/interfaces/
 interfaces/dbus/org.templaros.Associations1.xml usr/share/dbus-1/interfaces/

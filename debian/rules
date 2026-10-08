@@ -11,33 +11,51 @@ export RUSTFLAGS = -Cdebuginfo=1
 override_dh_auto_configure:
 	# One version authority (@templaros.decision.build-set-id-is-the-version-authority): the source
 	# package must ship the same version string `cargo deb --deb-version` stamps on every binary
-	# package. debian/changelog is generated from the build-set id by
-	# `cargo xtask archive changelog --write`, which ci/source-build.sh runs against the
-	# disposable copy of the tree. When the build set is named, disagreement is a build failure —
-	# a source package that quietly ships a different version is exactly the mixed set this
-	# machinery exists to prevent.
-	@if [ -n "$$TEMPLAROS_BUILD_SET_ID" ]; then \
-		changelog_version=$$(dpkg-parsechangelog -S Version); \
+	# package. Generate debian/changelog with `cargo xtask archive changelog --epoch`
+	# from the prepared closure; ci/source-build.sh uses one epoch for both xtask calls.
+	# An unnamed or mismatched source build must not ship the retained placeholder version.
+	@test -n "$$TEMPLAROS_BUILD_SET_ID" || { echo "source packaging requires an authoritative TEMPLAROS_BUILD_SET_ID" >&2; exit 1; }
+	@changelog_version=$$(dpkg-parsechangelog -S Version); \
 		if [ "$$changelog_version" != "$$TEMPLAROS_BUILD_SET_ID" ]; then \
 			echo "debian/changelog says $$changelog_version but the build set is $$TEMPLAROS_BUILD_SET_ID;" >&2; \
-			echo "run: cargo xtask archive changelog --write debian/changelog" >&2; \
+			echo "generate the changelog from the pinned closure with the same --epoch as build-set --print-id" >&2; \
 			exit 1; \
 		fi; \
-		echo "changelog and build set agree: $$changelog_version"; \
-	fi
+		echo "changelog and build set agree: $$changelog_version"
 	mkdir -p $(CARGO_HOME)
-	# vendor/ is shipped in the orig tarball (`just vendor`); make cargo use it and nothing else.
-	printf '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "vendor"\n' > $(CARGO_HOME)/config.toml
+	# The prepared complete closure supplies the full registry/Git source config
+	# in .cargo/config.toml; do not replace it with a crates.io-only vendor guess.
+	test -f ../../source-provenance.json
+	test -f .cargo/config.toml
+
+	@content=$$(python3 -c 'import json; print(json.load(open("../../source-provenance.json"))["bundle_content_sha256"])'); \
+		case "$$TEMPLAROS_BUILD_SET_ID" in *+s"$$content") ;; \
+		*) echo "build-set origin does not match closed-source content $$content" >&2; exit 1;; esac
 
 override_dh_auto_build:
-	cargo build --release --frozen --offline --workspace
+	scripts/build-preview-codecs.sh
+	cargo build --release --frozen --offline --workspace --features templar-wallpaper/decode
+	# --workspace builds templar-appd's native templar-app-exec binary as well as
+	# the feature-selected decoder; both are assets of templaros-sessiond.
+	test -x target/release/templar-app-exec
+	test -x target/release/templar-wallpaper-decode
 
 override_dh_auto_test:
-	cargo test --release --frozen --offline --workspace
+	scripts/test-nonzero.sh --release --frozen --offline --workspace
 
 override_dh_auto_install:
-	# Binaries and data are placed by debian/*.install from target/release and the repo tree.
-	:
+	# dh_install handles unchanged basenames; stage the executable/document renames here.
+	install -Dm0755 installer/account-maintenance.py debian/templaros-hostd/usr/libexec/templaros-account-maintenance
+	install -Dm0755 installer/deployment-layout.py debian/templaros-hostd/usr/libexec/templaros-deployment-layout
+	install -Dm0755 installer/account-login-gate.py debian/templaros-hostd/usr/libexec/templaros-account-login-gate
+	install -Dm0755 installer/provision.sh debian/templaros-cli/usr/libexec/templaros/provision
+	install -Dm0644 installer/README.md debian/templaros-cli/usr/share/doc/templaros-cli/provision.md
+
+override_dh_installdeb:
+	# Cargo-deb and native Debian packaging share the same reviewed maintainer hooks.
+	install -m0755 packaging/templaros-hostd/postinst debian/templaros-hostd.postinst
+	install -m0755 packaging/templaros-hostd/prerm debian/templaros-hostd.prerm
+	dh_installdeb
 
 override_dh_auto_clean:
 	rm -rf $(CARGO_HOME)

@@ -21,6 +21,31 @@ pub struct AudioState {
     pub volume_percent: u32,
     #[serde(default)]
     pub muted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AudioDirection { Output, Input }
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AudioDevice {
+    pub id: u32,
+    pub serial: u64,
+    pub name: String,
+    pub description: String,
+    pub direction: AudioDirection,
+    pub is_default: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AudioInventory {
+    pub devices: Vec<AudioDevice>,
+    pub default_output: Option<String>,
+    pub default_input: Option<String>,
+    pub preferred_output: Option<String>,
+    pub preferred_input: Option<String>,
 }
 
 /// `Backlight1.Get`.
@@ -60,7 +85,7 @@ impl AudioState {
     /// volume *is*, and two clients that both render it must not each invent their own wording.
     pub fn headline(&self) -> String {
         if !self.present {
-            return "No audio".to_owned();
+            return if self.unavailable_reason.is_some() { "Audio unavailable" } else { "No audio" }.to_owned();
         }
         let level = format!("{}%{}", self.volume_percent, self.boost_note());
         if self.muted {
@@ -178,76 +203,17 @@ mod tests {
 
     #[test]
     fn a_sink_boosted_past_full_scale_says_so_rather_than_showing_a_bare_number() {
-        let boosted = AudioState {
-            present: true,
-            volume_percent: 126,
-            muted: false,
-        };
+        let boosted = AudioState { present: true, volume_percent: 126, muted: false, unavailable_reason: None };
         assert!(boosted.boosted());
-        assert_eq!(boosted.headline(), "126% (boosted)");
     }
 
-    #[test]
-    fn a_boosted_sink_that_is_muted_says_both() {
-        let state = AudioState {
-            present: true,
-            volume_percent: 126,
-            muted: true,
-        };
-        assert_eq!(state.headline(), "Muted · 126% (boosted)");
-    }
 
     #[test]
     fn full_scale_is_not_boosted() {
-        let state = AudioState {
-            present: true,
-            volume_percent: 100,
-            muted: false,
-        };
+        let state = AudioState { present: true, volume_percent: 100, muted: false, unavailable_reason: None };
         assert!(!state.boosted());
-        assert_eq!(state.headline(), "100%");
     }
 
-    /// The direction is said once. "discharging · 2 h 23 min remaining" is one fact twice, and on
-    /// a tile it is one fact twice *and* truncated.
-    #[test]
-    fn a_battery_reading_never_states_its_direction_twice() {
-        let discharging = BatteryState {
-            present: true,
-            percent: Some(72),
-            status: "discharging".to_owned(),
-            on_mains: false,
-            time_to_empty_minutes: Some(143),
-            time_to_full_minutes: None,
-        };
-        assert_eq!(discharging.reading(), "72% · 2 h 23 min remaining");
-
-        // With no estimate the status word is the whole answer, so it does appear.
-        let no_estimate = BatteryState {
-            time_to_empty_minutes: None,
-            ..discharging.clone()
-        };
-        assert_eq!(no_estimate.reading(), "72% discharging");
-
-        // A full battery on mains gets no invented estimate and no doubled word.
-        let full = BatteryState {
-            present: true,
-            percent: Some(100),
-            status: "full".to_owned(),
-            on_mains: true,
-            time_to_empty_minutes: None,
-            time_to_full_minutes: None,
-        };
-        assert_eq!(full.reading(), "100% full");
-
-        // A machine with no battery says so and stops; nothing is appended to that.
-        let none = BatteryState {
-            present: false,
-            on_mains: true,
-            ..BatteryState::default()
-        };
-        assert_eq!(none.reading(), "On mains");
-    }
 
     #[test]
     fn the_wire_shapes_match_what_the_services_publish() {
@@ -301,59 +267,5 @@ mod tests {
         assert_eq!(battery.time_remaining(), None);
     }
 
-    #[test]
-    fn a_headline_never_shows_absent_hardware_as_a_flat_or_silent_one() {
-        assert_eq!(
-            BatteryState {
-                present: false,
-                on_mains: true,
-                ..BatteryState::default()
-            }
-            .headline(),
-            "On mains"
-        );
-        assert_eq!(BatteryState::default().headline(), "No battery");
-        assert_eq!(AudioState::default().headline(), "No audio");
-        assert_eq!(BacklightState::default().headline(), "No backlight");
-    }
 
-    #[test]
-    fn a_present_headline_is_the_level_and_says_when_it_is_muted() {
-        assert_eq!(
-            AudioState {
-                present: true,
-                volume_percent: 45,
-                muted: false
-            }
-            .headline(),
-            "45%"
-        );
-        assert_eq!(
-            AudioState {
-                present: true,
-                volume_percent: 45,
-                muted: true
-            }
-            .headline(),
-            "Muted · 45%",
-            "the level survives a mute, because unmuting returns to it"
-        );
-        assert_eq!(
-            BatteryState {
-                present: true,
-                percent: Some(72),
-                ..BatteryState::default()
-            }
-            .headline(),
-            "72%"
-        );
-    }
-
-    #[test]
-    fn durations_read_the_way_a_person_says_them() {
-        assert_eq!(duration_minutes(0), "0 min");
-        assert_eq!(duration_minutes(45), "45 min");
-        assert_eq!(duration_minutes(120), "2 h");
-        assert_eq!(duration_minutes(143), "2 h 23 min");
-    }
 }

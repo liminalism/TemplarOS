@@ -13,14 +13,22 @@
 
 pub mod action;
 pub mod app;
+pub mod appearance;
 pub mod checkpoint;
+pub mod compositor_control;
 pub mod dbus;
+pub mod display;
 pub mod file_sort;
 pub mod identity;
+pub mod input;
+pub mod native_path;
 pub mod provider;
+pub mod settings;
 pub mod unit;
 pub mod uri_list;
 pub mod variant;
+pub mod workload;
+pub mod wallpaper;
 
 pub use action::{ActionCategory, ActionDecl, Chord, Key, Modifiers, Requires};
 pub use app::{
@@ -28,7 +36,9 @@ pub use app::{
 };
 pub use identity::IdentityConfidence;
 pub use provider::{ProviderCapability, ProviderRole};
+pub use settings::SettingsPage;
 pub use variant::{
     AppOriginKind, AppProvenance, AppVariantId, LaunchMechanism, LogicalAppId, TrustTier,
     UpdateOwner,
 };
+pub use workload::{ResourceId, ResourceIdentity, ResourceMetadata, WorkloadClass, WorkloadId, WorkloadRecord};

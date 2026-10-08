@@ -21,23 +21,34 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "store")]
 pub mod aggregate;
+#[cfg(feature = "store")]
 mod arrays;
+#[cfg(feature = "store")]
 pub mod btrfs_delta;
+#[cfg(feature = "store")]
 pub mod coalesce;
 pub mod error;
+#[cfg(feature = "store")]
 pub mod generation;
 pub mod model;
 pub mod mutation;
 pub mod query;
+#[cfg(feature = "store")]
 pub mod reconcile;
+#[cfg(feature = "store")]
 pub mod scan;
+#[cfg(feature = "store")]
 pub mod schema;
 pub mod snapshot;
+#[cfg(feature = "store")]
 pub mod watch;
 
+#[cfg(feature = "store")]
 pub use aggregate::{AggregateRow, SubtreeTotals};
 pub use error::{IndexError, Result};
+#[cfg(feature = "store")]
 pub use generation::{
     CancelToken, ScanBudget, ScanOptions, ScanOutcome, ScanSession, ScannedEntry,
 };
@@ -49,7 +60,26 @@ pub use model::{
 pub use mutation::{
     Applied, Change, ChangeOp, ChangeSink, ChangesBatch, Mutation, MutationBatch, MutationSource,
 };
-pub use query::{Cursor, CursorId, FieldMask, Hit, Page, Query, Rank, SearchResult, Sort};
+pub use query::{CursorId, FieldMask, Hit, Page, Query, Rank, SearchResult, Sort};
+#[cfg(feature = "store")]
+pub use query::Cursor;
+
+#[cfg(feature = "store")]
+pub use store::{Diagnostics, Index, IndexConfig};
+#[cfg(feature = "store")]
+pub(crate) use store::{
+    ENTRY_COLUMNS, ScanClaim, entry_row_from_row, next_generation,
+    read_generation, read_root, read_roots, set_state,
+};
+
+#[cfg(feature = "store")]
+mod store {
+use super::{
+    ScanBudget, Generation, RootStatus, Result, schema, IndexError, generation, mutation,
+    ChangeSink, query, RootId, arrays, model, NativePath, RootPolicy, RootState, StaleReason,
+    VolumeIdentity, WatchStatus, EntryRow, ObjectKey, MetadataFreshness, EntryId, EntryMeta,
+    EntryKind, Coverage,
+};
 
 use parking_lot::{Mutex, RwLock};
 use rusqlite::{Connection, OpenFlags};
@@ -79,6 +109,8 @@ pub struct IndexConfig {
     pub scan_flush_rows: usize,
     /// Mutations applied in one transaction before a batch is split.
     pub max_batch: usize,
+    /// Explicit daemon repair budgets. Unlimited unless the owner opts into a cap.
+    pub scan_budget: ScanBudget,
     /// Answer searches from in-memory arrays of the live rows (`arrays.rs`) once a search has
     /// had them built for the current generation, instead of through SQL. Off by default so a
     /// library user, and every test that does not ask for it, gets the one deterministic SQL
@@ -97,6 +129,7 @@ impl Default for IndexConfig {
             tombstone_retention_generations: 2,
             scan_flush_rows: 4_096,
             max_batch: 10_000,
+            scan_budget: ScanBudget::unlimited(),
             search_arrays: false,
         }
     }
@@ -119,8 +152,63 @@ pub struct Diagnostics {
     pub roots: Vec<RootStatus>,
 }
 
+impl Diagnostics {
+    /// Inspect an existing store without opening the owner, migrating, recovering staging rows,
+    /// or rebuilding anything. A diagnostic reader must never become a second database writer.
+    /// Cursor counts are process-local and are therefore zero for this offline inspection.
+    pub fn read_only(path: &Path) -> Result<Self> {
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        connection.busy_timeout(std::time::Duration::from_secs(2))?;
+        connection.execute_batch("PRAGMA query_only = ON;")?;
+        let view = connection.unchecked_transaction()?;
+        let version = |key| -> Result<u32> {
+            schema::read_meta(&view, key)?
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(|| IndexError::Corrupt {
+                    detail: format!("missing or invalid {key}"),
+                })
+        };
+        let schema_version = version("schema_version")?;
+        let format_version = version("format_version")?;
+        // Root-status diagnostics gained their final required column in schema 3. Later
+        // additive entry/index migrations do not make an older readable store a doctor failure.
+        if format_version != schema::FORMAT_VERSION
+            || !(3..=schema::schema_version()).contains(&schema_version)
+        {
+            return Err(IndexError::Corrupt {
+                detail: format!(
+                    "stored format {format_version}, schema {schema_version}; this build reads \
+                     format {}, diagnostic schemas 3..={}. Only templar-filed may migrate the store",
+                    schema::FORMAT_VERSION, schema::schema_version(),
+                ),
+            });
+        }
+        let fts_available = generation::fts_present(&view);
+        Ok(Self {
+            path: path.display().to_string(),
+            schema_version,
+            format_version,
+            scanner_version: version("scanner_version")?,
+            db_bytes: std::fs::metadata(path)?.len(),
+            generation: read_generation(&view)?,
+            planner: if fts_available { "fts5-trigram" } else { "like-scan" }.to_owned(),
+            fts_available,
+            change_seq_floor: schema::read_meta(&view, "min_retained_change_seq")?
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
+            change_seq_head: mutation::read_latest_change_seq(&view)?,
+            cursor_count: 0,
+            roots: read_roots(&view)?,
+        })
+    }
+}
+
 struct Inner {
     path: PathBuf,
+    cache_identity: String,
     writer: Mutex<Connection>,
     readers: Mutex<Vec<Connection>>,
     config: IndexConfig,
@@ -165,9 +253,13 @@ impl Index {
             }
         };
         let fts = schema::ensure_fts(&writer);
+        let cache_identity = writer.query_row(
+            "SELECT value FROM index_meta WHERE key = 'cache_identity'", [], |row| row.get(0),
+        )?;
 
         let index = Self(Arc::new(Inner {
             path: path.to_path_buf(),
+            cache_identity,
             writer: Mutex::new(writer),
             readers: Mutex::new(Vec::new()),
             config,
@@ -180,6 +272,10 @@ impl Index {
         index.sweep_aborted_scans()?;
         Ok(index)
     }
+
+    /// Stable only for this derived cache; replacement must invalidate retained checkpoints.
+    #[must_use]
+    pub fn cache_identity(&self) -> &str { &self.0.cache_identity }
 
     fn open_migrated(path: &Path) -> Result<Connection> {
         let connection = Connection::open_with_flags(
@@ -347,19 +443,25 @@ impl Index {
             if let Some(root_id) = existing {
                 return Ok(RootId(root_id));
             }
-            connection.execute(
-                "INSERT INTO roots (path_bytes, display, cross_mount, policy_json, policy_hash,
-                                    state, committed_generation, complete, entry_count)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'empty', 0, 0, 0)",
-                rusqlite::params![
-                    path.as_bytes(),
-                    path.display(),
-                    i64::from(policy.cross_mount),
-                    policy_json,
-                    policy.hash(),
-                ],
+            let transaction = connection.transaction()?;
+            let next: String = transaction.query_row(
+                "SELECT value FROM index_meta WHERE key='next_root_id'", [], |row| row.get(0),
             )?;
-            Ok(RootId(connection.last_insert_rowid()))
+            let root_id: i64 = next.parse().map_err(|_| IndexError::Corrupt {
+                detail: "invalid next root identity".to_owned(),
+            })?;
+            let following = root_id.checked_add(1).filter(|_| root_id > 0).ok_or_else(|| IndexError::Unsupported {
+                detail: "root identity space exhausted".to_owned(),
+            })?;
+            transaction.execute("UPDATE index_meta SET value=?1 WHERE key='next_root_id'", [following.to_string()])?;
+            transaction.execute(
+                "INSERT INTO roots (root_id, path_bytes, display, cross_mount, policy_json, policy_hash,
+                                    state, committed_generation, complete, entry_count)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'empty', 0, 0, 0)",
+                rusqlite::params![root_id, path.as_bytes(), path.display(), i64::from(policy.cross_mount), policy_json, policy.hash()],
+            )?;
+            transaction.commit()?;
+            Ok(RootId(root_id))
         })?;
         self.root_status(root_id)
     }
@@ -594,28 +696,37 @@ impl Index {
         })
     }
 
-    /// What the index currently holds directly under `directory` — the other half of a
-    /// reconciliation diff.
+    /// Live immediate children, in byte-path order, from one read view. Non-root entries link to
+    /// their indexed parent; the indexed root itself has no parent in this store.
     pub fn children(&self, root: RootId, directory: &NativePath) -> Result<Vec<EntryRow>> {
-        let (low, high) = directory.subtree_bounds();
-        let depth = separators(&low);
+        let mut entries = Vec::new();
+        self.visit_children(root, directory, |entry| {
+            entries.push(entry);
+            Ok(true)
+        })?;
+        Ok(entries)
+    }
+
+    /// Stream the same indexed lookup while a repair spends its explicit budget. Returning false
+    /// from the visitor stops SQLite row decoding immediately, instead of materializing a whole
+    /// million-child directory before the first budget check.
+    pub(crate) fn visit_children(
+        &self, root: RootId, directory: &NativePath,
+        mut visit: impl FnMut(EntryRow) -> Result<bool>,
+    ) -> Result<bool> {
         self.with_read(|connection| {
             let mut statement = connection.prepare(&format!(
                 "SELECT {ENTRY_COLUMNS} FROM entries
-                  WHERE root_id = ?1 AND path_bytes >= ?2 AND path_bytes < ?3
+                  WHERE root_id = ?1 AND parent_id = (
+                      SELECT entry_id FROM entries WHERE root_id = ?1 AND path_bytes = ?2
+                        AND deleted_generation IS NULL)
                     AND deleted_generation IS NULL
                   ORDER BY path_bytes"
             ))?;
-            let rows =
-                statement.query_map(rusqlite::params![root.0, low, high], entry_row_from_row)?;
-            let mut entries = Vec::new();
-            for row in rows {
-                let entry = row?;
-                if separators(entry.path.as_bytes()) == depth {
-                    entries.push(entry);
-                }
+            for row in statement.query_map(rusqlite::params![root.0, directory.as_bytes()], entry_row_from_row)? {
+                if !visit(row?)? { return Ok(false); }
             }
-            Ok(entries)
+            Ok(true)
         })
     }
 
@@ -637,38 +748,30 @@ impl Index {
     }
 
     pub fn diagnostics(&self) -> Result<Diagnostics> {
-        let roots = self.roots()?;
         let cursor_count = self.0.cursors.lock().len();
         let db_bytes = std::fs::metadata(&self.0.path).map_or(0, |meta| meta.len());
         self.with_read(|connection| {
-            let head: i64 = connection
-                .query_row("SELECT COALESCE(MAX(seq), 0) FROM changes", [], |row| {
-                    row.get(0)
-                })
-                .unwrap_or(0);
+            let view = connection.unchecked_transaction()?;
+            let head = mutation::read_latest_change_seq(&view)?;
             Ok(Diagnostics {
                 path: self.0.path.display().to_string(),
                 schema_version: schema::schema_version(),
                 format_version: schema::FORMAT_VERSION,
                 scanner_version: schema::SCANNER_VERSION,
                 db_bytes,
-                generation: Generation(
-                    schema::read_meta(connection, "committed_generation")?
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(0),
-                ),
+                generation: read_generation(&view)?,
                 planner: if self.0.fts {
                     "fts5-trigram".to_owned()
                 } else {
                     "like-scan".to_owned()
                 },
                 fts_available: self.0.fts,
-                change_seq_floor: schema::read_meta(connection, "min_retained_change_seq")?
+                change_seq_floor: schema::read_meta(&view, "min_retained_change_seq")?
                     .and_then(|value| value.parse().ok())
                     .unwrap_or(0),
-                change_seq_head: head as u64,
+                change_seq_head: head,
                 cursor_count,
-                roots,
+                roots: read_roots(&view)?,
             })
         })
     }
@@ -834,18 +937,13 @@ pub(crate) fn next_generation(connection: &Connection) -> Result<Generation> {
     Ok(Generation(next))
 }
 
-// A path's separator count is a handful of bytes at most; pulling in the `bytecount` crate for
-// this would violate the crate's minimal-dependency contract (F1-contract.md preamble) for no
-// measurable gain.
-#[allow(clippy::naive_bytecount)]
-pub(crate) fn separators(bytes: &[u8]) -> usize {
-    bytes.iter().filter(|byte| **byte == b'/').count()
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mutation::{Mutation, MutationBatch, MutationSource};
+    use crate::{BudgetKind, ScanOutcome, ScanOptions, ScanScope, ScannedEntry,
+        Query, Rank, Sort, SearchResult, ChangeOp, snapshot};
     use std::os::unix::ffi::OsStringExt;
 
     fn index_at(dir: &Path) -> Index {
@@ -866,6 +964,76 @@ mod tests {
             .scan_root(status.root, ScanOptions::default())
             .unwrap();
         (status.root, outcome)
+    }
+
+    #[test]
+    fn diagnostics_never_create_migrate_or_recover_the_derived_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.sqlite3");
+        assert!(Diagnostics::read_only(&missing).is_err());
+        assert!(!missing.exists());
+        let home = dir.path().join("home");
+        tree(&home);
+        let path = dir.path().join("index.sqlite3");
+        let index = Index::open(&path, IndexConfig::default()).unwrap();
+        let (root, _) = scan(&index, &home);
+        let generation = index.generation().unwrap();
+        let diagnostic = Diagnostics::read_only(&path).unwrap();
+        assert_eq!(diagnostic.generation, generation);
+        assert_eq!(diagnostic.roots[0].root, root);
+        index.with_write(|connection| {
+            connection.execute("UPDATE index_meta SET value='5' WHERE key='schema_version'", [])?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(Diagnostics::read_only(&path).unwrap().schema_version, 5);
+        index.with_write(|connection| {
+            connection.execute("UPDATE index_meta SET value='999' WHERE key='schema_version'", [])?;
+            Ok(())
+        }).unwrap();
+        drop(index);
+        let before = std::fs::read(&path).unwrap();
+        assert!(Diagnostics::read_only(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!path.with_extension("corrupt").exists());
+    }
+
+    #[test]
+    fn cache_lineage_survives_reopen_but_not_disposable_cache_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.sqlite3");
+        let first = Index::open(&path, IndexConfig::default()).unwrap();
+        let identity = first.cache_identity().to_owned();
+        let a = first.add_root(&NativePath::from_path(&dir.path().join("a")), RootPolicy::default_home()).unwrap();
+        first.forget_root(a.root).unwrap();
+        let b = first.add_root(&NativePath::from_path(&dir.path().join("b")), RootPolicy::default_home()).unwrap();
+        assert!(b.root.0 > a.root.0, "removal recycled an old root identity");
+        drop(first);
+        let reopened = Index::open(&path, IndexConfig::default()).unwrap();
+        assert_eq!(reopened.cache_identity(), identity);
+        reopened.forget_root(b.root).unwrap();
+        let c = reopened.add_root(&NativePath::from_path(&dir.path().join("c")), RootPolicy::default_home()).unwrap();
+        assert!(c.root.0 > b.root.0, "reopening lost the root identity sequence");
+        let replacement = Index::open(&dir.path().join("replacement.sqlite3"), IndexConfig::default()).unwrap();
+        assert_ne!(replacement.cache_identity(), identity);
+    }
+
+    #[test]
+    fn atomic_acquisition_never_commits_a_prefix_above_the_watcher_chunk_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        tree(&home);
+        let index = Index::open(&dir.path().join("index.sqlite3"), IndexConfig { max_batch: 1, ..IndexConfig::default() }).unwrap();
+        let (root, _) = scan(&index, &home);
+        let generation = index.generation().unwrap();
+        let path = NativePath::from_path(&home.join("candidate.txt"));
+        let meta = EntryMeta::default();
+        let batch = MutationBatch::new(MutationSource::Reconcile, vec![
+            Mutation::Upsert { root, path: path.clone(), meta: meta.clone() },
+            Mutation::Upsert { root: RootId(i64::MAX), path: NativePath::from_path(&home.join("invalid")), meta },
+        ]);
+        assert!(index.apply_atomic(&batch).is_err());
+        assert_eq!(index.generation().unwrap(), generation);
+        assert!(index.entry(root, &path).unwrap().is_none());
     }
 
     #[test]
@@ -2128,6 +2296,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_cursor_refuses_newer_size_or_renamed_path_facts_and_refresh_restores_the_right_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        tree(&home);
+        let index = index_at(dir.path());
+        let (root, _) = scan(&index, &home);
+        let original = home.join("report.pdf");
+        let pinned = index.search(&Query::new("report.pdf")).unwrap();
+        std::fs::write(&original, b"new size").unwrap();
+        index.apply(MutationBatch::new(MutationSource::Watcher, vec![Mutation::Upsert {
+            root, path: NativePath::from_path(&original),
+            meta: EntryMeta::from_symlink_metadata(&original, &original.symlink_metadata().unwrap()),
+        }])).unwrap();
+        assert!(matches!(index.fetch_page(&pinned.cursor, 0, 100), Err(IndexError::SnapshotRequired { .. })));
+        let refreshed = index.search(&Query::new("report.pdf")).unwrap();
+        assert_eq!(refreshed.hits[0].row.meta.size_bytes, 8);
+        assert!(refreshed.generation > pinned.generation);
+        let renamed = home.join("notes/renamed-document.pdf");
+        std::fs::rename(&original, &renamed).unwrap();
+        index.apply(MutationBatch::new(MutationSource::Watcher, vec![Mutation::Move {
+            root, from: NativePath::from_path(&original), to: NativePath::from_path(&renamed),
+            meta: EntryMeta::from_symlink_metadata(&renamed, &renamed.symlink_metadata().unwrap()),
+        }])).unwrap();
+        assert!(matches!(index.fetch_page(&refreshed.cursor, 0, 100), Err(IndexError::SnapshotRequired { .. })));
+        assert!(index.search(&Query::new("report.pdf")).unwrap().hits.is_empty());
+        let current = index.search(&Query::new("renamed-document.pdf")).unwrap();
+        assert_eq!(current.hits[0].row.path.as_path(), renamed);
+        let parent = index.entry(root, &NativePath::from_path(&home.join("notes"))).unwrap().unwrap();
+        assert_eq!(current.hits[0].row.parent, Some(parent.entry_id));
+    }
+
     /// The point of a durable index: starting again serves what was already known, immediately,
     /// without walking a single directory.
     #[test]
@@ -2636,4 +2836,5 @@ mod tests {
             );
         }
     }
+}
 }

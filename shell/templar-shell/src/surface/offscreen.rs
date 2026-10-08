@@ -48,6 +48,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         notifications_widget,
         settings_widget,
         browser_sources,
+        garden,
     ) = tokio::join!(
         crate::data::fetch_all(12),
         crate::data::fetch_apps(),
@@ -56,6 +57,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         crate::data::fetch_notifications_widget(),
         crate::data::fetch_settings_widget(),
         crate::data::fetch_browser_sources(),
+        crate::garden::fetch_places(),
     );
 
     let (cols, rows) = field_model::grid_for(width as i32, height as i32, field_model::TILE_SIZE);
@@ -86,11 +88,33 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
     let mut kernel = RasterKernel::new();
     let mut input = Input::new();
     let mut screen = FieldScreen::default();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
 
     let empty_icons = HashMap::new();
     let empty_previews = HashMap::new();
     let empty_thumbnails = std::collections::HashMap::new();
-    let empty_folder_listings = HashMap::new();
+    let mut folder_listings = HashMap::new();
+    for tile in &field.tiles {
+        if let templar_field::TileKind::DesktopDock { path, order } = &tile.kind {
+            let listing = async {
+                let connection = crate::data::session().await.map_err(anyhow::Error::msg)?;
+                let browse = templar_client::proxies::FilesBrowseProxy::new(&connection).await?;
+                let json = browse
+                    .list_directory_native_v1(
+                        &templar_client::file_index::encode_path(path),
+                        false,
+                        500,
+                    )
+                    .await?;
+                let mut dock = super::desktop_dock::DesktopDock::new(path.clone(), order.clone());
+                dock.apply_listing(serde_json::from_str(&json)?)?;
+                dock.browse_listing()
+            }
+            .await
+            .map_err(|error| error.to_string());
+            folder_listings.insert(path.clone(), listing);
+        }
+    }
     let browser = FileBrowserData {
         sources: &browser_sources,
         listing: None,
@@ -103,9 +127,9 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         feeds: &drawer_feeds,
         thumbnails: &empty_thumbnails,
         icons: &empty_icons,
-        home: None,
+        home: home.as_deref(),
     };
-    let data = FieldData {
+    let mut data = FieldData {
         notifications: &[],
         field: &field,
         toplevels: &[],
@@ -114,9 +138,8 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         previews: &empty_previews,
         drawer_feeds: &drawer_feeds,
         treemap: None,
-        composition: &[],
         browser: &browser,
-        folder_listings: &empty_folder_listings,
+        folder_listings: &folder_listings,
         connected: false,
         home_revealed: false,
         apps: &apps,
@@ -124,7 +147,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         widgets: &widgets,
         variants: &HashMap::new(),
         projects: &projects,
-        garden: &HashMap::new(),
+        garden: &garden,
         actions: templar_types::action::MANIFEST,
         file_search: None,
         recents: &[],
@@ -135,7 +158,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
 
     // Two passes: the first establishes every tile's rect (the field lays out while it draws), the
     // second paints with those rects known. The same reason `Harness::rect_of` draws twice.
-    for _ in 0..2 {
+    let mut paint = |data: &FieldData<'_>| {
         let mut ui = Ui::new(
             Painter::new(&mut buffer),
             &mut text,
@@ -144,9 +167,28 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
             Scale::ONE,
             &mut kernel,
         );
-        screen.draw(&mut ui, Rect::new(0, 0, width as i32, height as i32), &data);
+        let actions = screen.draw(&mut ui, Rect::new(0, 0, width as i32, height as i32), data);
+        drop(ui);
         input.end_frame();
-    }
+        actions
+    };
+    let actions = paint(&data);
+    let preview = if let Some(crate::surface::field_screen::FieldAction::NeedTreemap {
+        path,
+        width,
+        height,
+    }) = actions.into_iter().find(|action| {
+        matches!(
+            action,
+            crate::surface::field_screen::FieldAction::NeedTreemap { .. }
+        )
+    }) {
+        Some(super::app::load_treemap_preview(path, width, height).await)
+    } else {
+        None
+    };
+    data.treemap = preview.as_ref();
+    let _ = paint(&data);
 
     write_png(path, &buffer).with_context(|| format!("writing {}", path.display()))
 }
@@ -203,15 +245,10 @@ pub(super) fn bar_frame(
     let mut kernel = RasterKernel::new();
     let mut input = Input::new();
     let mut screen = BarScreen::default();
-    // One of the group's two windows has a capture and the other has not, so a single image
-    // shows both halves of the rule: a preview when there is one, the icon fallback when there
-    // is not. The gradient stands in for a real window's pixels.
-    let mut previews = HashMap::new();
-    previews.insert("window:1".to_owned(), preview_fixture());
+    // Window-pixel previews are Home-only: the bar's fan cards wear icons, never captures.
     let data = BarData {
         entries: &entries,
         icons,
-        previews: &previews,
         // A fixed clock, not the wall clock: this fixture is hashed as a visual baseline, and
         // a baseline that changes every minute is not one.
         activated: Some(templar_window::WindowId(1)),
@@ -259,13 +296,16 @@ pub(super) fn bar_frame(
         }
     }
     if open_fan {
-        // The fan is opened the way a person opens it: the pointer comes to the first chip and
+        // The row is opened the way a person opens it: the pointer comes to the first chip and
         // stays there until the hover dwell elapses. This frame is the chip merely hovered; the
-        // final paint below is the one with the fan on it.
+        // final paint below is the one with the row on it.
         //
-        // 32 is the island's 8-pixel margin plus half a 48-pixel cell — the middle of the first
-        // chip, which is the group with two windows.
-        input.cursor_moved(scale.px(32) as f32, height as f32 - scale.px(24) as f32);
+        // The chips are centred in a surface the open row has widened, so the first chip's middle
+        // is that centring offset plus the island's 8-pixel margin and half a 48-pixel cell. The
+        // first chip is the group with two windows.
+        let island = crate::surface::bar_screen::island_width(entries.len());
+        let first = (logical.0 - island) / 2 + 32;
+        input.cursor_moved(scale.px(first) as f32, height as f32 - scale.px(24) as f32);
         paint(&mut buffer, &mut input, &data);
     }
     let now = BarData {
@@ -308,6 +348,7 @@ fn fixture_toplevels() -> Vec<templar_window::ShellToplevel> {
                 name: name.to_owned(),
                 accent,
             }),
+            tab_count: None,
         }
     };
     let group = Some((7, "Notes and sources", 0x00e0_7b39));
@@ -327,16 +368,12 @@ fn fixture_toplevels() -> Vec<templar_window::ShellToplevel> {
 }
 
 /// Exercise the shell's real switcher painter with deterministic compositor-order fixtures.
-/// Captures stand in for the standard preview protocol; this does not claim a live session.
+/// Window-pixel previews are Home-only, so the rows wear icons; this does not claim a live
+/// session.
 pub fn render_switcher(prefix: &Path) -> Result<()> {
     let icons = fixture_icons();
-    for (name, scale, colour) in [
-        ("open", 1.0, 0x0012_3456),
-        ("refreshed", 1.0, 0x0065_4321),
-        ("hidpi", 2.0, 0x0012_3456),
-        ("fractional", 1.5, 0x0012_3456),
-    ] {
-        let (buffer, mask) = switcher_frame(scale, colour, &icons);
+    for (name, scale) in [("open", 1.0), ("hidpi", 2.0), ("fractional", 1.5)] {
+        let (buffer, mask) = switcher_frame(scale, &icons);
         assert!(
             mask.pixels.iter().any(|pixel| *pixel != 0),
             "switcher records its painted coverage"
@@ -344,19 +381,11 @@ pub fn render_switcher(prefix: &Path) -> Result<()> {
         let path = PathBuf::from(format!("{}-{name}.png", prefix.display()));
         write_png_masked(&path, &buffer, &mask)?;
     }
-    let empty = HashMap::new();
-    let (before, _) = switcher_frame(1.0, 0x0012_3456, &empty);
-    let (after, _) = switcher_frame(1.0, 0x0065_4321, &empty);
-    assert_ne!(
-        before.pixels, after.pixels,
-        "a refreshed capture changes the real shell presentation"
-    );
     Ok(())
 }
 
 fn switcher_frame(
     scale: f64,
-    colour: u32,
     icons: &HashMap<String, pixelkit_raster::Bitmap>,
 ) -> (WindowBuffer, WindowBuffer) {
     let scale = Scale::new(scale);
@@ -373,19 +402,6 @@ fn switcher_frame(
         selected: Some(templar_window::WindowId(4)),
         windows: windows.iter().map(|window| window.window_id).collect(),
     };
-    let previews = windows
-        .iter()
-        .map(|window| {
-            (
-                crate::field_model::session_identifier(window, None),
-                pixelkit_raster::Bitmap {
-                    width: 160,
-                    height: 90,
-                    pixels: vec![0xff00_0000 | colour; 160 * 90],
-                },
-            )
-        })
-        .collect();
     let mut buffer = WindowBuffer::new(scale.px(1000) as u32, scale.px(600) as u32);
     let area = Rect::new(0, 0, buffer.width as i32, buffer.height as i32);
     let mut text = pixelkit_text::TextCache::new(fonts::set());
@@ -401,7 +417,7 @@ fn switcher_frame(
             scale,
             &mut kernel,
         );
-        screen.draw_switcher(&mut ui, area, &status, &windows, icons, &previews);
+        screen.draw_switcher(&mut ui, area, &status, &windows, icons);
     }
     let mut mask = WindowBuffer::new(buffer.width, buffer.height);
     let mut painter = Painter::new(&mut mask);
@@ -450,7 +466,6 @@ pub fn render_rails(path: &Path) -> Result<Vec<std::path::PathBuf>> {
     let origin = width / 2;
     let entries = crate::taskbar::entries(&fixture_toplevels());
     let icons = fixture_icons();
-    let previews = HashMap::new();
     let machine = crate::data::MachineReadings::default();
     let mut text = pixelkit_text::TextCache::new(fonts::set());
     let mut kernel = RasterKernel::new();
@@ -483,7 +498,6 @@ pub fn render_rails(path: &Path) -> Result<Vec<std::path::PathBuf>> {
                 let data = bar_screen::BarData {
                     entries: &entries,
                     icons: &icons,
-                    previews: &previews,
                     activated: Some(templar_window::WindowId(1)),
                     covered: false,
                     peeked: false,
@@ -813,10 +827,10 @@ impl CalendarFixture {
     }
 }
 
-/// Render active Home work at normal/HiDPI and narrow sizes, exercising the real merge, the
-/// centred folder-clustered placement on the field's free cells, pointer activation/restoration,
-/// parking and activation stability, the narrow overflow card and a close snapshot. No service
-/// or display is read.
+/// Render contained project work and one Loose tray at normal/HiDPI and narrow sizes,
+/// exercising real merge, pointer focus/restore, stable park targets and overflow.
+/// Also render coding/attention/resting/fading, template bodies and real Files/Apps
+/// tabs from explicit fixture snapshots. No service or display is read.
 #[allow(clippy::too_many_lines)]
 pub fn render_home_work(path: &Path) -> Result<Vec<std::path::PathBuf>> {
     use crate::surface::field_screen::FieldAction;
@@ -827,6 +841,30 @@ pub fn render_home_work(path: &Path) -> Result<Vec<std::path::PathBuf>> {
         ("narrow", 400, 640, 1.0),
     ] {
         let mut fixture = HomeWorkFixture::new(width, height, scale)?;
+        if name == "narrow" {
+            // Overflow is a workload boundary, not an assumption that five windows
+            // cannot fit at this width. Keep the project links unchanged and fill Loose.
+            for index in 0..16_u32 {
+                let mut window = fixture.windows[1].clone();
+                window.window_id = templar_window::WindowId(u64::from(100 + index));
+                window.title = format!("Loose task {}", index + 1);
+                window.instance_id = None;
+                window.activated = false;
+                window.mru_rank = 10 + index;
+                fixture.previews.insert(
+                    field_model::session_identifier(&window, None),
+                    preview_fixture(),
+                );
+                fixture.windows.push(window);
+            }
+            field_model::merge(
+                &mut fixture.field,
+                &LiveState {
+                    toplevels: &fixture.windows,
+                    projects: &[],
+                },
+            );
+        }
         fixture.frame();
         fixture.frame();
         written.push(fixture.output(path, name, "open")?);
@@ -843,46 +881,36 @@ pub fn render_home_work(path: &Path) -> Result<Vec<std::path::PathBuf>> {
             );
         }
 
-        // The most recent window opens the first cluster, at the centre of the field.
-        let bounds = fixture.screen.bounds;
-        let centre = (bounds.x + bounds.w / 2, bounds.y + bounds.h / 2);
-        let distance = |rect: &Rect| {
-            let (x, y) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
-            i64::from(x - centre.0).pow(2) + i64::from(y - centre.1).pow(2)
-        };
-        let recent = (0..fixture.windows.len())
-            .min_by_key(|index| fixture.windows[*index].mru_rank)
-            .context("no windows")?;
-        if let Some(nearest) = cards
-            .iter()
-            .min_by_key(|(_, rect)| distance(rect))
-            .map(|(index, _)| *index)
-        {
-            anyhow::ensure!(
-                nearest == recent,
-                "{name}: the most recent window's card is not the one nearest the centre: \
-                 {cards:?}"
+        // Belonging is containment, never proximity to the centre or a Recent-folder guess.
+        let project = {
+            let ui = Ui::new(
+                Painter::new(&mut fixture.buffer),
+                &mut fixture.text,
+                &mut fixture.input,
+                design::theme(),
+                fixture.scale,
+                &mut fixture.kernel,
             );
-        }
-
-        // Windows sharing a folder gather: every card of a folder touches another of it.
-        let reach = fixture.scale.px(field_model::GAP) + 1;
-        for group in HomeWorkFixture::FOLDERS {
-            let members: Vec<Rect> = cards
-                .iter()
-                .filter(|(index, _)| group.contains(index))
-                .map(|(_, rect)| *rect)
-                .collect();
-            if members.len() < 2 {
-                continue;
-            }
-            for (i, rect) in members.iter().enumerate() {
+            fixture
+                .screen
+                .tile_rect(
+                    &fixture.field,
+                    field_model::folder_tile_id(Path::new("/home/fixture/Documents")),
+                    &ui,
+                )
+                .context("project has no rectangle")?
+        };
+        for (index, rect) in &cards {
+            if HomeWorkFixture::PROJECT_WINDOWS.contains(index) {
                 anyhow::ensure!(
-                    members
-                        .iter()
-                        .enumerate()
-                        .any(|(j, other)| i != j && touches(*rect, *other, reach)),
-                    "{name}: a card of folder {group:?} sits apart from the rest: {members:?}"
+                    project.contains(rect.x, rect.y)
+                        && project.contains(rect.right() - 1, rect.bottom() - 1),
+                    "{name}: attributed window is outside its project: {rect:?}"
+                );
+            } else {
+                anyhow::ensure!(
+                    !intersects(project, *rect),
+                    "{name}: Loose window appeared inside an unproved project"
                 );
             }
         }
@@ -984,16 +1012,204 @@ pub fn render_home_work(path: &Path) -> Result<Vec<std::path::PathBuf>> {
             "closing work changed existing recent files/folders"
         );
         written.push(fixture.output(path, name, "closed")?);
+
+        // Exercise the actual alpha buffer path, including live preview erasure and disable.
+        fixture.premultiplied = true;
+        fixture.screen.wallpaper_active = true;
+        fixture.frame();
+        anyhow::ensure!(
+            fixture.buffer.pixels.contains(&0),
+            "{name}: wallpaper ground is not transparent"
+        );
+        anyhow::ensure!(
+            fixture.buffer.pixels.iter().any(|pixel| pixel >> 24 == 255),
+            "{name}: transparent Home lost its readable objects"
+        );
+        written.push(fixture.output(path, name, "wallpaper-revealed")?);
+        fixture.home_revealed = false;
+        fixture.windows[0].shelved = false;
+        fixture.windows[0].geometry = templar_window::Rect::new(
+            0,
+            0,
+            fixture.scale.logical(fixture.buffer.width as i32) as i32,
+            fixture.scale.logical(fixture.buffer.height as i32) as i32,
+        );
+        fixture.frame();
+        anyhow::ensure!(
+            fixture.buffer.pixels.iter().all(|pixel| *pixel == 0),
+            "{name}: Home content/preview leaked underneath a covering client"
+        );
+        written.push(fixture.output(path, name, "wallpaper-occluded")?);
+        fixture.screen.wallpaper_active = false;
+        fixture.frame();
+        anyhow::ensure!(
+            fixture.buffer.pixels.iter().all(|pixel| pixel >> 24 == 255),
+            "{name}: disabling wallpaper left transparent ground"
+        );
+        written.push(fixture.output(path, name, "wallpaper-disabled")?);
     }
+    written.extend(render_project_work_bodies(path)?);
     Ok(written)
 }
 
-/// Whether two rects are within `reach` pixels of each other on both axes without overlapping:
-/// neighbouring cards, one grid gap apart.
-fn touches(a: Rect, b: Rect, reach: i32) -> bool {
-    let x = a.x < b.right() + reach && b.x < a.right() + reach;
-    let y = a.y < b.bottom() + reach && b.y < a.bottom() + reach;
-    x && y && !intersects(a, b)
+#[allow(clippy::too_many_lines)]
+fn render_project_work_bodies(path: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let mut written = Vec::new();
+    for (name, template, activity, attention) in [
+        ("coding", "coding", "active", "needs-you"),
+        ("resting", "coding", "resting", ""),
+        ("fading", "coding", "fading", ""),
+        ("video", "video", "resting", ""),
+        ("images", "images", "resting", ""),
+        ("documents", "documents", "resting", ""),
+        ("files-tab", "coding", "resting", ""),
+        ("apps-tab", "coding", "resting", ""),
+        ("text-only", "coding", "active", "failed"),
+    ] {
+        let mut fixture = HomeWorkFixture::new(1280, 832, 1.0)?;
+        let root = std::path::PathBuf::from("/home/fixture/Documents");
+        if activity != "active" {
+            fixture.windows.clear();
+            field_model::merge(
+                &mut fixture.field,
+                &LiveState {
+                    toplevels: &[],
+                    projects: &[],
+                },
+            );
+        }
+        fixture.screen.previews_on = name != "text-only";
+        let place = fixture
+            .garden
+            .get_mut(&root)
+            .context("missing fixture project")?;
+        place.material_seed = 7;
+        template.clone_into(&mut place.presentation.template);
+        activity.clone_into(&mut place.presentation.activity);
+        attention.clone_into(&mut place.presentation.attention);
+        match (activity, attention) {
+            (_, "needs-you") => "claude waiting for you · Focus",
+            (_, "failed") => "cargo test failed · Focus",
+            ("resting", _) => "Resume: auth refactor",
+            ("fading", _) => "Last worked yesterday · Resume",
+            _ => "Running · Focus",
+        }
+        .clone_into(&mut place.presentation.state_line);
+        place.presentation.sessions = (0..8)
+            .map(|index| crate::garden::ProjectSession {
+                id: format!("fixture-session-{index}"),
+                kind: "terminal".to_owned(),
+                instance_id: if activity == "active" && index < 2 {
+                    place.instances.get(index).cloned()
+                } else {
+                    None
+                },
+                program: if index == 0 { "claude" } else { "cargo test" }.to_owned(),
+                subject: if index == 0 {
+                    "auth refactor"
+                } else {
+                    "preview cache"
+                }
+                .to_owned(),
+                state: if activity != "active" || index >= 2 {
+                    "ended"
+                } else if attention == "failed" {
+                    "failed"
+                } else {
+                    "waiting"
+                }
+                .to_owned(),
+                cwd: root.clone(),
+                commands: vec!["cargo test".to_owned(), "git status".to_owned()],
+                ..Default::default()
+            })
+            .collect();
+        place.presentation.apps = fixture
+            .apps
+            .iter()
+            .map(|app| crate::garden::ProjectApp {
+                app_id: app.id.to_string(),
+                name: app.name.clone(),
+                template: template.to_owned(),
+            })
+            .collect();
+        place.presentation.recent_files = [
+            ("edit.kdenlive", "video-project"),
+            ("final.mp4", "render"),
+            ("new-footage.mkv", "footage"),
+            ("garden.png", "image"),
+            ("portrait.jpg", "image"),
+            ("report.pdf", "document"),
+            ("notes.odt", "document"),
+        ]
+        .into_iter()
+        .map(|(name, category)| crate::garden::ProjectFile {
+            path: root.join(name),
+            name: name.to_owned(),
+            category: category.to_owned(),
+            ..Default::default()
+        })
+        .collect();
+        let entries = place
+            .presentation
+            .recent_files
+            .iter()
+            .map(|file| crate::file_browser::BrowseEntry {
+                path: file.path.clone(),
+                name: file.name.clone(),
+                kind: crate::file_browser::EntryKind::File,
+                is_symlink: false,
+                hidden: false,
+                size_bytes: 0,
+                mtime_ms: 0,
+            })
+            .collect();
+        fixture.folder_listings.insert(
+            root.clone(),
+            Ok(crate::file_browser::DirectoryListing {
+                directory: root.clone(),
+                parent: root.parent().map(Path::to_path_buf),
+                entries,
+                truncated: false,
+                limit: 128,
+            }),
+        );
+        fixture.thumbnails = place
+            .presentation
+            .recent_files
+            .iter()
+            .filter(|file| matches!(file.category.as_str(), "image" | "document"))
+            .map(|file| (file.path.clone(), preview_fixture()))
+            .collect();
+        fixture.frame();
+        if matches!(name, "files-tab" | "apps-tab") {
+            let ui = Ui::new(
+                Painter::new(&mut fixture.buffer),
+                &mut fixture.text,
+                &mut fixture.input,
+                design::theme(),
+                fixture.scale,
+                &mut fixture.kernel,
+            );
+            let project = fixture
+                .screen
+                .tile_rect(&fixture.field, field_model::folder_tile_id(&root), &ui)
+                .context("missing project rectangle")?;
+            drop(ui);
+            fixture.input.cursor_moved(
+                (project.x + project.w * if name == "files-tab" { 3 } else { 5 } / 6) as f32,
+                (project.bottom() - 20) as f32,
+            );
+            fixture.input.mouse(pixelkit_shell::MouseButton::Left, true);
+            fixture
+                .input
+                .mouse(pixelkit_shell::MouseButton::Left, false);
+            fixture.frame();
+        }
+        fixture.frame();
+        written.push(fixture.output(path, "project", name)?);
+    }
+    Ok(written)
 }
 
 fn intersects(a: Rect, b: Rect) -> bool {
@@ -1011,18 +1227,21 @@ struct HomeWorkFixture {
     sources: crate::file_browser::BrowserSources,
     garden: HashMap<std::path::PathBuf, crate::garden::GardenPlace>,
     previews: HashMap<String, pixelkit_raster::Bitmap>,
+    thumbnails: HashMap<std::path::PathBuf, pixelkit_raster::Bitmap>,
+    folder_listings:
+        HashMap<std::path::PathBuf, Result<crate::file_browser::DirectoryListing, String>>,
     buffer: WindowBuffer,
     text: pixelkit_text::TextCache,
     input: Input,
     kernel: RasterKernel,
     scale: Scale,
+    home_revealed: bool,
+    premultiplied: bool,
 }
 
 impl HomeWorkFixture {
-    /// The fixture's windows (by index) that share a folder: the terminal and the file manager
-    /// are associated with the Documents Place, the editor is near it by its Recent entry; the
-    /// parked terminal and the image viewer have no folder and gather as unfiled tools.
-    const FOLDERS: [&'static [usize]; 2] = [&[0, 2, 3], &[1, 4]];
+    /// Exact fixture instances belong to one project; Recent data never creates a link.
+    const PROJECT_WINDOWS: &'static [usize] = &[0, 2];
 
     #[allow(clippy::too_many_lines)]
     fn new(width: i32, height: i32, scale: f64) -> Result<Self> {
@@ -1051,6 +1270,14 @@ impl HomeWorkFixture {
         for op in field_model::open_folder_ops(&field, &root) {
             field = templar_field::apply(&field, &op)?.0;
         }
+        field = templar_field::apply(
+            &field,
+            &templar_field::FieldOp::Resize {
+                id: field_model::folder_tile_id(&root),
+                span: templar_field::Span::new(4, 3),
+            },
+        )?
+        .0;
         field_model::merge(
             &mut field,
             &LiveState {
@@ -1095,11 +1322,20 @@ impl HomeWorkFixture {
         let garden = HashMap::from([(
             root.clone(),
             crate::garden::GardenPlace {
-                root,
+                root: root.clone(),
                 stage: "trace".to_owned(),
                 form: "plain".to_owned(),
                 summary: "Recent writing".to_owned(),
                 instances: associated.iter().map(ToString::to_string).collect(),
+                presentation: crate::garden::ProjectPresentation {
+                    root: root.clone(),
+                    name: "Documents".to_owned(),
+                    template: "plain".to_owned(),
+                    activity: "active".to_owned(),
+                    state_line: "2 running · Focus".to_owned(),
+                    instances: associated.iter().map(ToString::to_string).collect(),
+                    ..Default::default()
+                },
                 ..crate::garden::GardenPlace::default()
             },
         )]);
@@ -1123,11 +1359,15 @@ impl HomeWorkFixture {
             sources,
             garden,
             previews,
+            thumbnails: HashMap::new(),
+            folder_listings: HashMap::new(),
             buffer: WindowBuffer::new(scale.px(width) as u32, scale.px(height) as u32),
             text: pixelkit_text::TextCache::new(fonts::set()),
             input: Input::new(),
             kernel: RasterKernel::new(),
             scale,
+            home_revealed: true,
+            premultiplied: false,
         })
     }
 
@@ -1191,6 +1431,7 @@ impl HomeWorkFixture {
                     geometry: templar_window::Rect::new(0, 0, 800, 600),
                     layer: templar_window::Layer::Normal,
                     group: None,
+                    tab_count: None,
                 },
             )
             .collect();
@@ -1217,8 +1458,6 @@ impl HomeWorkFixture {
 
     fn frame(&mut self) -> Vec<crate::surface::field_screen::FieldAction> {
         let empty_bitmaps = HashMap::new();
-        let empty_thumbnails = HashMap::new();
-        let empty_listings = HashMap::new();
         let widgets = HashMap::new();
         let browser = FileBrowserData {
             sources: &self.sources,
@@ -1230,7 +1469,7 @@ impl HomeWorkFixture {
             search_entries: None,
             search_error: None,
             feeds: &self.feeds,
-            thumbnails: &empty_thumbnails,
+            thumbnails: &self.thumbnails,
             icons: &empty_bitmaps,
             home: Some(Path::new("/home/fixture")),
         };
@@ -1242,12 +1481,11 @@ impl HomeWorkFixture {
             previews: &self.previews,
             drawer_feeds: &self.feeds,
             treemap: None,
-            composition: &[],
             browser: &browser,
-            folder_listings: &empty_listings,
+            folder_listings: &self.folder_listings,
             notifications: &[],
             connected: true,
-            home_revealed: true,
+            home_revealed: self.home_revealed,
             apps: &self.apps,
             variants: &HashMap::new(),
             projects: &[],
@@ -1263,7 +1501,11 @@ impl HomeWorkFixture {
         };
         let area = Rect::new(0, 0, self.buffer.width as i32, self.buffer.height as i32);
         let mut ui = Ui::new(
-            Painter::new(&mut self.buffer),
+            if self.premultiplied {
+                Painter::new_premultiplied(&mut self.buffer)
+            } else {
+                Painter::new(&mut self.buffer)
+            },
             &mut self.text,
             &mut self.input,
             design::theme(),
@@ -1305,12 +1547,14 @@ impl HomeWorkFixture {
             .filter(|(id, _)| {
                 !matches!(
                     self.field.kind_of(*id),
-                    Some(templar_field::TileKind::ParkedSession { .. })
+                    Some(
+                        templar_field::TileKind::ParkedSession { .. }
+                            | templar_field::TileKind::Folder { .. }
+                    )
                 )
             })
             .filter_map(|(id, _)| self.screen.tile_rect(&self.field, id, &ui))
             .collect();
-        anyhow::ensure!(!persistent.is_empty(), "the fixture has no persistent tile");
         let all: Vec<Rect> = cards
             .iter()
             .map(|(_, rect)| *rect)
@@ -1352,7 +1596,7 @@ impl HomeWorkFixture {
 
     fn output(&self, path: &Path, name: &str, step: &str) -> Result<std::path::PathBuf> {
         let output = std::path::PathBuf::from(format!("{}-{name}-{step}.png", path.display()));
-        write_png(&output, &self.buffer)?;
+        write_png_mode(&output, &self.buffer, self.premultiplied)?;
         Ok(output)
     }
 }
@@ -1399,11 +1643,24 @@ fn preview_fixture() -> pixelkit_raster::Bitmap {
     }
 }
 
-/// `WindowBuffer` is 0xAARRGGBB in native order; PNG wants RGBA bytes.
+/// Write the ordinary opaque XRGB field as RGBA bytes.
 pub(super) fn write_png(path: &Path, buffer: &WindowBuffer) -> Result<()> {
+    write_png_mode(path, buffer, false)
+}
+
+/// PNG stores straight alpha, so unpremultiply only at this diagnostic output boundary.
+fn write_png_mode(path: &Path, buffer: &WindowBuffer, premultiplied: bool) -> Result<()> {
     let mut rgba = Vec::with_capacity(buffer.pixels.len() * 4);
     for pixel in &buffer.pixels {
-        rgba.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, *pixel as u8, 0xff]);
+        let alpha = if premultiplied { pixel >> 24 } else { 255 };
+        let channel = |shift: u32| {
+            let value = (*pixel >> shift) & 255_u32;
+            (value * 255 + alpha / 2)
+                .checked_div(alpha)
+                .unwrap_or(0)
+                .min(255) as u8
+        };
+        rgba.extend_from_slice(&[channel(16), channel(8), channel(0), alpha as u8]);
     }
     let file = std::fs::File::create(path)?;
     let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), buffer.width, buffer.height);
@@ -1712,7 +1969,6 @@ fn garden_tile_frame(
         previews: &bitmaps,
         drawer_feeds: &feeds,
         treemap: None,
-        composition: &[],
         browser: &browser,
         folder_listings: &listings,
         connected: true,
@@ -1854,7 +2110,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn switcher_real_painter_refreshes_captures_and_retains_selected_overflow_row() {
+    fn switcher_real_painter_wears_icons_and_retains_selected_overflow_row() {
         let icons = ["org.templaros.Settings", "org.templaros.Notes"]
             .into_iter()
             .map(|app| {
@@ -1868,9 +2124,11 @@ mod tests {
                 )
             })
             .collect();
-        let (before, mask) = switcher_frame(1.0, 0x0012_3456, &icons);
-        let (after, _) = switcher_frame(1.0, 0x0065_4321, &icons);
-        assert_ne!(before.pixels, after.pixels);
+        // Window-pixel previews are Home-only: the switcher rows wear icons, so two frames
+        // of the same fixtures are identical — no capture to refresh.
+        let (before, mask) = switcher_frame(1.0, &icons);
+        let (after, _) = switcher_frame(1.0, &icons);
+        assert_eq!(before.pixels, after.pixels);
         assert!(mask.pixels.iter().any(|pixel| *pixel != 0));
         // The parked selected window is drawn even though the twelve-window ring overflows.
         assert!(
@@ -1885,7 +2143,7 @@ mod tests {
             parked_icon, 0x00ab_cdef,
             "parked dimming covers the icon too"
         );
-        let (scaled, _) = switcher_frame(1.5, 0x0012_3456, &icons);
+        let (scaled, _) = switcher_frame(1.5, &icons);
         assert_eq!((scaled.width, scaled.height), (1500, 900));
     }
 
@@ -1907,6 +2165,39 @@ mod tests {
             buffer.pixels.iter().all(|&p| p != 0),
             "and nothing was left black"
         );
+    }
+
+    #[test]
+    fn wallpaper_diagnostic_png_preserves_real_alpha_not_opaque_or_premultiplied_png() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut fixture = HomeWorkFixture::new(1280, 832, 1.0).unwrap();
+        fixture.premultiplied = true;
+        fixture.screen.wallpaper_active = true;
+        fixture.frame();
+        let output = fixture
+            .output(&directory.path().join("home"), "wide", "wallpaper")
+            .unwrap();
+        let decoded = pixelkit_raster::png::decode(&std::fs::read(output).unwrap()).unwrap();
+        assert_eq!(decoded.pixels.len(), fixture.buffer.pixels.len());
+        for (png, native) in decoded.pixels.iter().zip(&fixture.buffer.pixels) {
+            let alpha = native >> 24;
+            assert_eq!(png >> 24, alpha);
+            for shift in [0, 8, 16] {
+                let premultiplied = (native >> shift) & 255;
+                let straight = (png >> shift) & 255;
+                assert!(premultiplied <= alpha);
+                if alpha == 0 {
+                    assert_eq!(*png, 0);
+                } else {
+                    assert_eq!(
+                        straight,
+                        ((premultiplied * 255 + alpha / 2) / alpha).min(255)
+                    );
+                }
+            }
+        }
+        assert!(decoded.pixels.iter().any(|pixel| *pixel == 0));
+        assert!(decoded.pixels.iter().any(|pixel| pixel >> 24 == 255));
     }
 
     #[tokio::test]

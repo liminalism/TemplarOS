@@ -287,7 +287,12 @@ fn run_checks(root: &Path, timeout: Duration) -> Vec<Check> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().init();
+    use std::io::IsTerminal as _;
+    // No ANSI under the journal: journald stores coloured MESSAGE fields as byte arrays, which
+    // greps and JSON consumers cannot read. A terminal keeps its colours.
+    tracing_subscriber::fmt()
+        .with_ansi(std::io::stdout().is_terminal())
+        .init();
     let cli = Cli::parse();
     let timeout = Duration::from_secs(cli.timeout_secs.max(1));
 

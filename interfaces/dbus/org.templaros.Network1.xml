@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- NetworkManager is the effect/authorization authority. Existing NetworkStatusUi remains default.
+     Inventory JSON contains lossless SSID bytes, applied state/capability/revision and nonsecret
+     prompt metadata only. AcquireUi is explicit and bound to the unique session-bus caller.
+     Secrets travel via fully sealed h descriptors, never JSON. Caller loss/page leave rejects
+     prompts and attempts bounded cancellation/unregister of native work only. Unconfirmed
+     cleanup remains owned and is reported, never represented as successful cancellation.
+     Upstream: https://networkmanager.dev/docs/api/latest/gdbus-org.freedesktop.NetworkManager.SecretAgent.html -->
+<node name="/org/templaros/Session/Network">
+  <interface name="org.templaros.Network1">
+    <method name="Inventory"><arg name="observation_json" type="s" direction="out"/></method>
+    <method name="AcquireUi"/>
+    <method name="ReleaseUi"/>
+    <method name="SetWireless"><arg name="enabled" type="b" direction="in"/></method>
+    <method name="Scan"><arg name="device" type="s" direction="in"/></method>
+    <method name="Connect">
+      <arg name="device" type="s" direction="in"/><arg name="access_point" type="s" direction="in"/>
+      <arg name="ssid" type="ay" direction="in"/><arg name="security" type="s" direction="in"/>
+      <arg name="hidden" type="b" direction="in"/><arg name="session_only" type="b" direction="in"/>
+      <arg name="active_connection" type="o" direction="out"/>
+    </method>
+    <method name="Activate"><arg name="profile" type="s" direction="in"/><arg name="device" type="s" direction="in"/><arg name="active_connection" type="o" direction="out"/></method>
+    <method name="Disconnect"><arg name="device" type="s" direction="in"/></method>
+    <method name="Cancel"/>
+    <method name="Forget"><arg name="profile" type="s" direction="in"/></method>
+    <method name="SetAutoconnect"><arg name="profile" type="s" direction="in"/><arg name="enabled" type="b" direction="in"/></method>
+    <method name="Answer"><arg name="token" type="s" direction="in"/><arg name="approved" type="b" direction="in"/></method>
+    <method name="AnswerSecret"><arg name="token" type="s" direction="in"/><arg name="secret" type="h" direction="in"/></method>
+    <signal name="Changed"><arg name="revision_json" type="s"/></signal>
+  </interface>
+</node>

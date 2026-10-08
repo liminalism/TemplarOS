@@ -16,5 +16,12 @@
       <arg name="metadata_json" type="s" direction="out"/>
       <arg name="png" type="ay" direction="out"/>
     </method>
+    <!-- Canonical native-byte base64 path; identical preview/error contract to Render. -->
+    <method name="RenderNativeV1">
+      <arg name="path_b64" type="s" direction="in"/>
+      <arg name="max_edge" type="u" direction="in"/>
+      <arg name="metadata_json" type="s" direction="out"/>
+      <arg name="png" type="ay" direction="out"/>
+    </method>
   </interface>
 </node>

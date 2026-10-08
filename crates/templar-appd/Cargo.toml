@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "templar-app-exec"
+path = "src/bin/templar-app-exec.rs"
+
 [dependencies]
 templar-types = { workspace = true }
 templar-client = { workspace = true }
@@ -20,6 +24,8 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 zbus = { workspace = true }
 zbus_systemd = { workspace = true }
+futures-util = { workspace = true }
+rustix = { version = "1.1", features = ["process"] }
 
 [dev-dependencies]
 tempfile = "3"

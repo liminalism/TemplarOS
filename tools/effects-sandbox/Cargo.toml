@@ -1,0 +1,23 @@
+[package]
+name = "effects-sandbox"
+description = "Standalone wgpu sandbox for templar-effects: a fake desktop to tune the essence transition and the surface materials, plus the shader gate and GPU timing"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "AGPL-3.0-only"
+publish = false
+
+# Its own workspace, like helpers/templar-preview-codecs: wgpu, winit and naga stay out of the
+# TemplarOS lockfile and out of every shipped binary. Nothing here is packaged.
+[workspace]
+
+[dependencies]
+templar-effects = { path = "../../crates/templar-effects" }
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "vulkan", "gles"] }
+naga = { version = "=30.0.1", features = ["wgsl-in", "glsl-out", "spv-out"] }
+winit = "=0.30.13"
+pollster = "=1.0.1"
+png = "0.17"
+
+[profile.release]
+debug = "line-tables-only"

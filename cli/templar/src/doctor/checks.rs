@@ -1468,9 +1468,9 @@ fn index_db_path() -> Option<std::path::PathBuf> {
 /// The shared file index: size, generation, per-root state, watcher backend/limits, watches
 /// armed/refused, last event, last reconciliation, and why a root is stale — plan of record
 /// `docs/planning/shared-incremental-file-index.md` acceptance gate 10, unmet before this check
-/// existed. Runtime only, and never creates the index or the state store it needs to open it: both
-/// must already exist (`Path::exists` first) or the check `Skip`s rather than paying for a scan a
-/// diagnostic tool has no business starting.
+/// existed. Runtime only, and opens only the existing derived database in read-only/query-only
+/// mode. It never opens session state, applies migrations, recovers staging or rebuilds a cache.
+/// An absent cache `Skip`s; unsupported stored versions fail without changing any data.
 ///
 /// A root reporting `Stale` because the watch budget ran out is not this check's failure to
 /// report honestly — `RootStatus::reason` says so, and that reason is carried into `detail`
@@ -1546,11 +1546,8 @@ enum FileIndexProbe {
     Failed(&'static str, String),
 }
 
-/// Opens the durable index database the same way `templar-filed` does
-/// (`$XDG_CACHE_HOME/templaros/file-index-v1.sqlite3`) and reads its diagnostics and root list.
-/// Never creates the index or the state store it needs to open it — both must already exist, or
-/// this returns `Skipped` rather than paying for a scan a diagnostic tool has no business
-/// starting.
+/// Read only the existing derived store. Do not open session state or construct the filed owner:
+/// both paths migrate and perform recovery writes, which are forbidden in a diagnostic probe.
 fn open_index_for_diagnostics() -> FileIndexProbe {
     let Some(db_path) = index_db_path() else {
         return FileIndexProbe::Skipped(
@@ -1564,40 +1561,16 @@ fn open_index_for_diagnostics() -> FileIndexProbe {
             db_path.display().to_string(),
         );
     }
-    let state_path = templar_state::default_path();
-    if !state_path.exists() {
-        return FileIndexProbe::Skipped(
-            "no session state store yet (no session has run)",
-            state_path.display().to_string(),
-        );
+    match templar_file_index::Diagnostics::read_only(&db_path) {
+        Ok(diagnostics) => {
+            let roots = diagnostics.roots.clone();
+            FileIndexProbe::Ready(diagnostics, roots)
+        }
+        Err(error) => FileIndexProbe::Failed(
+            "could not inspect the file index read-only",
+            format!("{}: {error}", db_path.display()),
+        ),
     }
-    let store = match templar_state::Store::open(&state_path) {
-        Ok(store) => store,
-        Err(error) => {
-            return FileIndexProbe::Failed("could not open the state store", error.to_string());
-        }
-    };
-    let config = templar_file_index::IndexConfig::default();
-    let index = match templar_filed::search::Index::with_index_db(store, &db_path, config) {
-        Ok(index) => index,
-        Err(error) => {
-            return FileIndexProbe::Failed("could not open the file index", error.to_string());
-        }
-    };
-    let core = index.core();
-    let diagnostics = match core.diagnostics() {
-        Ok(diagnostics) => diagnostics,
-        Err(error) => {
-            return FileIndexProbe::Failed("could not read index diagnostics", error.to_string());
-        }
-    };
-    let roots = match core.roots() {
-        Ok(roots) => roots,
-        Err(error) => {
-            return FileIndexProbe::Failed("could not read index roots", error.to_string());
-        }
-    };
-    FileIndexProbe::Ready(diagnostics, roots)
 }
 
 /// One `RootStatus` as a `templar doctor` detail line: state, entry count, why it is stale (if it

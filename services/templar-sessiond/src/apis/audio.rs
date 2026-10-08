@@ -1,49 +1,24 @@
-//! `org.templaros.Audio1`: the default sink's volume, through WirePlumber's `wpctl`.
-//!
-//! **Why a subprocess and not libpipewire.** The native route means linking a C library, needing
-//! its headers at build time, and writing unsafe FFI in a workspace that forbids it — and it
-//! means a PipeWire main loop living inside the one policy daemon whose crash takes identity,
-//! launch, notifications and settings with it (ADR-0001). `wpctl` ships with WirePlumber on every
-//! PipeWire desktop, runs with no display and no audio session of its own, and costs one short
-//! process per adjustment. A volume key is pressed a few times a minute, not a few thousand times
-//! a second, so that cost buys a dependency-free implementation that cannot take the daemon down.
-//!
-//! The trade is stated plainly in the interface XML: without a PipeWire event subscription, a
-//! change made *elsewhere* — a hardware key wired straight to WirePlumber — is not observed, so
-//! `Changed` covers changes made through this interface and clients that must not go stale poll.
-//!
-//! Everything below is testable without touching the machine's audio: [`parse_volume`] is a pure
-//! function over `wpctl`'s real output, and the command runner is a trait, so a test observes the
-//! `wpctl` invocation that *would* have been made rather than making it.
+//! Audio1: bounded WirePlumber control, native PipeWire inventory and external event observation.
 
 use crate::apis::failed;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use rusqlite::OptionalExtension;
+use std::{sync::Arc, time::Duration};
+use templar_client::status::{AudioDevice, AudioDirection, AudioInventory, AudioState};
+use templar_state::Store;
 use zbus::fdo;
 
 /// WirePlumber's name for "whatever the user is listening through".
 const DEFAULT_SINK: &str = "@DEFAULT_AUDIO_SINK@";
 
-/// What `Audio1.Get` answers.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct AudioState {
-    /// Whether this machine has a volume this service can reach: WirePlumber present, and a
-    /// default sink to point at. A machine with no audio is a fact, not a failure.
-    pub present: bool,
-    pub volume_percent: u32,
-    pub muted: bool,
-}
 
 /// What this interface needs from WirePlumber.
 #[async_trait]
 pub trait AudioControl: Send + Sync + std::fmt::Debug {
-    /// Run `wpctl` with these arguments, returning its stdout.
-    ///
-    /// One method rather than one per operation, so the fake in the tests observes the exact
-    /// command line and the parsing under test is the same code the daemon runs.
+    /// Run bounded native `wpctl` arguments, returning its stdout.
     async fn wpctl(&self, arguments: &[&str]) -> Result<String>;
+    async fn inventory(&self) -> Result<AudioInventory>;
 }
 
 /// The real thing: `wpctl` on `PATH`.
@@ -53,21 +28,55 @@ pub struct WpctlAudio;
 #[async_trait]
 impl AudioControl for WpctlAudio {
     async fn wpctl(&self, arguments: &[&str]) -> Result<String> {
-        let arguments: Vec<String> = arguments.iter().map(|value| (*value).to_owned()).collect();
-        let output = tokio::process::Command::new("wpctl")
-            .args(&arguments)
-            .output()
-            .await
-            .with_context(|| format!("running wpctl {}", arguments.join(" ")))?;
-        if !output.status.success() {
-            bail!(
-                "wpctl {} failed: {}",
-                arguments.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        crate::command::run("wpctl", arguments, 65536).await
     }
+
+    async fn inventory(&self) -> Result<AudioInventory> {
+        parse_inventory(&crate::command::run("pw-dump", &[], 8 * 1024 * 1024).await?)
+    }
+}
+
+pub fn parse_inventory(json: &str) -> Result<AudioInventory> {
+    let objects: Vec<serde_json::Value> = serde_json::from_str(json)?;
+    let mut inventory = AudioInventory::default();
+    for object in &objects {
+        if object["type"] == "PipeWire:Interface:Metadata"
+            && object["props"]["metadata.name"] == "default"
+            && let Some(metadata) = object["metadata"].as_array()
+        {
+            for entry in metadata {
+                let name = entry["value"]["name"].as_str().map(str::to_owned);
+                match entry["key"].as_str() {
+                    Some("default.audio.sink") => inventory.default_output = name,
+                    Some("default.audio.source") => inventory.default_input = name,
+                    _ => {}
+                }
+            }
+        }
+    }
+    for object in &objects {
+        if object["type"] != "PipeWire:Interface:Node" { continue; }
+        let props = &object["info"]["props"];
+        let direction = match props["media.class"].as_str() {
+            Some("Audio/Sink") => AudioDirection::Output,
+            Some("Audio/Source") => AudioDirection::Input,
+            _ => continue,
+        };
+        let Some(name) = props["node.name"].as_str() else { continue; };
+        let Some(id) = object["id"].as_u64().and_then(|id| u32::try_from(id).ok()) else { continue; };
+        let Some(serial) = props["object.serial"].as_u64() else { continue; };
+        let default = match direction {
+            AudioDirection::Output => &inventory.default_output,
+            AudioDirection::Input => &inventory.default_input,
+        };
+        inventory.devices.push(AudioDevice {
+            id, serial, name: name.into(), direction,
+            description: props["node.description"].as_str().unwrap_or(name).into(),
+            is_default: default.as_deref() == Some(name),
+        });
+    }
+    inventory.devices.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(inventory)
 }
 
 /// Parse `wpctl get-volume @DEFAULT_AUDIO_SINK@`, whose output is one line:
@@ -117,30 +126,35 @@ fn step_to(current: u32, delta: i32) -> u32 {
 #[derive(Debug)]
 pub struct AudioApi {
     control: Arc<dyn AudioControl>,
+    store: Store,
+    writes: tokio::sync::Mutex<()>,
 }
 
 impl AudioApi {
-    pub fn new(control: Arc<dyn AudioControl>) -> Self {
-        Self { control }
+    pub fn new(control: Arc<dyn AudioControl>, store: Store) -> Self {
+        Self { control, store, writes: tokio::sync::Mutex::new(()) }
     }
 
-    /// Read the default sink, treating an unreachable `wpctl` as "this machine has no volume
-    /// control" rather than as an error: a desktop with no WirePlumber is a working machine.
+    /// No readable default is unavailable, not a fabricated zero-volume device.
     pub async fn state(&self) -> AudioState {
-        let Ok(output) = self.control.wpctl(&["get-volume", DEFAULT_SINK]).await else {
-            return AudioState::default();
+        let output = match self.control.wpctl(&["get-volume", DEFAULT_SINK]).await {
+            Ok(output) => output,
+            Err(error) => return AudioState {
+                unavailable_reason: Some(error.to_string()), ..AudioState::default()
+            },
         };
         match parse_volume(&output) {
             Ok((volume_percent, muted)) => AudioState {
                 present: true,
                 volume_percent,
                 muted,
+                unavailable_reason: None,
             },
             // wpctl answered but in a shape this does not understand. That is a real fault and is
             // worth a log line, but it is still not a reason to claim the volume is zero.
             Err(error) => {
                 tracing::warn!(%error, "could not read the default sink's volume");
-                AudioState::default()
+                AudioState { unavailable_reason: Some(error.to_string()), ..AudioState::default() }
             }
         }
     }
@@ -156,6 +170,59 @@ impl AudioApi {
     fn absent() -> fdo::Error {
         fdo::Error::NotSupported("this machine has no volume control".to_owned())
     }
+
+    fn preference(&self, direction: AudioDirection) -> Result<Option<String>> {
+        let json: Option<String> = self.store.lock().query_row(
+            "SELECT value_json FROM settings_values WHERE key = ?1",
+            [preference_key(direction)], |row| row.get(0)
+        ).optional()?;
+        json.map(|json| serde_json::from_str(&json).map_err(Into::into)).transpose()
+    }
+
+    async fn inventory_state(&self) -> Result<AudioInventory> {
+        let mut inventory = self.control.inventory().await?;
+        inventory.preferred_output = self.preference(AudioDirection::Output)?;
+        inventory.preferred_input = self.preference(AudioDirection::Input)?;
+        Ok(inventory)
+    }
+
+    async fn select(&self, direction: AudioDirection, name: &str) -> Result<()> {
+        let _write = self.writes.lock().await;
+        let inventory = self.control.inventory().await?;
+        let device = inventory.devices.iter().find(|device|
+            device.direction == direction && device.name == name
+        ).context("audio device disappeared or belongs to a different direction")?;
+        self.control.wpctl(&["set-default", &device.id.to_string()]).await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let observed = self.control.inventory().await?;
+            let applied = match direction {
+                AudioDirection::Output => observed.default_output,
+                AudioDirection::Input => observed.default_input,
+            };
+            if applied.as_deref() == Some(name) { break; }
+            if tokio::time::Instant::now() >= deadline {
+                bail!("WirePlumber did not apply the requested audio device");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let json = serde_json::to_string(name)?;
+        self.store.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO settings_values (key, value_json, updated_ms) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_ms=excluded.updated_ms",
+                rusqlite::params![preference_key(direction), json, templar_state::now_ms()],
+            )?;
+            Ok(())
+        })
+    }
+}
+
+fn preference_key(direction: AudioDirection) -> &'static str {
+    match direction {
+        AudioDirection::Output => "_internal.audio.preferred-output",
+        AudioDirection::Input => "_internal.audio.preferred-input",
+    }
 }
 
 #[zbus::interface(name = "org.templaros.Audio1")]
@@ -164,6 +231,23 @@ impl AudioApi {
     async fn get(&self) -> fdo::Result<String> {
         serde_json::to_string(&self.state().await)
             .map_err(|error| failed(anyhow::anyhow!("{error}")))
+    }
+
+    async fn inventory(&self) -> fdo::Result<String> {
+        serde_json::to_string(&self.inventory_state().await.map_err(failed)?).map_err(failed)
+    }
+
+    async fn select_device(
+        &self, direction: &str, name: &str,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> fdo::Result<()> {
+        let direction = match direction {
+            "output" => AudioDirection::Output, "input" => AudioDirection::Input,
+            _ => return Err(fdo::Error::InvalidArgs("expected input or output".into())),
+        };
+        self.select(direction, name).await.map_err(failed)?;
+        let _ = Self::changed(&emitter).await;
+        Ok(())
     }
 
     /// Set the default sink's volume, clamped to 0..=100.
@@ -192,7 +276,8 @@ impl AudioApi {
             return Err(Self::absent());
         }
         let wanted = step_to(state.volume_percent, delta);
-        let landed = self.apply_volume(wanted).await.map_err(failed)?;
+        self.apply_volume(wanted).await.map_err(failed)?;
+        let landed = self.state().await.volume_percent;
         let _ = Self::changed(&emitter).await;
         Ok(landed)
     }
@@ -229,12 +314,130 @@ impl AudioApi {
             .await
             .map_err(failed)?;
         let _ = Self::changed(&emitter).await;
-        Ok(!state.muted)
+        Ok(self.state().await.muted)
     }
 
     /// This service changed the volume or the mute state.
     #[zbus(signal)]
     async fn changed(emitter: &zbus::object_server::SignalEmitter<'_>) -> zbus::Result<()>;
+}
+
+/// A separate monitor process keeps PipeWire's native loop out of the policy daemon.
+pub fn spawn_watch(connection: zbus::Connection) {
+    tokio::spawn(async move {
+        let mut disconnected = false;
+        loop {
+            if let Err(error) = watch_once(&connection, &mut disconnected).await {
+                tracing::warn!(%error, "audio event monitor disconnected");
+                // Event-driven consumers must re-read availability on loss, not keep showing
+                // the last working route. Repeated reconnect failures are the same transition.
+                if !disconnected {
+                    disconnected = true;
+                    if let Ok(interface) = connection.object_server().interface::<_, AudioApi>(
+                        templar_types::dbus::session::AUDIO_PATH,
+                    ).await {
+                        let _ = AudioApi::changed(interface.signal_emitter()).await;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
+}
+
+async fn watch_once(connection: &zbus::Connection, disconnected: &mut bool) -> Result<()> {
+    use tokio::io::AsyncReadExt as _;
+    use std::{collections::HashSet, process::Stdio};
+    let mut child = tokio::process::Command::new("pw-dump").arg("--monitor")
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
+        .kill_on_drop(true).spawn().context("starting PipeWire monitor")?;
+    let mut stdout = child.stdout.take().context("monitor stdout unavailable")?;
+    let interface = connection.object_server().interface::<_, AudioApi>(
+        templar_types::dbus::session::AUDIO_PATH
+    ).await?;
+    let mut previous = None;
+    let mut known = HashSet::<u64>::new();
+    let mut frames = MonitorFrames::default();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let count = stdout.read(&mut chunk).await?;
+        if count == 0 { bail!("PipeWire monitor exited: {}", child.wait().await?); }
+        let mut relevant = false;
+        frames.push(&chunk[..count], |objects| {
+            for object in objects {
+                let Some(id) = object["id"].as_u64() else { continue; };
+                let interesting = object["type"] == "PipeWire:Interface:Node"
+                    || (object["type"] == "PipeWire:Interface:Metadata"
+                        && object["props"]["metadata.name"] == "default");
+                if interesting { known.insert(id); }
+                if interesting || known.contains(&id) {
+                    relevant = true;
+                    if object["info"].is_null() && object["type"].is_null() { known.remove(&id); }
+                }
+            }
+        })?;
+        if !relevant { continue; }
+        let api = interface.get().await;
+        let inventory = api.inventory_state().await?;
+        // A saved stable preference is reapplied only at startup or when its device reappears,
+        // never on a volume/default edit by another application.
+        for (direction, preference) in [
+            (AudioDirection::Output, inventory.preferred_output.as_deref()),
+            (AudioDirection::Input, inventory.preferred_input.as_deref()),
+        ] {
+            if let Some(name) = preference
+                && inventory.devices.iter().any(|device| device.name == name && device.direction == direction)
+                && previous.as_ref().is_none_or(|(_, old): &(AudioState, AudioInventory)|
+                    !old.devices.iter().any(|device| device.name == name && device.direction == direction))
+                && let Err(error) = api.select(direction, name).await
+            {
+                tracing::warn!(%error, ?direction, "could not restore audio device preference");
+            }
+        }
+        let state = api.state().await;
+        let inventory = api.inventory_state().await?;
+        *disconnected = false;
+        if previous.as_ref().is_none_or(|(old_state, old_inventory)|
+            old_state != &state || old_inventory != &inventory) {
+            previous = Some((state, inventory));
+            let _ = AudioApi::changed(interface.signal_emitter()).await;
+        }
+    }
+}
+
+/// pw-dump emits a stream of top-level arrays. Frame once, then parse once, with bounded memory.
+#[derive(Default)]
+struct MonitorFrames {
+    bytes: Vec<u8>,
+    depth: usize,
+    quoted: bool,
+    escaped: bool,
+}
+impl MonitorFrames {
+    fn push(&mut self, chunk: &[u8], mut frame: impl FnMut(Vec<serde_json::Value>)) -> Result<()> {
+        for &byte in chunk {
+            if self.bytes.is_empty() && byte.is_ascii_whitespace() { continue; }
+            if self.bytes.len() == 8 * 1024 * 1024 { bail!("PipeWire monitor frame exceeded 8 MiB"); }
+            self.bytes.push(byte);
+            if self.quoted {
+                if self.escaped { self.escaped = false; }
+                else if byte == b'\\' { self.escaped = true; }
+                else if byte == b'\"' { self.quoted = false; }
+            } else {
+                match byte {
+                    b'\"' => self.quoted = true,
+                    b'[' | b'{' => self.depth += 1,
+                    b']' | b'}' => self.depth = self.depth.checked_sub(1).context("malformed monitor frame")?,
+                    _ => {}
+                }
+            }
+            if self.depth == 0 {
+                frame(serde_json::from_slice(&self.bytes)?);
+                self.bytes.clear();
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -263,57 +466,6 @@ mod tests {
         assert_eq!(step_to(0, -5), 0);
     }
 
-    use std::sync::Mutex;
-
-    /// Answers like `wpctl` and records what it was asked. Nothing in this module's tests changes
-    /// the volume of the machine running them.
-    #[derive(Debug)]
-    struct FakeWpctl {
-        /// What `get-volume` prints — the real one-line format.
-        volume: Mutex<String>,
-        calls: Mutex<Vec<Vec<String>>>,
-        /// When true, `wpctl` is not on this machine.
-        absent: bool,
-    }
-
-    impl FakeWpctl {
-        fn reporting(volume: &str) -> Arc<Self> {
-            Arc::new(Self {
-                volume: Mutex::new(volume.to_owned()),
-                calls: Mutex::new(Vec::new()),
-                absent: false,
-            })
-        }
-
-        fn missing() -> Arc<Self> {
-            Arc::new(Self {
-                volume: Mutex::new(String::new()),
-                calls: Mutex::new(Vec::new()),
-                absent: true,
-            })
-        }
-
-        fn calls(&self) -> Vec<Vec<String>> {
-            self.calls.lock().unwrap().clone()
-        }
-    }
-
-    #[async_trait]
-    impl AudioControl for FakeWpctl {
-        async fn wpctl(&self, arguments: &[&str]) -> Result<String> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(arguments.iter().map(|value| (*value).to_owned()).collect());
-            if self.absent {
-                bail!("no such file or directory: wpctl");
-            }
-            if arguments.first() == Some(&"get-volume") {
-                return Ok(self.volume.lock().unwrap().clone());
-            }
-            Ok(String::new())
-        }
-    }
 
     #[test]
     fn wpctls_real_output_shapes_parse() {
@@ -328,62 +480,4 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn the_volume_is_read_from_the_default_sink() {
-        let wpctl = FakeWpctl::reporting("Volume: 0.32 [MUTED]\n");
-        let api = AudioApi::new(wpctl.clone());
-        let state = api.state().await;
-        assert_eq!(
-            state,
-            AudioState {
-                present: true,
-                volume_percent: 32,
-                muted: true
-            }
-        );
-        assert_eq!(
-            wpctl.calls(),
-            vec![vec!["get-volume".to_owned(), DEFAULT_SINK.to_owned()]]
-        );
-    }
-
-    #[tokio::test]
-    async fn a_machine_without_wireplumber_says_no_audio_rather_than_zero() {
-        let wpctl = FakeWpctl::missing();
-        let api = AudioApi::new(wpctl.clone());
-        let state = api.state().await;
-        assert!(!state.present, "absent, which is not the same as silent");
-        assert_eq!(state.volume_percent, 0);
-        // The read was attempted: "no audio" is what a failing wpctl means, not a guess made
-        // without asking.
-        assert_eq!(wpctl.calls().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn setting_a_volume_asks_wpctl_in_percent_and_clamps_to_a_hundred() {
-        let wpctl = FakeWpctl::reporting("Volume: 0.20\n");
-        let api = AudioApi::new(wpctl.clone());
-        assert_eq!(api.apply_volume(65).await.unwrap(), 65);
-        assert_eq!(api.apply_volume(400).await.unwrap(), 100);
-        let calls = wpctl.calls();
-        assert_eq!(calls[0], ["set-volume", DEFAULT_SINK, "65%"]);
-        assert_eq!(calls[1], ["set-volume", DEFAULT_SINK, "100%"]);
-    }
-
-    #[tokio::test]
-    async fn adjusting_reads_then_steps_and_never_leaves_the_range() {
-        let wpctl = FakeWpctl::reporting("Volume: 0.95\n");
-        let api = AudioApi::new(wpctl.clone());
-        // Reading first is what makes one adjustment one step: the service, not the caller,
-        // knows where the volume was.
-        let state = api.state().await;
-        assert_eq!(state.volume_percent, 95);
-        let wanted = (i64::from(state.volume_percent) + 10).clamp(0, 100) as u32;
-        assert_eq!(api.apply_volume(wanted).await.unwrap(), 100);
-
-        *wpctl.volume.lock().unwrap() = "Volume: 0.03\n".to_owned();
-        let state = api.state().await;
-        let wanted = (i64::from(state.volume_percent) - 10).clamp(0, 100) as u32;
-        assert_eq!(api.apply_volume(wanted).await.unwrap(), 0);
-    }
 }

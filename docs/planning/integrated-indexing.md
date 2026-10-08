@@ -22,6 +22,94 @@ Ledger records this plan draws on (`akr get <key>`):
 | `legeos.observation.home-tree-exceeds-the-inotify-watch-budget/2` | stale | Premise of the inotify decision |
 | `legeos.observation.lege-client-links-rusqlite-through-the-shared-index-types` | stale | Consumer types still link the store |
 
+## Source handoff — 2026-10-05
+
+The observations and ledger-state table below describe the 2026-10-01 assessment, not a new
+runtime verification. Reopened index heads require provenance/evidence revalidation; they do
+not by themselves establish a regression. The following source changes are implemented but
+have not been built or exercised by the delegated index worker:
+
+- Doctor opens the existing derived database **read-only**, without creating/migrating the
+  index or opening authoritative session state. Schema 3 through the current supported schema
+  are inspected without migration; unsupported schemas fail untouched. The bounded live read
+  found schema 5, generation 13,510, an incomplete watcher-exhausted home root, refused watches,
+  previous overflows and an ENOENT watcher error for a disappearing rustc output directory.
+  A vanished child is now distinct from watch refusal/exhaustion; genuine exhaustion, overflow,
+  budgets and stale root truth remain visible rather than being downgraded.
+- Indexed immediate children use `(root_id,parent_id,path_bytes)` and streaming repair
+  consumption, not a descendant-range decode. Migration 6 repairs legacy links; take-on-trust
+  reconciliation and moves preserve parent identity. Default repair entry/byte budgets are
+  unlimited unless explicitly configured, and an explicit budget remains an incomplete pass.
+  Atomic delta acquisition cannot commit just a prefix above the watcher chunk limit.
+- Production full-root reconciliation acquires **pre/post** Btrfs checkpoints. A bounded,
+  recognized incremental stream must prove no overlapping change during that pass before the
+  post-checkpoint can become a baseline. Raw commands are checked too, so a transient
+  create/delete is not hidden by an empty net plan. Incompatible or busy acquisition keeps the
+  ordinary watcher/reconcile path. Baseline identity includes disposable-cache UUID (migration
+  7), root, generation, policy and subvolume. Durable pending fences prevent replay after a
+  crash between commit and pointer publication; recursive watch coverage precedes Current.
+- Store-free client models, native typed search sessions and snapshot consumption retain
+  generation, total/truncation, namespace and metadata truth. `Index1.Observe(bool,u64)` pins an
+  independent caller-owned token without renewal polling; disconnect releases all tokens.
+  Closing an old cursor cannot detach a replacement or a reacquired observation after restart.
+  Acquire/search cancellation drops an eventual owned result after the reply, and cleanup uses
+  the acquired runtime even when Drop runs on the GUI thread. Unique-name loss revokes pending
+  acquisition flags before commands are drained; no disconnected-name tombstone history or
+  renewal timer is needed. The loss subscription is installed before the public name is claimed;
+  subscription failure/end is an honest service failure instead of immortal lifetime pins.
+  Newer row facts cannot be mislabeled with an older pinned page generation: they return
+  `SnapshotRequired`; unchanged paging and deletion-as-absent retain their contracts.
+  Snapshot wire flag constants are outside the store-only writer module; this fixes the missing
+  aggregate-flag names reported by the parent's first store-free compile attempt. `OpenSnapshot`
+  streams into a memfd and applies kernel WRITE/GROW/SHRINK/SEAL seals, then reopens an O_RDONLY
+  descriptor before returning `sealed:true`; kernel creation/sealing failure is an actual
+  publication failure, not an unsealed fallback. Private runtime coverage checks access mode,
+  kernel seals, write, truncation and growth.
+- Root policies use the existing `RootPolicy` through `RootPolicy`, `ConfigureRoot` and
+  `RemoveRoot`. Native path bytes and policies live in authoritative `file_index_roots`, not
+  only the disposable cache. Empty choices and removed HOME survive cache replacement/restart.
+  Disabled monitoring preserves searchable rows but reports unwatched; it does not claim Current.
+  Native path plus observed policy hash fences reads, updates and removals atomically in the
+  authoritative store; `"absent"` is explicitly add-only. Cache UUID fences rebuild requests,
+  and root IDs increase monotonically within a cache so removal/addition cannot recycle an
+  old queued target. CLI `index policy/configure/remove` mirrors these Settings controls.
+- `Actions1.RenderNative` and the client `render_native_path` helper preserve raw bytes through
+  percent-encoded URIs and ANSI-C shell quoting. Plain UTF-8 text forms fail explicitly when
+  unrepresentable. Treemap fallback is bounded and reports real depth/entry/read/missing-path
+  limits; available-but-stale or broken indexed results do not silently trigger another scan.
+- Bookmark export is explicit and additive with backup, owned-line evidence, native-entry
+  preservation and atomic exchange conflict recovery. External file-manager mutations enter
+  the watcher, never a fabricated filed undo journal.
+  Ownership is recorded only after successful GTK publication; interrupted exports can leave
+  an unmanaged line but cannot falsely adopt a native application's line. Editing/removing an
+  owned native label drops its tracking without rewriting GTK when no additions are needed.
+
+### Owner verification and remaining gates
+
+Run once after source integration, not against the live desktop:
+
+```sh
+cargo test -p templar-file-index -p templar-filed -p templar-client -p templar-treemap -- --nocapture
+```
+
+`private_runtime` owns a private D-Bus socket, HOME/XDG stores and exact child PIDs. Its nonzero
+exercise covers 258 warm paged/native hits, metadata update, rename, move, external trash without
+invented undo, native URI/shell byte round trips, bookmark backup/preservation, bounded restart
+visibility, GUI-thread cursor cleanup, observation reacquisition, kernel-sealed O_RDONLY snapshots
+and persisted non-UTF8 root policy after cache deletion. Root-policy tests exercise stale
+read/update/remove rejection and exactly one concurrent durable CAS winner.
+It requires `dbus-daemon` and Bash; both session and optional system-bus calls are isolated.
+`snapshot_consumer` consumes real writer frames, cached opaque totals, native paths, scope and
+freshness. Focused core/service tests cover large atomic acquisition, parent identity, failed
+publication/crash fences, transient/late acquisition changes, disposable cache identity and
+last-check-to-rename bookmark conflicts. No success counts are claimed before the owner runs them.
+
+Physical/mount evidence remains separate: real `@home` checkpoint privilege/lineage and reboot
+recovery, the complete mounted home/project watch budget, overflow/convergence under real load,
+2M broad-query latency/memory and installed first-party journeys. FSearch fork/packaging and
+external Silvaview service mode still require their owned source/provenance lane; no substitute
+private index or claimed external-consumer success is introduced here.
+
 ## 1. Where it stands
 
 The service side is built: `templar-filed` is the only watcher and database owner, the core is
@@ -112,8 +200,8 @@ These are already-scoped records. Order as the Astra parent prescribes.
    signatures) with templar crate names, attach evidence, and complete it.
 2. **`btrfs-delta-baseline-checkpoint-protocol-20260909`.** Unlike every earlier run, this one can
    be validated on a real `@home`:
-   - Seed: give `ensure_baseline` a production caller after a root first reaches `current` on
-     btrfs.
+   - Seed: production `begin_reconcile` / `complete_reconcile` acquire pre/post checkpoints
+     around a complete root pass and refuse overlapping changes; owner mount evidence remains.
    - Atomic lineage: write the baseline pointer in the same commit as the applied generation, or
      after it with a recovery rule. Never write it before decode and apply succeed.
    - Re-arm recursive watches after a successful catch-up.

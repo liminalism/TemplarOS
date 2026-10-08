@@ -25,8 +25,11 @@ mod browser;
 mod clients;
 mod dialog;
 mod file_chooser;
+mod host;
+mod parent;
 mod request;
 mod settings;
+mod wire;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -44,25 +47,57 @@ struct Cli {
     /// Claim the name and idle without serving interfaces (smoke test).
     #[arg(long)]
     idle: bool,
+    /// Owned request-local X11 UI process; never claims a portal backend name.
+    #[arg(long, hide = true)]
+    x11_dialog: bool,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt().init();
+fn main() -> Result<()> {
+    use std::io::IsTerminal as _;
     let cli = Cli::parse();
+    if cli.x11_dialog {
+        tracing_subscriber::fmt()
+            .with_ansi(std::io::stderr().is_terminal())
+            .with_writer(std::io::stderr)
+            .init();
+        return host::run_x11_dialog();
+    }
+    // No ANSI under the journal: journald stores coloured MESSAGE fields as byte arrays.
+    tracing_subscriber::fmt()
+        .with_ansi(std::io::stdout().is_terminal())
+        .init();
 
     // Say which build is running, for `templar dev status`. Diagnostic only: a stamp that cannot be
     // written must never keep xdg-desktop-portal-templar from starting.
     if let Err(error) = templar_build::write_stamp("xdg-desktop-portal-templar") {
         tracing::warn!(%error, "could not write the build stamp");
     }
+    let runtime = tokio::runtime::Runtime::new()?;
+    if cli.idle || !display_available() {
+        return runtime.block_on(backend(cli.idle, None));
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    pixelkit_windowing::run_window_service(
+        |waker| {
+            runtime.spawn(async move {
+                if let Err(error) = backend(false, Some(host::Client::new(sender, waker))).await {
+                    tracing::error!(%error, "portal backend infrastructure failed");
+                    std::process::exit(1);
+                }
+            });
+        },
+        move || host::receive(&receiver),
+    ).map_err(|error| anyhow::anyhow!("portal graphical host: {error}"))
+}
+
+async fn backend(idle: bool, ui_host: Option<host::Client>) -> Result<()> {
     let connection = connection::Builder::session()?
-        .name(BUS_NAME)?
         .build()
         .await
-        .context("claiming the portal backend name")?;
+        .context("connecting to the portal bus")?;
 
-    if cli.idle {
+    if idle {
+        connection.request_name(BUS_NAME).await?;
         tracing::info!(
             name = BUS_NAME,
             "portal backend idling (--idle, no interfaces served)"
@@ -71,9 +106,13 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    serve(&connection)
+    serve(&connection, ui_host)
         .await
         .context("serving the portal backend interfaces")?;
+    // Publish readiness only after every interface is registered. The frontend
+    // can call immediately after activation reports name ownership.
+    connection.request_name(BUS_NAME).await
+        .context("claiming the portal backend name")?;
     tracing::info!(
         name = BUS_NAME,
         "portal backend ready: FileChooser, AppChooser, Settings, Background"
@@ -82,34 +121,27 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Whether a compositor is reachable. Without one, the Pixelkit dialogs have nothing to open
-/// onto, so each interface falls back to its headless default — which declines rather than
-/// fabricating an answer — instead of blocking a worker thread on a window that cannot appear.
+/// Environment is only an intent to connect; event-loop/window failures are
+/// reported separately and never translated into user cancellation.
 fn display_available() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some()
 }
 
 /// Wire every interface onto `connection` and start the background forwarders. Split out from
 /// `main` so a future integration test can call it directly against a private connection.
-async fn serve(connection: &zbus::Connection) -> Result<()> {
-    let graphical = display_available();
-    if !graphical {
-        tracing::warn!(
-            "no WAYLAND_DISPLAY or DISPLAY: portal dialogs will decline instead of prompting"
-        );
-    }
-    let file_chooser_ui: Arc<dyn file_chooser::FileChooserUi> = if graphical {
-        Arc::new(file_chooser::NativeUi)
+async fn serve(connection: &zbus::Connection, ui_host: Option<host::Client>) -> Result<()> {
+    let file_chooser_ui: Arc<dyn file_chooser::FileChooserUi> = if let Some(host) = &ui_host {
+        Arc::new(file_chooser::NativeUi(host.clone()))
     } else {
         Arc::new(file_chooser::NoUiAvailable)
     };
-    let app_chooser_ui: Arc<dyn app_chooser::AppChooserUi> = if graphical {
-        Arc::new(app_chooser::NativeUi)
+    let app_chooser_ui: Arc<dyn app_chooser::AppChooserUi> = if let Some(host) = &ui_host {
+        Arc::new(app_chooser::NativeUi(host.clone()))
     } else {
         Arc::new(app_chooser::NoUiAvailable)
     };
-    let background_ui: Arc<dyn background::BackgroundUi> = if graphical {
-        Arc::new(background::NativeUi)
+    let background_ui: Arc<dyn background::BackgroundUi> = if let Some(host) = &ui_host {
+        Arc::new(background::NativeUi(host.clone()))
     } else {
         Arc::new(background::NoUiAvailable)
     };

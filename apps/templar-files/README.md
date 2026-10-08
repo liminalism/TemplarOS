@@ -13,7 +13,7 @@ video thumbnails are decoded by bounded service routes, never on the window thre
 application does not stop an operation already accepted by `templar-filed`.
 
 The visible **Copy path** action asks `Files.Actions1` for the path exactly as shown and places it
-on the Wayland clipboard through `wl-copy`. **Properties** is explicit because folder totals may
+on the native clipboard through PixelKit's shared worker. **Properties** is explicit because folder totals may
 take time: for a folder it reports recursive regular-file and subfolder counts plus logical and
 allocated byte totals, without following symlinks. Partial totals are labelled if a descendant
 cannot be read.
@@ -28,9 +28,9 @@ page. The Templar renderer is compiled into the packaged `templar-preview-codecs
 keeps its heavy dependency graph and lockfile out of the
 main OS workspace. `TEMPLAROS_PREVIEW_CODECS` can select a development build. Video is
 the deliberate ffmpeg route: ffprobe supplies the duration and ffmpeg seeks to 3% before taking
-one bounded frame. No still image or PDF is routed through ffmpeg. `templar-files` depends on
-`wl-clipboard` so Copy path has a real compositor clipboard provider rather than an
-application-local string.
+one bounded frame. No still image or PDF is routed through ffmpeg. Copy path and text editing
+share the asynchronous native clipboard owner: success is reported after ownership completes,
+not after storing an application-local string. No `wl-copy` process is required by standalone Files.
 
 For a service-backed text smoke without opening a window:
 

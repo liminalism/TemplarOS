@@ -25,8 +25,8 @@
       <arg name="role" type="s" direction="in"/>
     </method>
     <!-- Recompute every context's stage and bring `output`'s field in line: one HomeField1
-         batch of Place/Resize/Remove ops, never a Move, never a change to a tile the user
-         placed, moved, resized or pinned. Returns the tending report as JSON
+         batch of Place/Resize/Remove ops, never a Move. Pin/Keep/hand placement prevents
+         recession but only manual resize freezes size. Returns the tending report as JSON
          ({"changed": n, "ops": [{"op": label, "reason": sentence}]}); "changed" is 0 when the
          field was already in line. -->
     <method name="Tend">
@@ -39,9 +39,58 @@
       <arg name="contexts_json" type="s" direction="out"/>
     </method>
     <!-- Exact per-instance terminal cwd, including directories ignored for activity.
-         JSON object from verified instance UUID strings to absolute paths. -->
+         JSON object from verified instance UUID strings to absolute native paths:
+         UTF-8 strings unchanged, otherwise {"path_b64":"canonical base64 of Unix bytes"}. -->
     <method name="WorkingDirectories">
       <arg name="directories_json" type="s" direction="out"/>
+    </method>
+    <!-- Versioned project-work presentation. JSON {version:1,projects:[{root,name,template,
+         secondary_templates,template_override,activity,attention,state_line,instances,sessions,
+         recent_files,apps}],source_errors:[string]}. Activity active/resting/fading is neutral;
+         attention none/needs-you/failed alone selects accents. Session rows contain id,
+         instance_id,kind,program,subject,state,updated_ms,exit_status,commands,cwd,resume.
+         Path fields use the same native codec as WorkingDirectories; display names are separate.
+         recent_files.app_id may be null when the owning Recents1 source has no application identity.
+         Commands are approved program/verb only, never raw argv/prompts. Owner Recents1 data
+         supports existing Places only; neither recents nor sessions creates ledger weight. -->
+    <method name="PresentationV1">
+      <arg name="presentation_json" type="s" direction="out"/>
+    </method>
+    <!-- Display-only schema_version=1 adapter hook. Genuine bus sender uid/PID and a
+         broker/current-systemd registered cgroup required; a self-describing name is insufficient.
+         JSON bounded, adapter/event/session_id/cwd only. Cwd uses the native JSON path codec.
+         Unknown fields or adapters rejected. This can refine existing containment only;
+         it never creates a Place or ledger weight. -->
+    <method name="ObserveSessionV1">
+      <arg name="observation_json" type="s" direction="in"/>
+    </method>
+    <method name="SessionsV1">
+      <arg name="sessions_json" type="s" direction="out"/>
+    </method>
+    <!-- Collect verified processes and private command journals on activation, without
+         moving/resizing/tending a card. Public agent CLI inventory runs at Tend only. -->
+    <method name="ActivateInstanceV1">
+      <arg name="instance_id" type="s" direction="in"/>
+    </method>
+    <!-- Persist coding/video/images/documents/plain override; empty restores inference. -->
+    <method name="ShowAsV1">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="template" type="s" direction="in"/>
+    </method>
+    <!-- Catalogue row and existing project validated server-side. Fixed adapter argv only;
+         Launcher1 terminal provider starts a new managed instance with the row's exact cwd,
+         carried as a native local-file URI, never lossy directory argv or compositor commands. -->
+    <method name="ResumeSessionV1">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="session_id" type="s" direction="in"/>
+      <arg name="instance_id" type="s" direction="out"/>
+    </method>
+    <!-- Relaunch an installed app inside an existing project using Launcher1's actual
+         service WorkingDirectory. No client/raw command arguments reach this API. -->
+    <method name="LaunchAppInPlaceV1">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="app_id" type="s" direction="in"/>
+      <arg name="instance_id" type="s" direction="out"/>
     </method>
     <!-- One context by root, with the reason for its last stage change: what `garden.why`
          shows. An empty string when the path is no context. -->
@@ -49,14 +98,13 @@
       <arg name="path" type="s" direction="in"/>
       <arg name="context_json" type="s" direction="out"/>
     </method>
-    <!-- A pinned context never recedes and is never removed; it may still grow. Unpinning also
-         releases a size kept by Keep. A folder the user placed or resized by hand is pinned and
-         kept without asking: the tender only ever resizes or removes what it grew itself. -->
+    <!-- A pinned context never recedes and is never removed; it may still grow. Pinning,
+         Keeping or placement by hand does not freeze size. Only manual resizing does. -->
     <method name="Pin">
       <arg name="path" type="s" direction="in"/>
       <arg name="pinned" type="b" direction="in"/>
     </method>
-    <!-- Pin, and freeze the tile at the size it has now: the tender never resizes it again. -->
+    <!-- Keep the project on Home against recession, without freezing its activity-driven size. -->
     <method name="Keep">
       <arg name="path" type="s" direction="in"/>
     </method>

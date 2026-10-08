@@ -85,6 +85,11 @@ impl AssociationEngine {
     pub fn database(&self) -> &AssociationDb {
         &self.db
     }
+    /// Publish the committed association view for non-TemplarOS applications.
+    pub fn export_mimeapps(&self, destination: &Path) -> anyhow::Result<()> {
+        crate::export::export_mimeapps(&self.db, self.catalog.as_ref(), destination)
+    }
+
 
     /// Replace the whole database at once — used after `History1.Undo` reverses a persisted
     /// change, to bring the in-memory engine back in sync with `templar-state` without needing a
@@ -356,33 +361,42 @@ impl AssociationEngine {
     /// table, then to a sibling copy of the same application. Replacing the deb with the Flatpak
     /// should not make every PDF stop opening.
     fn live_handler(&self, stored: &AppId, test: impl Fn(&AppId) -> bool) -> Option<Substituted> {
-        if test(stored) {
-            return Some(Substituted {
-                app_id: stored.clone(),
-                substituted: false,
-            });
-        }
-        let resolved = self.catalog.resolve_alias(stored);
-        if resolved != *stored && test(&resolved) {
-            return Some(Substituted {
-                app_id: resolved,
-                substituted: true,
-            });
-        }
-        self.catalog
-            .sibling_variants(&resolved)
-            .into_iter()
-            .find(|sibling| test(sibling))
-            .map(|app_id| Substituted {
-                app_id,
-                substituted: true,
-            })
+        live_handler(self.catalog.as_ref(), stored, test)
     }
 }
 
+/// Shared canonical installed-copy resolution for owned and compatibility association consumers.
+pub(crate) fn live_handler(
+    catalog: &dyn AppCatalog,
+    stored: &AppId,
+    test: impl Fn(&AppId) -> bool,
+) -> Option<Substituted> {
+    if test(stored) {
+        return Some(Substituted {
+            app_id: stored.clone(),
+            substituted: false,
+        });
+    }
+    let resolved = catalog.resolve_alias(stored);
+    if resolved != *stored && test(&resolved) {
+        return Some(Substituted {
+            app_id: resolved,
+            substituted: true,
+        });
+    }
+    catalog
+        .sibling_variants(&resolved)
+        .into_iter()
+        .find(|sibling| test(sibling))
+        .map(|app_id| Substituted {
+            app_id,
+            substituted: true,
+        })
+}
+
 /// A resolved handler, and whether it is the copy the person actually chose.
-struct Substituted {
-    app_id: AppId,
+pub(crate) struct Substituted {
+    pub(crate) app_id: AppId,
     substituted: bool,
 }
 
@@ -464,6 +478,7 @@ pub(crate) mod tests {
                     keywords: std::collections::BTreeSet::default(),
                     no_display: false,
                     provenance: None,
+                    provides: Vec::new(),
                 };
                 catalog
                     .manifests

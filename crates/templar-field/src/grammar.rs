@@ -220,7 +220,8 @@ pub fn operation_for(
             Some(match source {
                 TileKind::Project { .. }
                 | TileKind::WindowGroup { .. }
-                | TileKind::AppGroup { .. } => return None,
+                | TileKind::AppGroup { .. }
+                | TileKind::DesktopDock { .. } => return None,
                 TileKind::App { .. } => Operation::PinTool { project: *id },
                 TileKind::ParkedSession { .. } => Operation::ParkSession { project: *id },
                 TileKind::Widget { .. } => Operation::ScopeWidget { project: *id },
@@ -262,6 +263,11 @@ pub fn operation_for(
                 (TileKind::File { .. }, TileKind::Tray { .. }) => {
                     Some(Operation::AddReference { tray: *id })
                 }
+                (TileKind::File { .. } | TileKind::Folder { .. }, TileKind::DesktopDock { .. }) => {
+                    // Native dock drops carry Shift separately; this legacy grammar only knows
+                    // Ctrl-copy and must never reinterpret it as permission to move.
+                    Some(Operation::CopyInto { folder: *id })
+                }
                 // A real thing onto a real folder is a real file operation, and it is named:
                 // this is where the grammar stopped short before, returning None so that no drop
                 // could quietly move somebody's data while the invariant "an unnamed drop changes
@@ -282,6 +288,7 @@ pub fn operation_for(
                 // answers for it above, the way `Target::Project` does for a project.)
                 (
                     TileKind::Folder { .. }
+                    | TileKind::DesktopDock { .. }
                     | TileKind::Project { .. }
                     | TileKind::WindowGroup { .. }
                     | TileKind::AppGroup { .. },
@@ -290,6 +297,7 @@ pub fn operation_for(
                 | (
                     _,
                     TileKind::Folder { .. }
+                    | TileKind::DesktopDock { .. }
                     | TileKind::Project { .. }
                     | TileKind::WindowGroup { .. }
                     | TileKind::AppGroup { .. },

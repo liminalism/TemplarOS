@@ -31,13 +31,14 @@
 //! display and no `Space`; [`collect`] is the same rule with real pixels hung off it.
 
 use crate::chrome::{ChromeInputs, ChromeState};
+use crate::wallpaper::WallpaperRenderer;
 use smithay::{
     backend::renderer::{
         element::{
             AsRenderElements, memory::MemoryRenderBufferRenderElement,
             surface::WaylandSurfaceRenderElement,
         },
-        gles::GlesRenderer,
+        ImportAll, ImportMem,
     },
     desktop::{Space, Window},
     output::Output,
@@ -48,17 +49,28 @@ use templar_window::{Rect, WindowId};
 
 // The one element type both backends draw a frame out of. `render_elements!` (Smithay macro,
 // `#[macro_export]`'d — not doc-commentable, hence `//` rather than `///`) generates
-// `SceneElement` and its `RenderElement<GlesRenderer>` impl.
+// `SceneElement` and its renderer-generic `RenderElement` impl.
 //
 // There is deliberately no `Space` variant: this module never calls `space_render_elements`,
 // because that function returns one flat list for the whole space and the whole point here is to
 // interleave per window. `Space` is still where a window's *position* comes from — it remains the
 // render mirror `src/space_sync.rs` maintains — only the flattening is gone.
 smithay::backend::renderer::element::render_elements! {
-    pub SceneElement<=GlesRenderer>;
-    Cursor=crate::cursor::CursorRenderElement,
-    Chrome=MemoryRenderBufferRenderElement<GlesRenderer>,
-    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    pub SceneElement<R> where R: ImportAll + ImportMem + WallpaperRenderer;
+    Cursor=crate::cursor::CursorRenderElement<R>,
+    Chrome=MemoryRenderBufferRenderElement<R>,
+    Surface=WaylandSurfaceRenderElement<R>,
+    Wallpaper=crate::wallpaper::WallpaperElement,
+    Ground=smithay::backend::renderer::element::solid::SolidColorRenderElement,
+}
+
+// Native composition keeps the zero-inset path unwrapped. Calibrated elements are constrained
+// after the complete scene, including the cursor, so damage/capture/hit geometry agree.
+smithay::backend::renderer::element::render_elements! {
+    pub NativeSceneElement<R> where R: ImportAll + ImportMem + WallpaperRenderer;
+    Plain=SceneElement<R>,
+    Calibrated=smithay::backend::renderer::element::utils::CropRenderElement<smithay::backend::renderer::element::utils::RelocateRenderElement<smithay::backend::renderer::element::utils::RescaleRenderElement<SceneElement<R>>>>,
+    Identification=smithay::backend::renderer::element::utils::RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
 }
 
 /// One thing to draw for one window, in front-to-back order within that window.
@@ -101,15 +113,16 @@ pub fn window_scene_order(windows: &[(WindowId, bool, bool)]) -> Vec<ScenePiece>
 ///
 /// Takes `chrome`/`windows`/`inputs` as separately-borrowed pieces rather than `&mut
 /// TemplarCompState<B>` for the reason `ChromeInputs` exists: `src/backend/udev.rs` calls this while
-/// a device's `GlesRenderer`, borrowed out of `state.backend_data`, is held mutably.
-pub fn collect(
+/// a native GPU-manager renderer, borrowed out of `state.backend_data`, is held mutably.
+pub fn collect<R: ImportAll + ImportMem + WallpaperRenderer>(
     chrome: &mut ChromeState,
+    wallpaper: &mut crate::wallpaper::WallpaperState,
     windows: &crate::window_bridge::WindowIndex,
     inputs: &ChromeInputs<'_>,
     output: &Output,
-    renderer: &mut GlesRenderer,
-) -> Vec<SceneElement> {
-    let Some(output_geometry) = inputs.space.output_geometry(output) else {
+    renderer: &mut R,
+) -> Vec<SceneElement<R>> where R::TextureId: Clone + Send + 'static {
+    let Some(output_geometry) = crate::viewport::output_geometry(&inputs.space, output) else {
         return Vec::new();
     };
     let output_rect = Rect::new(
@@ -123,7 +136,26 @@ pub fn collect(
     let mut background = Vec::new();
     let (overlay, windows_get_chrome) =
         crate::chrome::collect_output_chrome(chrome, inputs, output, renderer, &mut background);
-    let mut elements: Vec<SceneElement> = overlay.into_iter().map(SceneElement::Chrome).collect();
+    let mut elements: Vec<SceneElement<R>> = overlay.into_iter().map(SceneElement::Chrome).collect();
+
+    if inputs.session_lock.locked {
+        // Never import or render ordinary surfaces while locked, even if fallback chrome fails.
+        // A transparent lock surface composites over the cleared frame, not the user's work.
+        if let Some(surface) = inputs.session_lock.surfaces.get(&output.name()) {
+            let mut lock_elements: Vec<SceneElement<R>> =
+                smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+                    renderer,
+                    surface.wl_surface(),
+                    (0, 0),
+                    Scale::from(output_scale),
+                    1.0,
+                    smithay::backend::renderer::element::Kind::Unspecified,
+                );
+            lock_elements.append(&mut elements);
+            return lock_elements;
+        }
+        return elements;
+    }
 
     let plan: Vec<(WindowId, bool, bool)> = inputs
         .window_service
@@ -159,6 +191,7 @@ pub fn collect(
                     chrome,
                     inputs.window_service,
                     window_id,
+                    inputs.tab_counts.get(&window_id).map(|tabs| tabs.count),
                     inputs.drop_target,
                     output_rect,
                     output_scale,
@@ -204,6 +237,10 @@ pub fn collect(
     // Taskfield so it stays mapped; inserting the scrim after the cards puts it above Home and
     // below the cards, which is the ground they stand on.
     elements.extend(background.into_iter().map(SceneElement::Chrome));
+    elements.extend(wallpaper.elements(renderer, output).into_iter().map(|element| match element {
+        crate::wallpaper::WallpaperScene::Image(image) => SceneElement::Wallpaper(image),
+        crate::wallpaper::WallpaperScene::Ground(ground) => SceneElement::Ground(ground),
+    }));
 
     retain_visible_chrome(chrome, inputs, live_chrome);
     elements
@@ -268,14 +305,14 @@ fn surface_placement(
 /// Anything `Space` is showing that the stacking order did not account for, drawn beneath
 /// everything the order did. Not in Taskfield: a leftover without a card used to be drawn at its
 /// real size, which is how a filter left full-size windows sitting on the overview.
-fn append_leftovers(
+fn append_leftovers<R: ImportAll + ImportMem + WallpaperRenderer>(
     inputs: &ChromeInputs<'_>,
     drawn: &[Window],
     output_geometry: Rectangle<i32, Logical>,
     output_scale: f64,
-    renderer: &mut GlesRenderer,
-    elements: &mut Vec<SceneElement>,
-) {
+    renderer: &mut R,
+    elements: &mut Vec<SceneElement<R>>,
+) where R::TextureId: Clone + Send + 'static {
     if matches!(
         inputs.window_service.presentation(),
         templar_window::Presentation::Taskfield(_)
@@ -368,16 +405,16 @@ fn card_placement(
     )
 }
 
-fn surface_elements(
+fn surface_elements<R: ImportAll + ImportMem + WallpaperRenderer>(
     window: &Window,
     space: &Space<Window>,
     output_geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
     output_scale: f64,
     presentation: Option<Rect>,
     alpha: f32,
-    renderer: &mut GlesRenderer,
-    elements: &mut Vec<SceneElement>,
-) {
+    renderer: &mut R,
+    elements: &mut Vec<SceneElement<R>>,
+) where R::TextureId: Clone + Send + 'static {
     let geometry = window.geometry();
     if let Some(card) = presentation {
         let (origin, k) = card_placement(
@@ -392,8 +429,8 @@ fn surface_elements(
             output_scale,
         );
         elements.extend(
-            AsRenderElements::<GlesRenderer>::render_elements::<
-                WaylandSurfaceRenderElement<GlesRenderer>,
+            AsRenderElements::<R>::render_elements::<
+                WaylandSurfaceRenderElement<R>,
             >(
                 window,
                 renderer,
@@ -420,8 +457,8 @@ fn surface_elements(
     let scale = Scale::from(output_scale);
     let physical = (render_location - output_geometry.loc).to_physical_precise_round(scale);
     elements.extend(
-        AsRenderElements::<GlesRenderer>::render_elements::<
-            WaylandSurfaceRenderElement<GlesRenderer>,
+        AsRenderElements::<R>::render_elements::<
+            WaylandSurfaceRenderElement<R>,
         >(window, renderer, physical, scale, alpha)
         .into_iter()
         .map(SceneElement::Surface),

@@ -1,7 +1,7 @@
 //! Hardware profile: detection (via `templar-hwdetect`) plus the one declarative GPU-mode setting
 //! (planning doc 01 §4: "hybrid, integrated-only and discrete-only modes are represented by one
 //! declarative setting rather than hand-edited configuration files"). hostd is the only writer of
-//! `<etc>/templaros/hardware/gpu-mode`; nothing else in the system should hand-edit it.
+//! `/var/lib/templaros/hardware/gpu-mode`; version-lock metadata stays with the deployment.
 
 use anyhow::{Context, Result, bail};
 use std::{fs, path::Path};
@@ -16,14 +16,14 @@ pub fn probe(sys_root: &Path) -> Result<GraphicsProfile> {
 /// mechanism" for a hybrid laptop in the absence of a live udev/prime-select action — the actual
 /// switch (powering the dGPU, `__NV_PRIME_RENDER_OFFLOAD` defaults) is a session-side concern that
 /// reads this file; hostd's job is only to make it one trustworthy, privileged write.
-pub fn set_gpu_mode(mode: GpuMode, profile: &GraphicsProfile, etc_dir: &Path) -> Result<()> {
+pub fn set_gpu_mode(mode: GpuMode, profile: &GraphicsProfile, state_dir: &Path) -> Result<()> {
     if !profile.supported_modes.contains(&mode) {
         bail!(
             "mode {mode:?} is not supported by this hardware (supports {:?})",
             profile.supported_modes
         );
     }
-    let path = etc_dir.join("gpu-mode");
+    let path = state_dir.join("gpu-mode");
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
@@ -34,8 +34,8 @@ pub fn set_gpu_mode(mode: GpuMode, profile: &GraphicsProfile, etc_dir: &Path) ->
         .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))
 }
 
-pub fn read_gpu_mode(etc_dir: &Path) -> Result<Option<GpuMode>> {
-    match fs::read_to_string(etc_dir.join("gpu-mode")) {
+pub fn read_gpu_mode(state_dir: &Path) -> Result<Option<GpuMode>> {
+    match fs::read_to_string(state_dir.join("gpu-mode")) {
         Ok(text) => mode_from_str(text.trim())
             .map(Some)
             .with_context(|| format!("unrecognised gpu-mode value {:?}", text.trim())),

@@ -27,18 +27,20 @@ pub use commands::{
     ActivationGrant, CommandContext, CommandEffect, CommandError, RevealHome, WindowCommand,
 };
 pub use geometry::{
-    Direction, Output, PhysicalPoint, Point, RecoveryAffordance, Rect, ResizeEdges, bounding_rect,
-    client_area, frame_around, is_beside, is_recoverable, logical_to_physical, move_into_view,
-    physical_to_logical, place_beside, recovery_affordance, repair_window, resize_edges_at,
-    resize_rect, scatter_layout, tag_strip,
+    Corner, Direction, Output, PhysicalPoint, Point, RecoveryAffordance, Rect, ResizeEdges,
+    RESIZE_SQUARE, TAB_ACTIVATION_DEPTH, TAB_CONTROL_GAP, TAB_CONTROL_SIZE, TAB_EXIT_GRACE_MS,
+    TAB_HYSTERESIS, TAB_REVEAL_GRACE_MS, TAB_TITLE_MAX_WIDTH, TAB_TITLE_MIN_WIDTH, TabControl,
+    TabPlacement, TabPolicy, WindowLayout, bounding_rect, is_beside, is_recoverable,
+    logical_to_physical, move_into_view, physical_to_logical, place_beside, recovery_affordance,
+    recovery_band, repair_window, resize_edges_at, resize_rect, scatter_layout,
 };
-pub use group::{GROUP_ACCENTS, GroupId, GroupRecord, accent_for};
+pub use group::{GROUP_ACCENTS, GROUP_STRIPE_WIDTH, GroupId, GroupRecord, accent_for};
 pub use layers::{ClientKind, Layer, LayerError, LayerStack, StackPosition, may_request_layer};
 pub use service::{
-    CachedIdentity, Decoration, EscapeAction, IdentityCache, Presentation, WindowId, WindowRecord,
-    WindowRole, WindowService,
+    CachedIdentity, Decoration, EscapeAction, IdentityCache, Presentation, TabDeadlineFired,
+    WindowId, WindowRecord, WindowRole, WindowService, WindowStacking,
 };
-pub use shell::{DockGrouping, GroupInfo, ShellToplevel, grouping_key};
+pub use shell::{DockGrouping, GroupInfo, ShellToplevel, TabCount, grouping_key};
 pub use switch::SwitchRing;
 pub use task::{ChipAction, TaskKey, TaskUnit};
 pub use taskfield::{Card, Section, TaskFilter, TaskfieldState};

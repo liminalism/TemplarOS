@@ -7,7 +7,7 @@
 //! Smithay 0.7.0 wires every protocol delegate through one macro,
 //! [`smithay::delegate_dispatch2`], rather than the classic per-protocol `delegate_xxx!` calls:
 //! any type implementing `Dispatch2`/`GlobalDispatch2` for a given Wayland interface is picked up
-//! automatically, which is also how our own `templar_shell_v1`/`templar_recovery_v1` protocol objects
+//! automatically, which is also how our own `templar_shell_v2`/`templar_recovery_v1` protocol objects
 //! (`src/protocols_shell.rs`, `src/protocols_recovery.rs`) are wired — the same one macro call at
 //! the bottom of this file covers Smithay's built-in protocols and ours alike.
 
@@ -15,6 +15,7 @@ use crate::window_bridge::WindowIndex;
 use smithay::{
     desktop::{PopupManager, Space, Window},
     input::{Seat, SeatState, pointer::CursorImageStatus},
+    output::Output,
     reexports::{
         calloop::LoopHandle,
         wayland_server::{
@@ -23,7 +24,7 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{Clock, Monotonic},
+    utils::{Clock, Monotonic, Transform},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         dmabuf::DmabufState,
@@ -52,7 +53,7 @@ use templar_window::WindowService;
 /// Per-`wl_client` bookkeeping. The one field the rest of this crate cares about is
 /// `trusted_shell`: it is `true` for exactly the connection accepted on the private socket
 /// (`src/shell_socket.rs`) the compositor itself listens on for the shell, and it is the sole
-/// source of the `CommandContext::trusted_shell` flag `handle_command` and the `templar_shell_v1`
+/// source of the `CommandContext::trusted_shell` flag `handle_command` and the `templar_shell_v2`
 /// request handlers (`src/protocols_shell.rs`) both gate on — see [`client_is_trusted_shell`].
 #[derive(Debug, Default)]
 pub struct ClientState {
@@ -66,7 +67,7 @@ impl ClientData for ClientState {
 }
 
 /// Whether `client` is the one connection the compositor itself accepted as the trusted shell
-/// (`ClientKind::TrustedShell`, COMPOSITOR.md's `templar_shell_v1` row). Every other connection is
+/// (`ClientKind::TrustedShell`, COMPOSITOR.md's `templar_shell_v2` row). Every other connection is
 /// `ClientKind::Application` — there is no request-time way to become trusted, only
 /// connection-time (`src/shell_socket.rs`).
 pub fn client_is_trusted_shell(client: &Client) -> bool {
@@ -81,6 +82,40 @@ pub fn client_is_trusted_shell(client: &Client) -> bool {
 pub trait Backend: Sized {
     /// Human-readable seat name advertised over `wl_seat`.
     fn seat_name(&self) -> String;
+    /// Map absolute device coordinates, independently of framebuffer inversion.
+    fn absolute_input_transform(&self, output: &Output) -> Transform {
+        output.current_transform()
+    }
+    fn session_active(&self) -> bool { true }
+    /// Authoritative primary output; Home never chooses whichever output lit first.
+    fn primary_output_name(&self) -> Option<String> { None }
+    fn display_inventory(&self) -> Vec<templar_types::display::Display> { Vec::new() }
+    fn display_failures(&self) -> Vec<templar_types::display::DisplayFailure> { Vec::new() }
+    /// A real active/unknown physical image without a drawable managed output cannot be attested.
+    fn unknown_physical_outputs(&self) -> bool { false }
+    /// Actual physical readback, not the desired idle flag.
+    fn outputs_blanked(&self) -> bool { false }
+    /// Admit asynchronous native preparations without blocking protocol/input dispatch.
+    fn defer_control(
+        _state: &mut TemplarCompState<Self>,
+        _request: &templar_types::compositor_control::ControlRequest,
+        _reply: &mut Option<tokio::sync::oneshot::Sender<templar_types::compositor_control::ControlReply>>,
+    ) -> Result<bool, templar_types::compositor_control::ControlError> { Ok(false) }
+    fn defer_restore(
+        _state: &mut TemplarCompState<Self>,
+        _profile: &templar_types::display::DisplayProfile,
+        _token: Option<uuid::Uuid>,
+    ) -> Result<bool, templar_types::display::DisplayError> { Ok(false) }
+    fn display_restore_pending(&self) -> bool { false }
+    fn validate_displays(_state: &mut TemplarCompState<Self>, _profile: &templar_types::display::DisplayProfile) -> Result<(), templar_types::display::DisplayError> {
+        Err(templar_types::display::DisplayError::new("unsupported_backend", "Physical output configuration requires native DRM/KMS"))
+    }
+    fn apply_displays(_state: &mut TemplarCompState<Self>, _profile: &templar_types::display::DisplayProfile) -> Result<(), templar_types::display::DisplayError> {
+        Err(templar_types::display::DisplayError::new("unsupported_backend", "Physical output configuration requires native DRM/KMS"))
+    }
+    fn verify_displays(_state: &TemplarCompState<Self>, _profile: &templar_types::display::DisplayProfile) -> Result<(), templar_types::display::DisplayError> {
+        Err(templar_types::display::DisplayError::new("unsupported_backend", "Physical output configuration requires native DRM/KMS"))
+    }
 
     /// Give the backend a chance to import a client buffer early (DMA-BUF direct scanout paths);
     /// a no-op is always correct, just less efficient.
@@ -147,6 +182,8 @@ pub struct TemplarCompState<B: Backend + 'static> {
     pub xdg_decoration_state: XdgDecorationState,
     pub xdg_dialog_state: XdgDialogState,
     pub xdg_activation_state: XdgActivationState,
+    pub(crate) pending_activations: crate::xdg_shell::PendingActivations,
+    pub foreign_parent: crate::xdg_foreign::ForeignState,
     pub session_lock_manager_state: SessionLockManagerState,
     /// `zwp_idle_inhibit_manager_v1`: a client (a video player, a presentation) declaring that the
     /// screen must not turn off while its surface is up. Held so the global stays registered;
@@ -215,6 +252,8 @@ pub struct TemplarCompState<B: Backend + 'static> {
     pub taskfield_press: Option<templar_window::Point>,
     /// Non-`None` while the compositor-drawn fallback switcher (`src/keybindings.rs`) is showing.
     pub switcher: Option<crate::chrome::SwitcherState>,
+    /// Secondary title menu, including the captured target and owned button pair.
+    pub name_tab_menu: crate::chrome::NameTabMenu,
     /// The list `Alt+Tab` / `` Alt+` `` is walking, frozen at the first press. Stepping only
     /// moves its selection; when the modifier comes up (`src/input.rs::on_keyboard`) the walk
     /// commits — the selection is activated — and any other ending (Escape, a click, another
@@ -259,14 +298,13 @@ pub struct TemplarCompState<B: Backend + 'static> {
     /// The bottom-centre gesture gate (`src/gesture_gate.rs`): its configuration from the shell
     /// (`set_gesture_gate`) and the recognizer both pointer paths feed (`input::update_gesture_gate`).
     pub gesture_gate: crate::gesture_gate::GestureGate,
-    /// Whether tapping the touchpad counts as a click, from the shell (`set_touchpad_tap`,
-    /// relayed from `input.touchpad.tap-to-click`). Applied to every tracked libinput device;
-    /// libinput leaves tap-to-click off unless asked, so the default is on.
-    pub touchpad_tap: bool,
     /// The libinput devices seen so far (udev backend only; winit never fills this). Tracked
     /// because libinput offers no device enumeration: without this a setting change could only
     /// reach devices added afterwards.
     pub input_devices: Vec<smithay::reexports::input::Device>,
+    pub display_control: crate::display_control::DisplayController,
+    pub wallpaper: crate::wallpaper::WallpaperState,
+    pub input_control: crate::input_control::InputController,
     /// The rail the gate opened, while it is open: the output's name and the side the pointer
     /// went. The peek on that output is the rail's (`input::update_dwell` leaves it alone), and
     /// every motion is reported to the shell as `rail_pointer` until it closes
@@ -289,10 +327,17 @@ pub struct TemplarCompState<B: Backend + 'static> {
     /// client, drawn right there under the strip, so clicking "close" also clicks the terminal's
     /// last line.
     pub swallowing_press: bool,
+    /// Real native file DnD may reveal Home while keeping its source grab alive.
+    /// Cleared by the DnD lifecycle, never inferred from a generic held pointer button.
+    pub native_file_drag_active: bool,
+    pub pending_tab_control: Option<crate::input::TabControlPress>,
     /// The compositor's own chrome renderer — the discovered font (if any) and every painted
     /// widget's cache (`src/chrome/mod.rs`). Long-lived like every other field here, never
     /// reconstructed per-frame.
     pub chrome: crate::chrome::ChromeState,
+    pub tab_metadata: crate::tab_metadata::TabMetadata,
+    /// Latest-value appearance observation; only its owned eventfd wakes this render loop.
+    appearance: templar_client::appearance::AppearanceObserver,
     /// Idle screen blanking: the configured delay, the armed timer, and whether the outputs are
     /// off right now (`src/idle.rs`). The compositor is the session's only idle source.
     pub idle: crate::idle::IdleState,
@@ -360,11 +405,25 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         seat.add_pointer();
 
         let primary_selection_state = PrimarySelectionState::new::<Self>(dh);
-        // Visible to every client, like the session lock manager below: clipboard tools are
-        // ordinary clients by design, and gating them would break `wl-copy` with no error.
+        // Clipboard tools are ordinary clients by design; this is separate from
+        // the private trusted-shell-only session lock manager.
         let data_control_state =
             DataControlState::new::<Self, _>(dh, Some(&primary_selection_state), |_| true);
+        let (appearance_wake, appearance_source) =
+            smithay::reexports::calloop::ping::make_ping()?;
+        let appearance = templar_client::appearance::AppearanceObserver::new(move || appearance_wake.ping());
+        loop_handle.insert_source(appearance_source, |(), (), state: &mut Self| {
+            match state.appearance.take_update() {
+                Some(Ok(value)) => {
+                    if state.chrome.update_appearance(value) { B::request_redraw(state); }
+                }
+                Some(Err(error)) => tracing::warn!(%error, "appearance observation unavailable; retaining last palette"),
+                None => {}
+            }
+        }).map_err(|error| anyhow::anyhow!("registering owned appearance wake: {error}"))?;
 
+
+        crate::xdg_foreign::create_globals::<B>(dh);
         Ok(Self {
             backend_data,
             display_handle: dh.clone(),
@@ -387,7 +446,9 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             xdg_decoration_state: XdgDecorationState::new::<Self>(dh),
             xdg_dialog_state: XdgDialogState::new::<Self>(dh),
             xdg_activation_state: XdgActivationState::new::<Self>(dh),
-            session_lock_manager_state: SessionLockManagerState::new::<Self, _>(dh, |_| true),
+            pending_activations: Default::default(),
+            foreign_parent: Default::default(),
+            session_lock_manager_state: SessionLockManagerState::new::<Self, _>(dh, client_is_trusted_shell),
             idle_inhibit_manager_state:
                 smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Self>(dh),
             foreign_toplevel_list_state:
@@ -422,6 +483,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             screencopy: crate::screencopy::ScreencopyState::new::<B>(dh),
             taskfield_press: None,
             switcher: None,
+            name_tab_menu: crate::chrome::NameTabMenu::default(),
             switch_ring: None,
             chord_held: false,
             drop_target: None,
@@ -431,23 +493,29 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             dwell: None,
             dwell_timer_pending: false,
             gesture_gate: crate::gesture_gate::GestureGate::default(),
-            touchpad_tap: true,
             input_devices: Vec::new(),
+            display_control: crate::display_control::DisplayController::default(),
+            wallpaper: crate::wallpaper::WallpaperState::default(),
+            input_control: crate::input_control::InputController::default(),
             rail: None,
             last_pointer_scene: Vec::new(),
             pointer_refresh_pending: false,
             swallowing_press: false,
+            native_file_drag_active: false,
+            pending_tab_control: None,
             chrome: crate::chrome::ChromeState::new(),
+            tab_metadata: crate::tab_metadata::TabMetadata::default(),
+            appearance,
             idle: crate::idle::IdleState::default(),
         })
     }
 
     /// Something happened on the seat. Wake a blanked screen and restart the idle countdown.
     ///
-    /// Called from one place — `src/input.rs::process_input_event`, before the event is
-    /// dispatched anywhere — because "any input at all" is the whole condition, and a per-event
-    /// list of what counts would be a list to forget something from.
+    /// Called from `src/input.rs::process_input_event` before seat events are dispatched.
+    /// Device inventory changes are not user activity; every real seat event resets this clock.
     pub fn note_activity(&mut self) {
+        self.idle.note_activity();
         if self.idle.wake() {
             tracing::info!(cause = "input", "outputs woken from idle blank");
             B::set_blanked(self, false);
@@ -456,13 +524,24 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         self.arm_idle_timer();
     }
 
-    /// (Re-)arm the idle countdown from now, replacing whatever was armed before. Arms nothing
-    /// when idle blanking is off, when something is inhibiting it, or when the screen is already
-    /// off (`idle::delay_before_blanking`).
+    /// A lock is not seat input. Wake for its real protected frame without resetting the clock.
+    pub fn wake_for_protected_frame(&mut self) {
+        if self.idle.wake() {
+            tracing::info!(cause = "protected-frame", "outputs woken from idle blank");
+            B::set_blanked(self, false);
+            self.idle_notifier.set_idle(false);
+        }
+        self.arm_idle_timer();
+    }
+
+    /// Replace the native blank timer using the remaining interval of the owned activity epoch.
+    /// Do not blank before current-generation protected-output coverage; coverage completion
+    /// rearms the timer without inventing input. Existing inhibition/blanked policy still applies.
     pub fn arm_idle_timer(&mut self) {
         if let Some(token) = self.idle.take_timer() {
             self.loop_handle.remove(token);
         }
+        if self.session_lock.locked && !self.session_lock.protected_covered() { return; }
         let Some(timer) = self.idle.timer_source() else {
             return;
         };
@@ -480,6 +559,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// The idle timer fired: turn the outputs off.
     fn blank_now(&mut self) {
         let _ = self.idle.take_timer();
+        if self.session_lock.locked && !self.session_lock.protected_covered() { return; }
         if self.idle.expire() {
             tracing::info!(
                 timeout_s = self.idle.timeout().map_or(0, |d| d.as_secs()),
@@ -490,79 +570,34 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
     }
 
-    /// The session's screen-off delay changed (`templar_shell_v1.set_idle_timeout`, ultimately
-    /// `Power1`'s `screen_off_after`). Zero is never. A screen that is currently off comes back
-    /// on, so a person who has just turned blanking off is not left looking at a dark screen.
-    pub fn set_idle_timeout(&mut self, seconds: u32) {
-        let timeout = crate::idle::timeout_from_seconds(seconds);
-        if self.idle.timeout() == timeout {
-            return;
-        }
-        let _ = self.idle.set_timeout(timeout);
-        tracing::info!(seconds, "idle screen-off delay set");
-        if timeout.is_none() && self.idle.wake() {
-            tracing::info!(
-                cause = "idle blanking turned off",
-                "outputs woken from idle blank"
-            );
-            B::set_blanked(self, false);
-            self.idle_notifier.set_idle(false);
-        }
-        self.arm_idle_timer();
-    }
 
-    /// Tap-to-click changed (`templar_shell_v1.set_touchpad_tap`, ultimately
-    /// `input.touchpad.tap-to-click`). Applied to every tracked device now; devices added
-    /// later pick it up in `track_input_device`.
-    pub fn set_touchpad_tap(&mut self, enabled: bool) {
-        self.touchpad_tap = enabled;
-        for device in &mut self.input_devices {
-            Self::apply_tap_to_device(device, enabled);
-        }
-    }
-
-    /// Remember a newly seen libinput device and bring it under the current tap setting.
-    /// Called from the udev backend's device-added path; the winit backend has no libinput
-    /// devices and never calls this.
+    /// Track a newly seen libinput device. Native defaults remain unchanged until Input1 applies
+    /// a stable per-device preference; the winit backend has no libinput devices.
     pub fn track_input_device(&mut self, device: smithay::reexports::input::Device) {
         let mut device = device;
-        Self::apply_tap_to_device(&mut device, self.touchpad_tap);
         if !self
             .input_devices
             .iter()
             .any(|known| known.sysname() == device.sysname())
         {
+            self.input_control.added(&mut device);
             self.input_devices.push(device);
         }
     }
 
     /// Forget a removed libinput device, by kernel name.
     pub fn untrack_input_device(&mut self, sysname: &str) {
-        self.input_devices
-            .retain(|known| known.sysname() != sysname);
+        let before = self.input_devices.len();
+        self.input_devices.retain(|known| known.sysname() != sysname);
+        if self.input_devices.len() != before { self.input_control.removed(sysname); }
     }
 
-    /// One device's tap configuration. Devices without tap support (`config_tap_finger_count`
-    /// 0 — keyboards, mice, anything that is not a touchpad) are left alone; a refusal from
-    /// libinput is logged, never fatal.
-    fn apply_tap_to_device(device: &mut smithay::reexports::input::Device, enabled: bool) {
-        if device.config_tap_finger_count() == 0 {
-            return;
-        }
-        if let Err(error) = device.config_tap_set_enabled(enabled) {
-            tracing::debug!(
-                device = device.sysname(),
-                ?error,
-                "libinput refused tap-to-click configuration"
-            );
-        }
-    }
 
-    /// Create the two private protocol globals (`templar_shell_v1`, `templar_recovery_v1`).
+    /// Create the two private protocol globals (`templar_shell_v2`, `templar_recovery_v1`).
     ///
     /// Kept beside [`TemplarCompState::new`] for the same reason: both backends must advertise both.
     pub fn create_private_globals(dh: &DisplayHandle) {
-        dh.create_global::<Self, crate::protocols::templar_shell_v1::templar_shell_manager_v1::TemplarShellManagerV1, _>(
+        dh.create_global::<Self, crate::protocols::templar_shell_v2::templar_shell_manager_v2::TemplarShellManagerV2, _>(
             crate::protocols_shell::SHELL_PROTOCOL_VERSION,
             crate::protocols_shell::ShellManagerGlobalData,
         );

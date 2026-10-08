@@ -255,6 +255,59 @@ record legeos.observation.cargo-install-route-has-no-path-story/1 : observation 
     author "dk"
 }
 
+record legeos.observation.claude-validation-deferred-20261008/1 : observation {
+    title "Owner temporarily deferred Claude login and external-agent Resume validation"
+    state superseded
+    statement """
+        On 2026-10-08 the owner explicitly deferred Claude CLI login and the genuine external-agent Resume check for now after the login window did not appear. The isolated flow had emitted a manual OAuth link; no authorization code was supplied and no isolated credentials were created. Parent stopped its exact owned auth process with Ctrl-C (exit130), and the auth scope is inactive/dead Result=success. This check stays open; safe shell Resume remains separately observed. Code integration remains indefinitely deferred under the earlier owner direction. Continue package, Home and native secondary-worker validation; do not restart Claude authentication without a later owner instruction.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method manual
+    watches [
+        "session/integrations/claude-code/**",
+        "services/templar-sessiond/src/apis/homegarden.rs"
+    ]
+    author "dk"
+}
+
+record legeos.observation.claude-validation-deferred-20261008/2 : observation {
+    title "Owner temporarily deferred Claude login and external-agent Resume validation"
+    state verified
+    statement """
+        On 2026-10-08 the owner explicitly deferred Claude CLI login and the genuine external-agent Resume check for now after the login window did not appear. The isolated flow had emitted a manual OAuth link; no authorization code was supplied and no isolated credentials were created. Parent stopped its exact owned auth process with Ctrl-C (exit130), and the auth scope is inactive/dead Result=success. This check stays open; safe shell Resume remains separately observed. Code integration remains indefinitely deferred under the earlier owner direction. Continue package, Home and native secondary-worker validation; do not restart Claude authentication without a later owner instruction.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method manual
+    watches [ "services/templar-sessiond/src/apis/homegarden.rs" ]
+    supersedes [ @legeos.observation.claude-validation-deferred-20261008/1 ]
+    author "dk"
+}
+
+record legeos.observation.claude-validation-deferred-watch-correction-20261008/1 : observation {
+    title "legeos.observation.claude-validation-deferred-watch-correction-20261008"
+    state superseded
+    statement """
+        On 2026-10-08 the owner explicitly deferred Claude CLI login and the genuine external-agent Resume check for now after the login window did not appear. The isolated flow had emitted a manual OAuth link; no authorization code was supplied and no isolated credentials were created. Parent stopped its exact owned auth process with Ctrl-C (exit130), and the auth scope is inactive/dead Result=success. This check stays open; safe shell Resume remains separately observed. Code integration remains indefinitely deferred under the earlier owner direction. Continue package, Home and native secondary-worker validation; do not restart Claude authentication without a later owner instruction.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method manual
+    watches [ "services/templar-sessiond/src/apis/homegarden.rs" ]
+    author "dk"
+}
+
+record legeos.observation.claude-validation-deferred-watch-correction-20261008/2 : observation {
+    title "legeos.observation.claude-validation-deferred-watch-correction-20261008"
+    state withdrawn
+    statement """
+        On 2026-10-08 the owner explicitly deferred Claude CLI login and the genuine external-agent Resume check for now after the login window did not appear. The isolated flow had emitted a manual OAuth link; no authorization code was supplied and no isolated credentials were created. Parent stopped its exact owned auth process with Ctrl-C (exit130), and the auth scope is inactive/dead Result=success. This check stays open; safe shell Resume remains separately observed. Code integration remains indefinitely deferred under the earlier owner direction. Continue package, Home and native secondary-worker validation; do not restart Claude authentication without a later owner instruction.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method manual
+    watches [ "services/templar-sessiond/src/apis/homegarden.rs" ]
+    supersedes [ @legeos.observation.claude-validation-deferred-watch-correction-20261008/1 ]
+    author "dk"
+}
+
 record legeos.observation.close-tag-sits-under-the-client-bottom-right-corner/1 : observation {
     title "A press just below a framed window's visible bottom-right corner lands on Close; the resize corner is a whole tag height lower"
     state verified
@@ -1030,6 +1083,41 @@ record legeos.observation.home-chrome-retired-to-the-bar-and-the-garden/1 : obse
     method observation
 }
 
+record legeos.observation.home-garden-external-tend-refresh-20261008/1 : observation {
+    title "legeos.observation.home-garden-external-tend-refresh-20261008"
+    state superseded
+    statement """
+        Owned n with final90f/47d binaries and genuine boot session10 created a new HOMEchild through public Observe placed-on-home and Tend. The owner API reported Trace/fading/attentionnone/Openproject while steady Home rendered genericempty. A normal Home hide/reveal refreshed Garden and rendered the expected fading actionable text; clicking it opened a verified file manager for that exact folder. Shell spawn_garden_watch subscribed only ContextChanged; placement without a managed instance emits no such signal, whereas a committed changed Tend emits Tended. The checkout now subscribes to both signals before the initial snapshot using its existing single read-only refresh worker. This source repair is reviewed but has not yet been compiled, shipped or validated at runtime. Foreground collection remains on tending/activation, with no timer or private-store parsing. The test context and empty folder were removed through public Forget and rmdir; original projects were preserved.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method command
+    watches [
+        "shell/templar-shell/src/surface/app.rs",
+        "services/templar-sessiond/src/apis/homegarden.rs"
+    ]
+    author "dk"
+}
+
+record legeos.observation.home-garden-external-tend-refresh-20261008/2 : observation {
+    title "legeos.observation.home-garden-external-tend-refresh-20261008"
+    state verified
+    statement """
+        On fresh cohort 518/3ef in owned guest o, a new HOME child was created through public Observe placed-on-home and exactly one public Tend while Home remained visible. Before and repeated readonly after snapshots showed the external child's owner PresentationV1 state as fading, attention none, template plain and state line Open project to continue. The actual shell now subscribed to Tended as well as ContextChanged and rendered the fading generic actionable tile without a Home hide/reveal or another Tend. After visual inspection, one click opened the exact folder in PCManFM-Qt; its service ExecStart and identity-verified compositor window matched. Public Forget and rmdir removed only that empty test folder.
+
+        The same guest selected the existing Video project as Plain using public ShowAsV1. Its genuine recent garden-footage.mkv entry and Open project to continue text were visible; one screenshot-grounded click started /usr/bin/mpv with that exact file URI and a compositor identity-verified window. The project was restored to inferred presentation. The exact fixture state was exported and the owned guest stopped successfully.
+
+        The change subscribes to both relevant public signals before the initial snapshot and keeps the existing single read-only refresh worker; no timer, private-store parsing, new ABI or collector was added. Build, current-source shell tests, package gates and manifest checks are recorded separately. This demonstrates the refresh regression and specific Home actions only; broader Home representation, adapter/resume coverage, and HDMI qualification remain open.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method observation
+    watches [
+        "shell/templar-shell/src/surface/app.rs",
+        "services/templar-sessiond/src/apis/homegarden.rs"
+    ]
+    supersedes [ @legeos.observation.home-garden-external-tend-refresh-20261008/1 ]
+    author "dk"
+}
+
 record legeos.observation.home-hands-on-failures-diagnosed/1 : observation {
     title "Why the Home Field failed at a real desktop: four typing defects, an inverted rung rule, an unregistered interface and a mixed-age install"
     state superseded
@@ -1426,7 +1514,7 @@ record legeos.observation.hostd-hands-a-privileged-fd-through-deltaopen/3 : obse
 
 record legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/1 : observation {
     title "hostd stages candidate deployments under /var/lib/templaros/hostd/deployments, not the @deployments/{id} that layout.toml and the provisioner declare"
-    state verified
+    state superseded
     statement """
         At 50af378. distro/deploy/layout.toml:89 declares subvolume_template = "@deployments/{id}" and installer/provision.sh (fstab block around :1219-1231) mounts @deployments at /.deployments. templar-hostd's real configuration sets deployments_dir: state_dir.join("deployments") with state_dir = root/var/lib/templaros/hostd (services/templar-hostd/src/main.rs:47,65), i.e. inside the shared @var subvolume, and UpdateLedger::candidate_deployment uses candidate_dir(id).display() as the Deployment's subvolume (services/templar-hostd/src/updates.rs:374-378), which the boot-entry writers put into rootflags=subvol=. Only fixture tests use @deployments/{id}. [INFERENCE, not run on hardware] a staged candidate's entry would name subvol=/var/lib/templaros/hostd/deployments/<id>, a path relative to the mounted root rather than to the btrfs top level (where it is @var/lib/...), so the candidate would not boot; and a candidate kept in @var lives in the same subvolume as the persistent state it is supposed to be independent of. Separately, templar dev deploy keeps its own rollback snapshot at /var/lib/templaros/snapshots/root-before-<set> (cli/templar/src/dev/gates.rs:278-284), a second rollback location.
         """
@@ -1440,6 +1528,73 @@ record legeos.observation.hostd-stages-candidates-outside-the-declared-deploymen
         "distro/deploy/layout.toml",
         "installer/provision.sh",
         "cli/templar/src/dev/gates.rs"
+    ]
+    author "dk"
+}
+
+record legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/2 : observation {
+    title "Production hostd follows declared candidate mounts and boot subvolume identities; physical deployment gates remain unproven"
+    state superseded
+    statement """
+        At source commit 7c68786687bea7b20dbc382bdacc2804e7284b70 plus the integration working tree, production hostd real_config reads DeploymentLayout instead of joining state_dir/deployments. DeploymentLayout::candidate_mount resolves the declared /var/lib/templaros/deployments mount, and subvolume uses the separate @deployments/{id} boot identity. Engine persists the layout identity and refuses to reinterpret a resumed transaction under changed layout. The historical 50af378 source-path mismatch is no longer present in these production sources. The writable development/provisioning exceptions remain explicitly declared; this observation does not establish Btrfs snapshot, ESP, candidate boot, rollback, or installed read-only behavior. Those physical acceptance gates remain outstanding.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method observation
+    watches [
+        "services/templar-hostd/src/main.rs",
+        "services/templar-hostd/src/layout.rs",
+        "services/templar-hostd/src/updates.rs",
+        "distro/deploy/layout.toml",
+        "distro/deploy/components.toml"
+    ]
+    supersedes [
+        @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/1
+    ]
+    author "dk"
+}
+
+record legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/3 : observation {
+    title "Production hostd follows declared candidate mounts and boot subvolume identities; physical deployment gates remain unproven"
+    state superseded
+    statement """
+        At source commit 7c68786687bea7b20dbc382bdacc2804e7284b70 plus the integration working tree, production hostd real_config reads DeploymentLayout instead of joining state_dir/deployments. DeploymentLayout::candidate_mount resolves the declared /var/lib/templaros/deployments mount, and subvolume uses the separate @deployments/{id} boot identity. Engine persists the layout identity and refuses to reinterpret a resumed transaction under changed layout. The historical 50af378 source-path mismatch is no longer present in these production sources. The writable development/provisioning exceptions remain explicitly declared; this observation does not establish Btrfs snapshot, ESP, candidate boot, rollback, or installed read-only behavior. Those physical acceptance gates remain outstanding.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method observation
+    watches [
+        "services/templar-hostd/src/**",
+        "distro/deploy/layout.toml",
+        "distro/deploy/components.toml"
+    ]
+    supersedes [
+        @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/2
+    ]
+    author "dk"
+}
+
+record legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/4 : observation {
+    title "Real native guest candidate, rollback and interrupted-stage boot pass; installed/reference hardware gates remain unproven"
+    state verified
+    statement """
+        At source commit 7c68786687bea7b20dbc382bdacc2804e7284b70 plus the integration working tree, production hostd real_config reads DeploymentLayout rather than state_dir/deployments. Candidate mounts resolve the declared deployment mount, independently from @deployments/{id} and ESP-relative boot identities. The engine persists that identity and refuses to reinterpret resumed transactions under changed layout; the historical 50af378 mismatch is absent.
+        Actual unprivileged QEMU TCG/OVMF guests with GPT/Btrfs/FAT ESP, real Ubuntu kernel/systemd/bootctl/dpkg/APT and an owned signed archive staged package2.0 from known-good1.0, booted the candidate through firmware, resumed AwaitingReboot as Trial from the actual kernel deployment ID, performed native rollback, and booted known-good1.0. Root and dpkg stayed read-only; Home/profile hashes, candidate-created document and shared runtime state survived. A separate actual Staging transaction was interrupted by killing only guest-hostd.service; the persisted journal remained Staging with no candidate, and subsequent unchanged firmware selection booted known-good rather than an incomplete candidate.
+        This exposed and corrected bootctl selection of a +tries filename instead of the stable templaros-{id}.conf loader ID, and journal trial reconciliation previously depending on the legacy GRUB counter. Entry selection alone no longer records Trial. Native hostd also now acquires its well-known bus name only after recovery and interface registration; its first actual deployment API after ownership answered within 1s on a private bus.
+        Runtime initramfs overlays supplied fresh native hostd and owned observer services without rewriting sealed roots, dpkg, journal or EFI defaults. Writable development/provisioning exceptions remain declared. Full installed TemplarOS writer/promotion-health/schema-upgrade, Canonical shim/GRUB Secure Boot, reference laptop and physical daily-driver acceptance remain unproven; these guest observations do not replace those gates.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method command
+    watches [
+        "services/templar-hostd/src/**",
+        "distro/deploy/layout.toml",
+        "distro/deploy/components.toml"
+    ]
+    supersedes [
+        @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/3
+    ]
+    verified_by [
+        @legeos.evidence.hostd-native-name-readiness-20261006/1,
+        @legeos.evidence.s17-native-interrupted-staging-firmware-known-good-20261006/1,
+        @legeos.evidence.s17-s18-owned-native-full-stage-boot-rollback-20261006/1
     ]
     author "dk"
 }
@@ -1536,6 +1691,123 @@ record legeos.observation.lege-client-links-rusqlite-through-the-shared-index-ty
     author "dk"
 }
 
+record legeos.observation.liminalview-local-source-package-closure-20261006/1 : observation {
+    title "LiminalView native package closes real local sources without fictional Git provenance"
+    state superseded
+    statement """
+        The owner-selected LiminalView is now a real selected native source package,
+        not an executable allowlist. It is registered as local external source with
+        its Debian overlay and builds at the normal BuildSetId through build-set.
+        The supplied viewer is not a Git checkout: release_origin/release_pin and
+        its Git head are null. A public checkout-only release needs a real supplied
+        origin and immutable pin; the actual closed archive is sufficient for honest
+        local source reproduction and is not classified as an incomplete build.
+
+        Native rootless package proof built from SHA256-addressed archive
+        fbe8473b34e781d7779a1f160c981092678caae7c9c384203180fd3740a395b4,
+        with an empty Cargo home, locked offline vendor tree, five owning source
+        roots, 334 locked dependencies and both compiled PixelKit Noto fonts.
+        Actual native graph MSRV is 1.97, fulfilled by native amd64 Rust/Cargo 1.97.1;
+        this explicit Rustup toolchain substitution is recorded while every non-Rust
+        Debian build dependency is still checked. The real package supplies the
+        manifest's /usr/bin/liminalview and generated Linux desktop file. It does
+        not install/deploy anything into the running system or contact its bus.
+
+        Archived owning package source snapshots (all versioned owners dirty):
+        jp2lam owner Git 883393dc473bf5288501b4e619688a4bfb68bcf9;
+        bpg-rs Git ac004c44a17e1492e334428f45cb0083ea670b35;
+        JPXL Git 1e2004aa0672259279cc24a52d4b8e264f675b77;
+        PixelKit Git 593e10d10770a28f258085fd1e49f665bd77c8a1.
+        Source content hashes, not these dirty Git heads, identify the archived trees.
+        LiminalView content SHA256 is
+        9ae41cb1a230c57b9626badfdc7290e3f25501ad03ab8a3cb6798f90bb523055;
+        its locked Cargo input SHA256 is
+        058ab71234351d6c2c47106e1ddd7e8ea67e98ce99ef023db6a9e56c2352c394.
+
+        The archive preserves required package trees and workspace inheritance,
+        licenses and toolchain declarations, not whole sibling workspace backups.
+        Filename inspection found no secrets/private assistant/runtime/cache input.
+        PixelKit UI is not in this viewer's dependency graph; unrelated UI source
+        and large workspace conformance corpora are intentionally not archive inputs.
+        Installed-image/native graphical acceptance and public license review are
+        separate claims not implied by the package/source closure proof.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method command
+    watches [
+        "distro/forks/manifest.toml",
+        "distro/forks/liminalview/**",
+        "scripts/build-local-source-deb.py",
+        "scripts/build-fork-deb.sh",
+        "tools/xtask/src/build_set.rs",
+        "distro/seeds/selection.toml"
+    ]
+    derived_from [ @legeos.work.integration-stabilization-20261005/1 ]
+    verified_by [
+        @legeos.evidence.liminalview-closed-native-package-20261006/1,
+        @legeos.evidence.liminalview-selected-build-set-source-20261006/1
+    ]
+    author "dk"
+}
+
+record legeos.observation.liminalview-local-source-package-closure-20261006/2 : observation {
+    title "LiminalView native package closes real local sources without fictional Git provenance"
+    state verified
+    statement """
+        The owner-selected LiminalView is now a real selected native source package,
+        not an executable allowlist. It is registered as local external source with
+        its Debian overlay and builds at the normal BuildSetId through build-set.
+        The supplied viewer is not a Git checkout: release_origin/release_pin and
+        its Git head are null. A public checkout-only release needs a real supplied
+        origin and immutable pin; the actual closed archive is sufficient for honest
+        local source reproduction and is not classified as an incomplete build.
+
+        Native rootless package proof built from SHA256-addressed archive
+        fbe8473b34e781d7779a1f160c981092678caae7c9c384203180fd3740a395b4,
+        with an empty Cargo home, locked offline vendor tree, five owning source
+        roots, 334 locked dependencies and both compiled PixelKit Noto fonts.
+        Actual native graph MSRV is 1.97, fulfilled by native amd64 Rust/Cargo 1.97.1;
+        this explicit Rustup toolchain substitution is recorded while every non-Rust
+        Debian build dependency is still checked. The real package supplies the
+        manifest's /usr/bin/liminalview and generated Linux desktop file. It does
+        not install/deploy anything into the running system or contact its bus.
+
+        Archived owning package source snapshots (all versioned owners dirty):
+        jp2lam owner Git 883393dc473bf5288501b4e619688a4bfb68bcf9;
+        bpg-rs Git ac004c44a17e1492e334428f45cb0083ea670b35;
+        JPXL Git 1e2004aa0672259279cc24a52d4b8e264f675b77;
+        PixelKit Git 593e10d10770a28f258085fd1e49f665bd77c8a1.
+        Source content hashes, not these dirty Git heads, identify the archived trees.
+        LiminalView content SHA256 is
+        9ae41cb1a230c57b9626badfdc7290e3f25501ad03ab8a3cb6798f90bb523055;
+        its locked Cargo input SHA256 is
+        058ab71234351d6c2c47106e1ddd7e8ea67e98ce99ef023db6a9e56c2352c394.
+
+        The archive preserves required package trees and workspace inheritance,
+        licenses and toolchain declarations, not whole sibling workspace backups.
+        Filename inspection found no secrets/private assistant/runtime/cache input.
+        PixelKit UI is not in this viewer's dependency graph; unrelated UI source
+        and large workspace conformance corpora are intentionally not archive inputs.
+        Installed-image/native graphical acceptance and public license review are
+        separate claims not implied by the package/source closure proof.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method command
+    watches [
+        "distro/forks/**",
+        "scripts/build-*",
+        "tools/xtask/src/build_set.rs",
+        "distro/seeds/selection.toml"
+    ]
+    derived_from [ @legeos.work.integration-stabilization-20261005/1 ]
+    supersedes [ @legeos.observation.liminalview-local-source-package-closure-20261006/1 ]
+    verified_by [
+        @legeos.evidence.liminalview-closed-native-package-20261006/1,
+        @legeos.evidence.liminalview-selected-build-set-source-20261006/1
+    ]
+    author "dk"
+}
+
 record legeos.observation.live-casper-sessiond-namespace-20260911/1 : observation {
     title "Live USB sessiond failed 226/NAMESPACE because ~/.config/templaros did not exist"
     state verified
@@ -1553,6 +1825,21 @@ record legeos.observation.live-casper-sessiond-namespace-20260911/1 : observatio
         "distro/iso/live/customize.sh",
         "session/templar-session/src/main.rs"
     ]
+}
+
+record legeos.observation.logout-watchdog-memory-pressure-20261007/1 : observation {
+    title "Installed compositor watchdog abort during global memory pressure"
+    state verified
+    statement """
+        On 2026-10-07 the installed TemplarOS compositor PID2339 logged an event-loop stall with main_state=D and main_wchan=folio_wait_bit_common, later read_extent_buffer_pages. Its watchdog logged a self-abort at 09:33:44.348 UTC after 30.738 seconds; systemd recorded code=dumped/status=6/ABRT at 09:34:25 and stopped the shell afterwards. The greeter returned at 09:34:26 and the owner logged in again at 09:34:56. This establishes watchdog abort followed by session teardown, not a normal logout request.
+        Kernel/journal evidence shows memory pressure before the abort and a subsequent global OOM event with zero configured swap. The OOM killer killed the systemd-coredump collector PID220908, so no fresh compositor core is available. Our rust-analyzer PID36287 held 1,568,484 resident pages (about 5.98 GiB); Android Studio, several Java processes and rustc were additional large consumers. Our tooling therefore contributed to the memory pressure. Pressure-induced page/I/O stalls are strongly supported, but the precise stalled user-space stack and sole underlying cause are not established.
+        Structured executed-command audit of the pre-crash parent and six PDF agents found no live desktop stop, deploy, kill or logout command; parent termination calls targeted owned private fixtures. The installed compositor still used single-primary-GPU scope, explicitly ignored card2 on restart, and did not contain the checkout's unqualified secondary-GPU changes. Do not attribute this incident to HDMI or silently suppress its watchdog.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method observation
+    derived_from [ @legeos.work.pdf-homegarden-hdmi-20261007/1 ]
+    verified_by [ @legeos.evidence.logout-watchdog-oom-20261007/1 ]
+    author "dk"
 }
 
 record legeos.observation.memory-baseline-before-templaros-20260909/1 : observation {
@@ -1919,6 +2206,22 @@ record legeos.observation.session-time-enters-sessiond-at-four-edges/1 : observa
         """
     observed_at git:b1259f6fc8fc7973ce4090ab9f63af17d60b0206
     method command
+}
+
+record legeos.observation.shell-switcher-surface-hidden-outside-taskfield-20261007/1 : observation {
+    title "The shell's Alt+Tab surface was mapped but never drawn: is_visible hid Presentation outside Taskfield while the text HUD stood down for it"
+    state verified
+    statement """
+        In the installed g1853e26 session every Alt+Tab walk mapped the shell's full-output Layer::Presentation switcher surface about 20 ms after the first press (journal 2026-10-07 00:47: froze targets, trusted-shell surface claim applied, toplevel mapped, committed on release, toplevel destroyed), and the compositor's own steps and commits worked (a two-second hold committed the fifth target). Nothing was visible after the first frame because WindowService::is_visible returned true for Layer::Presentation only under Presentation::Taskfield, so space_sync never put the switcher surface in Space, while chrome::collect_output_chrome suppressed the text HUD for any merely mapped Presentation surface. The person saw the text HUD for one frame and then nothing, and could not tell the selection was moving.
+        """
+    observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
+    method command
+    watches [
+        "crates/templar-window/src/service.rs",
+        "compositor/templar-comp/src/chrome/mod.rs",
+        "compositor/templar-comp/src/keybindings.rs"
+    ]
+    author "dk"
 }
 
 record legeos.observation.shelved-tiles-have-no-route-back/1 : observation {

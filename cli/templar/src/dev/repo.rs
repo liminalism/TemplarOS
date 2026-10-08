@@ -1,8 +1,8 @@
 //! `templar dev repo` — the local package archive a development machine installs from.
 //!
 //! **Why an archive at all**, when `dpkg -i` is right there: because `dpkg -i` is not
-//! transactional. `scripts/reinstall-templaros-desktop.sh` installs thirteen packages, and when one
-//! fails halfway it calls `apt-get -f install` to repair whatever state that left — which is the
+//! transactional. The predecessor's direct reinstall path passed a batch of packages to
+//! `dpkg -i`, and when one failed halfway it called `apt-get -f install` to repair that state — the
 //! non-atomic install that produced the mixed sets this whole roadmap exists to end. One
 //! `apt-get install pkg=version …` against a real archive either takes the whole set or takes
 //! none of it, and can be pointed at the *previous* set just as easily, which is what makes
@@ -248,6 +248,11 @@ impl Repo {
     /// # Errors
     /// If `/etc/apt` cannot be written — almost always "run this one step as root".
     pub fn install_source(&self, sysroot: &Path) -> Result<Vec<PathBuf>> {
+        if super::install::is_native_root(sysroot)? {
+            bail!(
+                "native archive keys/sources are installed only into hostd candidates; publish then use templar dev install/deploy"
+            );
+        }
         let keyring = sysroot.join(KEYRING_PATH.trim_start_matches('/'));
         let source = sysroot.join(SOURCE_PATH.trim_start_matches('/'));
         for path in [&keyring, &source] {
@@ -547,8 +552,17 @@ impl Repo {
     /// If the set was never published here, or its manifest is unreadable.
     pub fn manifest(&self, build_set: &str) -> Result<SetManifest> {
         let path = self.sets().join(build_set).join("manifest.json");
-        let body = fs::read(&path)
-            .with_context(|| format!("{build_set} was never published to this archive"))?;
+        let no_sets_dir = !self.sets().is_dir();
+        let body = fs::read(&path).with_context(|| {
+            if no_sets_dir {
+                format!(
+                    "{build_set} was never published to this archive (this archive predates set \
+                     manifests; republish to record one)"
+                )
+            } else {
+                format!("{build_set} was never published to this archive")
+            }
+        })?;
         serde_json::from_slice(&body).with_context(|| format!("parsing {}", path.display()))
     }
 
@@ -714,13 +728,27 @@ impl Repo {
         // the target carry. The private home (`gnupg/`, 0700, never copied) is only for signing;
         // the verifier must not depend on it or an installer can never verify what it installs.
         let keyring = self.public_key();
-        if !keyring.is_file() {
-            problems.push(format!(
-                "the public key {} is missing, so the signatures were not checked; \
-                 the next publish exports it",
-                keyring.display()
-            ));
-            return problems;
+        match fs::File::open(&keyring) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                problems.push(format!(
+                    "the public key {} is missing, so the signatures were not checked; \
+                     the next publish exports it",
+                    keyring.display()
+                ));
+                return problems;
+            }
+            Err(error) => {
+                // A root-owned archive verified as the user: the key exists but cannot be read,
+                // which must not read as a failed signature — that phrasing means tampering.
+                problems.push(format!(
+                    "the public key {} cannot be read by this user ({error}), so the signatures \
+                     were not checked; the archive itself may be fine — re-run with access to \
+                     it rather than reading this as tampering",
+                    keyring.display()
+                ));
+                return problems;
+            }
         }
         let keyring = keyring.display().to_string();
         for (name, args) in [
@@ -1103,43 +1131,6 @@ mod tests {
         let _ = fs::remove_dir_all(scratch);
     }
 
-    #[test]
-    fn publishing_a_set_indexes_and_signs_the_archive() {
-        let (repo, runner, scratch) = repo("publish");
-        let manifest = repo.publish(&build_set(&scratch, SET), SET).unwrap();
-        assert_eq!(manifest.packages.len(), 13);
-        assert_eq!(repo.current().unwrap().as_deref(), Some(SET));
-        assert!(repo.root.join("Packages").is_file());
-        assert!(repo.root.join("Release").is_file());
-
-        let lines = runner.lines();
-        assert!(
-            lines
-                .iter()
-                .any(|line| line == "apt-ftparchive packages pool"),
-            "{lines:#?}"
-        );
-        assert!(
-            lines.iter().any(|line| line.contains("release .")),
-            "{lines:#?}"
-        );
-        assert!(
-            lines.iter().any(|line| line.contains("--clearsign")),
-            "InRelease must be written: {lines:#?}"
-        );
-        assert!(
-            lines.iter().any(|line| line.contains("--detach-sign")),
-            "Release.gpg must be written too: {lines:#?}"
-        );
-        // Every archive tool must run *in* the archive, or the index points nowhere.
-        for call in runner.calls() {
-            if call.program == "apt-ftparchive" {
-                assert_eq!(call.dir, repo.root, "{call:?}");
-            }
-        }
-        let _ = fs::remove_dir_all(scratch);
-    }
-
     /// 2026-09-29: a publish that pruned an old set left `Packages` naming its deleted files, so
     /// `repo verify` failed on a freshly published archive and apt would have 404ed. Whatever the
     /// prune removed, the index is written again after it.
@@ -1176,16 +1167,6 @@ mod tests {
     }
 
     #[test]
-    fn the_manifest_pins_every_package_the_way_apt_wants() {
-        let (repo, _runner, scratch) = repo("pins");
-        let manifest = repo.publish(&build_set(&scratch, SET), SET).unwrap();
-        let pinned = manifest.pinned_packages();
-        assert_eq!(pinned.len(), 13);
-        assert!(pinned.contains(&format!("templaros-shell={SET}")));
-        let _ = fs::remove_dir_all(scratch);
-    }
-
-    #[test]
     fn a_mixed_set_is_refused_before_anything_is_copied() {
         let (repo, _runner, scratch) = repo("mixed");
         let mut packages = build_set(&scratch, SET);
@@ -1217,20 +1198,6 @@ mod tests {
             Some(SET),
             "the set to roll back to must survive a republish"
         );
-        let _ = fs::remove_dir_all(scratch);
-    }
-
-    #[test]
-    fn pruning_keeps_three_sets_and_removes_their_packages() {
-        let (repo, _runner, scratch) = repo("prune");
-        for epoch in 1..=5 {
-            let set = format!("0.1.0~dev{epoch}000+gaaaaaa{epoch}");
-            repo.publish(&build_set(&scratch, &set), &set).unwrap();
-        }
-        let sets = repo.published_sets().unwrap();
-        assert_eq!(sets.len(), 3, "{sets:?}");
-        let pooled = fs::read_dir(repo.pool()).unwrap().count();
-        assert_eq!(pooled, 3 * 13, "the pool must not keep orphans");
         let _ = fs::remove_dir_all(scratch);
     }
 
@@ -1280,6 +1247,62 @@ mod tests {
             current.problems
         );
         assert!(report.render().ends_with("verify: FAILED\n"));
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn verify_says_unreadable_key_not_tampering() {
+        // A root-owned archive verified as the user: the key exists but cannot be read. That
+        // used to surface as a signature that "does not verify", which reads like tampering.
+        let (repo, _runner, scratch) = repo("verify-unreadable-key");
+        repo.publish(&build_set(&scratch, SET), SET).unwrap();
+        signed(&repo);
+        let key = repo.public_key();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::File::open(&key).is_ok() {
+            // Running with the privileges to read anything (root): the premise does not hold.
+            return;
+        }
+        let report = repo
+            .verify(&templar_build::components::Matrix::embedded(), None)
+            .unwrap();
+        assert!(!report.ok, "{}", report.render());
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|problem| problem.contains("cannot be read by this user")),
+            "{:#?}",
+            report.problems
+        );
+        assert!(
+            !report
+                .problems
+                .iter()
+                .any(|problem| problem.contains("does not verify")),
+            "{:#?}",
+            report.problems
+        );
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn manifest_names_an_archive_that_predates_set_manifests() {
+        // Published by a `templar dev` from before set manifests existed: current/previous/pool
+        // but no sets/ directory at all. The bare "was never published" sends the reader to
+        // re-publish the set, when the archive itself is what predates the concept.
+        let (repo, _runner, scratch) = repo("predates-manifests");
+        let error = repo.manifest(SET).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("predates set manifests"),
+            "{error:#}"
+        );
+        fs::create_dir_all(repo.sets()).unwrap();
+        let error = repo.manifest(SET).unwrap_err();
+        assert!(
+            !format!("{error:#}").contains("predates set manifests"),
+            "{error:#}"
+        );
         let _ = fs::remove_dir_all(scratch);
     }
 

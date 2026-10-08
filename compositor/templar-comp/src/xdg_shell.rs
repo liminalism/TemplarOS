@@ -25,7 +25,7 @@ use smithay::{
             protocol::{wl_output, wl_seat, wl_surface::WlSurface},
         },
     },
-    utils::Serial,
+    utils::{Serial, SERIAL_COUNTER},
     wayland::{
         compositor::{
             CompositorClientState, CompositorHandler, CompositorState, get_parent,
@@ -43,6 +43,75 @@ use smithay::{
     },
 };
 use templar_window::{CommandContext, CommandEffect, Decoration, WindowCommand, WindowId};
+
+const ACTIVATION_LIFETIME: std::time::Duration = std::time::Duration::from_secs(5);
+const MAX_PENDING_ACTIVATIONS: usize = 64;
+
+/// Only known, live xdg toplevels can enter this queue. Object ids do not retain a surface;
+/// destruction removes the entry, and both insertion and mapping prune expired authority.
+/// The key is generic so the lifecycle policy can be exercised without a Wayland connection.
+#[derive(Debug)]
+pub(crate) struct PendingActivations<S = ObjectId> {
+    entries: Vec<(S, templar_window::ActivationGrant)>,
+}
+
+impl<S> Default for PendingActivations<S> {
+    fn default() -> Self {
+        Self { entries: Vec::new() }
+    }
+}
+
+impl<S: PartialEq> PendingActivations<S> {
+    fn prune(&mut self, now_monotonic_ns: u64) {
+        self.entries.retain(|(_, grant)| {
+            grant.had_recent_input_evidence && now_monotonic_ns < grant.expires_at_monotonic_ns
+        });
+    }
+
+    fn remove(&mut self, surface: &S) {
+        self.entries.retain(|(candidate, _)| candidate != surface);
+    }
+
+    fn insert(&mut self, surface: S, grant: templar_window::ActivationGrant, now_monotonic_ns: u64) {
+        self.prune(now_monotonic_ns);
+        if !grant.had_recent_input_evidence || now_monotonic_ns >= grant.expires_at_monotonic_ns {
+            return;
+        }
+        if let Some((_, pending)) = self.entries.iter_mut().find(|(candidate, _)| candidate == &surface) {
+            *pending = grant;
+        } else if self.entries.len() < MAX_PENDING_ACTIVATIONS {
+            self.entries.push((surface, grant));
+        }
+    }
+
+    fn take(&mut self, surface: &S, now_monotonic_ns: u64) -> Option<templar_window::ActivationGrant> {
+        self.prune(now_monotonic_ns);
+        let index = self.entries.iter().position(|(candidate, _)| candidate == surface)?;
+        Some(self.entries.swap_remove(index).1)
+    }
+}
+
+fn activation_grant(
+    token: String,
+    age: std::time::Duration,
+    now_monotonic_ns: u64,
+) -> Option<templar_window::ActivationGrant> {
+    let remaining = ACTIVATION_LIFETIME.checked_sub(age)?;
+    if remaining.is_zero() {
+        return None;
+    }
+    Some(templar_window::ActivationGrant {
+        token,
+        requesting_instance: None,
+        target_instance: None,
+        expires_at_monotonic_ns: now_monotonic_ns.saturating_add(remaining.as_nanos() as u64),
+        had_recent_input_evidence: true,
+    })
+}
+
+fn valid_activation_serial(serial: Serial, last_enter: Serial, upper_bound: Serial) -> bool {
+    serial.is_no_older_than(&last_enter) && upper_bound.is_no_older_than(&serial)
+}
 
 impl<B: Backend + 'static> CompositorHandler for TemplarCompState<B> {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -74,12 +143,29 @@ impl<B: Backend + 'static> CompositorHandler for TemplarCompState<B> {
             }
             if let Some(window) = window_for_surface(self, &root) {
                 window.on_commit();
+                if self.screencopy.pending.iter().any(|(id, _)|
+                    self.windows.surface_for(*id) == Some(&root))
+                {
+                    B::request_redraw(self);
+                }
             }
         }
 
         self.popups.commit(surface);
         ensure_initial_popup_configure(&mut self.popups, surface);
         self.handle_toplevel_commit(surface);
+    }
+
+    fn destroyed(&mut self, surface: &WlSurface) {
+        self.pending_activations.remove(&surface.id());
+        crate::xdg_foreign::surface_destroyed(self, surface);
+        if let Some(window) = window_for_surface(self, surface) {
+            self.space.unmap_elem(&window);
+        }
+        if let Some(window_id) = self.windows.remove(&surface.id()) {
+            tracing::info!(?window_id, "toplevel surface destroyed");
+            crate::space_sync::on_window_destroyed(self, window_id);
+        }
     }
 }
 
@@ -192,7 +278,7 @@ pub fn apply_maximized<B: Backend + 'static>(
                 toplevel.send_configure();
             }
         } else if let Some(x11) = window.x11_surface() {
-            // An X11 window is told its whole placement in one request; the band button is
+            // An X11 window is told its whole placement in one request; the tab control is
             // the only maximize route it has.
             let _ = x11.set_maximized(maximized);
             let _ = x11.configure(Some(smithay::utils::Rectangle::new(
@@ -292,6 +378,29 @@ fn ensure_initial_popup_configure(popups: &mut PopupManager, surface: &WlSurface
 }
 
 impl<B: Backend + 'static> TemplarCompState<B> {
+    fn apply_activation_grant(
+        &mut self,
+        window_id: WindowId,
+        grant: templar_window::ActivationGrant,
+    ) -> bool {
+        let ctx = CommandContext {
+            trusted_shell: true,
+            now_monotonic_ns: now_monotonic_ns(&self.clock),
+        };
+        if self.window_service.handle_command(WindowCommand::Activate { window_id, grant }, ctx).is_err() {
+            return false;
+        }
+        crate::input::activate_window(self, window_id);
+        true
+    }
+
+    fn apply_pending_activation(&mut self, surface: &WlSurface, window_id: WindowId) {
+        let now = now_monotonic_ns(&self.clock);
+        if let Some(grant) = self.pending_activations.take(&surface.id(), now) {
+            self.apply_activation_grant(window_id, grant);
+        }
+    }
+
     fn unmap_existing_toplevel(&mut self, object_id: &ObjectId, window: &Window) {
         let Some(window_id) = self.windows.mark_unmapped(object_id) else {
             return;
@@ -326,6 +435,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         self.space
             .map_element(window.clone(), (client.x, client.y), false);
         tracing::info!(?window_id, backend = "wayland", "toplevel remapped");
+        self.apply_pending_activation(surface, window_id);
         crate::space_sync::sync_after_change(self);
         true
     }
@@ -336,6 +446,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// only fires post-map, so the just-mapped title is read here directly from
     /// [`XdgToplevelSurfaceData`] instead of waiting for a redundant first change notification).
     fn handle_toplevel_commit(&mut self, surface: &WlSurface) {
+        self.pending_activations.prune(now_monotonic_ns(&self.clock));
         let Some(window) = window_for_surface(self, surface) else {
             return;
         };
@@ -401,22 +512,14 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let trusted_shell =
             client.is_some_and(|client| crate::state::client_is_trusted_shell(&client));
         let claims = claims_from_wayland(app_id);
-        // The client's size, asked for as the frame it needs: the tag strip goes below the
-        // client (`templar_window::geometry::client_area`), so what is placed and clamped is the
-        // whole of what will be on screen. The geometry's own location is the window's offset inside its
-        // surface (a client-side shadow margin), not a position — an xdg client cannot ask for
-        // one — and would otherwise read as a placed window that skips centring.
-        //
-        // Except for a surface the trusted shell placed itself: it has no frame
-        // (`WindowService::has_frame`), so adding a tag strip to what it asked for made its very
-        // first configure one strip too tall — a 48px bar was placed 80px tall and told to be 80,
-        // and every catch-up commit afterwards chased that number.
+        // The client's size, placed and clamped as committed: the client rectangle is
+        // authoritative and corner tabs live outside it (or overlaid over it), so what is
+        // placed is the whole of what will be on screen with no frame added. The geometry's
+        // own location is the window's offset inside its surface (a client-side shadow
+        // margin), not a position — an xdg client cannot ask for one — and would otherwise
+        // read as a placed window that skips centring.
         let committed = templar_window::Rect::new(0, 0, geometry.size.w, geometry.size.h);
-        let requested = if crate::protocols_shell::has_surface_claim(self, surface) {
-            committed
-        } else {
-            templar_window::frame_around(committed)
-        };
+        let requested = committed;
 
         let window_id = self.window_service.on_toplevel_mapped(
             peer_pid,
@@ -427,13 +530,14 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         );
         self.windows.mark_mapped(surface.clone(), window_id);
         crate::protocols_shell::apply_surface_claims(self, surface, window_id, requested);
+        crate::xdg_foreign::mapped(self, surface);
 
         let repaired = self
             .window_service
             .window(window_id)
             .map_or(requested, |record| record.geometry);
-        // A shell surface has no frame, so this is the whole geometry for one; a client window
-        // sits under its band.
+        // The client rectangle is the geometry, whole: mapped at its own origin with no
+        // frame offset, for shell surfaces and client windows alike.
         let client = crate::space_sync::client_area(self, window_id);
         self.space
             .map_element(window.clone(), (client.x, client.y), false);
@@ -445,13 +549,13 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             });
             toplevel.send_configure();
         }
-        // The window the person just opened takes the keyboard (`should_activate_on_map`): no
-        // other path in the map sequence activates one, and a launch through `Launcher1` carries
-        // no xdg-activation token, so without this an application opened from the Home search bar
-        // maps unfocused under a Home surface that still owns the keyboard.
+        // Launcher1 carries no token, so ordinary launches still use the map fallback.
+        // A chooser opened over fullscreen needs its explicit grant instead: parenting is
+        // presentation-only and the fallback correctly refuses to steal fullscreen focus.
         if self.window_service.should_activate_on_map(window_id) {
             crate::input::activate_window(self, window_id);
         }
+        self.apply_pending_activation(surface, window_id);
         tracing::info!(
             ?window_id,
             requested = ?requested,
@@ -514,9 +618,9 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         };
         let (maximized, fullscreen, geometry) =
             (record.maximized, record.fullscreen, record.geometry);
-        // A shell surface holding an exclusive zone chooses its own thickness and its own extent
-        // along the edge (the zone is a floor, `shell_surface_placement`): a committed size other
-        // than the one it has is re-placed at the same edge with that size.
+        // Edge-anchored shell surfaces and notifications choose their own extent, but not
+        // their anchor. Reapply placement on size changes so a growing/shrinking toast
+        // keeps its bottom-right edge rather than extending beyond the output.
         //
         // Only once it has acknowledged the last size it was sent, exactly as the ordinary path
         // below requires. A commit that arrives before that ack still carries the *previous*
@@ -529,6 +633,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             .shell_protocol
             .exclusive_zones
             .contains_key(&surface.id())
+            || record.role == templar_window::WindowRole::Notification
         {
             let committed = window.geometry().size;
             if (committed.w, committed.h) != (geometry.width, geometry.height)
@@ -555,13 +660,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         if !has_acked_last_configure(surface) {
             return;
         }
-        let frame = templar_window::frame_around(templar_window::Rect::new(
-            client.x,
-            client.y,
-            committed.w,
-            committed.h,
-        ));
-        self.window_service.set_geometry(window_id, frame);
+        // Adopt the committed size as the client rectangle itself: no frame is added,
+        // so an oversized commit re-places the same pixels the client drew.
+        let geometry =
+            templar_window::Rect::new(client.x, client.y, committed.w, committed.h);
+        self.window_service.set_geometry(window_id, geometry);
         crate::space_sync::sync_after_change(self);
     }
 }
@@ -582,14 +685,7 @@ impl<B: Backend + 'static> XdgShellHandler for TemplarCompState<B> {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        let object_id = surface.wl_surface().id();
-        if let Some(window) = window_for_surface(self, surface.wl_surface()) {
-            self.space.unmap_elem(&window);
-        }
-        if let Some(window_id) = self.windows.remove(&object_id) {
-            tracing::info!(?window_id, "toplevel destroyed");
-            crate::space_sync::on_window_destroyed(self, window_id);
-        }
+        CompositorHandler::destroyed(self, surface.wl_surface());
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
@@ -606,6 +702,10 @@ impl<B: Backend + 'static> XdgShellHandler for TemplarCompState<B> {
         .unwrap_or_default();
         self.window_service.set_title(window_id, title);
         crate::space_sync::sync_after_change(self);
+    }
+
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        crate::xdg_foreign::sync_parent(self, surface.wl_surface());
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -713,7 +813,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let Some(output) = self.space.outputs().next() else {
             return;
         };
-        let Some(output_geo) = self.space.output_geometry(output) else {
+        let Some(output_geo) = crate::viewport::output_geometry(&self.space, output) else {
             return;
         };
         let Some(window_geo) = self.space.element_geometry(&window) else {
@@ -813,48 +913,64 @@ impl<B: Backend + 'static> XdgActivationHandler for TemplarCompState<B> {
         &mut self.xdg_activation_state
     }
 
+    fn token_created(&mut self, _token: XdgActivationToken, data: XdgActivationTokenData) -> bool {
+        // Validate the issuer now, while it still has focus. A portal or another process may
+        // legitimately redeem the token later, with no source surface of its own.
+        let Some((serial, seat_resource)) = data.serial.as_ref() else {
+            return false;
+        };
+        if Seat::<Self>::from_resource(seat_resource).as_ref() != Some(&self.seat) {
+            return false;
+        }
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return false;
+        };
+        let Some(focused_client) = keyboard.current_focus().and_then(|surface| surface.client()) else {
+            return false;
+        };
+        if data.client_id.as_ref() != Some(&focused_client.id()) {
+            return false;
+        }
+        if let Some(source) = data.surface.as_ref()
+            && source.client().as_ref().map(Client::id).as_ref() != data.client_id.as_ref()
+        {
+            return false;
+        }
+        keyboard.last_enter().is_some_and(|last_enter| {
+            valid_activation_serial(*serial, last_enter, SERIAL_COUNTER.next_serial())
+        })
+    }
+
     fn request_activation(
         &mut self,
         token: XdgActivationToken,
         token_data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
-        let Some(window_id) = self.windows.window_id_for(&surface.id()) else {
+        // Smithay only dispatches known tokens, but keeps them in its pool until we remove
+        // them. Consume before either immediate activation or queueing so a replay cannot
+        // redirect queued authority to a different surface, even after destruction/expiry.
+        if !self.xdg_activation_state.remove_token(&token) {
+            return;
+        }
+        let now = now_monotonic_ns(&self.clock);
+        self.pending_activations.prune(now);
+        let Some(grant) = activation_grant(token.into(), token_data.timestamp.elapsed(), now) else {
             return;
         };
-        let had_recent_input_evidence = token_data
-            .serial
-            .as_ref()
-            .and_then(|(serial, _seat_resource)| {
-                self.seat
-                    .get_keyboard()
-                    .and_then(|keyboard| keyboard.last_enter())
-                    .map(|last_enter| serial.is_no_older_than(&last_enter))
-            })
-            .unwrap_or(false);
-
-        let now_monotonic_ns = now_monotonic_ns(&self.clock);
-        let grant = templar_window::ActivationGrant {
-            token: token.as_str().to_owned(),
-            requesting_instance: None,
-            target_instance: None,
-            expires_at_monotonic_ns: now_monotonic_ns.saturating_add(5_000_000_000),
-            had_recent_input_evidence,
-        };
-        let ctx = templar_window::CommandContext {
-            trusted_shell: true,
-            now_monotonic_ns,
-        };
-        if self
-            .window_service
-            .handle_command(
-                templar_window::WindowCommand::Activate { window_id, grant },
-                ctx,
-            )
-            .is_ok()
+        if !surface.is_alive()
+            || !self.windows.element_for(&surface.id()).is_some_and(|window| window.toplevel().is_some())
         {
-            crate::input::activate_window(self, window_id);
-            crate::space_sync::sync_after_change(self);
+            return;
+        }
+        if self.windows.is_mapped(&surface.id()) {
+            if let Some(window_id) = self.windows.window_id_for(&surface.id())
+                && self.apply_activation_grant(window_id, grant)
+            {
+                crate::space_sync::sync_after_change(self);
+            }
+        } else {
+            self.pending_activations.insert(surface.id(), grant, now);
         }
     }
 }
@@ -863,6 +979,149 @@ impl<B: Backend + 'static> XdgActivationHandler for TemplarCompState<B> {
 mod tests {
     use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge as Wire;
+    use super::{ACTIVATION_LIFETIME, MAX_PENDING_ACTIVATIONS, PendingActivations, activation_grant};
+    use templar_window::{ClientKind, CommandContext, Output, Rect, WindowClaims, WindowCommand, WindowId, WindowService};
+
+    struct NullCache;
+    impl templar_window::IdentityCache for NullCache {
+        fn resolve_cached(
+            &self,
+            _pid: u32,
+            _claims: &WindowClaims,
+        ) -> Option<templar_window::CachedIdentity> {
+            None
+        }
+        fn request_resolution(&self, _window_id: WindowId, _pid: u32, _claims: WindowClaims) {}
+    }
+
+    fn fullscreen_browser() -> (WindowService<NullCache>, WindowId) {
+        let mut service = WindowService::new(
+            NullCache,
+            vec![Output::new("test", Rect::new(0, 0, 1920, 1080), 1000)],
+        );
+        let browser = map_test_window(&mut service, "browser");
+        service.activate(browser);
+        service.set_fullscreen(browser, true);
+        (service, browser)
+    }
+
+    fn map_test_window(service: &mut WindowService<NullCache>, title: &str) -> WindowId {
+        service.on_toplevel_mapped(
+            1,
+            ClientKind::Application,
+            WindowClaims::default(),
+            title.into(),
+            Rect::new(0, 0, 400, 300),
+        )
+    }
+
+    fn grant(token: &str, now: u64) -> templar_window::ActivationGrant {
+        activation_grant(token.into(), std::time::Duration::ZERO, now).unwrap()
+    }
+
+    #[test]
+    fn pending_chooser_grant_overrides_fullscreen_map_refusal_once() {
+        let (mut service, browser) = fullscreen_browser();
+        let mut pending = PendingActivations::default();
+        pending.insert(7, grant("chooser-input", 0), 0);
+        let chooser = map_test_window(&mut service, "chooser");
+        assert!(!service.should_activate_on_map(chooser));
+        assert!(service.window(browser).unwrap().activated);
+        let grant = pending.take(&7, 1).unwrap();
+        service.handle_command(
+            WindowCommand::Activate { window_id: chooser, grant: grant.clone() },
+            CommandContext { trusted_shell: true, now_monotonic_ns: 1 },
+        ).unwrap();
+        assert!(service.window(chooser).unwrap().activated);
+        assert!(!service.window(browser).unwrap().activated);
+        assert!(pending.take(&7, 1).is_none());
+
+        // Neither a second map nor a replay of the retained token may take focus again.
+        service.activate(browser);
+        let replay = service.handle_command(
+            WindowCommand::Activate { window_id: chooser, grant },
+            CommandContext { trusted_shell: true, now_monotonic_ns: 2 },
+        );
+        assert_eq!(replay, Err(templar_window::CommandError::GrantAlreadyUsed));
+        assert!(service.window(browser).unwrap().activated);
+        assert!(!service.should_activate_on_map(chooser));
+    }
+
+    #[test]
+    fn expired_untrusted_and_destroyed_pending_choosers_do_not_interrupt_fullscreen() {
+        for invalidation in ["expired", "untrusted", "destroyed"] {
+            let (mut service, browser) = fullscreen_browser();
+            let mut pending = PendingActivations::default();
+            let mut request = grant(invalidation, 0);
+            if invalidation == "untrusted" {
+                request.had_recent_input_evidence = false;
+            }
+            let expiry = request.expires_at_monotonic_ns;
+            pending.insert(7, request, 0);
+            if invalidation == "destroyed" {
+                pending.remove(&7);
+            }
+            let chooser = map_test_window(&mut service, "chooser");
+            let now = if invalidation == "expired" { expiry } else { 1 };
+            assert!(pending.take(&7, now).is_none(), "{invalidation}");
+            assert!(!service.should_activate_on_map(chooser));
+            assert!(service.window(browser).unwrap().activated);
+            assert!(!service.window(chooser).unwrap().activated);
+        }
+    }
+
+    #[test]
+    fn activation_deadline_is_anchored_to_mint_not_map_or_redemption() {
+        let now = 10_000_000_000;
+        let age = std::time::Duration::from_secs(4);
+        let request = activation_grant("recent".into(), age, now).unwrap();
+        assert_eq!(request.expires_at_monotonic_ns, now + 1_000_000_000);
+        let mut pending = PendingActivations::default();
+        pending.insert(7, request, now);
+        assert!(pending.take(&7, now + 1_000_000_000).is_none());
+        assert!(activation_grant("expired".into(), ACTIVATION_LIFETIME, now).is_none());
+        assert!(activation_grant("older".into(), ACTIVATION_LIFETIME + age, now).is_none());
+    }
+
+    #[test]
+    fn pending_capacity_does_not_evict_valid_authority_and_reclaims_expiry() {
+        let mut pending = PendingActivations::default();
+        for surface in 0..MAX_PENDING_ACTIVATIONS {
+            pending.insert(surface, grant(&format!("token-{surface}"), 0), 0);
+        }
+        pending.insert(MAX_PENDING_ACTIVATIONS, grant("overflow", 0), 0);
+        assert!(pending.take(&MAX_PENDING_ACTIVATIONS, 1).is_none());
+        assert!(pending.take(&0, 1).is_some());
+        pending.insert(MAX_PENDING_ACTIVATIONS, grant("replacement", 1), 1);
+        assert!(pending.take(&MAX_PENDING_ACTIVATIONS, 2).is_some());
+        let expiry = ACTIVATION_LIFETIME.as_nanos() as u64;
+        pending.insert(MAX_PENDING_ACTIVATIONS + 1, grant("after-expiry", expiry), expiry);
+        assert_eq!(pending.entries.len(), 1);
+        assert!(pending.take(&(MAX_PENDING_ACTIVATIONS + 1), expiry).is_some());
+    }
+
+    #[test]
+    fn one_surface_retains_only_its_latest_requested_grant() {
+        let mut pending = PendingActivations::default();
+        pending.insert(7, grant("first", 0), 0);
+        pending.insert(7, grant("second", 1), 1);
+        assert_eq!(pending.take(&7, 2).unwrap().token, "second");
+        assert!(pending.take(&7, 2).is_none());
+    }
+
+    #[test]
+    fn activation_serial_must_be_within_the_focused_issuers_serial_interval() {
+        let valid = |serial: u32, enter: u32, upper: u32| {
+            super::valid_activation_serial(serial.into(), enter.into(), upper.into())
+        };
+        assert!(valid(12u32, 10u32, 15u32));
+        assert!(valid(10, 10, 15));
+        assert!(!valid(9, 10, 15));
+        assert!(!valid(16, 10, 15));
+        assert!(valid(1, u32::MAX - 1, 3));
+        assert!(!valid(u32::MAX - 2, u32::MAX - 1, 3));
+        assert!(!valid(4, u32::MAX - 1, 3));
+    }
 
     /// The compositor draws every frame, so decoration negotiation is not a negotiation: a
     /// client asking for client-side still gets server-side, and no application themes its

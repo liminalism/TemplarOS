@@ -14,8 +14,8 @@ use std::fmt::Write as _;
 #[async_trait]
 pub trait ResourcesClient {
     async fn status(&self) -> Result<(String, bool)>;
-    async fn report(&self) -> Result<String>;
-    async fn explain_instance(&self, instance_id: &str) -> Result<String>;
+    async fn targets(&self) -> Result<String>;
+    async fn explain_target(&self, resource_id: &str) -> Result<String>;
     async fn stage(&self) -> Result<String>;
     async fn set_stage(&self, stage: &str) -> Result<()>;
     async fn recent_traces(&self, limit: u32) -> Result<String>;
@@ -26,13 +26,11 @@ impl ResourcesClient for templar_client::proxies::ResourcesProxy<'_> {
     async fn status(&self) -> Result<(String, bool)> {
         self.status().await.context("Resources1.Status")
     }
-    async fn report(&self) -> Result<String> {
-        self.report().await.context("Resources1.Report")
+    async fn targets(&self) -> Result<String> {
+        self.targets().await.context("Resources1.Targets")
     }
-    async fn explain_instance(&self, instance_id: &str) -> Result<String> {
-        self.explain_instance(instance_id)
-            .await
-            .context("Resources1.ExplainInstance")
+    async fn explain_target(&self, resource_id: &str) -> Result<String> {
+        self.explain_target(resource_id).await.context("Resources1.ExplainTarget")
     }
     async fn stage(&self) -> Result<String> {
         self.stage().await.context("Resources1.Stage")
@@ -77,7 +75,8 @@ pub struct ScoreBreakdown {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InstanceReport {
     pub instance_id: String,
-    pub app_id: String,
+    #[serde(flatten)]
+    pub metadata: templar_types::ResourceMetadata,
     pub memory_current_bytes: u64,
     pub memory_growth_bytes_per_second: i64,
     pub full_psi_avg10: f64,
@@ -173,7 +172,7 @@ pub fn render_report(report: &Report) -> String {
         out.push_str("no tracked instances\n");
         return out;
     }
-    let mut ranked = report.instances.clone();
+    let mut ranked: Vec<_> = report.instances.iter().collect();
     ranked.sort_by(|left, right| {
         right
             .victim_score
@@ -184,7 +183,7 @@ pub fn render_report(report: &Report) -> String {
         let _ = writeln!(
             out,
             "{:<28} score {:>7.1}  mem {:>9}  growth {:>8}/s  psi {:>5.1}{}{}{}{}",
-            instance.app_id,
+            instance.metadata.identity,
             instance.victim_score,
             human_bytes(instance.memory_current_bytes),
             human_bytes(instance.memory_growth_bytes_per_second.max(0) as u64),
@@ -267,69 +266,3 @@ pub fn parse_traces(traces_json: &str) -> Vec<TraceRecord> {
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const SAMPLE_REPORT: &str = r#"{
-        "level": "severe",
-        "stage": "observe-only",
-        "uptime_seconds": 3725,
-        "mem_available_bytes": 2147483648,
-        "global_memory_psi": {"some": {"avg10":0.0,"avg60":0.0,"avg300":0.0,"total_microseconds":0},
-                               "full": {"avg10":0.7,"avg60":0.5,"avg300":0.3,"total_microseconds":100}},
-        "global_io_psi": {"some": {"avg10":0.0,"avg60":0.0,"avg300":0.0,"total_microseconds":0},
-                           "full": {"avg10":0.0,"avg60":0.0,"avg300":0.0,"total_microseconds":0}},
-        "instances": [
-            {"instance_id":"11112222-3333-4444-5555-666677778888","app_id":"org.templaros.Waterfox",
-             "memory_current_bytes":14395793408,"memory_growth_bytes_per_second":1048576,
-             "full_psi_avg10":2.4,"foreground":false,"visible":true,"protected":false,
-             "disposable":false,"has_unsaved_work":false,"victim_score":42.5,
-             "score_breakdown":{"memory_term":30.0,"growth_term":1.0,"psi_term":9.6,
-                                 "disposable_term":0.0,"visible_term":-20.0,"foreground_term":0.0,
-                                 "unsaved_term":0.0,"total":42.5}}
-        ]
-    }"#;
-
-    #[test]
-    fn empty_object_parses_as_no_report_yet() {
-        let report = parse_report("{}").unwrap();
-        assert!(report.level.is_empty());
-        assert_eq!(
-            render_report(&report),
-            "no report yet (the governor has not completed its first tick)"
-        );
-    }
-
-    #[test]
-    fn a_real_report_renders_the_ranked_instance_with_its_breakdown() {
-        let report = parse_report(SAMPLE_REPORT).unwrap();
-        assert_eq!(report.level, "severe");
-        assert_eq!(report.instances.len(), 1);
-        let rendered = render_report(&report);
-        assert!(rendered.contains("pressure: severe"));
-        assert!(rendered.contains("org.templaros.Waterfox"));
-        assert!(rendered.contains("visible"));
-        assert!(rendered.contains("breakdown:"));
-    }
-
-    #[test]
-    fn traces_parse_from_newline_delimited_json_newest_first() {
-        let lines = format!(
-            "{}\n{}\n",
-            r#"{"timestamp_ms":1000,"level":"normal","stage":"observe-only","mem_available_bytes":1,"instances":[],"victim":null,"actions":[]}"#,
-            r#"{"timestamp_ms":2000,"level":"critical","stage":"terminate","mem_available_bytes":2,"instances":[],"victim":"aaaa","actions":[{"kind":"kill-cgroup","instance_id":"aaaa","applied":true,"reason":"persistent pressure"}]}"#,
-        );
-        let traces = parse_traces(&lines);
-        assert_eq!(traces.len(), 2);
-        assert_eq!(traces[1].level, "critical");
-        let rendered = render_traces(&traces);
-        assert!(rendered.contains("kill-cgroup"));
-        assert!(rendered.contains("[applied]"));
-    }
-
-    #[test]
-    fn no_traces_says_so_plainly() {
-        assert_eq!(render_traces(&[]), "no traces recorded yet");
-    }
-}

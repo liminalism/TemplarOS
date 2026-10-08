@@ -13,6 +13,14 @@
       <arg name="form" type="s" direction="in"/>
       <arg name="text" type="s" direction="out"/>
     </method>
+    <!-- Additive native-path boundary. Plain forms refuse unrepresentable UTF-8; URI encodes
+         raw octets, shell-quoted uses ANSI-C quoting for non-UTF8 (Bash/Ksh/Zsh/POSIX.1-2024).
+         path_b64 is canonical base64 of an absolute non-NUL Unix path. -->
+    <method name="RenderNative">
+      <arg name="path_b64" type="s" direction="in"/>
+      <arg name="form" type="s" direction="in"/>
+      <arg name="text" type="s" direction="out"/>
+    </method>
     <method name="Forms">
       <arg name="forms" type="as" direction="out"/>
     </method>

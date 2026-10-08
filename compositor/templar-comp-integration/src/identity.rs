@@ -3,8 +3,8 @@
 //!
 //! The render thread only ever touches [`DbusIdentityCache::resolve_cached`] (a map lookup plus
 //! one local `/proc/<pid>/stat` read — no D-Bus). Resolution requests are queued to a tokio task
-//! that talks to `org.templaros.AppIdentity1`; answers are drained by the compositor loop through
-//! [`DbusIdentityCache::drain_answers`] and fed to `WindowService::update_identity`.
+//! that talks to `org.templaros.AppIdentity1`. Its answer sink must wake the compositor's
+//! event loop and apply `WindowService::update_identity` there, never on the resolver task.
 
 use crate::pid;
 use parking_lot::Mutex;
@@ -27,7 +27,7 @@ const CACHE_CAPACITY: usize = 512;
 /// this module conservatively treats as "the connection may be stale" — see `run`).
 const RECONNECT_BACKOFF: Duration = Duration::from_secs(2);
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Request {
     window_id: WindowId,
     pid: u32,
@@ -87,42 +87,36 @@ impl BoundedCache {
 pub struct DbusIdentityCache {
     proc_root: PathBuf,
     cache: Arc<Mutex<BoundedCache>>,
-    answers: Arc<Mutex<Vec<(WindowId, CachedIdentity)>>>,
     requests: mpsc::UnboundedSender<Request>,
 }
 
 impl DbusIdentityCache {
-    /// Spawn the resolver task on the given runtime handle, reading process start times from
-    /// the real `/proc`.
-    pub fn spawn(handle: &tokio::runtime::Handle) -> Self {
-        Self::spawn_with_proc_root(handle, PathBuf::from("/proc"))
+    /// Spawn the resolver task, reading process start times from the real `/proc`.
+    /// `deliver` runs off the render thread and must enqueue an event-loop update.
+    pub fn spawn(
+        handle: &tokio::runtime::Handle,
+        deliver: impl Fn(WindowId, CachedIdentity) + Send + 'static,
+    ) -> Self {
+        Self::spawn_with_proc_root(handle, PathBuf::from("/proc"), deliver)
     }
 
     /// As [`Self::spawn`], but reading start times from `proc_root` — the seam tests use to
     /// avoid depending on the real `/proc`.
-    pub fn spawn_with_proc_root(handle: &tokio::runtime::Handle, proc_root: PathBuf) -> Self {
+    pub fn spawn_with_proc_root(
+        handle: &tokio::runtime::Handle,
+        proc_root: PathBuf,
+        deliver: impl Fn(WindowId, CachedIdentity) + Send + 'static,
+    ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel::<Request>();
         let cache: Arc<Mutex<BoundedCache>> = Arc::default();
-        let answers: Arc<Mutex<Vec<(WindowId, CachedIdentity)>>> = Arc::default();
 
-        handle.spawn(run(
-            rx,
-            Arc::clone(&cache),
-            Arc::clone(&answers),
-            proc_root.clone(),
-        ));
+        handle.spawn(run(rx, Arc::clone(&cache), deliver, proc_root.clone()));
 
         Self {
             proc_root,
             cache,
-            answers,
             requests: tx,
         }
-    }
-
-    /// Take resolved answers to apply with `WindowService::update_identity`.
-    pub fn drain_answers(&self) -> Vec<(WindowId, CachedIdentity)> {
-        std::mem::take(&mut *self.answers.lock())
     }
 
     /// Forget a PID (process exited): drop it from the bounded cache immediately rather than
@@ -162,15 +156,34 @@ impl IdentityCache for DbusIdentityCache {
 async fn run(
     mut requests: mpsc::UnboundedReceiver<Request>,
     cache: Arc<Mutex<BoundedCache>>,
-    answers: Arc<Mutex<Vec<(WindowId, CachedIdentity)>>>,
+    deliver: impl Fn(WindowId, CachedIdentity) + Send + 'static,
     proc_root: PathBuf,
 ) {
     // `AppIdentityProxy` owns everything it needs internally (zbus connections are Arc-backed),
     // so no separate `Connection` binding needs to be kept alive alongside it.
     let mut proxy: Option<AppIdentityProxy<'_>> = None;
     let mut next_attempt = Instant::now();
-
-    while let Some(request) = requests.recv().await {
+    let mut pending = VecDeque::new();
+    loop {
+        let request = if pending.is_empty() {
+            let Some(request) = requests.recv().await else {
+                break;
+            };
+            request
+        } else {
+            tokio::select! {
+                request = requests.recv() => {
+                    let Some(request) = request else { break };
+                    request
+                }
+                _ = tokio::time::sleep(RECONNECT_BACKOFF) => pending.pop_front().expect("pending identity"),
+            }
+        };
+        if request.start_time.is_none()
+            || pid::read_start_time(&proc_root, request.pid) != request.start_time
+        {
+            continue;
+        }
         if proxy.is_none() && Instant::now() >= next_attempt {
             match zbus::Connection::session().await {
                 Ok(new_connection) => match AppIdentityProxy::new(&new_connection).await {
@@ -233,8 +246,31 @@ async fn run(
             )
         });
 
+        let managed =
+            std::fs::read_to_string(proc_root.join(request.pid.to_string()).join("cgroup"))
+                .ok()
+                .is_some_and(|membership| {
+                    membership.lines().any(|line| {
+                        line.strip_prefix("0::").is_some_and(|group| {
+                            templar_types::unit::parse_cgroup_path(std::path::Path::new(group))
+                                .is_some()
+                        })
+                    })
+                });
+        // A transient startup/import race must not permanently cache a '?' for this process.
+        // Retry only unavailable service answers or an actual managed-unit provisional answer.
+        let retry = current_start_time == request.start_time
+            && identity
+                .as_ref()
+                .is_none_or(|answer| !answer.verified && managed);
+        if retry && pending.len() < CACHE_CAPACITY {
+            pending.retain(|old: &Request| old.window_id != request.window_id);
+            pending.push_back(request.clone());
+        }
         if let Some(identity) = identity {
-            if let Some(start_time) = request.start_time {
+            if identity.verified
+                && let Some(start_time) = request.start_time
+            {
                 cache.lock().insert(
                     request.pid,
                     CacheEntry {
@@ -243,11 +279,9 @@ async fn run(
                     },
                 );
             }
-            answers.lock().push((request.window_id, identity));
+            deliver(request.window_id, identity);
         } else {
-            answers
-                .lock()
-                .push((request.window_id, CachedIdentity::UNKNOWN));
+            deliver(request.window_id, CachedIdentity::UNKNOWN);
         }
     }
 }
@@ -297,7 +331,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // No fixture PID directories at all: every start-time read fails, so every cache lookup
         // is a clean miss rather than a panic.
-        let cache = DbusIdentityCache::spawn_with_proc_root(&handle, dir.path().to_path_buf());
+        let cache =
+            DbusIdentityCache::spawn_with_proc_root(&handle, dir.path().to_path_buf(), |_, _| {
+                panic!("a nonexistent PID must not produce an identity answer")
+            });
         assert!(
             cache
                 .resolve_cached(4242, &WindowClaims::default())

@@ -11,11 +11,10 @@
 //!
 //! A bus name is a claim, exactly like a Wayland `app_id`, so [`DbusCheckpointTransport`] never
 //! trusts one without checking it: it resolves the claimed name's PID
-//! (`org.freedesktop.DBus.GetConnectionUnixProcessID`) and confirms that PID's cgroup actually
-//! names the target instance's unit — the same property `AppIdentity1` checks for a window,
-//! using the same self-describing unit name (`unit::parse_cgroup_path`) that lets it work even
-//! against a cgroup sessiond never registered. An application that merely claims another
-//! instance's bus name cannot answer "checkpoint complete" on its behalf.
+//! (`org.freedesktop.DBus.GetConnectionUnixProcessID`) and verifies it through the same trusted
+//! launch/current-user-manager registry as `AppIdentity1`. A matching cgroup name cannot
+//! authorize an unregistered peer. The request is addressed to the verified unique bus owner,
+//! so a later handoff of the claimed well-known name cannot redirect it to another process.
 //!
 //! Peer resolution and the actual method call are behind two small traits
 //! ([`PeerResolver`], [`CheckpointCaller`]) so verification and decoding are unit-tested without
@@ -25,10 +24,9 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::{sync::Arc, time::Duration};
 use templar_types::{
-    AppId, InstanceId,
+    InstanceId,
     checkpoint::{CheckpointRequest, CheckpointResponse},
     dbus::checkpoint as wire,
-    unit,
 };
 
 /// Deliver a [`CheckpointRequest`] to `instance` and wait for its answer.
@@ -53,12 +51,18 @@ impl CheckpointTransport for NullCheckpointTransport {
     }
 }
 
-/// Resolves a claimed `org.templaros.Instance.i*` bus name to the `(AppId, InstanceId)` its cgroup
-/// actually names, or `None` if nobody currently owns that name. A trait so verification is
-/// testable without a real bus or `/proc`.
+/// A verified instance plus the unique owner to which the actual request must be addressed.
+#[derive(Clone, Debug)]
+struct ResolvedPeer {
+    instance: InstanceId,
+    owner: zbus::names::OwnedUniqueName,
+}
+
+/// Resolve the claimed name to a registry-verified peer; no owner or no verified identity is
+/// `None`. The trait permits deterministic verification tests without a live bus or `/proc`.
 #[async_trait]
 trait PeerResolver: Send + Sync + std::fmt::Debug {
-    async fn resolve(&self, bus_name: &str) -> Result<Option<(AppId, InstanceId)>>;
+    async fn resolve(&self, bus_name: &str) -> Result<Option<ResolvedPeer>>;
 }
 
 /// Makes the actual `Checkpoint1.Request` call. Separated from [`PeerResolver`] so a
@@ -71,24 +75,30 @@ trait CheckpointCaller: Send + Sync + std::fmt::Debug {
 #[derive(Debug, Clone)]
 struct DbusPeerResolver {
     connection: zbus::Connection,
+    registry: Arc<templar_appd::Registry>,
 }
 
 #[async_trait]
 impl PeerResolver for DbusPeerResolver {
-    async fn resolve(&self, bus_name: &str) -> Result<Option<(AppId, InstanceId)>> {
+    async fn resolve(&self, bus_name: &str) -> Result<Option<ResolvedPeer>> {
         let dbus = zbus::fdo::DBusProxy::new(&self.connection)
             .await
             .context("connecting to org.freedesktop.DBus")?;
         let name = zbus::names::BusName::try_from(bus_name)
             .with_context(|| format!("{bus_name} is not a valid bus name"))?;
-        // No owner: not an error, just nobody to verify.
-        let Ok(pid) = dbus.get_connection_unix_process_id(name).await else {
+        let Ok(owner) = dbus.get_name_owner(name).await else {
             return Ok(None);
         };
-        let cgroup = templar_appd::identity::unified_cgroup_of(pid)
-            .with_context(|| format!("reading the cgroup of pid {pid} (peer of {bus_name})"))?;
-        Ok(unit::parse_cgroup_path(&cgroup))
+        let pid = dbus.get_connection_unix_process_id(owner.clone().into()).await?;
+        let identity = self.registry.resolve_window(pid, &templar_types::WindowClaims::default())
+            .with_context(|| format!("verifying pid {pid} (peer of {bus_name})"))?;
+        Ok(verified_peer(owner, identity))
     }
+}
+
+fn verified_peer(owner: zbus::names::OwnedUniqueName, identity: templar_appd::identity::IdentityResolution) -> Option<ResolvedPeer> {
+    if !identity.confidence.is_verified() || identity.app_id.is_none() { return None; }
+    Some(ResolvedPeer { instance: identity.instance_id?, owner })
 }
 
 #[derive(Debug, Clone)]
@@ -152,10 +162,11 @@ pub struct DbusCheckpointTransport {
 }
 
 impl DbusCheckpointTransport {
-    pub fn new(connection: zbus::Connection) -> Self {
+    pub fn new(connection: zbus::Connection, registry: Arc<templar_appd::Registry>) -> Self {
         Self {
             resolver: Arc::new(DbusPeerResolver {
                 connection: connection.clone(),
+                registry,
             }),
             caller: Arc::new(DbusCaller { connection }),
         }
@@ -179,12 +190,13 @@ impl DbusCheckpointTransport {
                 return refused(instance, format!("could not resolve {bus_name}: {error}"));
             }
         };
-        let Some((_app_id, resolved_instance)) = resolved else {
+        let Some(peer) = resolved else {
             return refused(
                 instance,
                 format!("no application instance currently owns {bus_name}"),
             );
         };
+        let resolved_instance = peer.instance;
         if resolved_instance != instance {
             return refused(
                 instance,
@@ -204,7 +216,7 @@ impl DbusCheckpointTransport {
                 );
             }
         };
-        match self.caller.call(&bus_name, &request_json).await {
+        match self.caller.call(peer.owner.as_str(), &request_json).await {
             Ok(response_json) => decode_response(instance, &response_json),
             Err(error) => refused(instance, format!("{bus_name} did not answer: {error}")),
         }
@@ -229,6 +241,36 @@ impl CheckpointTransport for DbusCheckpointTransport {
 mod tests {
     use super::*;
     use std::time::Duration as StdDuration;
+
+    #[test]
+    fn a_self_describing_unregistered_or_claim_only_peer_never_authorizes_checkpoint() {
+        use templar_appd::identity::{InstanceRecord, Registry};
+        use templar_types::{AppAliases, AppManifest, IdentityConfidence, ResourceClass, unit};
+        let registry = Registry::default();
+        let app = "org.example.Checkpoint".parse().unwrap();
+        registry.insert_manifest(AppManifest {
+            id: app, display_name: "Checkpoint".into(), primary_desktop_file_id: "checkpoint.desktop".into(),
+            executable: "/usr/bin/true".into(), aliases: AppAliases::default(), mime_types: Default::default(),
+            resource_class: ResourceClass::Normal, supports_checkpoint: true, icon: None,
+            categories: Default::default(), keywords: Default::default(), no_display: false,
+            provenance: None, provides: Vec::new(),
+        });
+        let app = "org.example.Checkpoint".parse().unwrap();
+        let instance = InstanceId::new();
+        let unit_name = unit::unit_name(&app, instance);
+        let group = std::path::PathBuf::from(format!("/user.slice/user-1000.slice/user@1000.service/app.slice/{unit_name}"));
+        let owner = || zbus::names::OwnedUniqueName::try_from(":1.23").unwrap();
+        let claims = templar_types::WindowClaims::default();
+        assert!(verified_peer(owner(), registry.resolve_cgroup(group.clone(), &claims)).is_none());
+        registry.register_instance(InstanceRecord {
+            id: instance, app_id: app, systemd_unit: unit_name, control_group: group.clone(),
+        });
+        let identity = registry.resolve_cgroup(group.clone(), &claims);
+        assert_eq!(verified_peer(owner(), identity).unwrap().instance, instance);
+        let mut claim_only = registry.resolve_cgroup(group, &claims);
+        claim_only.confidence = IdentityConfidence::ClaimOnly;
+        assert!(verified_peer(owner(), claim_only).is_none());
+    }
 
     #[tokio::test]
     async fn null_transport_always_refuses() {
@@ -284,10 +326,10 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct FixedResolver(Option<(AppId, InstanceId)>);
+    struct FixedResolver(Option<ResolvedPeer>);
     #[async_trait]
     impl PeerResolver for FixedResolver {
-        async fn resolve(&self, _bus_name: &str) -> Result<Option<(AppId, InstanceId)>> {
+        async fn resolve(&self, _bus_name: &str) -> Result<Option<ResolvedPeer>> {
             Ok(self.0.clone())
         }
     }
@@ -305,13 +347,14 @@ mod tests {
     struct FixedCaller(String);
     #[async_trait]
     impl CheckpointCaller for FixedCaller {
-        async fn call(&self, _bus_name: &str, _request_json: &str) -> Result<String> {
+        async fn call(&self, bus_name: &str, _request_json: &str) -> Result<String> {
+            assert_eq!(bus_name, ":1.23", "request must pin the verified unique owner");
             Ok(self.0.clone())
         }
     }
 
-    fn app_id() -> AppId {
-        "org.example.Impostor".parse().unwrap()
+    fn peer(instance: InstanceId) -> ResolvedPeer {
+        ResolvedPeer { instance, owner: ":1.23".try_into().unwrap() }
     }
 
     #[tokio::test]
@@ -319,7 +362,7 @@ mod tests {
         let target = InstanceId::new();
         let impostor_instance = InstanceId::new();
         let transport = DbusCheckpointTransport::with_fakes(
-            Arc::new(FixedResolver(Some((app_id(), impostor_instance)))),
+            Arc::new(FixedResolver(Some(peer(impostor_instance)))),
             Arc::new(PanicsIfCalled),
         );
         let response = transport
@@ -362,7 +405,7 @@ mod tests {
         })
         .unwrap();
         let transport = DbusCheckpointTransport::with_fakes(
-            Arc::new(FixedResolver(Some((app_id(), target)))),
+            Arc::new(FixedResolver(Some(peer(target)))),
             Arc::new(FixedCaller(reply)),
         );
         let response = transport
@@ -394,7 +437,7 @@ mod tests {
     async fn a_call_past_its_deadline_is_refused_rather_than_hanging() {
         let target = InstanceId::new();
         let transport = DbusCheckpointTransport::with_fakes(
-            Arc::new(FixedResolver(Some((app_id(), target)))),
+            Arc::new(FixedResolver(Some(peer(target)))),
             Arc::new(NeverAnswers),
         );
         let request = CheckpointRequest::CheckpointNow {

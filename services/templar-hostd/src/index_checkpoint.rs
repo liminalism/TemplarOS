@@ -638,6 +638,9 @@ mod tests {
                 stderr: Vec::new(),
             })
         }
+        fn run_with_stdin(&self, _program: &str, _args: &[&str], _input: std::fs::File) -> Result<std::process::Output> {
+            anyhow::bail!("checkpoint send fixture does not accept stdin commands")
+        }
     }
 
     fn sending_store(dir: &Path, bytes: &[u8]) -> IndexCheckpoints {

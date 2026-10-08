@@ -208,6 +208,77 @@ impl PlaceStyles {
         self.theme
     }
 
+    /// Seeded neutral paper for the new project object, cached independently of its contents.
+    /// Directory topology is deliberately not an input to this material.
+    pub fn paint_material(
+        &mut self,
+        ui: &mut Ui<'_>,
+        rect: Rect,
+        tile: TileId,
+        place: &GardenPlace,
+        fill: u32,
+    ) {
+        if rect.w <= 0 || rect.h <= 0 {
+            return;
+        }
+        let Some(style) = self.theme.style_for("plain", true) else {
+            return;
+        };
+        let scale = ui.scale.0;
+        let theme = self.theme.name;
+        let palette = design::palette();
+        if let Some(body) = self.cache.matching(tile, |key| {
+            key.form == "material"
+                && key.root == place.root
+                && key.tree == u64::from(fill)
+                && key.size == (rect.w, rect.h)
+                && key.scale == scale.to_bits()
+                && key.theme == theme
+                && key.palette == palette
+                && key.seed == place.material_seed
+        }) {
+            ui.painter.blit(&body.bitmap, rect, ScaleFilter::Bilinear);
+            return;
+        }
+        let key = cache::BodyKey {
+            root: place.root.clone(),
+            tree: u64::from(fill),
+            size: (rect.w, rect.h),
+            scale: scale.to_bits(),
+            theme,
+            palette,
+            form: "material".to_owned(),
+            seed: place.material_seed,
+        };
+        let body = self.cache.get_or_build(tile, key, |_| cache::Built {
+            layout: layouts::layout(&LayoutRequest {
+                kind: style.kind,
+                roots: &[],
+                bounds: Bounds {
+                    x: 0.0,
+                    y: 0.0,
+                    w: rect.w as f32 / scale,
+                    h: rect.h as f32 / scale,
+                },
+                seed: place.material_seed,
+                max_depth: 0,
+                max_nodes: 0,
+                previous: None,
+            }),
+            paths: Vec::new(),
+            names: Vec::new(),
+            bitmap: paint::material(
+                rect.w as u32,
+                rect.h as u32,
+                fill,
+                &style.grain,
+                place.material_seed,
+                scale,
+            ),
+        });
+        ui.painter.blit(&body.bitmap, rect, ScaleFilter::Bilinear);
+    }
+
     /// Draw `place`'s body into `rect`, the part of its tile below the state line. Returns
     /// whether anything was drawn: `false` for a form the theme leaves plain at this rung, or a
     /// tree with nothing in it — the caller's to fill (a large plain place is browsable).
@@ -237,10 +308,11 @@ impl PlaceStyles {
             size: (rect.w, rect.h),
             scale: scale.to_bits(),
             theme: self.theme.name,
+            palette: design::palette(),
             form: place.form.clone(),
             seed: place.material_seed,
         };
-        let palette = design::palette();
+        let palette = key.palette;
         let kernel = &mut *ui.kernel;
         let body = self.cache.get_or_build(tile, key, |previous| {
             let roots = weighted_tree(&place.tree, budget);
@@ -276,7 +348,7 @@ impl PlaceStyles {
             let bitmap = paint::rasterize(
                 &layout,
                 style,
-                palette,
+                &palette,
                 rect.w as u32,
                 rect.h as u32,
                 scale,
@@ -399,7 +471,7 @@ impl PlaceStyles {
             ui.painter.fill_path(
                 ui.kernel,
                 &mut path,
-                paint::bark(palette, style, item, heaviest),
+                paint::bark(&palette, style, item, heaviest),
                 255,
             );
         }

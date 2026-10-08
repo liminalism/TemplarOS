@@ -1,0 +1,148 @@
+Description: Open the actual network menu as a native window and scope forwarding to its session bus
+Author: TemplarOS contributors <dev@templaros.org>
+Forwarded: no
+Last-Update: 2026-10-07
+
+diff --git a/src/main.cpp b/src/main.cpp
+index 04f7d45..dbb76cf 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -25,10 +25,10 @@ COPYRIGHT_HEADER*/
+ #include <QDBusConnection>
+ #include <QDBusInterface>
+ #include <QDBusMetaType>
+-#include <QLockFile>
+-#include <QDir>
++#include <QDBusMessage>
++#include <QDebug>
++#include <QDBusError>
+ #include <QMessageBox>
+-#include <QStandardPaths>
+ #include <QTimer>
+ 
+ #include "tray.h"
+@@ -56,33 +56,47 @@ int main(int argc, char * argv[])
+     qDBusRegisterMetaType<nm::ConnectionSettings>();
+     qDBusRegisterMetaType<QList<uint>>();
+ 
+-    QString runtimeDir = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+-    if (runtimeDir.isEmpty()) {
+-        runtimeDir = QDir::tempPath();
+-    }
+-    QLockFile lock(QDir(runtimeDir).filePath(QStringLiteral("nm-tray-alt.lock")));
+-    lock.setStaleLockTime(0);
+-    if (!lock.tryLock(100)) {
++    // The session bus, not a process-wide runtime-file lock, owns the singleton. An owned
++    // nested session must never forward its menu request to the person's live desktop.
++    auto bus = QDBusConnection::sessionBus();
++    if (!bus.isConnected()) {
++        qCritical() << "Network menu unavailable: session bus is not connected";
+         if (openPopup) {
+-            QDBusInterface running(QStringLiteral("org.legeos.NetworkTray"),
+-                                   QStringLiteral("/org/legeos/NetworkTray"),
+-                                   QString(),
+-                                   QDBusConnection::sessionBus());
+-            running.call(QDBus::NoBlock, QStringLiteral("showNetworkMenu"));
+-            return 0;
++            QMessageBox::critical(nullptr, QObject::tr("Network"), QObject::tr("The session bus is unavailable; the network menu cannot open."));
++        }
++        return 1;
++    }
++    if (!bus.registerService(QStringLiteral("org.legeos.NetworkTray"))) {
++        if (!openPopup) {
++            qCritical() << "Network tray already running or bus ownership unavailable:"
++                        << bus.lastError().message();
++            return 1;
++        }
++        QDBusInterface running(QStringLiteral("org.legeos.NetworkTray"),
++                               QStringLiteral("/org/legeos/NetworkTray"),
++                               QString(), bus);
++        running.setTimeout(5000);
++        const auto reply = running.call(QStringLiteral("showNetworkMenu"));
++        if (reply.type() == QDBusMessage::ErrorMessage) {
++            qCritical() << "Network menu request refused:" << reply.errorMessage();
++            QMessageBox::critical(nullptr, QObject::tr("Network"),
++                                  QObject::tr("The running network provider could not open its menu: %1").arg(reply.errorMessage()));
++            return 1;
+         }
+-        QMessageBox::information(nullptr,
+-                                 QObject::tr("nm-tray-alt"),
+-                                 QObject::tr("nm-tray-alt is already running."));
+         return 0;
+     }
+ 
+     Tray tray;
+-    auto bus = QDBusConnection::sessionBus();
+-    bus.registerService(QStringLiteral("org.legeos.NetworkTray"));
+-    bus.registerObject(QStringLiteral("/org/legeos/NetworkTray"),
+-                       &tray,
+-                       QDBusConnection::ExportAllSlots);
++    if (!bus.registerObject(QStringLiteral("/org/legeos/NetworkTray"),
++                            &tray, QDBusConnection::ExportAllSlots)) {
++        qCritical() << "Network menu unavailable: cannot export menu entry point:"
++                    << bus.lastError().message();
++        if (openPopup) {
++            QMessageBox::critical(nullptr, QObject::tr("Network"),
++                                  QObject::tr("The network provider could not export its menu: %1").arg(bus.lastError().message()));
++        }
++        return 1;
++    }
+     if (openPopup) {
+         QTimer::singleShot(0, &tray, &Tray::showNetworkMenu);
+     }
+diff --git a/src/tray.cpp b/src/tray.cpp
+index e6adbce..3a34dad 100644
+--- a/src/tray.cpp
++++ b/src/tray.cpp
+@@ -25,7 +25,7 @@ COPYRIGHT_HEADER*/
+ #include <QMenu>
+ #include <QMessageBox>
+ #include <QApplication>
+-#include <QCursor>
++#include <QPointer>
+ #include <QPersistentModelIndex>
+ #include <QPainter>
+ #include <QProcess>
+@@ -89,6 +89,7 @@ public:
+     QTimer mIconTimer;
+     QScopedPointer<QDialog> mConnDialog;
+     QScopedPointer<QDialog> mInfoDialog;
++    QPointer<WindowMenu> mNetworkMenu;
+ 
+     org::freedesktop::Notifications mNotification;
+     nm::ConnectivityMonitor mConnectivity;
+@@ -532,10 +533,19 @@ void Tray::onActivated(const QSystemTrayIcon::ActivationReason reason)
+ 
+ void Tray::showNetworkMenu()
+ {
+-    auto * menu = new WindowMenu(&d->mNmModel, &d->mConnectivity);
++    if (d->mNetworkMenu) {
++        d->mNetworkMenu->close();
++    }
++    auto *menu = new WindowMenu(&d->mNmModel, &d->mConnectivity);
++    d->mNetworkMenu = menu;
+     menu->setAttribute(Qt::WA_DeleteOnClose);
+     connect(menu, &WindowMenu::requestConnectionInfo, this, &Tray::showConnectionInfo);
+-    menu->popup(QCursor::pos());
++    // A brokered --popup/D-Bus request has no Qt parent surface or Wayland input serial.
++    // Show the genuine menu as a normal native window instead of an invalid xdg_popup grab.
++    // The same actions/models remain in WindowMenu; no tray host or fabricated parent is needed.
++    menu->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
++    menu->setWindowTitle(tr("Network"));
++    menu->show();
+ }
+ 
+ void Tray::setActionsStates()
+diff --git a/src/tray.h b/src/tray.h
+index a9e7e61..eceaf81 100644
+--- a/src/tray.h
++++ b/src/tray.h
+@@ -38,7 +38,7 @@ public:
+     ~Tray();
+ 
+ public Q_SLOTS:
+-    /// Open the full network menu without requiring a system-tray host.
++    /// Open the full network menu as a native window without requiring a tray or popup serial.
+     void showNetworkMenu();
+ 
+ protected:

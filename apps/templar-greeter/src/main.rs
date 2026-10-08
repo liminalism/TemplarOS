@@ -34,10 +34,16 @@ use clap::Parser;
 struct Cli;
 
 fn main() -> anyhow::Result<()> {
+    use std::io::IsTerminal as _;
+    // No ANSI under the journal: journald stores coloured MESSAGE fields as byte arrays.
+    let ansi = std::io::stdout().is_terminal();
     if let Ok(env_filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
-        tracing_subscriber::fmt().with_env_filter(env_filter).init();
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_ansi(ansi)
+            .init();
     } else {
-        tracing_subscriber::fmt().init();
+        tracing_subscriber::fmt().with_ansi(ansi).init();
     }
     Cli::parse();
 

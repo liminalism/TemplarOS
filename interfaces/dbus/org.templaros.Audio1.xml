@@ -20,14 +20,27 @@
 <node>
   <interface name="org.templaros.Audio1">
 
-    <!-- The default sink as JSON: { present, volume_percent, muted }.
+    <!-- The default sink as JSON: { present, volume_percent, muted, unavailable_reason? }.
 
-         `present: false` means this machine has no volume control this service can reach — no
-         WirePlumber, or no default sink — which is a fact about the machine and not a failure,
-         so it is reported rather than raised. An error here means the control exists and could
-         not be read. -->
+         `present: false` means the default volume could not be read: no native server/default
+         sink, a failed helper, an unreadable response, or the helper deadline. The optional
+         unavailable_reason explains the failure; zero does not stand for a working silent sink.
+         Get reports this state rather than raising the native observation failure. -->
     <method name="Get">
       <arg name="state_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Current native input/output inventory, defaults and saved stable preferences as JSON.
+         Native inventory observation failures are raised, never returned as an empty inventory. -->
+    <method name="Inventory">
+      <arg name="inventory_json" type="s" direction="out"/>
+    </method>
+    <!-- Select a currently present input/output by stable node name. The preference is durable
+         only after native default readback confirms application; missing/wrong-direction nodes
+         and failed native observations do not replace the saved preference. -->
+    <method name="SelectDevice">
+      <arg name="direction" type="s" direction="in"/>
+      <arg name="name" type="s" direction="in"/>
     </method>
 
     <!-- Set the default sink's volume, as a percentage, clamped to 0..=100. -->
@@ -54,13 +67,12 @@
       <arg name="muted" type="b" direction="out"/>
     </method>
 
-    <!-- This service changed the volume or the mute state. Carries nothing — call Get.
-
-         Emitted for changes made *through this interface*, which is what keeps two shell
-         instances agreeing. A change made elsewhere — a hardware key wired straight to
-         WirePlumber, or pavucontrol — is not observed: that needs a PipeWire event subscription,
-         which is exactly the native dependency this interface is avoiding. Clients that must not
-         go stale poll Get; the shell already refreshes its widgets periodically. -->
+    <!-- Current devices/defaults/volume/mute changed. Includes external PipeWire events and one
+         notification on monitor disconnect, so consumers re-read availability on server loss.
+         The pw-dump monitor reconnects after disconnect; repeated failures are one transition.
+         Helpers have a 3-second deadline: wpctl output is bounded to 65536 bytes, pw-dump inventory
+         and monitor frames to 8 MiB. Call Get and Inventory for applied state.
+         Saved node names survive object-ID changes and are restored when the node reappears. -->
     <signal name="Changed"/>
   </interface>
 </node>

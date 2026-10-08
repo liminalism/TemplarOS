@@ -117,6 +117,22 @@ mod launcher {
             arguments: Vec<String>,
             activation_token: &str,
         ) -> zbus::Result<String>;
+        /// Set the actual managed service cwd, not an application-specific argv guess.
+        fn launch_in_directory_v1(
+            &self,
+            app_id: &str,
+            arguments: Vec<String>,
+            directory: &str,
+            activation_token: &str,
+        ) -> zbus::Result<String>;
+        /// Open local file URI targets using retained desktop %f/%F/%u/%U and fixed arguments.
+        /// Native byte argv is brokered losslessly in the same managed instance/cgroup.
+        fn launch_files_v1(
+            &self,
+            app_id: &str,
+            file_uris: Vec<String>,
+            activation_token: &str,
+        ) -> zbus::Result<String>;
 
         /// Launch a logical application, letting the daemon choose which copy. Pass an empty
         /// `preferred_variant` to mean "whichever is the default".
@@ -144,6 +160,11 @@ mod associations {
             &self,
             path: &str,
             project_id: &str,
+        ) -> zbus::Result<(String, String, String)>;
+
+        /// Local file MIME/policy resolution, with percent-encoded native filename bytes.
+        fn resolve_file_uri_v1(
+            &self, uri: &str, project_id: &str,
         ) -> zbus::Result<(String, String, String)>;
 
         /// `(canonical_app_id, detected_mime, reason)`
@@ -265,6 +286,9 @@ mod settings {
         fn set(&self, key: &str, value_json: &str, origin: &str) -> zbus::Result<()>;
 
         fn list(&self) -> zbus::Result<Vec<(String, String)>>;
+
+        /// Observation<Vec<SettingObservation<SettingValue>>> JSON from one owned read.
+        fn inspect(&self) -> zbus::Result<String>;
 
         fn changes(&self, limit: u32) -> zbus::Result<Vec<String>>;
 
@@ -397,12 +421,25 @@ mod homegarden {
 
         /// Verified live-instance cwd map as JSON, independent of Place activity attribution.
         fn working_directories(&self) -> zbus::Result<String>;
+        /// Versioned project cards, sessions, template metadata and owner-provided recents.
+        fn presentation_v1(&self) -> zbus::Result<String>;
+        /// Display-only agent hook; sender must be a verified managed instance.
+        fn observe_session_v1(&self, observation_json: &str) -> zbus::Result<()>;
+        fn sessions_v1(&self) -> zbus::Result<String>;
+        /// Refresh verified foreground processes/journals on activation; no geometry/agent CLI.
+        fn activate_instance_v1(&self, instance_id: &str) -> zbus::Result<()>;
+        /// Empty template restores inference; overrides persist independently of size/pin.
+        fn show_as_v1(&self, path: &str, template: &str) -> zbus::Result<()>;
+        /// Resume a catalogue row through Launcher1's terminal provider as a new instance.
+        fn resume_session_v1(&self, path: &str, session_id: &str) -> zbus::Result<String>;
+        /// Relaunch an installed app in an existing project through the managed broker.
+        fn launch_app_in_place_v1(&self, path: &str, app_id: &str) -> zbus::Result<String>;
 
         /// One context by root, or `""`.
         fn describe(&self, path: &str) -> zbus::Result<String>;
 
         fn pin(&self, path: &str, pinned: bool) -> zbus::Result<()>;
-        /// Pin, and freeze the tile at its current size.
+        /// Keep on Home against recession; only resizing by hand freezes size.
         fn keep(&self, path: &str) -> zbus::Result<()>;
         fn hide(&self, path: &str, hidden: bool) -> zbus::Result<()>;
         fn forget(&self, path: &str) -> zbus::Result<()>;
@@ -438,6 +475,12 @@ mod power {
         fn set_profile(&self, source: &str, profile_json: &str) -> zbus::Result<()>;
 
         fn reset_profile(&self, source: &str) -> zbus::Result<()>;
+
+        /// Stored, selected and actually observed native power state are distinct.
+        fn inspect(&self) -> zbus::Result<String>;
+
+        #[zbus(signal)]
+        fn changed(&self, revision_json: &str) -> zbus::Result<()>;
     }
 }
 
@@ -452,6 +495,12 @@ mod notifications {
     pub trait Notifications {
         /// Active notification documents, newest first, encoded as JSON.
         fn list_active(&self) -> zbus::Result<Vec<String>>;
+
+        /// Atomic active model and journal cursor for subscribe-before-snapshot consumers.
+        fn snapshot(&self) -> zbus::Result<String>;
+
+        /// Ordered lifecycle changes; `must_resync` invalidates the old cursor and model.
+        fn transitions_since(&self, sequence: u64, owner_epoch: &str) -> zbus::Result<String>;
 
         fn dismiss(&self, id: u32) -> zbus::Result<bool>;
 
@@ -490,6 +539,9 @@ mod lifecycle {
 
         fn lock(&self) -> zbus::Result<()>;
 
+        /// The trusted shell observed the compositor's lock coverage barrier.
+        fn notify_locked(&self) -> zbus::Result<()>;
+
         /// The trusted shell reporting that it has released the compositor's lock. Refused for
         /// anyone else: `templar-shell` is the only process that calls `unlock_and_destroy`, so it
         /// is the only one that knows.
@@ -522,6 +574,12 @@ mod audio {
     pub trait Audio {
         /// `AudioState` JSON: `{ present, volume_percent, muted }`.
         fn get(&self) -> zbus::Result<String>;
+
+        /// AudioInventory JSON, including current defaults and saved stable preferences.
+        fn inventory(&self) -> zbus::Result<String>;
+
+        /// Select by stable node name, not a transient PipeWire object ID.
+        fn select_device(&self, direction: &str, name: &str) -> zbus::Result<()>;
 
         fn set_volume(&self, percent: u32) -> zbus::Result<()>;
 

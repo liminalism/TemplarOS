@@ -32,9 +32,17 @@ zbus = { workspace = true }
 url = { workspace = true }
 pixelkit-raster = { workspace = true }
 pixelkit-text = { workspace = true }
-pixelkit-ui = { workspace = true }
+pixelkit-ui = { workspace = true, features = ["accessibility"] }
 pixelkit-shell = { workspace = true }
-pixelkit-windowing = { workspace = true }
+pixelkit-windowing = { workspace = true, features = ["accessibility"] }
+templar-ui = { workspace = true }
+winit = "0.30"
+raw-window-handle = "0.6"
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+x11rb = "0.13"
+libc = { workspace = true }
 
 [lints]
 workspace = true
@@ -43,7 +51,7 @@ workspace = true
 name = "templaros-portal"
 section = "x11"
 priority = "optional"
-depends = "$auto, xdg-desktop-portal, templaros-sessiond, templaros-filed"
+depends = "$auto, xdg-desktop-portal, xdg-desktop-portal-lxqt, qt6-wayland, xdg-desktop-portal-gtk, templaros-sessiond, templaros-filed"
 assets = [
     ["target/release/xdg-desktop-portal-templar", "usr/libexec/xdg-desktop-portal-templar", "755"],
     ["templaros.portal", "usr/share/xdg-desktop-portal/portals/templaros.portal", "644"],

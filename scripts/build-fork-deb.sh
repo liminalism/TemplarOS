@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a Debian package for a fork listed in distro/forks/manifest.toml.
+# Build a Debian package for an external source registered in distro/forks/manifest.toml.
 #
 # ADR-0005 says forks are pinned, never vendored, so the source is not in this repository. What is
 # in this repository is the *packaging*: distro/forks/<name>/debian/ holds the control file, the
@@ -9,17 +9,19 @@
 #   scripts/build-fork-deb.sh nm-tray-2                  # from forks/<name> (just forks-fetch)
 #   scripts/build-fork-deb.sh nm-tray-2 --source <dir>   # from a checkout you already have
 #   scripts/build-fork-deb.sh nm-tray-2 --dry-run
+#   scripts/build-fork-deb.sh liminalview --source <dir-or-archive> --deb-version <build-set-id>
 #
 # The .deb lands in target/debian/, beside the cargo-deb output, so `just repo-local` picks it up
 # with everything else.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-name=""; source_dir=""; dry_run=0
+name=""; source_dir=""; dry_run=0; deb_version=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --source) source_dir="${2:?--source needs a directory}"; shift 2 ;;
         --dry-run) dry_run=1; shift ;;
+        --deb-version) deb_version="${2:?--deb-version needs a version}"; shift 2 ;;
         -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
         -*) echo "unknown option: $1" >&2; exit 2 ;;
         *) name="$1"; shift ;;
@@ -34,6 +36,17 @@ overlay="$root/distro/forks/$name/debian"
     exit 1
 }
 
+# A local-source entry is deliberately not a pretend Git fork. Its builder
+# snapshots the complete locked closure before compiling and can rebuild that
+# same archive without the original sibling directories.
+source_kind="$(python3 -c 'import sys,tomllib; print(tomllib.load(open(sys.argv[1],"rb")).get(sys.argv[2],{}).get("source_kind","git"))' "$root/distro/forks/manifest.toml" "$name")"
+if [ "$source_kind" = local ]; then
+    args=("$root/scripts/build-local-source-deb.py" "$name")
+    [ -z "$source_dir" ] || args+=(--source "$source_dir")
+    [ -z "$deb_version" ] || args+=(--deb-version "$deb_version")
+    [ "$dry_run" = 0 ] || args+=(--dry-run)
+    exec python3 "${args[@]}"
+fi
 # The manifest is the authority for the pin; read it without a TOML parser, the way fetch.sh does.
 pin="$(awk -v want="[$name]" '
     $0 == want { inside = 1; next }
@@ -69,7 +82,7 @@ if [ -x "$preflight" ]; then
 fi
 
 version="$(awk 'NR==1 { gsub(/^.*\(|\).*$/, ""); print; exit }' "$overlay/changelog")"
-stamped="$version~g$short${dirty:+.dirty}"
+stamped="${deb_version:-$version~g$short${dirty:+.dirty}}"
 
 if [ "$dry_run" = 1 ]; then
     echo "would build: $(awk '/^Package:/ { print $2; exit }' "$overlay/control") $stamped"

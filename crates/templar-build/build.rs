@@ -19,23 +19,34 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TEMPLAROS_BUILD_SET_ID");
     // The component matrix is compiled in, so a change to it must rebuild this crate.
     println!("cargo:rerun-if-changed=../../distro/deploy/components.toml");
-    for path in git_watch_paths() {
-        println!("cargo:rerun-if-changed={path}");
-    }
-
-    let sha = git(&["rev-parse", "--short=7", "HEAD"]).unwrap_or_else(|| "0000000".to_owned());
-    let dirty = git(&["status", "--porcelain", "--untracked-files=no"])
-        .is_some_and(|status| !status.trim().is_empty());
-    let epoch = git(&["log", "-1", "--format=%ct"])
-        .and_then(|t| t.trim().parse::<u64>().ok())
-        .unwrap_or(0);
-    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_owned());
-
-    let derived = format!(
-        "{version}~dev{epoch}+g{sha}{suffix}",
-        suffix = if dirty { ".dirty" } else { "" }
-    );
-    let build_set = std::env::var("TEMPLAROS_BUILD_SET_ID").unwrap_or(derived);
+    let supplied = std::env::var("TEMPLAROS_BUILD_SET_ID").ok();
+    let source_origin = supplied.as_deref().is_some_and(|id| {
+        id.split_once('+')
+            .is_some_and(|(_, origin)| origin.starts_with('s'))
+    });
+    let (sha, dirty, epoch) = if source_origin {
+        // The closure's content origin is authoritative. No Git checkout exists
+        // here; neither an enclosing host HEAD nor an invented SHA is a Git fact.
+        (String::new(), false, 0)
+    } else {
+        for path in git_watch_paths() {
+            println!("cargo:rerun-if-changed={path}");
+        }
+        let sha = git(&["rev-parse", "--short=7", "HEAD"]).unwrap_or_else(|| "0000000".to_owned());
+        let dirty = git(&["status", "--porcelain", "--untracked-files=no"])
+            .is_some_and(|status| !status.trim().is_empty());
+        let epoch = git(&["log", "-1", "--format=%ct"])
+            .and_then(|t| t.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        (sha, dirty, epoch)
+    };
+    let build_set = supplied.unwrap_or_else(|| {
+        let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_owned());
+        format!(
+            "{version}~dev{epoch}+g{sha}{suffix}",
+            suffix = if dirty { ".dirty" } else { "" }
+        )
+    });
 
     println!("cargo:rustc-env=TEMPLAROS_BUILD_SET_ID={build_set}");
     println!("cargo:rustc-env=TEMPLAROS_GIT_SHA={sha}");

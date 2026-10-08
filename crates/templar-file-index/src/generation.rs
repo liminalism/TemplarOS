@@ -367,7 +367,6 @@ impl ScanSession {
     /// scope), refresh the accelerator, log the change, move the root forward.
     pub fn commit(mut self) -> Result<ScanOutcome> {
         self.flush()?;
-        self.finished = true;
 
         // A cancellation is a duration budget by another name; recording it as one keeps the
         // reason a person reads from depending on whether `observe` happened to be called again
@@ -411,6 +410,7 @@ impl ScanSession {
                 },
             )
         })?;
+        self.finished = true;
 
         let _ = reason;
         let outcome = ScanOutcome {
@@ -470,6 +470,16 @@ impl ScanSession {
         )
     }
 
+    /// Scoped repairs may worsen the root namespace axis, but cannot certify the unvisited rest.
+    fn committed_root_state(&self, complete: bool) -> (RootState, Option<String>, bool) {
+        let (state, reason) = self.committed_state(complete);
+        if matches!(self.options.scope, ScanScope::Root) || worsens(self.prior.state, state) {
+            (state, reason, complete)
+        } else {
+            (self.prior.state, self.prior.reason.clone(), self.prior.complete)
+        }
+    }
+
     /// The body of [`Self::commit`]'s one transaction, pulled out only so the method above stays
     /// short: merge staging into `entries`, collect (only if `complete`, only in this session's
     /// scope), refresh the accelerator, log the rescan marker, and move the root forward.
@@ -491,6 +501,11 @@ impl ScanSession {
 
         let transaction = connection.transaction()?;
         let generation_id = generation.0 as i64;
+        if crate::read_root(&transaction, root)?.policy_hash != self.prior.policy_hash {
+            return Err(IndexError::SnapshotRequired {
+                reason: "the root policy changed while this acquisition was running",
+            });
+        }
 
         merge_staging_into_entries(&transaction, root, generation_id)?;
         crate::aggregate::write_pending(&transaction, root, generation, &self.pending_aggregates)?;
@@ -530,22 +545,7 @@ impl ScanSession {
             |row| row.get(0),
         )?;
 
-        // The namespace axis, under the rule the metadata axis below already follows. A subtree
-        // pass looked at part of the root: it may report that part broken, and it may never
-        // certify the rest. So it keeps whatever the root already said unless what it found is
-        // worse — a whole-root overflow, watcher exhaustion or budget stop survives a clean
-        // scoped repair, and only a whole-root pass restores `current` and `complete`.
-        let (state, state_reason) = self.committed_state(complete);
-        let (state, state_reason, root_complete) =
-            if matches!(scope, ScanScope::Root) || worsens(self.prior.state, state) {
-                (state, state_reason, complete)
-            } else {
-                (
-                    self.prior.state,
-                    self.prior.reason.clone(),
-                    self.prior.complete,
-                )
-            };
+        let (state, state_reason, root_complete) = self.committed_root_state(complete);
 
         transaction.execute(
             "UPDATE roots

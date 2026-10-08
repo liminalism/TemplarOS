@@ -15,15 +15,15 @@ Before=templar-shell.service
 Type=notify
 # A display-manager session is always the hardware compositor.  Never infer this from the user
 # manager's inherited DISPLAY/WAYLAND_DISPLAY: that manager can survive logout and retain the
-# previous desktop's environment.  The stable socket name is also the contract used by
-# templar-session (ordinary clients) and templar-shell.service (the private trusted-shell connection).
+# previous desktop's environment. The compositor publishes its actual listener to both activation
+# owners before readiness; the launcher reads the matching runtime display artifact for helpers.
 #
 # The name is `wayland-0`, not something of ours, because confined applications are allowed to
 # reach exactly that shape and no other: snapd's wayland interface grants
 # `owner /run/user/[0-9]*/wayland-[0-9]* rw,` and nothing else, so a socket called `templaros-0` is
 # a socket every snap is denied — which is how Chromium and Firefox came to report "Failed to
 # connect to Wayland display: Permission denied" on a working desktop.
-ExecStart=/usr/bin/templar-comp --backend udev --socket-name wayland-0
+ExecStart=/usr/bin/templar-comp --backend udev --socket-name wayland-0 --session-activation
 # Evidence for a frozen desktop (`templar doctor freeze`). A panic prints its backtrace (and
 # RUST_LIB_BACKTRACE=0 keeps error values from capturing one each, which costs on hot paths);
 # the compositor's own debug lines are event-level (gestures, rails, grouping, capture failures),

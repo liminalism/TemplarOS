@@ -1,7 +1,7 @@
 //! Fixed recovery keybindings (`docs/architecture/accessibility.md`, COMPOSITOR.md's keybinding
 //! row): show every window, escape fullscreen/modal, cycle the minimal fallback switcher. These
 //! call `templar_window::WindowService` directly from the compositor's own input handler
-//! (`src/input.rs`) — never through `templar_shell_v1`, and never gated on a shell connection
+//! (`src/input.rs`) — never through `templar_shell_v2`, and never gated on a shell connection
 //! existing — because their entire purpose is to keep working with `templar-shell` dead.
 //!
 //! The keysym-to-action table is a pure function so it is testable without a keyboard, an xkb
@@ -13,7 +13,7 @@ use crate::state::{Backend, TemplarCompState};
 use smithay::{
     backend::input::KeyState,
     input::keyboard::{Keysym, ModifiersState, keysyms},
-    // For `TemplarShellManagerV1::version` — the terminal chord's `terminal_requested` is a
+    // For `TemplarShellManagerV2::version` — the terminal chord's `terminal_requested` is a
     // `since = "5"` event and is guarded on the bound object's version like every other one.
     reexports::wayland_server::Resource,
 };
@@ -49,7 +49,7 @@ pub enum RecoveryAction {
     WithinUnitForward,
     /// `` Alt+Shift+` ``: the previous window of that unit.
     WithinUnitBackward,
-    /// `Super+Space`: reveal Home and arm its Apps bar (`templar_shell_manager_v1.launcher_focus`,
+    /// `Super+Space`: reveal Home and arm its Apps bar (`templar_shell_manager_v2.launcher_focus`,
     /// `since=8`). Not a second launcher — one launcher object, one more route into it.
     RevealLauncher,
     /// `Super+G`: group the focused window with the previously focused one and set it down
@@ -650,8 +650,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             }
         };
         let Some(mut ring) = ring else {
-            self.switcher = None;
-            crate::protocols_shell::send_switcher_state(self);
+            self.set_switcher(None);
             return;
         };
         ring.step(forward);
@@ -664,8 +663,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// parked window back: `WindowService::activate` unshelves it and `input::activate_window`
     /// re-applies its geometry.
     pub(crate) fn commit_switch_walk(&mut self) {
-        self.switcher = None;
-        crate::protocols_shell::send_switcher_state(self);
+        self.set_switcher(None);
         let Some(target) = self
             .switch_ring
             .take()
@@ -691,8 +689,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// overview opening, a reveal. The keyboard stays exactly where it was.
     pub(crate) fn cancel_switch_walk(&mut self) {
         self.switch_ring = None;
-        self.switcher = None;
-        crate::protocols_shell::send_switcher_state(self);
+        self.set_switcher(None);
     }
 
     /// `window_id` went away (closed or unmapped): take it out of a walk in progress, so the HUD
@@ -712,8 +709,22 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             ring.selected()
                 .map(|selected| self.switcher_state(ring, *within_unit, selected))
         });
+        self.set_switcher(state);
+    }
+
+    /// The one way the walk's HUD state changes. The shell draws the walk on its
+    /// `Layer::Presentation` surface, which `WindowService::is_visible` shows only while a walk
+    /// is up, so the service is told first and the render mirror re-synced when that flips —
+    /// otherwise the shell's surface stays unmapped from `Space`, the text HUD stands down for
+    /// it anyway, and the walk shows for one frame and then not at all.
+    fn set_switcher(&mut self, state: Option<crate::chrome::SwitcherState>) {
+        let walking = state.is_some();
         self.switcher = state;
+        if self.window_service.set_switch_walk(walking) {
+            crate::space_sync::sync_after_change(self);
+        }
         crate::protocols_shell::send_switcher_state(self);
+        B::request_redraw(self);
     }
 
     /// The window that currently holds the keyboard, if any.
@@ -947,7 +958,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     }
 
     /// "Go home" from either route — the keybindings above or the shell's
-    /// `templar_shell_manager_v1.reveal_home`. The command is `WindowService`'s; what is left here
+    /// `templar_shell_manager_v2.reveal_home`. The command is `WindowService`'s; what is left here
     /// is the compositor-side consequence: the
     /// window overview and the switcher HUD cannot coexist with a reveal, the
     /// `Space` mirror must follow the new visibility, and the keyboard must go where the user
@@ -1765,5 +1776,64 @@ mod tests {
         crate::space_sync::on_window_destroyed(&mut state, ids[2]);
         assert!(state.switch_ring.is_none(), "nothing left to walk");
         assert!(state.switcher.is_none());
+    }
+
+    /// The action manifest's id for a compositor-bound recovery chord — `None` for the
+    /// taskfield modal keys, which are not chords and have no manifest entry. The match is
+    /// exhaustive on purpose: binding a new chord without declaring it must fail to compile
+    /// this test, not land silently the way `Super+Space` once did.
+    fn manifest_id(action: &RecoveryAction) -> Option<&'static str> {
+        Some(match action {
+            RecoveryAction::ShowAllWindows => "window.show-all",
+            RecoveryAction::EscapeFullscreenOrModal => "window.escape-fullscreen",
+            RecoveryAction::CycleFocusForward => "window.cycle-forward",
+            RecoveryAction::CycleFocusBackward => "window.cycle-backward",
+            RecoveryAction::OpenTaskfield => "taskfield.open",
+            RecoveryAction::WithinUnitForward => "window.within-unit-forward",
+            RecoveryAction::WithinUnitBackward => "window.within-unit-backward",
+            RecoveryAction::RevealLauncher => "launcher.show-all",
+            RecoveryAction::GroupWithPrevious => "window.group",
+            RecoveryAction::UngroupFocused => "window.ungroup",
+            RecoveryAction::RevealHome => "home.reveal",
+            RecoveryAction::StepRight => "window.step-right",
+            RecoveryAction::StepLeft => "window.step-left",
+            RecoveryAction::ParkFocused => "window.park",
+            RecoveryAction::ToggleTerminal => "terminal.toggle",
+            RecoveryAction::Taskfield(_) => return None,
+        })
+    }
+
+    #[test]
+    fn every_compositor_bound_chord_is_declared_in_the_action_manifest() {
+        // `check-actions` reads the manifest and the shell surfaces; this is the direction it
+        // cannot see — a chord the compositor binds but nothing declares.
+        const MANIFEST: &str =
+            include_str!("../../../crates/templar-types/src/action.rs");
+        for action in [
+            RecoveryAction::ShowAllWindows,
+            RecoveryAction::EscapeFullscreenOrModal,
+            RecoveryAction::CycleFocusForward,
+            RecoveryAction::CycleFocusBackward,
+            RecoveryAction::OpenTaskfield,
+            RecoveryAction::WithinUnitForward,
+            RecoveryAction::WithinUnitBackward,
+            RecoveryAction::RevealLauncher,
+            RecoveryAction::GroupWithPrevious,
+            RecoveryAction::UngroupFocused,
+            RecoveryAction::RevealHome,
+            RecoveryAction::StepRight,
+            RecoveryAction::StepLeft,
+            RecoveryAction::ParkFocused,
+            RecoveryAction::ToggleTerminal,
+            RecoveryAction::Taskfield(TaskfieldKey::Escape),
+        ] {
+            let Some(id) = manifest_id(&action) else {
+                continue;
+            };
+            assert!(
+                MANIFEST.contains(&format!("id: \"{id}\"")),
+                "{action:?} is bound by the compositor but {id} is not in the action manifest"
+            );
+        }
     }
 }

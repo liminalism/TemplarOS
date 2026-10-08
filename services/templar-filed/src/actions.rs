@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use std::{
     fmt::Write as _,
-    os::unix::ffi::OsStringExt as _,
+    os::unix::ffi::{OsStrExt as _, OsStringExt as _},
     path::{Path, PathBuf},
 };
 
@@ -25,7 +25,7 @@ pub enum PathForm {
     AsShown,
     /// `file://` URI with the necessary octets percent-encoded.
     Uri,
-    /// Safe to paste into a POSIX shell, however odd the name is.
+    /// POSIX single quotes for UTF-8; ANSI-C quoting (Bash/Ksh/Zsh/POSIX.1-2024) for raw bytes.
     ShellQuoted,
     /// The containing directory, canonical.
     ParentDirectory,
@@ -64,18 +64,15 @@ impl PathForm {
 pub fn render(path: &Path, form: PathForm) -> Result<String> {
     let canonical = || path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     Ok(match form {
-        PathForm::Canonical => canonical().to_string_lossy().into_owned(),
-        PathForm::AsShown => path.to_string_lossy().into_owned(),
+        PathForm::Canonical => canonical().to_str().context("Canonical path is not UTF-8; use URI or shell-quoted")?.to_owned(),
+        PathForm::AsShown => path.to_str().context("Path is not UTF-8; use URI or shell-quoted")?.to_owned(),
         PathForm::Uri => file_uri(&canonical()),
-        PathForm::ShellQuoted => shell_quote(&path.to_string_lossy()),
-        PathForm::ParentDirectory => canonical()
-            .parent()
-            .map(|parent| parent.to_string_lossy().into_owned())
-            .with_context(|| format!("{} has no parent", path.display()))?,
-        PathForm::Name => path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .with_context(|| format!("{} has no file name", path.display()))?,
+        PathForm::ShellQuoted => shell_quote_native(path.as_os_str()),
+        PathForm::ParentDirectory => canonical().parent()
+            .with_context(|| format!("{} has no parent", path.display()))?
+            .to_str().context("Parent path is not UTF-8; use URI or shell-quoted")?.to_owned(),
+        PathForm::Name => path.file_name().with_context(|| format!("{} has no file name", path.display()))?
+            .to_str().context("File name is not UTF-8; use URI or shell-quoted")?.to_owned(),
     })
 }
 
@@ -85,7 +82,7 @@ pub fn render(path: &Path, form: PathForm) -> Result<String> {
 /// including the space that breaks naive consumers, is percent-encoded.
 pub fn file_uri(path: &Path) -> String {
     let mut uri = String::from("file://");
-    for byte in path.to_string_lossy().bytes() {
+    for &byte in path.as_os_str().as_bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'/') {
             uri.push(byte as char);
         } else {
@@ -143,6 +140,23 @@ pub fn shell_quote(value: &str) -> String {
             quoted.push_str("'\\''");
         } else {
             quoted.push(character);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+fn shell_quote_native(value: &std::ffi::OsStr) -> String {
+    if let Some(value) = value.to_str() { return shell_quote(value); }
+    let bytes = value.as_bytes();
+    let mut quoted = String::with_capacity(bytes.len() + 3);
+    quoted.push_str("$'");
+    for &byte in bytes {
+        match byte {
+            b'\\' => quoted.push_str("\\\\"),
+            b'\'' => quoted.push_str("\\'"),
+            0x20..=0x7e => quoted.push(char::from(byte)),
+            _ => { let _ = write!(quoted, "\\{byte:03o}"); }
         }
     }
     quoted.push('\'');
@@ -265,5 +279,25 @@ mod tests {
             render(path, PathForm::Canonical).unwrap(),
             "/definitely/not/here.txt"
         );
+    }
+
+    #[test]
+    fn native_render_round_trips_uri_and_shell_bytes_and_refuses_lossy_plain_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw_directory = dir.path().join(std::ffi::OsString::from_vec(b"directory-\xff".to_vec()));
+        std::fs::create_dir(&raw_directory).unwrap();
+        let path = raw_directory.join(std::ffi::OsString::from_vec(b"file-\xfe ' $(not-a-command)\n".to_vec()));
+        std::fs::write(&path, b"native").unwrap();
+        let uri = render(&path, PathForm::Uri).unwrap();
+        assert!(uri.contains("%FF") && uri.contains("%FE"));
+        assert_eq!(path_from_uri(&uri).unwrap(), path);
+        let quoted = render(&path, PathForm::ShellQuoted).unwrap();
+        let output = std::process::Command::new("bash").args(["--noprofile", "--norc", "-c",
+            &format!("printf '%s' {quoted}")]).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, path.as_os_str().as_bytes());
+        for form in [PathForm::Canonical, PathForm::AsShown, PathForm::Name, PathForm::ParentDirectory] {
+            assert!(render(&path, form).is_err(), "plain text must not name a different file");
+        }
     }
 }

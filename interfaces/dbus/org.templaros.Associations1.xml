@@ -18,6 +18,15 @@
       <arg name="detected_mime" type="s" direction="out"/>
       <arg name="reason" type="s" direction="out"/>
     </method>
+    <!-- Local file URI, preserving percent-encoded native filename bytes. Unlike ResolveUri,
+         detects the file MIME and uses the same project/file policy as ResolveFile. -->
+    <method name="ResolveFileUriV1">
+      <arg name="uri" type="s" direction="in"/>
+      <arg name="project_id" type="s" direction="in"/>
+      <arg name="canonical_app_id" type="s" direction="out"/>
+      <arg name="detected_mime" type="s" direction="out"/>
+      <arg name="reason" type="s" direction="out"/>
+    </method>
     <!-- scheme is derived from a URI's leading `scheme:`; resolved against
          x-scheme-handler/<scheme>, with no extension fallback (a scheme has no filename). -->
     <method name="ResolveUri">

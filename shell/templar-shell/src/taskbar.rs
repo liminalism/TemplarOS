@@ -104,19 +104,14 @@ pub fn rows_of(entries: &[Entry], mode: LaneMode, capacity: usize) -> Option<Row
         .then_some(Rows { active, latent })
 }
 
-/// One window of an entry, as the fan needs it.
-///
-/// `preview` is what this window's capture is filed under
-/// ([`crate::field_model::session_identifier`]) — carried rather than derived because the bar
-/// never sees a `ShellToplevel`, and the key belongs to one function, not to two.
+/// One window of an entry, as the fan needs it. Window-pixel previews are Home-only: the
+/// fan card wears the window's icon and title and asks for no capture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntryWindow {
     pub id: WindowId,
     pub title: String,
-    pub preview: String,
-    /// The window's own application, whose icon its fan card falls back to before a capture
-    /// arrives. In a group the members are different applications, so the entry's icon is not
-    /// enough.
+    /// The window's own application, whose icon its fan card wears. In a group the members
+    /// are different applications, so the entry's icon is not enough.
     pub app_id: Option<String>,
     pub verified: bool,
 }
@@ -271,16 +266,9 @@ fn entry_window(toplevel: &ShellToplevel) -> EntryWindow {
     EntryWindow {
         id: toplevel.window_id,
         title: title_or_untitled(&toplevel.title),
-        preview: preview_key(toplevel),
         app_id: toplevel.icon_app_id().map(str::to_owned),
         verified: toplevel.verified_identity,
     }
-}
-
-/// What this window's capture is filed under — the same key Home's session tiles use, so the
-/// bar and Home read one cache rather than two.
-fn preview_key(toplevel: &ShellToplevel) -> String {
-    crate::field_model::session_identifier(toplevel, None)
 }
 
 fn title_or_untitled(title: &str) -> String {
@@ -316,6 +304,7 @@ mod tests {
                 name: String::new(),
                 accent: 0x0011_2233,
             }),
+            tab_count: None,
         }
     }
 
@@ -354,17 +343,12 @@ mod tests {
             vec!["group:9", "org.templaros.Files", "org.example.Editor"]
         );
         assert_eq!(entries[0].windows.len(), 2);
-        // The hover row looks a preview up by this key, and Home files it under that same one:
-        // one cache, one formula, whichever branch of `entries` built the window.
+        // Every entry window is a toplevel, whichever branch of `entries` built it.
         for entry in &entries {
             for window in &entry.windows {
-                let toplevel = toplevels
-                    .iter()
-                    .find(|t| t.window_id == window.id)
-                    .expect("every entry window is a toplevel");
-                assert_eq!(
-                    window.preview,
-                    crate::field_model::session_identifier(toplevel, None)
+                assert!(
+                    toplevels.iter().any(|t| t.window_id == window.id),
+                    "every entry window is a toplevel"
                 );
             }
         }

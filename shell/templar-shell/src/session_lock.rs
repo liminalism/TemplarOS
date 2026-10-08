@@ -24,6 +24,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
+use wayland_client::Proxy;
 
 /// Tell sessiond the lock is gone.
 ///
@@ -46,6 +47,21 @@ pub async fn notify_unlocked() {
             }
         }
         Err(error) => tracing::debug!(%error, "no Lifecycle1 to report the unlock to"),
+    }
+}
+
+/// Report only the compositor's actual presented-frame acknowledgment, never a request.
+pub async fn notify_locked() {
+    let Ok(connection) = crate::data::session().await else {
+        return;
+    };
+    match templar_client::proxies::LifecycleProxy::new(&connection).await {
+        Ok(proxy) => {
+            if let Err(error) = proxy.notify_locked().await {
+                tracing::warn!(%error, "sessiond would not record confirmed lock coverage");
+            }
+        }
+        Err(error) => tracing::warn!(%error, "no Lifecycle1 to report lock coverage to"),
     }
 }
 
@@ -105,10 +121,38 @@ pub fn key_from_keysym(keysym: u32, utf8: Option<&str>) -> Option<LockKey> {
 /// is painted into.
 struct LockSurface {
     proxy: ExtSessionLockSurfaceV1,
+    output: WlOutput,
     surface: WlSurface,
     buffer: Option<crate::previews::ShmBuffer>,
     /// The size the compositor configured, in surface-local pixels. `None` until it does.
     size: Option<(u32, u32)>,
+}
+
+impl LockSurface {
+    fn new(
+        compositor: &WlCompositor,
+        lock: &ExtSessionLockV1,
+        output: &WlOutput,
+        qh: &QueueHandle<BridgeState>,
+    ) -> Self {
+        let surface = compositor.create_surface(qh, ());
+        let proxy = lock.get_lock_surface(&surface, output, qh, ());
+        Self {
+            output: output.clone(),
+            proxy,
+            surface,
+            buffer: None,
+            size: None,
+        }
+    }
+
+    fn destroy(self) {
+        if let Some(buffer) = self.buffer {
+            buffer.destroy();
+        }
+        self.proxy.destroy();
+        self.surface.destroy();
+    }
 }
 
 /// What the lock needs from the registry, and the lock itself while one is up.
@@ -121,6 +165,7 @@ pub struct SessionLockState {
     surfaces: Vec<LockSurface>,
     /// The compositor confirmed the lock: the screen is covered and input is ours.
     locked: bool,
+    confirmation_pending: bool,
     /// The compositor refused, or the lock ended without us. Either way there is nothing to
     /// unlock and the shell must stop pretending there is.
     finished: bool,
@@ -173,12 +218,35 @@ impl SessionLockState {
                     Some(registry.bind::<WlCompositor, _, _>(name, version.min(4), qh, ()));
             }
             "wl_output" => {
-                self.outputs.insert(
-                    name,
-                    registry.bind::<WlOutput, _, _>(name, version.min(4), qh, ()),
-                );
+                let output = registry.bind::<WlOutput, _, _>(name, version.min(4), qh, ());
+                // A protected compositor fallback covers this output until its own configured
+                // lock surface is committed. Do not leave a hotplugged monitor black forever.
+                if let (Some(lock), Some(compositor)) = (&self.lock, &self.compositor) {
+                    if !self.finished {
+                        self.surfaces
+                            .push(LockSurface::new(compositor, lock, &output, qh));
+                        self.dirty = true;
+                    }
+                }
+                self.outputs.insert(name, output);
             }
             _ => {}
+        }
+    }
+
+    pub fn remove_global(&mut self, name: u32) {
+        let Some(output) = self.outputs.remove(&name) else {
+            return;
+        };
+        if let Some(index) = self
+            .surfaces
+            .iter()
+            .position(|surface| surface.output == output)
+        {
+            self.surfaces.remove(index).destroy();
+        }
+        if output.version() >= 3 {
+            output.release();
         }
     }
 
@@ -196,6 +264,10 @@ impl SessionLockState {
     /// Whether the compositor has confirmed the lock.
     pub fn locked(&self) -> bool {
         self.locked
+    }
+
+    pub fn take_confirmation(&mut self) -> bool {
+        std::mem::take(&mut self.confirmation_pending)
     }
 
     /// Whether the compositor refused the lock or ended it.
@@ -229,16 +301,11 @@ impl SessionLockState {
         }
         self.finished = false;
         self.locked = false;
+        self.confirmation_pending = false;
         let lock = manager.lock(shm_qh, ());
         for output in self.outputs.values() {
-            let surface = compositor.create_surface(shm_qh, ());
-            let proxy = lock.get_lock_surface(&surface, output, shm_qh, ());
-            self.surfaces.push(LockSurface {
-                proxy,
-                surface,
-                buffer: None,
-                size: None,
-            });
+            self.surfaces
+                .push(LockSurface::new(compositor, &lock, output, shm_qh));
         }
         self.lock = Some(lock);
         Ok(())
@@ -315,11 +382,7 @@ impl SessionLockState {
             }
         }
         for surface in self.surfaces.drain(..) {
-            if let Some(buffer) = surface.buffer {
-                buffer.destroy();
-            }
-            surface.proxy.destroy();
-            surface.surface.destroy();
+            surface.destroy();
         }
         self.locked = false;
         self.finished = false;
@@ -431,6 +494,7 @@ impl Dispatch<ExtSessionLockV1, ()> for BridgeState {
         match event {
             ext_session_lock_v1::Event::Locked => {
                 state.session_lock.locked = true;
+                state.session_lock.confirmation_pending = true;
                 state.session_lock.dirty = true;
             }
             ext_session_lock_v1::Event::Finished => {

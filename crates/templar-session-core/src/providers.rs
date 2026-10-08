@@ -50,6 +50,18 @@ impl ProviderRegistry {
         self.declarations.push(Declaration { app_id, capability });
     }
 
+    /// Add currently installed derived and metadata-claimed capabilities without persisting them.
+    /// Explicit selections remain the durable choice, not a frozen installed-app catalogue.
+    pub fn declare_installed(&mut self, catalog: &dyn templar_types::AppCatalog) {
+        for manifest in catalog.manifests() {
+            for capability in derived_capabilities(&manifest).into_iter()
+                .chain(claimed_capabilities(&manifest))
+            {
+                self.declare(manifest.id.clone(), capability);
+            }
+        }
+    }
+
     pub fn undeclare_app(&mut self, app_id: &AppId) {
         self.declarations.retain(|d| &d.app_id != app_id);
     }
@@ -169,10 +181,10 @@ const DEFAULT_FILE_MANAGER: &str = "pcmanfm-qt";
 /// ordinary application that happens to be the one thing "Open terminal here" needs — so the
 /// declaration is derived from the `Categories=` the entry already carries.
 ///
-/// A derived declaration is never written down (see `ensure_derived_provider_declarations` in
-/// the daemon): it is re-read from the installed set on every start, so installing a terminal
-/// makes it a candidate and removing one stops it being offered, with nothing to go stale in
-/// between.
+/// A derived declaration is re-read from the authoritative installed set at startup and after
+/// catalogue changes (`Providers::declare_installed`): installing a terminal makes it a
+/// candidate, and removing one stops it being offered. Explicit selection remains durable even
+/// when its selected copy is unavailable.
 ///
 /// Trust is the same gate a claimed declaration passes: a `.desktop` file this account can
 /// rewrite must not become the session's terminal any more than it may become its lock screen.
@@ -219,18 +231,21 @@ pub fn derived_capabilities(manifest: &AppManifest) -> Vec<ProviderCapability> {
 }
 
 /// The roles an installed application claims in its own metadata: `X-TemplarOS-Provides=`
-/// on its desktop entry, recorded as `provider_claims` on the manifest's provenance at import.
+/// on its desktop entry, recorded as `provider_claims` on the manifest's provenance at import,
+/// plus the native manifest's own `provides` array.
 ///
 /// The difference from [`derived_capabilities`]: a derived role is read off what the entry says
 /// for other reasons (`Categories=`, the executable's name), while a claimed role is the
-/// application asking for a role outright. Both pass the same trust gate, and both are re-read
-/// from the installed set on every start rather than persisted (see
-/// `ensure_claimed_provider_declarations` in the daemon): a claim that outlived its application
+/// application asking for a role outright. Both pass the same trust gate, and both are
+/// rebuilt from the installed set at startup and after catalogue changes by
+/// `ProviderRegistry::declare_installed`: a claim that outlived its application
 /// would otherwise go on winning a role for a program that is no longer on the machine.
 ///
 /// Priority is 50, the third-party rung: a claim is an application nominating itself, not the
 /// distribution naming its default, so an explicit `Providers1.Declare` at 100 still outranks
-/// it. A role with a single claimant resolves to it whatever the number.
+/// it. A role with a single claimant resolves to it whatever the number. A native `provides`
+/// entry carries its own priority and comes last, so where both name a role the manifest's
+/// explicit number is what `declare` keeps.
 ///
 /// Unknown names are skipped, never failed: a claim for a role this build does not know is a
 /// newer application, not a broken one.
@@ -238,20 +253,25 @@ pub fn claimed_capabilities(manifest: &AppManifest) -> Vec<ProviderCapability> {
     if !manifest.trust().may_hold_exclusive_role() {
         return Vec::new();
     }
-    let Some(provenance) = manifest.provenance.as_ref() else {
-        return Vec::new();
-    };
-    provenance
-        .provider_claims
-        .iter()
-        .filter_map(|name| {
-            ProviderRole::ALL
+    let mut claimed: Vec<ProviderCapability> = manifest
+        .provenance
+        .as_ref()
+        .map(|provenance| {
+            provenance
+                .provider_claims
                 .iter()
-                .copied()
-                .find(|role| role.as_str() == name)
-                .map(|role| ProviderCapability { role, priority: 50 })
+                .filter_map(|name| {
+                    ProviderRole::ALL
+                        .iter()
+                        .copied()
+                        .find(|role| role.as_str() == name)
+                        .map(|role| ProviderCapability { role, priority: 50 })
+                })
+                .collect()
         })
-        .collect()
+        .unwrap_or_default();
+    claimed.extend(manifest.provides.iter().cloned());
+    claimed
 }
 
 /// Whether this manifest's executable is `name` — the file the launcher actually runs, not the
@@ -275,6 +295,11 @@ fn role_by_name(name: &str) -> Result<ProviderRole> {
 /// default (empty) registry, which is exactly first-run behaviour.
 pub fn load(store: &Store) -> Result<ProviderRegistry> {
     let connection = store.lock();
+    load_within(&connection)
+}
+
+/// Read declarations and selections while the caller holds Store-before-registry locks.
+pub fn load_within(connection: &rusqlite::Connection) -> Result<ProviderRegistry> {
     let mut registry = ProviderRegistry::default();
 
     let mut declarations = connection
@@ -469,12 +494,12 @@ pub fn deselect_within(tx: &Transaction<'_>, role: ProviderRole) -> Result<Optio
 /// Reverse a selection change recorded in the shared `change_log` (`History1.Undo`).
 /// `old_value_json` is a JSON string (the previous `AppId`) or `None` if the role had no
 /// selection before the change being undone.
+/// Returns the staged selection; publish it to the registry only after the transaction commits.
 pub fn revert_selection_within(
     tx: &Transaction<'_>,
-    registry: &mut ProviderRegistry,
     role: ProviderRole,
     old_value_json: Option<&str>,
-) -> Result<()> {
+) -> Result<Option<AppId>> {
     if let Some(json) = old_value_json {
         let raw: String =
             serde_json::from_str(json).context("parsing a stored provider selection")?;
@@ -487,16 +512,15 @@ pub fn revert_selection_within(
             params![role.as_str(), app_id.as_str()],
         )
         .context("restoring a provider_selections row")?;
-        registry.select(role, app_id);
+        Ok(Some(app_id))
     } else {
         tx.execute(
             "DELETE FROM provider_selections WHERE role = ?1",
             params![role.as_str()],
         )
         .context("removing a provider_selections row")?;
-        registry.selections.remove(&role);
+        Ok(None)
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -528,6 +552,7 @@ mod tests {
             } else {
                 AppOriginKind::UserDesktopEntry
             })),
+            provides: Vec::new(),
         }
     }
 
@@ -655,6 +680,36 @@ mod tests {
         assert!(
             claimed_capabilities(&mine).is_empty(),
             "the trust gate is the same one Declare applies"
+        );
+    }
+
+    #[test]
+    fn a_native_manifest_provides_claim_becomes_a_capability() {
+        // The schema always documented `provides`, but the struct dropped it and nothing
+        // downstream ever saw the claim. A packaged manifest's entries now arrive with their
+        // own priorities, behind the same trust gate as entry claims.
+        let mut tray = app(
+            "desktop-import.tray",
+            "templar-tray",
+            &["System", "Monitor"],
+            true,
+        );
+        tray.provides = vec![
+            cap(ProviderRole::NetworkStatusUi, 50),
+            cap(ProviderRole::NotificationServer, 100),
+        ];
+        assert_eq!(
+            claimed_capabilities(&tray),
+            vec![
+                cap(ProviderRole::NetworkStatusUi, 50),
+                cap(ProviderRole::NotificationServer, 100),
+            ]
+        );
+        let mut mine = app("desktop-import.mine", "tray", &["System"], false);
+        mine.provides = vec![cap(ProviderRole::NetworkStatusUi, 100)];
+        assert!(
+            claimed_capabilities(&mine).is_empty(),
+            "an explicit priority does not pass the trust gate"
         );
     }
 
@@ -848,9 +903,6 @@ mod tests {
         let store = Store::in_memory().unwrap();
         let tray: AppId = "org.templaros.NetworkTray".parse().unwrap();
         let applet: AppId = "org.gnome.NmApplet".parse().unwrap();
-        let mut registry = ProviderRegistry::default();
-        registry.declare(tray.clone(), cap(ProviderRole::NetworkStatusUi, 100));
-        registry.declare(applet.clone(), cap(ProviderRole::NetworkStatusUi, 50));
 
         store
             .transaction(|tx| {
@@ -869,7 +921,6 @@ mod tests {
             .transaction(|tx| {
                 revert_selection_within(
                     tx,
-                    &mut registry,
                     ProviderRole::NetworkStatusUi,
                     Some(&old_value),
                 )
@@ -886,15 +937,13 @@ mod tests {
     fn undoing_the_first_selection_a_role_ever_had_returns_it_to_automatic() {
         let store = Store::in_memory().unwrap();
         let applet: AppId = "org.gnome.NmApplet".parse().unwrap();
-        let mut registry = ProviderRegistry::default();
-        registry.declare(applet.clone(), cap(ProviderRole::NetworkStatusUi, 50));
 
         store
             .transaction(|tx| {
                 declare_within(tx, &applet, &cap(ProviderRole::NetworkStatusUi, 50))?;
                 apply_selection_within(tx, ProviderRole::NetworkStatusUi, Some(&applet), "test")?;
                 // No old value: the role had never been pinned before this.
-                revert_selection_within(tx, &mut registry, ProviderRole::NetworkStatusUi, None)
+                revert_selection_within(tx, ProviderRole::NetworkStatusUi, None)
             })
             .unwrap();
 
@@ -1010,16 +1059,16 @@ mod tests {
         );
 
         // Undo the second selection: back to the applet.
-        store
+        let restored = store
             .transaction(|tx| {
                 revert_selection_within(
                     tx,
-                    &mut registry,
                     ProviderRole::NetworkStatusUi,
                     Some(&serde_json::to_string(applet.as_str()).unwrap()),
                 )
             })
             .unwrap();
+        registry.select(ProviderRole::NetworkStatusUi, restored.expect("restored explicit selection"));
         assert_eq!(
             registry.provider(ProviderRole::NetworkStatusUi),
             Some(applet)
@@ -1028,9 +1077,10 @@ mod tests {
         // Undo the first selection too: no selection at all (defaults by priority again).
         store
             .transaction(|tx| {
-                revert_selection_within(tx, &mut registry, ProviderRole::NetworkStatusUi, None)
+                revert_selection_within(tx, ProviderRole::NetworkStatusUi, None)
             })
             .unwrap();
+        registry.deselect(ProviderRole::NetworkStatusUi);
         assert!(
             !registry
                 .selections

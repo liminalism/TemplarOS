@@ -19,7 +19,9 @@ templar-hwdetect = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
+futures-util = { workspace = true }
 libc = { workspace = true }
+parking_lot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -40,10 +42,19 @@ section = "admin"
 priority = "optional"
 # systemd-coredump: the coredump policy below is inert without it, and core_pattern stays `core`
 # (a file in whatever directory the crashing process had as its cwd, usually nowhere).
-depends = "$auto, systemd, apt, polkitd, systemd-coredump"
+depends = "$auto, systemd, apt, polkitd, systemd-coredump, python3, util-linux, btrfs-progs, passwd, libpam-runtime, libpam-modules, templaros-cli"
+maintainer-scripts = "../../packaging/templaros-hostd"
 assets = [
     ["target/release/templar-hostd", "usr/libexec/templar-hostd", "755"],
+    ["../../installer/account-maintenance.py", "usr/libexec/templaros-account-maintenance", "755"],
+    ["../../installer/account-login-gate.py", "usr/libexec/templaros-account-login-gate", "755"],
+    ["../../distro/policy/pam-configs/templaros-account-recovery", "usr/share/pam-configs/templaros-account-recovery", "644"],
+    ["../../installer/deployment-layout.py", "usr/libexec/templaros-deployment-layout", "755"],
+    ["../../distro/deploy/state-compat.toml", "usr/share/templaros/state-compat.toml", "644"],
     ["../../session/units/system/templar-hostd.service", "usr/lib/systemd/system/templar-hostd.service", "644"],
+    ["../../session/units/system/templar-account-recovery.service", "usr/lib/systemd/system/templar-account-recovery.service", "644"],
+    ["../../distro/policy/systemd/greetd.service.d/templaros-account-recovery.conf", "usr/lib/systemd/system/greetd.service.d/templaros-account-recovery.conf", "644"],
+    ["../../distro/policy/systemd/systemd-user-sessions.service.d/templaros-account-recovery.conf", "usr/lib/systemd/system/systemd-user-sessions.service.d/templaros-account-recovery.conf", "644"],
     ["../../distro/policy/polkit/org.templaros.host.policy", "usr/share/polkit-1/actions/org.templaros.host.policy", "644"],
     ["../../distro/policy/polkit/50-templaros-root-services.rules", "usr/share/polkit-1/rules.d/50-templaros-root-services.rules", "644"],
     ["../../distro/policy/dbus/org.templaros.Host.conf", "usr/share/dbus-1/system.d/org.templaros.Host.conf", "644"],

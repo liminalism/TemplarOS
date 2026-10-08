@@ -1,6 +1,6 @@
 //! The gesture gate: an invisible rectangle centred on each output's bottom edge that turns
 //! "came down into it from above, then went sideways" into a request for one of the shell's two
-//! rails (`templar-shell-v1.xml`'s `set_gesture_gate`).
+//! rails (`templar-shell-v2.xml`'s `set_gesture_gate`).
 //!
 //! Compositor state, not a surface: nothing here takes input or installs a grab, so a pointer
 //! passing over the gate is delivered to whatever is underneath exactly as it would be without

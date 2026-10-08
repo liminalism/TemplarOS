@@ -48,6 +48,18 @@ impl NativePath {
         PathBuf::from(std::ffi::OsString::from_vec(self.0.clone()))
     }
 
+    /// Move the native bytes into an owned path without copying them.
+    #[must_use]
+    pub fn into_path(self) -> PathBuf {
+        PathBuf::from(std::ffi::OsString::from_vec(self.0))
+    }
+
+    /// Borrow the byte-exact Unix path for I/O that does not need another owned copy.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        Path::new(OsStr::from_bytes(&self.0))
+    }
+
     /// For humans and for the search accelerator. Never fed back to the filesystem.
     #[must_use]
     pub fn display(&self) -> String {
@@ -114,6 +126,7 @@ impl NativePath {
     /// The `LIKE`/`GLOB`-free way to ask SQLite for "everything under this directory": the
     /// half-open byte range `[prefix/, prefix0)`.
     #[must_use]
+    #[cfg(feature = "store")]
     pub(crate) fn subtree_bounds(&self) -> (Vec<u8>, Vec<u8>) {
         let mut low = trim_trailing_separators(&self.0).to_vec();
         low.push(b'/');
@@ -617,6 +630,10 @@ pub struct RootPolicy {
     /// Follow into other filesystems. Off for `/` and for a home root; on only where a user
     /// explicitly indexed a mounted volume.
     pub cross_mount: bool,
+    /// Observe native external operations while consumers are attached. Disabling monitoring
+    /// preserves searchable rows but leaves namespace freshness explicitly unwatched.
+    #[serde(default = "default_monitoring")]
+    pub monitoring: bool,
     /// Directory names never descended into. The pre-tier policy, kept because it is what every
     /// root registered before coverage rules existed has stored in its `policy_json`: a policy
     /// with no rules falls back to it and behaves exactly as it did.
@@ -632,6 +649,8 @@ pub struct RootPolicy {
     #[serde(default)]
     pub default_coverage: Coverage,
 }
+
+const fn default_monitoring() -> bool { true }
 
 impl Default for RootPolicy {
     fn default() -> Self {
@@ -677,6 +696,7 @@ impl RootPolicy {
         );
         Self {
             cross_mount: false,
+            monitoring: true,
             // Kept empty: the rules above say the same thing with more resolution, and a
             // non-empty list here would only shadow them for a reader.
             skip_names: Vec::new(),
@@ -693,6 +713,7 @@ impl RootPolicy {
     pub fn legacy_home() -> Self {
         Self {
             cross_mount: false,
+            monitoring: true,
             skip_names: Self::BUILD_AND_CACHE_NAMES
                 .iter()
                 .map(|name| (*name).to_owned())
@@ -731,15 +752,31 @@ impl RootPolicy {
             self.include_hidden,
             names.join(",")
         );
+        if names.iter().any(|name| name.contains(',')) {
+            canonical.push_str(";skip-native=");
+            for name in &names {
+                canonical.push_str(&crate::query::base64(name.as_bytes()));
+                canonical.push(';');
+            }
+        }
+        if !self.monitoring {
+            canonical.push_str(";monitoring=false");
+        }
         if !self.coverage_rules.is_empty() || self.default_coverage != Coverage::Detailed {
             canonical.push_str(";default=");
             canonical.push_str(self.default_coverage.as_str());
             for rule in &self.coverage_rules {
                 canonical.push_str(";rule=");
                 match &rule.matcher {
-                    CoverageMatch::Name { name } => canonical.push_str(name),
-                    CoverageMatch::Trash => canonical.push_str("<trash>"),
-                    CoverageMatch::Subtree { path } => canonical.push_str(&path.display()),
+                    CoverageMatch::Name { name } => {
+                        canonical.push_str("name:");
+                        canonical.push_str(&crate::query::base64(name.as_bytes()));
+                    }
+                    CoverageMatch::Trash => canonical.push_str("trash"),
+                    CoverageMatch::Subtree { path } => {
+                        canonical.push_str("subtree:");
+                        canonical.push_str(&crate::query::base64(path.as_bytes()));
+                    }
                 }
                 canonical.push('=');
                 canonical.push_str(rule.coverage.as_str());
@@ -1046,6 +1083,26 @@ mod tests {
         let mut reordered = policy.clone();
         reordered.skip_names.reverse();
         assert_eq!(policy.hash(), reordered.hash());
+    }
+
+    #[test]
+    fn native_rule_bytes_and_matcher_kinds_are_part_of_policy_identity() {
+        let mut first = RootPolicy::legacy_home();
+        first.coverage_rules = vec![CoverageRule {
+            matcher: CoverageMatch::Subtree { path: NativePath::from_bytes(b"/tmp/\xff".to_vec()) },
+            coverage: Coverage::Ignored,
+        }];
+        let mut second = first.clone();
+        second.coverage_rules[0].matcher = CoverageMatch::Subtree { path: NativePath::from_bytes(b"/tmp/\xfe".to_vec()) };
+        assert_ne!(first.hash(), second.hash());
+        first.coverage_rules[0].matcher = CoverageMatch::Subtree { path: NativePath::from_bytes(b"/tmp/name".to_vec()) };
+        second.coverage_rules[0].matcher = CoverageMatch::Name { name: "/tmp/name".to_owned() };
+        assert_ne!(first.hash(), second.hash());
+        first.coverage_rules.clear();
+        second.coverage_rules.clear();
+        first.skip_names = vec!["a,b".to_owned()];
+        second.skip_names = vec!["a".to_owned(), "b".to_owned()];
+        assert_ne!(first.hash(), second.hash());
     }
 
     #[test]

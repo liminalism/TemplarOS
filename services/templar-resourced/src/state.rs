@@ -18,7 +18,8 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
-use templar_types::{AppId, InstanceId};
+use templar_types::{AppId, ResourceId, ResourceMetadata};
+use std::sync::Arc;
 
 /// Enrichment received over D-Bus: who is on screen and what must not be a victim. Defaults are
 /// chosen to be *protective*: an instance the compositor and sessiond have not yet described
@@ -27,6 +28,8 @@ use templar_types::{AppId, InstanceId};
 pub struct Enrichment {
     pub foreground: bool,
     pub visible: bool,
+    /// Only a window-state update establishes visibility; unrelated hints do not.
+    pub window_state_observed: bool,
     pub protected: bool,
     pub disposable: bool,
     pub supports_checkpoint: bool,
@@ -66,6 +69,7 @@ impl Default for Enrichment {
             // Unknown is treated as "could be visible": the protective default, until the
             // compositor's first `SetInstanceState` call says otherwise.
             visible: true,
+            window_state_observed: false,
             protected: false,
             disposable: false,
             supports_checkpoint: false,
@@ -121,8 +125,9 @@ impl Enrichment {
 /// `ExplainInstance`, and what a trace record's `instances` entries mirror.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct InstanceReport {
-    pub instance_id: InstanceId,
-    pub app_id: AppId,
+    pub instance_id: ResourceId,
+    #[serde(flatten)]
+    pub metadata: Arc<ResourceMetadata>,
     pub memory_current_bytes: u64,
     pub memory_growth_bytes_per_second: i64,
     pub full_psi_avg10: f64,
@@ -166,7 +171,7 @@ pub struct Report {
 /// words and in numbers (planning doc 01 §5's worked example).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Explanation {
-    pub instance_id: InstanceId,
+    pub instance_id: ResourceId,
     pub known: bool,
     pub level: PressureLevel,
     pub stage: Stage,
@@ -197,7 +202,35 @@ fn ago(age_ms: i64) -> String {
 }
 
 impl Report {
-    pub fn instance(&self, instance_id: InstanceId) -> Option<&InstanceReport> {
+    /// Shipped Report remains application-only; Targets adds work and sandbox scope identities.
+    pub fn applications_json(&self) -> serde_json::Result<String> {
+        #[derive(Serialize)]
+        struct Application<'a> {
+            app_id: &'a AppId,
+            #[serde(flatten)]
+            sample: &'a InstanceReport,
+        }
+        #[derive(Serialize)]
+        struct Applications<'a> {
+            level: PressureLevel,
+            stage: Stage,
+            uptime_seconds: u64,
+            mem_available_bytes: u64,
+            global_memory_psi: Psi,
+            global_io_psi: Psi,
+            instances: Vec<Application<'a>>,
+        }
+        serde_json::to_string(&Applications {
+            level: self.level, stage: self.stage, uptime_seconds: self.uptime_seconds,
+            mem_available_bytes: self.mem_available_bytes,
+            global_memory_psi: self.global_memory_psi, global_io_psi: self.global_io_psi,
+            instances: self.instances.iter().filter_map(|sample| {
+                sample.metadata.identity.application().map(|app_id| Application { app_id, sample })
+            }).collect(),
+        })
+    }
+
+    pub fn instance(&self, instance_id: ResourceId) -> Option<&InstanceReport> {
         self.instances
             .iter()
             .find(|instance| instance.instance_id == instance_id)
@@ -222,9 +255,9 @@ impl Report {
         self.ranked_candidates().into_iter().next()
     }
 
-    pub fn explain(&self, instance_id: InstanceId) -> Explanation {
+    pub fn explain(&self, instance_id: ResourceId) -> Explanation {
         let ranked = self.ranked_candidates();
-        let top_app_id = ranked.first().map(|top| top.app_id.clone());
+        let top_app_id = ranked.first().and_then(|top| top.metadata.identity.application()).cloned();
 
         let Some(found) = self.instance(instance_id) else {
             return Explanation {
@@ -253,17 +286,17 @@ impl Report {
         let summary = if found.protected {
             format!(
                 "{} is session-protected and can never be selected as a victim.",
-                found.app_id
+                found.metadata.identity
             )
         } else if self.level == PressureLevel::Normal {
             format!(
                 "{} would not be selected: pressure is currently normal.",
-                found.app_id
+                found.metadata.identity
             )
         } else if would_be_selected {
             format!(
                 "{} is the current top candidate at {}: score {:.1} (memory {:.1}, growth {:.1}, psi {:.1}).",
-                found.app_id,
+                found.metadata.identity,
                 self.level,
                 found.victim_score,
                 found.score_breakdown.memory_term,
@@ -274,9 +307,9 @@ impl Report {
             match ranked.first() {
                 Some(top) => format!(
                     "{} would not be selected: {} currently scores higher ({:.1} vs {:.1}).",
-                    found.app_id, top.app_id, top.victim_score, found.victim_score,
+                    found.metadata.identity, top.metadata.identity, top.victim_score, found.victim_score,
                 ),
-                None => format!("{} would not be selected.", found.app_id),
+                None => format!("{} would not be selected.", found.metadata.identity),
             }
         };
 
@@ -313,11 +346,11 @@ impl Report {
 pub struct SharedState {
     stage: RwLock<Stage>,
     stage_path: Option<PathBuf>,
-    pub enrichment: RwLock<HashMap<InstanceId, Enrichment>>,
+    pub enrichment: RwLock<HashMap<ResourceId, Enrichment>>,
     /// Instances `ForgetInstance` has been asked to drop; the loop drains this, restores any
     /// temporary limits and removes its own record on the next tick (see the module doc comment
     /// for why this is not done synchronously inside the D-Bus call).
-    pub pending_forgets: Mutex<HashSet<InstanceId>>,
+    pub pending_forgets: Mutex<HashSet<ResourceId>>,
     pub report: RwLock<Option<Report>>,
     pub traces: Mutex<TraceRing>,
 }
@@ -360,7 +393,7 @@ impl SharedState {
         }
     }
 
-    pub fn enrichment_for(&self, instance_id: InstanceId) -> Enrichment {
+    pub fn enrichment_for(&self, instance_id: ResourceId) -> Enrichment {
         self.enrichment
             .read()
             .get(&instance_id)
@@ -394,6 +427,7 @@ fn persist_stage_file(path: &Path, stage: Stage) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use templar_types::ResourceIdentity;
 
     #[test]
     fn an_unsaved_work_claim_is_stamped_when_it_first_becomes_true() {
@@ -494,8 +528,11 @@ mod tests {
 
     fn instance(score: f64, protected: bool) -> InstanceReport {
         InstanceReport {
-            instance_id: InstanceId::new(),
-            app_id: "org.templaros.Test".parse().unwrap(),
+            instance_id: ResourceId::new(),
+            metadata: Arc::new(ResourceMetadata {
+                identity: ResourceIdentity::Application { app_id: "org.templaros.Test".parse().unwrap() },
+                control_group: PathBuf::from("/test.scope"),
+            }),
             memory_current_bytes: 0,
             memory_growth_bytes_per_second: 0,
             full_psi_avg10: 0.0,
@@ -541,7 +578,7 @@ mod tests {
     #[test]
     fn explain_unknown_instance() {
         let snapshot = report(vec![instance(5.0, false)], PressureLevel::Severe);
-        let explanation = snapshot.explain(InstanceId::new());
+        let explanation = snapshot.explain(ResourceId::new());
         assert!(!explanation.known);
         assert!(!explanation.would_be_selected);
     }
@@ -598,7 +635,7 @@ mod tests {
     #[test]
     fn shared_state_enrichment_for_falls_back_to_default() {
         let shared = SharedState::in_memory();
-        let id = InstanceId::new();
+        let id = ResourceId::new();
         assert_eq!(shared.enrichment_for(id), Enrichment::default());
         shared.enrichment.write().insert(
             id,

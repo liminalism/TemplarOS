@@ -16,6 +16,9 @@ pub struct SettingsApi {
     schema: Arc<RwLock<SettingsSchema>>,
     values: Arc<RwLock<SettingsValues>>,
     store: Store,
+    revision_owner: templar_types::settings::Revision,
+    appearance: Arc<super::appearance::AppearanceEffects>,
+    wallpaper: super::wallpaper::WallpaperHost,
 }
 
 impl SettingsApi {
@@ -23,11 +26,16 @@ impl SettingsApi {
         schema: Arc<RwLock<SettingsSchema>>,
         values: Arc<RwLock<SettingsValues>>,
         store: Store,
+        appearance: Arc<super::appearance::AppearanceEffects>,
+        wallpaper: super::wallpaper::WallpaperHost,
     ) -> Self {
         Self {
             schema,
             values,
             store,
+            revision_owner: templar_types::settings::Revision::new_owner(),
+            appearance,
+            wallpaper,
         }
     }
 }
@@ -81,16 +89,21 @@ impl SettingsApi {
     ) -> fdo::Result<()> {
         let value: SettingValue = serde_json::from_str(value_json)
             .map_err(|error| fdo::Error::InvalidArgs(format!("invalid value JSON: {error}")))?;
-        self.store
-            .transaction(|tx| {
+        let guard = self.appearance.lock().await;
+        (|| -> anyhow::Result<()> {
+                // Store -> schema -> values is also Inspect's lock order. Keep publication
+                // excluded until the entire audit/history transaction has committed.
+                let mut connection = self.store.lock();
                 let schema = self.schema.read();
                 let mut values = self.values.write();
+                let transaction = connection.transaction()?;
+                let tx = &transaction;
                 let (old_json, new_json, _audit_id) = templar_session_core::settings::apply_within(
                     tx,
                     &schema,
-                    &mut values,
+                    &values,
                     key,
-                    value,
+                    &value,
                     origin,
                 )?;
 
@@ -119,11 +132,20 @@ impl SettingsApi {
                         }],
                         reversible: true,
                     },
-                )
-            })
-            .map_err(failed)?;
+                )?;
+                transaction.commit()?;
+                values.set(key, value);
+                Ok(())
+            })().map_err(failed)?;
+        let effects = if super::appearance::AppearanceEffects::affects(key) {
+            self.appearance.reconcile(guard).await
+        } else {
+            drop(guard);
+            Ok(())
+        };
+        if super::wallpaper::WallpaperHost::affects(key) { self.wallpaper.reconcile().await.map_err(failed)?; }
         let _ = emitter.changed(key.to_owned()).await;
-        Ok(())
+        effects.map_err(|error| failed(format!("Setting committed; supported toolkit configuration incomplete: {error:#}")))
     }
 
     /// Every known key at its effective value, as `(key, value_json)` pairs.
@@ -135,6 +157,29 @@ impl SettingsApi {
             .into_iter()
             .map(|(key, value)| (key, serde_json::to_string(&value).unwrap_or_default()))
             .collect()
+    }
+
+    /// Audit revision, capability and stored effective values under one write exclusion.
+    async fn inspect(&self) -> fdo::Result<String> {
+        let connection = self.store.lock();
+        let revision: i64 = connection.query_row(
+            "SELECT COALESCE(MAX(id), 0) FROM settings_changes", [], |row| row.get(0)
+        ).map_err(failed)?;
+        let revision = u64::try_from(revision).map_err(failed)?;
+        let schema = self.schema.read();
+        let values = self.values.read();
+        let snapshot = templar_types::settings::Observation {
+            revision: self.revision_owner.at_generation(revision),
+            value: values.list(&schema).into_iter().map(|(key, value)| {
+                let requires_restart = schema.specs.get(&key).is_some_and(|spec| spec.privileged);
+                templar_types::settings::SettingObservation {
+                    key,
+                    value,
+                    capability: templar_types::settings::Capability::Available { requires_restart },
+                }
+            }).collect::<Vec<_>>(),
+        };
+        serde_json::to_string(&snapshot).map_err(failed)
     }
 
     /// Recent `settings_changes` audit rows as JSON.
@@ -165,17 +210,29 @@ impl SettingsApi {
         origin: &str,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<()> {
-        let changed = self
-            .store
-            .transaction(|tx| {
+        let guard = self.appearance.lock().await;
+        let changed = (|| -> anyhow::Result<Option<String>> {
+                let mut connection = self.store.lock();
                 let mut values = self.values.write();
-                templar_session_core::settings::reset_within(tx, &mut values, key, origin)
-            })
-            .map_err(failed)?;
+                let transaction = connection.transaction()?;
+                let changed = templar_session_core::settings::reset_within(
+                    &transaction, &values, key, origin,
+                )?;
+                transaction.commit()?;
+                if changed.is_some() { values.reset(key); }
+                Ok(changed)
+            })().map_err(failed)?;
+        let effects = if changed.is_some() && super::appearance::AppearanceEffects::affects(key) {
+            self.appearance.reconcile(guard).await
+        } else {
+            drop(guard);
+            Ok(())
+        };
+        if changed.is_some() && super::wallpaper::WallpaperHost::affects(key) { self.wallpaper.reconcile().await.map_err(failed)?; }
         if changed.is_some() {
             let _ = emitter.changed(key.to_owned()).await;
         }
-        Ok(())
+        effects.map_err(|error| failed(format!("Reset committed; supported toolkit configuration incomplete: {error:#}")))
     }
 
     #[zbus(signal)]

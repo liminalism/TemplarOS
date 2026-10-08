@@ -10,14 +10,14 @@ default:
 check:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
-    cargo test --workspace
+    scripts/test-nonzero.sh --workspace
     just msrv
     just tree-check
     just deps-check
     just check-interfaces
 
-test:
-    cargo test --workspace
+test *ARGS:
+    scripts/test-nonzero.sh --workspace {{ARGS}}
 
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
@@ -28,6 +28,7 @@ fmt:
 # MSRV = workspace rust-version in Cargo.toml; the pinned development patch satisfies it.
 msrv:
     cargo +"$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')" check --workspace
+    cargo run -q -p xtask -- check-msrv
 
 tree-check:
     cargo run -q -p xtask -- tree-check
@@ -40,9 +41,11 @@ check-interfaces:
     cargo run -q -p xtask -- check-interface-signatures
     cargo run -q -p xtask -- check-proxies
     cargo run -q -p xtask -- check-packaging
+    cargo run -q -p xtask -- check-ownership
     cargo run -q -p xtask -- check-assets
     cargo run -q -p xtask -- check-actions
     cargo run -q -p xtask -- check-wayland-versions
+    cargo run -q -p xtask -- check-logging
 
 # `templar doctor` against this machine
 doctor *ARGS:
@@ -77,10 +80,16 @@ deb: preview-codecs
 deb-plan:
     cargo run -q -p xtask -- build-set --dry-run
 
-# Vendor dependencies for the offline archive build (debian/rules)
-vendor:
-    cargo vendor --locked vendor > /dev/null
-    echo "vendor/ ready (ship it in the orig tarball)"
+# Close workspace + preview-codec sibling sources/assets/licenses and locked vendor inputs.
+source-archive:
+    python3 scripts/build-local-source-deb.py workspace
+
+# Prepare a NEW isolated tree from a retained trusted exact-source archive.
+prepare-source archive sha256 destination:
+    python3 scripts/build-local-source-deb.py workspace --source "{{archive}}" --expect-sha256 "{{sha256}}" --extract "{{destination}}"
+
+# Historical entrypoint now closes the full source layout, not just registry crates.
+vendor: source-archive
 
 # Fetch/update upstream forks into forks/ (see distro/forks/manifest.toml)
 forks-fetch:
@@ -96,6 +105,13 @@ iso *args:
 image action="summary":
     ./distro/image/compose.sh
     mkosi --directory distro/image {{action}}
+    if [ "{{action}}" = build ]; then if [ "${TEMPLAROS_READ_ONLY:-0}" = 1 ]; then sudo bash distro/image/finalize.sh --read-only distro/image/mkosi.output/templaros_0.1.raw; else sudo bash distro/image/finalize.sh distro/image/mkosi.output/templaros_0.1.raw; fi; fi
+
+# mkosi without the seed compose: validating a mkosi.repart/*.conf change must not also
+# regenerate the package list, which is a different concern and a different owner.
+image-mkosi action="summary":
+    mkosi --directory distro/image {{action}}
+    if [ "{{action}}" = build ]; then if [ "${TEMPLAROS_READ_ONLY:-0}" = 1 ]; then sudo bash distro/image/finalize.sh --read-only distro/image/mkosi.output/templaros_0.1.raw; else sudo bash distro/image/finalize.sh distro/image/mkosi.output/templaros_0.1.raw; fi; fi
 
 # Whole CI pipeline locally
 ci:

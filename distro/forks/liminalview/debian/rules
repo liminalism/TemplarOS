@@ -1,0 +1,29 @@
+#!/usr/bin/make -f
+# The source bundle retains sibling paths; never compile an isolated viewer copy.
+export CARGO_HOME = $(CURDIR)/.cargo-home
+export CARGO_TARGET_DIR = $(CURDIR)/target
+export CARGO_NET_OFFLINE = true
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	mkdir -p $(CARGO_HOME)
+	python3 -c 'from pathlib import Path; import os; p=Path("cargo-vendor-config.toml"); Path(os.environ["CARGO_HOME"], "config.toml").write_text(p.read_text().replace("__VENDOR__", str(Path("vendor").resolve())))'
+
+override_dh_auto_build:
+	cd sources/liminalview && cargo build --release --locked --offline --bin liminalview
+	mkdir -p package-root/usr/bin package-root/usr/share/applications
+	install -m0755 target/release/liminalview package-root/usr/bin/liminalview
+	target/release/liminalview --print-formats > target/formats.json
+	python3 sources/liminalview/packaging/linux/generate-desktop.py --formats-json target/formats.json --bin-path /usr/bin/liminalview --out package-root/usr/share/applications/org.liminalview.LiminalView.desktop
+
+override_dh_auto_test:
+	# Packaging executes the real format inventory; the viewer test suite is separate.
+
+override_dh_auto_install:
+	:
+
+override_dh_auto_clean:
+	rm -rf target package-root .cargo-home

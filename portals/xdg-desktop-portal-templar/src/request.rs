@@ -1,72 +1,94 @@
-//! `org.freedesktop.impl.portal.Request`: the object every backend method exports at its
-//! caller-supplied `handle` path for the duration of one call.
-//!
-//! None of our four interfaces ever keeps a request open across an `await` point that outlives
-//! the method call itself (no interactive dialog exists yet — see each interface module's `Ui`
-//! seam), so `Close` has nothing to interrupt; it is still exported, because a well-behaved
-//! frontend may call it defensively, and an unknown method on a path it just received would be a
-//! spec violation. No `org.freedesktop.impl.portal.Session` object is used anywhere in this
-//! backend: that pattern belongs to stateful portals (ScreenCast, RemoteDesktop, Inhibit), none
-//! of which this backend implements.
+//! Backend Request lifetime: Close, caller loss and a bounded interaction deadline.
+use futures_util::StreamExt;
+use std::{collections::HashMap, time::Duration};
+use tokio::sync::watch;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-/// Numeric response codes shared by every backend method here
-/// (`org.freedesktop.impl.portal.Request` callers' convention).
 pub mod response {
-    /// The request is carried out.
     pub const SUCCESS: u32 = 0;
-    /// The user cancelled the interaction, or no UI was available to ask.
     pub const CANCELLED: u32 = 1;
-    /// The interaction ended some other way.
-    #[allow(dead_code)]
     pub const OTHER: u32 = 2;
 }
 
-/// The `Close` method every exported Request object must answer.
-#[derive(Debug, Default)]
-pub struct RequestObject;
+pub type Reply = (u32, HashMap<String, OwnedValue>);
+pub fn failed(message: String) -> Reply {
+    tracing::error!(%message, "portal infrastructure failure");
+    (response::OTHER, HashMap::from([("error".to_owned(), owned_value(message))]))
+}
 
+
+#[derive(Debug)]
+pub struct RequestObject(watch::Sender<bool>);
 #[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
 impl RequestObject {
-    /// Ends the user interaction. A no-op here: our methods complete before returning, so there
-    /// is never an in-flight interaction left for `Close` to interrupt.
-    async fn close(&self) {}
+    async fn close(&self) { self.0.send_replace(true); }
 }
 
-/// Export a fresh [`RequestObject`] at `handle` for the lifetime of one backend call, then
-/// unregister it once `body` resolves — so a caller inspecting the object between the method
-/// call and its reply finds a real (if inert) `Request`, and nothing is leaked afterwards.
-pub async fn with_request<T, F, Fut>(
+pub async fn with_request<F, Fut>(
     connection: &zbus::Connection,
-    handle: &zbus::zvariant::OwnedObjectPath,
+    handle: &OwnedObjectPath,
+    caller: Option<&zbus::names::UniqueName<'_>>,
     body: F,
-) -> zbus::fdo::Result<T>
+) -> zbus::fdo::Result<Reply>
 where
     F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = T>,
+    Fut: Future<Output = Reply>,
 {
-    let registered = connection
-        .object_server()
-        .at(handle.clone(), RequestObject)
-        .await
-        .map_err(|error| {
-            zbus::fdo::Error::Failed(format!("exporting Request at {handle}: {error}"))
-        })?;
-    let result = body().await;
-    if registered {
-        let _ = connection
-            .object_server()
-            .remove::<RequestObject, _>(handle.clone())
-            .await;
+    let (close, mut closed) = watch::channel(false);
+    let registered = connection.object_server().at(handle.clone(), RequestObject(close)).await
+        .map_err(|error| zbus::fdo::Error::Failed(format!("exporting Request: {error}")))?;
+    if !registered {
+        return Err(zbus::fdo::Error::InvalidArgs("request handle is already in use".into()));
     }
-    Ok(result)
+    // Subscribe before checking ownership so a disconnect cannot fall between
+    // the snapshot and the watch. No unmanaged/background task per request.
+    let result = async {
+        let proxy = zbus::fdo::DBusProxy::new(connection).await?;
+        let mut owners = proxy.receive_name_owner_changed().await?;
+        if let Some(caller) = caller {
+            if !proxy.name_has_owner(zbus::names::BusName::from(caller.clone())).await? {
+                return Ok((response::CANCELLED, HashMap::new()));
+            }
+        }
+        let caller_lost = async {
+            while let Some(signal) = owners.next().await {
+                let args = signal.args()?;
+                if caller.is_some_and(|caller| args.name().as_str() == caller.as_str())
+                    && args.new_owner().is_none() {
+                    return Ok::<(), zbus::Error>(());
+                }
+            }
+            Err(zbus::Error::Failure("caller watch closed".into()))
+        };
+        tokio::select! {
+            biased;
+            _ = closed.changed() => Ok((response::CANCELLED, HashMap::new())),
+            lost = caller_lost => Ok(match lost {
+                Ok(()) => (response::CANCELLED, HashMap::new()),
+                Err(error) => failed(format!("caller watch failed: {error}")),
+            }),
+            () = tokio::time::sleep(Duration::from_secs(300)) => Ok(failed("portal request timed out".into())),
+            result = body() => Ok(result),
+        }
+    }.await;
+    // Dropping the selected-out UI future wakes and closes exactly its window.
+    connection.object_server().remove::<RequestObject, _>(handle.clone()).await
+        .map_err(|error| zbus::fdo::Error::Failed(format!("retiring Request: {error}")))?;
+    result
 }
 
-/// Convert any zvariant-compatible value into an owned `v` for an `a{sv}` results map — the
-/// small piece every backend method needs and `zbus::zvariant::OwnedValue` does not implement
-/// `From` for directly (`String` notably), so it goes through the borrowed `Value` first.
-pub fn owned_value<'v>(value: impl Into<zbus::zvariant::Value<'v>>) -> zbus::zvariant::OwnedValue {
-    value
-        .into()
-        .try_to_owned()
+pub fn owned_value<'v>(value: impl Into<zbus::zvariant::Value<'v>>) -> OwnedValue {
+    value.into().try_to_owned()
         .expect("converting a primitive/string/collection value to OwnedValue never fails")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn infrastructure_failure_is_not_cancellation() {
+        let (code, results) = failed("display disconnected".into());
+        assert_eq!(code, response::OTHER);
+        assert_eq!(String::try_from(results["error"].clone()).unwrap(), "display disconnected");
+    }
 }

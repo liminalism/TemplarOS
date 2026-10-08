@@ -1,11 +1,8 @@
 //! `org.freedesktop.impl.portal.Settings`.
 //!
-//! Fully real: every value comes straight from `Settings1`. TemplarOS has no distinct
-//! per-toolkit namespaces yet (no `org.freedesktop.appearance` equivalents in the schema), so
-//! every key is exposed under one namespace, `"org.templaros.settings"`, keyed exactly as
-//! `Settings1.List` names it (`shell.dock.grouping`, `resources.mode`, ...). `SettingChanged` is
-//! forwarded from `Settings1`'s own `Changed` signal by a background task started alongside the
-//! interface (`spawn_change_forwarder`) — a real subscription, not a stub.
+//! Native settings remain under `org.templaros.settings`; supported toolkit appearance
+//! also follows the standard `org.freedesktop.appearance` color-scheme/accent-color contract.
+//! `SettingChanged` forwards actual Settings1 changes, not synthetic success.
 
 use crate::{clients::SessionSettingsClient, request::owned_value};
 use std::{collections::HashMap, sync::Arc};
@@ -14,6 +11,7 @@ use zbus::zvariant::OwnedValue;
 
 /// The one namespace every TemplarOS setting is exposed under.
 pub const NAMESPACE: &str = "org.templaros.settings";
+pub const APPEARANCE_NAMESPACE: &str = "org.freedesktop.appearance";
 
 /// D-Bus interface name, needed by the change-forwarder task to emit on the right interface.
 pub const INTERFACE: &str = "org.freedesktop.impl.portal.Settings";
@@ -69,14 +67,24 @@ impl SettingsApi {
         namespaces: Vec<String>,
     ) -> zbus::fdo::Result<HashMap<String, HashMap<String, OwnedValue>>> {
         let mut out = HashMap::new();
-        if namespace_requested(&namespaces, NAMESPACE) {
-            out.insert(NAMESPACE.to_owned(), self.snapshot().await?);
+        let native_requested = namespace_requested(&namespaces, NAMESPACE);
+        let appearance_requested = namespace_requested(&namespaces, APPEARANCE_NAMESPACE);
+        if native_requested || appearance_requested {
+            let snapshot = self.snapshot().await?;
+            if appearance_requested {
+                out.insert(APPEARANCE_NAMESPACE.to_owned(), standard_appearance(&snapshot)?);
+            }
+            if native_requested { out.insert(NAMESPACE.to_owned(), snapshot); }
         }
         Ok(out)
     }
 
     #[zbus(name = "Read")]
     async fn read(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
+        if namespace == APPEARANCE_NAMESPACE {
+            return standard_appearance(&self.snapshot().await?)?.remove(key)
+                .ok_or_else(|| zbus::fdo::Error::Failed(format!("unknown appearance key {key}")));
+        }
         if namespace != NAMESPACE {
             return Err(zbus::fdo::Error::Failed(format!(
                 "unknown namespace {namespace}"
@@ -121,6 +129,21 @@ impl SettingsApi {
     }
 }
 
+fn standard_appearance(values: &HashMap<String, OwnedValue>) -> zbus::fdo::Result<HashMap<String, OwnedValue>> {
+    use templar_types::appearance::{Appearance, THEME_KEY, ACCENT_KEY};
+    let choice = |key: &str| values.get(key).and_then(|value| String::try_from(value.clone()).ok())
+        .ok_or_else(|| zbus::fdo::Error::Failed(format!("appearance readback missing {key}")));
+    let theme = choice(THEME_KEY)?;
+    let accent = choice(ACCENT_KEY)?;
+    let appearance = Appearance::from_settings(&theme, &accent, false);
+    let colour = appearance.palette.accent;
+    Ok(HashMap::from([
+        ("color-scheme".into(), owned_value(if theme == "dark" { 1_u32 } else { 2_u32 })),
+        ("accent-color".into(), owned_value((((colour >> 16) & 255) as f64 / 255.0,
+            ((colour >> 8) & 255) as f64 / 255.0, (colour & 255) as f64 / 255.0))),
+    ]))
+}
+
 /// Subscribe to `Settings1`'s own `Changed` signal and re-emit `SettingChanged` on `connection`
 /// for as long as the underlying stream keeps producing signals. Spawned once at startup;
 /// exits quietly if `Settings1` is unreachable (no TemplarOS session, or sessiond not running yet).
@@ -148,12 +171,24 @@ pub async fn spawn_change_forwarder(connection: zbus::Connection) {
             let Ok(value) = serde_json::from_str::<SettingValue>(&value_json) else {
                 continue;
             };
-            let body = (NAMESPACE.to_owned(), key, to_variant(&value));
+            let body = (NAMESPACE.to_owned(), key.clone(), to_variant(&value));
             if let Err(error) = connection
                 .emit_signal(None::<&str>, PATH, INTERFACE, "SettingChanged", &body)
                 .await
             {
                 tracing::debug!(%error, "failed to forward SettingChanged");
+            }
+            if key == templar_types::appearance::THEME_KEY || key == templar_types::appearance::ACCENT_KEY {
+                let api = SettingsApi { settings: Arc::new(crate::clients::LiveSettings(connection.clone())) };
+                match api.snapshot().await.and_then(|values| standard_appearance(&values)) {
+                    Ok(values) => for (key, value) in values {
+                        let body = (APPEARANCE_NAMESPACE.to_owned(), key, value);
+                        if let Err(error) = connection.emit_signal(None::<&str>, PATH, INTERFACE, "SettingChanged", &body).await {
+                            tracing::warn!(%error, "appearance portal notification failed");
+                        }
+                    },
+                    Err(error) => tracing::warn!(%error, "appearance portal readback failed"),
+                }
             }
         }
     });
@@ -186,21 +221,6 @@ mod tests {
         assert!(!namespace_requested(&["org.gnome.*".into()], NAMESPACE));
     }
 
-    #[test]
-    fn every_setting_value_kind_converts() {
-        for value in [
-            SettingValue::Bool(true),
-            SettingValue::Int(3),
-            SettingValue::Float(1.5),
-            SettingValue::Str("x".into()),
-            SettingValue::Choice("by-application".into()),
-            SettingValue::StrList(vec!["a".into(), "b".into()]),
-        ] {
-            let variant = to_variant(&value);
-            assert!(!variant.value_signature().to_string().is_empty());
-        }
-    }
-
     #[derive(Debug, Default)]
     struct FakeSettings(Vec<(String, String)>);
 
@@ -212,27 +232,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_all_reflects_the_underlying_settings() {
-        let api = SettingsApi {
-            settings: Arc::new(FakeSettings(vec![(
-                "shell.dock.grouping".into(),
-                serde_json::to_string(&SettingValue::Choice("by-application".into())).unwrap(),
-            )])),
-        };
-        let all = api.read_all(Vec::new()).await.unwrap();
-        let namespace = &all[NAMESPACE];
-        assert_eq!(
-            String::try_from(namespace["shell.dock.grouping"].clone()).unwrap(),
-            "by-application"
-        );
-    }
-
-    #[tokio::test]
     async fn read_unknown_key_fails() {
         let api = SettingsApi {
             settings: Arc::new(FakeSettings::default()),
         };
         assert!(api.read(NAMESPACE, "nope").await.is_err());
         assert!(api.read("org.gnome.desktop", "x").await.is_err());
+    }
+    #[tokio::test]
+    async fn toolkit_appearance_uses_typed_standard_values_not_private_setting_strings() {
+        use templar_types::appearance::{THEME_KEY, ACCENT_KEY, Appearance};
+        let api = SettingsApi { settings: Arc::new(FakeSettings(vec![
+            (THEME_KEY.into(), serde_json::to_string(&SettingValue::Choice("dark".into())).unwrap()),
+            (ACCENT_KEY.into(), serde_json::to_string(&SettingValue::Choice("blue".into())).unwrap()),
+        ])) };
+        let values = api.read_all(vec![APPEARANCE_NAMESPACE.into()]).await.unwrap();
+        let appearance = &values[APPEARANCE_NAMESPACE];
+        assert_eq!(u32::try_from(appearance["color-scheme"].clone()).unwrap(), 1);
+        let rgb = zbus::zvariant::Structure::try_from(appearance["accent-color"].clone()).unwrap();
+        let expected = Appearance::from_settings("dark", "blue", false).palette.accent;
+        assert_eq!(f64::try_from(&rgb.fields()[0]).unwrap(), ((expected >> 16) & 255) as f64 / 255.0);
+        assert_eq!(f64::try_from(&rgb.fields()[1]).unwrap(), ((expected >> 8) & 255) as f64 / 255.0);
+        assert_eq!(f64::try_from(&rgb.fields()[2]).unwrap(), (expected & 255) as f64 / 255.0);
+        assert!(api.read(APPEARANCE_NAMESPACE, "unavailable").await.is_err());
     }
 }

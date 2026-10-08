@@ -36,8 +36,21 @@ pub async fn reconcile_instances(
                 tracing::warn!(%error, instance = %record.id, "failed to forget a dead instance");
             }
         } else {
-            registry.register_instance(record);
-            restored += 1;
+            // Persistent paths describe an earlier daemon lifetime, not current authority.
+            // Only the manager's fresh record may restore an existing instance.
+            if let Some(unit) = live.iter().find(|unit| unit.instance_id == record.id) {
+                let current = InstanceRecord {
+                    id: unit.instance_id, app_id: unit.app_id.clone(),
+                    systemd_unit: unit.unit_name.clone(), control_group: unit.control_group.clone(),
+                };
+                if current.has_managed_identity() {
+                    registry.register_instance(current.clone());
+                    if let Err(error) = store.transaction(|tx| appd_store::save_instance_within(tx, &current)) {
+                        tracing::warn!(%error, instance = %current.id, "failed to refresh restored instance");
+                    }
+                    restored += 1;
+                }
+            }
         }
     }
 
@@ -49,6 +62,10 @@ pub async fn reconcile_instances(
             systemd_unit: unit.unit_name.clone(),
             control_group: unit.control_group,
         };
+        if !record.has_managed_identity() {
+            tracing::warn!(unit = %record.systemd_unit, "systemd inventory returned an inconsistent managed identity");
+            continue;
+        }
         registry.register_instance(record.clone());
         if let Err(error) = store.transaction(|tx| appd_store::save_instance_within(tx, &record)) {
             tracing::warn!(%error, unit = %unit.unit_name, "failed to persist a newly adopted instance");

@@ -1,241 +1,107 @@
-//! Home Field design tokens and the few drawing primitives that give them one meaning.
-//!
-//! The shell deliberately owns these rather than changing Pixelkit: they are TemplarOS product
-//! language, not toolkit API.  Keeping the palette, geometry, elevation and state marks here
-//! also prevents each tile renderer from inventing a nearly-identical grey or radius.
+//! Home Field drawing primitives. Declarative policy lives in `templar_types::appearance`;
+//! `templar_ui` maps it to the toolkit without introducing windowing dependencies.
 
 use pixelkit_raster::Rect;
 use pixelkit_text::TextStyle;
 use pixelkit_ui::{Theme, Ui};
 
-/// Every colour role in the language, in one value.
-///
-/// Colours are reached through the accessors below rather than as constants because the palette
-/// is chosen once, at startup, from `shell.appearance.theme` — a `const` cannot read a choice
-/// made at runtime, so a light-only `const` would have meant every painter staying light however
-/// the setting was set. Geometry stays `const`: it does not vary by theme.
-///
-/// File-category colour is content and continues to come from `templar_treemap`; it never replaces
-/// one of these shell colours.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Palette {
-    pub ground: u32,
-    pub shell_fill: u32,
-    pub shell_low: u32,
-    pub system_shell: u32,
-    /// A real directory's shell: warm and paper-like, so a folder reads as material you file
-    /// things into, distinct from the cool glass of a shortcut pane.
-    pub folder_shell: u32,
-    pub folder_edge: u32,
-    /// A shortcut pane's shell: cool and glass-like — references, not the things themselves.
-    pub tray_shell: u32,
-    pub tray_edge: u32,
-    pub recessed: u32,
-    pub recessed_edge: u32,
-    pub edge: u32,
-    pub edge_strong: u32,
-    pub project_edge: u32,
-    pub text: u32,
-    pub text_dim: u32,
-    pub text_faint: u32,
-    pub accent: u32,
-    pub accent_soft: u32,
-    pub activity: u32,
-    pub activity_soft: u32,
-    pub danger: u32,
-    pub danger_soft: u32,
-    /// What a hovered shell fills with, and what the toolkit's `hover` role is set to. Was a
-    /// hardcoded white: on a dark palette that is a flash rather than a lift.
-    pub hover_fill: u32,
-    /// The upper-left light [`shell`] draws as a one-pixel rule inside the top edge.
-    pub top_light: u32,
-    /// A well: the recess a window preview or a project's child chip is set into. Lighter than
-    /// the shell around it on a light palette, darker on a dark one — it is a hole, not a card.
-    pub well_fill: u32,
-    /// Ink drawn *on* a saturated fill — the accent, the danger colour, a group's own accent.
-    /// A light palette's accent is dark and takes light ink; a dark palette's is light and takes
-    /// dark ink, which is the one place the two palettes invert rather than shift.
-    pub strong_ink: u32,
-}
+use templar_types::appearance::{LIGHT, Palette, spacing, typography};
 
-/// The light palette — the one this shell has always drawn. Every value here is the value the
-/// matching constant had before the palette existed, so nothing about the default look moved.
-pub const LIGHT: Palette = Palette {
-    // A warm mineral off-white, not a cool grey: the substrate a garden is grown on stays quiet
-    // and slightly warm, and the material a Place carries reads against it rather than against a
-    // screen-blue plate (`@templaros.decision.a-place-is-a-drawn-structure-not-a-richer-rectangle`).
-    ground: 0x00ee_ebe4,
-    shell_fill: 0x00fb_fcfd,
-    shell_low: 0x00f3_f5f7,
-    system_shell: 0x00f4_f6f8,
-    folder_shell: 0x00fb_f8f1,
-    folder_edge: 0x00e2_dbc9,
-    tray_shell: 0x00f3_f8fb,
-    tray_edge: 0x00cf_dde7,
-    recessed: 0x00e7_eaee,
-    recessed_edge: 0x00b9_c0c8,
-    edge: 0x00dd_e1e6,
-    edge_strong: 0x00d5_dae0,
-    project_edge: 0x00cf_d9db,
-    text: 0x0017_1b20,
-    text_dim: 0x0069_737d,
-    text_faint: 0x008b_939c,
-    accent: 0x000e_7482,
-    accent_soft: 0x00e3_f1f3,
-    activity: 0x001f_8f60,
-    activity_soft: 0x00e2_f2ea,
-    danger: 0x00b3_261e,
-    danger_soft: 0x00fa_e8e6,
-    hover_fill: 0x00ff_ffff,
-    top_light: 0x00ff_ffff,
-    well_fill: 0x00ff_ffff,
-    strong_ink: 0x00ff_ffff,
-};
+static PALETTE: std::sync::RwLock<Palette> = std::sync::RwLock::new(LIGHT);
 
-/// The dark palette. Same roles, same relationships: the ground is the darkest thing, a shell
-/// sits above it, and the two rules [`shell`] draws still run light at the top and dark at the
-/// bottom — which is what keeps a tile reading as a raised surface rather than an inverted one.
-pub const DARK: Palette = Palette {
-    ground: 0x0016_181c,
-    shell_fill: 0x0021_2429,
-    shell_low: 0x001a_1d21,
-    system_shell: 0x001e_2126,
-    folder_shell: 0x0026_231c,
-    folder_edge: 0x003b_3527,
-    tray_shell: 0x001c_2329,
-    tray_edge: 0x0033_434e,
-    recessed: 0x0018_1b1f,
-    recessed_edge: 0x003a_4048,
-    edge: 0x0030_353b,
-    edge_strong: 0x003c_424a,
-    project_edge: 0x0035_4247,
-    text: 0x00e6_eaee,
-    text_dim: 0x009a_a4ae,
-    text_faint: 0x0070_7a84,
-    accent: 0x004f_c3d4,
-    accent_soft: 0x0013_3a40,
-    activity: 0x0044_c68c,
-    activity_soft: 0x0012_3428,
-    danger: 0x00ff_8a7d,
-    danger_soft: 0x003a_1c18,
-    hover_fill: 0x002b_2f35,
-    top_light: 0x0034_393f,
-    well_fill: 0x0012_1418,
-    strong_ink: 0x000f_1216,
-};
-
-/// The palette this process draws with. Set once, before the first frame; every read before that
-/// — and every read in a test — gets [`LIGHT`].
-///
-/// // ponytail: startup-time palette. Switching theme takes a shell restart, which is half a
-/// second (`templar-shell.service` restarts; only the compositor cannot). A live switch means
-/// invalidating every cached widget bitmap and re-rendering, which is worth doing when someone
-/// asks for it and not before.
-static PALETTE: std::sync::OnceLock<Palette> = std::sync::OnceLock::new();
-
-/// Choose the palette. The first call wins; later calls are ignored rather than racing the
-/// painters, which is why this returns nothing.
-pub fn set_palette(palette: Palette) {
-    let _ = PALETTE.set(palette);
-}
-
-pub fn palette() -> &'static Palette {
-    PALETTE.get_or_init(|| LIGHT)
-}
-
-/// The same palette with a different accent. The soft accent is derived rather than asked for:
-/// one chosen colour is a setting a person can hold in their head, and a second one they have to
-/// keep consistent with the first is not.
-#[must_use]
-pub fn with_accent(palette: Palette, accent: u32) -> Palette {
-    Palette {
-        accent,
-        accent_soft: mix(accent, palette.shell_fill, 0.86),
-        ..palette
+/// Replace drawing colours live. The host must invalidate cached bitmaps when this returns true.
+pub fn set_palette(palette: Palette) -> bool {
+    let mut current = PALETTE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *current == palette {
+        return false;
     }
+    *current = palette;
+    true
 }
 
-/// `a` and `b` blended, `t` of the way from `a` to `b`, per channel.
-pub fn mix(a: u32, b: u32, t: f32) -> u32 {
-    let t = t.clamp(0.0, 1.0);
-    let channel = |shift: u32| {
-        let (from, to) = (((a >> shift) & 0xff) as f32, ((b >> shift) & 0xff) as f32);
-        ((from + (to - from) * t).round().clamp(0.0, 255.0) as u32) << shift
-    };
-    channel(16) | channel(8) | channel(0)
+pub fn palette() -> Palette {
+    *read_palette()
+}
+
+fn read_palette() -> std::sync::RwLockReadGuard<'static, Palette> {
+    PALETTE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub fn ground() -> u32 {
-    palette().ground
+    read_palette().ground
 }
 pub fn shell_fill() -> u32 {
-    palette().shell_fill
+    read_palette().shell_fill
 }
 pub fn shell_low() -> u32 {
-    palette().shell_low
+    read_palette().shell_low
 }
 pub fn system_shell() -> u32 {
-    palette().system_shell
+    read_palette().system_shell
 }
 pub fn folder_shell() -> u32 {
-    palette().folder_shell
+    read_palette().folder_shell
 }
 pub fn folder_edge() -> u32 {
-    palette().folder_edge
+    read_palette().folder_edge
 }
 pub fn tray_shell() -> u32 {
-    palette().tray_shell
+    read_palette().tray_shell
 }
 pub fn tray_edge() -> u32 {
-    palette().tray_edge
+    read_palette().tray_edge
 }
 pub fn recessed() -> u32 {
-    palette().recessed
+    read_palette().recessed
 }
 pub fn recessed_edge() -> u32 {
-    palette().recessed_edge
+    read_palette().recessed_edge
 }
 pub fn edge() -> u32 {
-    palette().edge
+    read_palette().edge
 }
 pub fn edge_strong() -> u32 {
-    palette().edge_strong
+    read_palette().edge_strong
 }
 pub fn project_edge() -> u32 {
-    palette().project_edge
+    read_palette().project_edge
 }
 pub fn text() -> u32 {
-    palette().text
+    read_palette().text
 }
 pub fn text_dim() -> u32 {
-    palette().text_dim
+    read_palette().text_dim
 }
 pub fn text_faint() -> u32 {
-    palette().text_faint
+    read_palette().text_faint
 }
 pub fn accent() -> u32 {
-    palette().accent
+    read_palette().accent
 }
 pub fn accent_soft() -> u32 {
-    palette().accent_soft
+    read_palette().accent_soft
 }
 pub fn activity() -> u32 {
-    palette().activity
+    read_palette().activity
 }
 pub fn activity_soft() -> u32 {
-    palette().activity_soft
+    read_palette().activity_soft
 }
 pub fn danger() -> u32 {
-    palette().danger
+    read_palette().danger
 }
 pub fn danger_soft() -> u32 {
-    palette().danger_soft
+    read_palette().danger_soft
 }
 pub fn well_fill() -> u32 {
-    palette().well_fill
+    read_palette().well_fill
 }
 pub fn strong_ink() -> u32 {
-    palette().strong_ink
+    read_palette().strong_ink
 }
 
 /// The bottom bar's chips wear the compositor's own name-tag colours, copied rather than shared:
@@ -258,9 +124,9 @@ pub const SEARCH_WIDTH: i32 = 520;
 pub const RECENTS_HEIGHT: i32 = 76;
 /// One recent application in that strip.
 pub const RECENT_CHIP_WIDTH: i32 = 76;
-pub const TILE_RADIUS: i32 = 8;
-pub const WELL_RADIUS: i32 = 5;
-pub const CHIP_RADIUS: i32 = 4;
+pub const TILE_RADIUS: i32 = spacing::TILE_RADIUS;
+pub const WELL_RADIUS: i32 = spacing::WELL_RADIUS;
+pub const CHIP_RADIUS: i32 = spacing::CHIP_RADIUS;
 /// The heading a tile large enough to have one carries: its name, and the controls that act on
 /// the whole tile. Reserved from the body, because at this size there is room to spend on it.
 pub const HEADING_HEIGHT: i32 = 30;
@@ -297,34 +163,7 @@ pub const FILES_PROGRESS_HEIGHT: i32 = 3;
 /// Pixelkit's default stays untouched because its dark operations-console palette is correct for
 /// its own consumers.  TemplarOS supplies this theme to both of its shell surfaces.
 pub fn theme() -> Theme {
-    theme_for(palette())
-}
-
-/// The same, for a palette that is not (or not yet) the process's own — what the Settings page
-/// and the palette tests use to look at one without setting it.
-pub fn theme_for(palette: &Palette) -> Theme {
-    let mut theme = Theme::default();
-    theme.background = palette.ground;
-    theme.panel = palette.shell_fill;
-    theme.panel_alt = palette.system_shell;
-    theme.panel_edge = palette.edge;
-    theme.text = palette.text;
-    theme.text_dim = palette.text_dim;
-    theme.alarm = palette.danger;
-    theme.alarm_soft = palette.danger_soft;
-    theme.good = palette.activity;
-    theme.good_soft = palette.activity_soft;
-    theme.accent = palette.accent;
-    theme.accent_soft = palette.accent_soft;
-    theme.hover = palette.hover_fill;
-    theme.selection = palette.accent_soft;
-    theme.row_height = HEADING_HEIGHT;
-    theme.body = theme.body.with_size(13.0);
-    theme.heading = theme.heading.with_size(32.0);
-    theme.padding = 12;
-    theme.corner_radius = TILE_RADIUS;
-    theme.border_width = 1;
-    theme
+    templar_ui::theme_for(&read_palette())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -345,7 +184,7 @@ pub fn shell(ui: &mut Ui<'_>, rect: Rect, fill: u32, edge: u32, elevation: Eleva
             .shadow_rect(rect, ui.px(10), ui.px(12), text(), 110),
     }
     let fill = if elevation == Elevation::Hover {
-        palette().hover_fill
+        read_palette().hover_fill
     } else {
         fill
     };
@@ -357,12 +196,12 @@ pub fn shell(ui: &mut Ui<'_>, rect: Rect, fill: u32, edge: u32, elevation: Eleva
     if inner.w > 0 && inner.h > 1 {
         ui.painter.blend_rect(
             Rect::new(inner.x, inner.y, inner.w, 1),
-            palette().top_light,
+            read_palette().top_light,
             180,
         );
         ui.painter.blend_rect(
             Rect::new(inner.x, inner.bottom() - 1, inner.w, 1),
-            palette().shell_low,
+            read_palette().shell_low,
             120,
         );
     }
@@ -401,102 +240,25 @@ pub fn dashed_rect(ui: &mut Ui<'_>, rect: Rect, colour: u32) {
 }
 
 pub fn title_style(ui: &Ui<'_>) -> TextStyle {
-    TextStyle::new(ui.theme.body.face, 13.0)
+    ui.text_style(TextStyle::new(ui.theme.body.face, typography::TITLE))
 }
 
 pub fn state_style(ui: &Ui<'_>) -> TextStyle {
-    TextStyle::new(ui.theme.body.face, 11.0)
+    ui.text_style(TextStyle::new(ui.theme.body.face, typography::STATE))
 }
 
 pub fn measurement_style(ui: &Ui<'_>) -> TextStyle {
     // The embedded set currently has one DejaVu face; this still centralises the 12/16 role so
     // adding DejaVu Sans Mono to the set later does not require changing every tile renderer.
-    TextStyle::new(ui.theme.body.face, 12.0)
+    ui.text_style(TextStyle::new(ui.theme.body.face, 12.0))
 }
 
 /// The label over one part of a tile's body — smaller than the tile's own title and tracked, so
 /// it reads as a divider rather than as another row of content.
 pub fn section_label_style(ui: &Ui<'_>) -> TextStyle {
-    TextStyle::tracked(ui.theme.body.face, 10.0, 0.12)
+    ui.text_style(TextStyle::tracked(ui.theme.body.face, 10.0, 0.12))
 }
 
 pub fn system_label_style(ui: &Ui<'_>) -> TextStyle {
-    TextStyle::tracked(ui.theme.body.face, 13.0, 0.14)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn home_field_theme_uses_the_design_roles() {
-        let theme = theme_for(&LIGHT);
-        assert_eq!(theme.background, LIGHT.ground);
-        assert_eq!(theme.panel, LIGHT.shell_fill);
-        assert_eq!(theme.panel_edge, LIGHT.edge);
-        assert_eq!(theme.accent, LIGHT.accent);
-        assert_eq!(theme.good, LIGHT.activity);
-        assert_eq!(theme.alarm, LIGHT.danger);
-        assert_eq!(theme.corner_radius, TILE_RADIUS);
-    }
-
-    /// The dark palette has to differ in *every* role: one forgotten field is a light colour on a
-    /// dark ground, which is exactly the bug a struct-of-roles exists to make impossible to ship
-    /// silently. And light's roles are pinned, so a change to the default look is a change to
-    /// this test and never a side effect of one.
-    #[test]
-    fn dark_palette_has_every_role_and_light_is_pinned() {
-        // The one role that has moved since the palette refactor: a warm mineral off-white
-        // substrate rather than a cool grey one.
-        assert_eq!(LIGHT.ground, 0x00ee_ebe4);
-        assert_eq!(LIGHT.shell_fill, 0x00fb_fcfd);
-        assert_eq!(LIGHT.text, 0x0017_1b20);
-        assert_eq!(LIGHT.accent, 0x000e_7482);
-        assert_eq!(
-            LIGHT.hover_fill, 0x00ff_ffff,
-            "the hover fill was a hardcoded white"
-        );
-        assert_eq!(LIGHT.top_light, 0x00ff_ffff, "so was the upper-left light");
-        assert_eq!(LIGHT.well_fill, 0x00ff_ffff, "and so was a preview well");
-        assert_eq!(LIGHT.strong_ink, 0x00ff_ffff, "and ink on the accent");
-
-        // Field by field, through the same Debug the struct derives: naming them one at a time
-        // here would let a role added later slip past this test.
-        let light = format!("{LIGHT:?}");
-        let dark = format!("{DARK:?}");
-        for (l, d) in light.split(", ").zip(dark.split(", ")) {
-            assert_ne!(l, d, "a role is identical in both palettes");
-        }
-        assert_eq!(light.matches(':').count(), dark.matches(':').count());
-    }
-
-    #[test]
-    fn theme_for_dark_uses_dark_roles() {
-        let theme = theme_for(&DARK);
-        assert_eq!(theme.background, DARK.ground);
-        assert_eq!(theme.text, DARK.text);
-        assert_eq!(theme.hover, DARK.hover_fill);
-        assert_ne!(theme.background, LIGHT.ground);
-    }
-
-    /// An accent is one colour; the soft accent is derived from it so the two cannot drift apart.
-    #[test]
-    fn with_accent_derives_the_soft_accent_and_leaves_the_rest_alone() {
-        let recoloured = with_accent(LIGHT, 0x0080_4020);
-        assert_eq!(recoloured.accent, 0x0080_4020);
-        assert_ne!(recoloured.accent_soft, LIGHT.accent_soft);
-        assert_eq!(recoloured.ground, LIGHT.ground);
-        // Soft means mostly the shell it sits on, with the accent tinting it.
-        assert_eq!(mix(0x0000_0000, 0x00ff_ffff, 0.0), 0x0000_0000);
-        assert_eq!(mix(0x0000_0000, 0x00ff_ffff, 1.0), 0x00ff_ffff);
-        assert_eq!(mix(0x0000_0000, 0x00ff_ffff, 0.5), 0x0080_8080);
-    }
-
-    /// Nothing has set the palette in a unit test, so every accessor answers with the light one.
-    #[test]
-    fn an_unset_palette_is_the_light_one() {
-        assert_eq!(ground(), LIGHT.ground);
-        assert_eq!(text_dim(), LIGHT.text_dim);
-        assert_eq!(accent_soft(), LIGHT.accent_soft);
-    }
+    ui.text_style(TextStyle::tracked(ui.theme.body.face, 13.0, 0.14))
 }

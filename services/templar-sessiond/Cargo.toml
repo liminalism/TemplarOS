@@ -1,6 +1,6 @@
 [package]
 name = "templar-sessiond"
-description = "TemplarOS user session policy daemon: application identity & launching, associations, providers/autostart, history, notifications, settings, projects, power, location"
+description = "TemplarOS user session policy daemon: application identity & launching, associations, providers/autostart, history, notifications, settings, wallpaper, projects, power, location"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -21,6 +21,8 @@ templar-client = { workspace = true }
 templar-session-core = { workspace = true }
 templar-field = { workspace = true }
 templar-state = { workspace = true }
+templar-wallpaper = { workspace = true, default-features = false }
+libc = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
@@ -35,6 +37,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 zbus = { workspace = true }
 zbus_systemd = { workspace = true }
+uuid = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -46,9 +50,14 @@ workspace = true
 name = "templaros-sessiond"
 section = "admin"
 priority = "optional"
-depends = "$auto, systemd, xdg-utils"
+# Build the packaged decode helper without changing ordinary policy-library defaults.
+features = ["templar-wallpaper/decode"]
+depends = "$auto, systemd, xdg-utils, wireplumber, pipewire-bin"
 assets = [
     ["target/release/templar-sessiond", "usr/libexec/templar-sessiond", "755"],
+    ["target/release/templar-wallpaper-decode", "usr/libexec/templar-wallpaper-decode", "755"],
+    ["target/release/templar-app-exec", "usr/libexec/templaros/templar-app-exec", "755"],
+    ["../../interfaces/dbus/org.templaros.Wallpaper1.xml", "usr/share/dbus-1/interfaces/org.templaros.Wallpaper1.xml", "644"],
     ["../../session/units/user/templar-sessiond.service", "usr/lib/systemd/user/templar-sessiond.service", "644"],
     ["../../session/skel/.config/templaros/.keep", "etc/skel/.config/templaros/.keep", "644"],
     ["../../distro/app-manifests/*.json", "usr/share/templaros/apps/", "644"],

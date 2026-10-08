@@ -169,6 +169,8 @@ pub enum DeltaError {
     Unterminated,
     /// A command that needs a path did not carry one.
     MissingPath(SendCmd),
+    /// The transport's reported size is not trusted: actual bytes exceeded the decoder's cap.
+    TooLarge { limit: u64 },
     /// The stream could not be read from disk.
     Io(String),
 }
@@ -184,6 +186,7 @@ impl std::fmt::Display for DeltaError {
             Self::CorruptCommand { at } => write!(f, "crc32c mismatch on the command at byte {at}"),
             Self::Unterminated => write!(f, "send stream has no BTRFS_SEND_C_END command"),
             Self::MissingPath(cmd) => write!(f, "{cmd:?} carried no path attribute"),
+            Self::TooLarge { limit } => write!(f, "send stream exceeds the {limit}-byte limit"),
             Self::Io(message) => write!(f, "reading the send stream: {message}"),
         }
     }
@@ -313,15 +316,20 @@ pub fn decode_file(path: &Path) -> Result<SendStream, DeltaError> {
 /// hands back a descriptor to a file it has already unlinked, so there is no path left to read
 /// and [`decode_file`] cannot be used.
 ///
-/// The whole stream is read into memory first, because [`decode`] needs random access to check
-/// each command's CRC against its own header. The cap that keeps that honest is the caller's:
-/// `templar-filed` refuses a stream over `TEMPLAR_FILED_DELTA_CAP_BYTES` before it opens one, on the
-/// grounds that past that size a reconcile is cheaper anyway.
-pub fn decode_reader(mut reader: impl std::io::Read) -> Result<SendStream, DeltaError> {
+/// Decoding is bounded even when the sender lies about the descriptor's size.
+pub fn decode_reader(reader: impl std::io::Read) -> Result<SendStream, DeltaError> {
+    decode_reader_bounded(reader, 16 * 1024 * 1024)
+}
+
+/// Read at most `limit` payload bytes and one overflow sentinel, then decode all-or-nothing.
+pub fn decode_reader_bounded(reader: impl std::io::Read, limit: u64) -> Result<SendStream, DeltaError> {
+    use std::io::Read as _;
     let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
+    reader.take(limit.saturating_add(1)).read_to_end(&mut bytes)
         .map_err(|error| DeltaError::Io(error.to_string()))?;
+    if bytes.len() as u64 > limit {
+        return Err(DeltaError::TooLarge { limit });
+    }
     decode(&bytes)
 }
 
@@ -1203,6 +1211,22 @@ mod tests {
         *,
     };
     use crate::model::EntryKind;
+
+    #[test]
+    fn btrfs_delta_reader_bounds_actual_bytes_even_for_an_infinite_stream() {
+        struct Counted { read: std::sync::Arc<std::sync::atomic::AtomicUsize> }
+        impl std::io::Read for Counted {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                buffer.fill(0);
+                self.read.fetch_add(buffer.len(), std::sync::atomic::Ordering::Relaxed);
+                Ok(buffer.len())
+            }
+        }
+        let read = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let result = decode_reader_bounded(Counted { read: read.clone() }, 64);
+        assert_eq!(result, Err(DeltaError::TooLarge { limit: 64 }));
+        assert_eq!(read.load(std::sync::atomic::Ordering::Relaxed), 65);
+    }
 
     /// A minimal encoder, for tests only.
     ///

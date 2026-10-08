@@ -12,6 +12,7 @@
 use crate::{
     clients::{AppStateClient, AssociationsClient},
     request::{owned_value, response, with_request},
+    host::{UiError, UiResult},
 };
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc};
@@ -27,11 +28,13 @@ pub struct AppChoiceRequest {
     pub app_id: String,
     pub content_type: Option<String>,
     pub uri: Option<String>,
+    pub activation_token: Option<String>,
+    pub parent: crate::parent::Parent,
 }
 
 #[async_trait]
 pub trait AppChooserUi: Send + Sync + std::fmt::Debug {
-    async fn choose(&self, request: AppChoiceRequest) -> Option<String>;
+    async fn choose(&self, request: AppChoiceRequest) -> UiResult<String>;
 }
 
 #[derive(Debug, Default)]
@@ -39,36 +42,40 @@ pub struct NoUiAvailable;
 
 #[async_trait]
 impl AppChooserUi for NoUiAvailable {
-    async fn choose(&self, _request: AppChoiceRequest) -> Option<String> {
-        None
+    async fn choose(&self, _request: AppChoiceRequest) -> UiResult<String> {
+        Err(UiError("no graphical display available".into()))
     }
 }
 
 /// Pixelkit graphical application chooser used by the live portal backend.
-#[derive(Debug, Default)]
-pub struct NativeUi;
+#[derive(Debug)]
+pub struct NativeUi(pub crate::host::Client);
 
 #[async_trait]
 impl AppChooserUi for NativeUi {
-    async fn choose(&self, request: AppChoiceRequest) -> Option<String> {
+    async fn choose(&self, request: AppChoiceRequest) -> UiResult<String> {
         let message = request.content_type.as_deref().map_or_else(
             || "Choose an application".to_owned(),
             |kind| format!("Open {kind} with"),
         );
         // The person picks a name; the frontend is answered with the id it offered for it.
-        let choices = request.choices.clone();
-        let labels = request.labels.clone();
-        let picked = tokio::task::spawn_blocking(move || {
-            crate::dialog::choice("Open with".into(), message, labels)
-        })
-        .await
-        .ok()
-        .flatten()?;
-        request
-            .labels
-            .iter()
-            .position(|label| *label == picked)
-            .and_then(|at| choices.get(at).cloned())
+        let choices = request.choices;
+        // Include IDs: two desktop entries can have identical display labels.
+        let labels = request.labels.into_iter().zip(&choices)
+            .map(|(label, id)| format!("{label} ({id})")).collect::<Vec<_>>();
+        let answer = self.0.request(crate::dialog::Spec::Choice {
+            title: "Open with".into(),
+            message,
+            choices: labels.clone(),
+            parent: request.parent,
+            activation_token: request.activation_token,
+        }).await?;
+        match answer {
+            Some(crate::dialog::Answer::Choice(picked)) => Ok(labels.iter()
+                .position(|label| *label == picked).and_then(|at| choices.get(at).cloned())),
+            None => Ok(None),
+            _ => Err(UiError("unexpected graphical answer".into())),
+        }
     }
 }
 
@@ -161,6 +168,7 @@ impl AppChooserApi {
         app_id: &str,
         choices: Vec<String>,
         options: &HashMap<String, OwnedValue>,
+        parent: crate::parent::Parent,
     ) -> (u32, HashMap<String, OwnedValue>) {
         let uri = get_string(options, "uri");
         let content_type = get_string(options, "content_type");
@@ -177,7 +185,7 @@ impl AppChooserApi {
             .and_then(|resolved| offered_spelling(&resolved, &choices, &applications));
 
         let chosen = if let Some(choice) = automatic {
-            Some(choice)
+            Ok(Some(choice))
         } else {
             let labels = choices
                 .iter()
@@ -190,54 +198,52 @@ impl AppChooserApi {
                     labels,
                     content_type,
                     uri,
+                    activation_token: Some(activation_token.clone()),
+                    parent,
                 })
                 .await
         };
 
         match chosen {
-            Some(choice) => {
+            Ok(Some(choice)) => {
                 let mut results = HashMap::new();
                 results.insert("choice".to_owned(), owned_value(choice));
                 results.insert("activation_token".to_owned(), owned_value(activation_token));
                 (response::SUCCESS, results)
             }
-            None => (response::CANCELLED, HashMap::new()),
+            Ok(None) => (response::CANCELLED, HashMap::new()),
+            Err(error) => crate::request::failed(error.0),
         }
     }
 }
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.AppChooser")]
 impl AppChooserApi {
-    /// `parent_window` is part of the fixed spec signature; this backend needs no
-    /// window-parenting (no toolkit dialog exists yet — see `AppChooserUi`).
+    /// Native foreign-parent import is unavailable in winit; report the
+    /// limitation rather than inventing position or raising unrelated windows.
     #[zbus(name = "ChooseApplication")]
     #[allow(unused_variables)]
     async fn choose_application_method(
         &self,
         #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         handle: OwnedObjectPath,
         app_id: &str,
         parent_window: &str,
         choices: Vec<String>,
         options: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<(u32, HashMap<String, OwnedValue>)> {
-        with_request(connection, &handle, || {
-            self.choose_application(app_id, choices, &options)
+        with_request(connection, &handle, header.sender(), || {
+            self.choose_application(app_id, choices, &options, crate::parent::Parent::parse(parent_window))
         })
         .await
     }
 
-    /// The frontend may narrow the offered choices between the call and the reply. Our methods
-    /// have already returned by the time a caller could invoke this (no interactive dialog stays
-    /// open), so there is nothing live to update; accepted and logged rather than refused, since
-    /// a spec-conforming frontend is allowed to call it regardless.
+    /// Dynamic narrowing is not implemented by this host. Refuse honestly
+    /// rather than acknowledge an update while showing obsolete choices.
     #[zbus(name = "UpdateChoices")]
-    #[allow(unused_variables)]
-    async fn update_choices(&self, handle: OwnedObjectPath, choices: Vec<String>) {
-        tracing::debug!(
-            ?choices,
-            "UpdateChoices received after the request already answered"
-        );
+    async fn update_choices(&self, _handle: OwnedObjectPath, _choices: Vec<String>) -> zbus::fdo::Result<()> {
+        Err(zbus::fdo::Error::NotSupported("native AppChooser cannot update a live choice list".into()))
     }
 }
 
@@ -301,12 +307,7 @@ mod tests {
             apps: Arc::new(FakeApps::default()),
             ui: Arc::new(NoUiAvailable),
         };
-        let (code, results) = api
-            .choose_application(
-                "org.templaros.Portal",
-                vec!["org.templaros.Viewer".into(), "org.example.Other".into()],
-                &options(&[("uri", "file:///a.pdf")]),
-            )
+        let (code, results) = api.choose_application("org.templaros.Portal", vec!["org.templaros.Viewer".into(), "org.example.Other".into()], &options(&[("uri", "file:///a.pdf")]), crate::parent::Parent::None)
             .await;
         assert_eq!(code, response::SUCCESS);
         assert_eq!(
@@ -331,14 +332,9 @@ mod tests {
             apps: Arc::new(FakeApps::default()),
             ui: Arc::new(NoUiAvailable),
         };
-        let (code, _) = api
-            .choose_application(
-                "org.templaros.Portal",
-                vec!["org.example.Other".into()],
-                &options(&[("uri", "file:///a.pdf")]),
-            )
+        let (code, _) = api.choose_application("org.templaros.Portal", vec!["org.example.Other".into()], &options(&[("uri", "file:///a.pdf")]), crate::parent::Parent::None)
             .await;
-        assert_eq!(code, response::CANCELLED);
+        assert_eq!(code, response::OTHER);
     }
 
     #[tokio::test]
@@ -352,12 +348,7 @@ mod tests {
             apps: Arc::new(FakeApps::default()),
             ui: Arc::new(NoUiAvailable),
         };
-        let (code, results) = api
-            .choose_application(
-                "org.templaros.Portal",
-                vec!["org.templaros.Viewer".into()],
-                &options(&[("content_type", "application/pdf")]),
-            )
+        let (code, results) = api.choose_application("org.templaros.Portal", vec!["org.templaros.Viewer".into()], &options(&[("content_type", "application/pdf")]), crate::parent::Parent::None)
             .await;
         assert_eq!(code, response::SUCCESS);
         assert_eq!(
@@ -367,21 +358,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nothing_resolves_and_no_ui_is_available_cancels() {
+    async fn unresolved_choice_without_display_reports_failure() {
         let api = AppChooserApi {
             associations: Arc::new(FakeAssociations::default()),
             apps: Arc::new(FakeApps::default()),
             ui: Arc::new(NoUiAvailable),
         };
-        let (code, results) = api
-            .choose_application(
-                "org.templaros.Portal",
-                vec!["org.example.Other".into()],
-                &HashMap::new(),
-            )
+        let (code, results) = api.choose_application("org.templaros.Portal", vec!["org.example.Other".into()], &HashMap::new(), crate::parent::Parent::None)
             .await;
-        assert_eq!(code, response::CANCELLED);
-        assert!(results.is_empty());
+        assert_eq!(code, response::OTHER);
+        assert!(results.contains_key("error"));
     }
 
     /// The journey behind "open this downloaded file": `xdg-desktop-portal` implements
@@ -411,12 +397,7 @@ mod tests {
             ui: Arc::new(NoUiAvailable),
         };
 
-        let (code, results) = api
-            .choose_application(
-                "org.mozilla.firefox",
-                vec!["org.templaros.Viewer.desktop".into(), "gimp".into()],
-                &options(&[("uri", "file:///home/u/Downloads/report.pdf")]),
-            )
+        let (code, results) = api.choose_application("org.mozilla.firefox", vec!["org.templaros.Viewer.desktop".into(), "gimp".into()], &options(&[("uri", "file:///home/u/Downloads/report.pdf")]), crate::parent::Parent::None)
             .await;
 
         assert_eq!(code, response::SUCCESS);

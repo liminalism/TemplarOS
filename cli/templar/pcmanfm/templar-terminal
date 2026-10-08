@@ -1,0 +1,9 @@
+#!/bin/sh
+# PCManFM-Qt's terminal command on TemplarOS (`[System] Terminal=templar-terminal`).
+#
+# libfm-qt runs a terminal name as a program in the folder it opens ("Open in Terminal") and
+# appends `-e CMD` or `--hold -e CMD` for a command, as declared by the `templar-terminal` group of
+# the per-user libfm-qt/terminals.list. `templar terminal` resolves the Terminal provider role and
+# starts it through Launcher1, in this directory, so the terminal is its own application rather
+# than a child in PCManFM-Qt's cgroup. See docs/architecture/files.md.
+exec templar terminal "$@"

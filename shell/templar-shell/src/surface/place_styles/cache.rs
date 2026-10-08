@@ -23,6 +23,7 @@ pub(super) struct BodyKey {
     /// Physical pixels per logical one, as bits so the key is exact.
     pub scale: u32,
     pub theme: &'static str,
+    pub palette: templar_types::appearance::Palette,
     pub form: String,
     pub seed: u64,
 }
@@ -61,6 +62,20 @@ pub(super) struct BodyCache {
 }
 
 impl BodyCache {
+    /// Borrow a matching body without allocating a replacement key on every repaint.
+    pub(super) fn matching(
+        &mut self,
+        tile: TileId,
+        matches: impl FnOnce(&BodyKey) -> bool,
+    ) -> Option<&Body> {
+        let body = self.bodies.get_mut(&tile)?;
+        if !matches(&body.key) {
+            return None;
+        }
+        self.clock += 1;
+        body.used = self.clock;
+        Some(body)
+    }
     /// The body for `tile` at `key`: the cached one when its key is `key`, otherwise the result
     /// of `build`, which is handed the tile's previous layout (when there is one) so a relayout
     /// can keep what did not move where it was.
@@ -125,6 +140,7 @@ mod tests {
             size,
             scale: 1.0_f32.to_bits(),
             theme: "mineral",
+            palette: templar_types::appearance::LIGHT,
             form: "branch".to_owned(),
             seed: 7,
         }
@@ -179,5 +195,21 @@ mod tests {
         });
         cache.get_or_build(tile, key((140, 80), 2), |_| panic!("still cached"));
         assert_eq!(cache.builds, 4);
+    }
+    #[test]
+    fn live_palette_change_rebuilds_pixels_but_preserves_previous_geometry() {
+        let mut cache = BodyCache::default();
+        let tile = TileId(1);
+        let light = key((100, 80), 1);
+        cache.get_or_build(tile, light.clone(), |_| built(100.0));
+        let mut dark = light;
+        dark.palette = templar_types::appearance::DARK;
+        cache.get_or_build(tile, dark.clone(), |previous| {
+            assert_eq!(previous.map(|layout| layout.bounds.w), Some(100.0));
+            built(100.0)
+        });
+        assert_eq!(cache.builds, 2);
+        cache.get_or_build(tile, dark, |_| panic!("unchanged appearance stays cached"));
+        assert_eq!(cache.builds, 2);
     }
 }

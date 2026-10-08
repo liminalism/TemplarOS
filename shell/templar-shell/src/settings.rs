@@ -83,7 +83,7 @@ impl Default for HomeFieldSettings {
         Self {
             tile_size: crate::field_model::TILE_SIZE,
             throw: false,
-            previews: PreviewMode::Static,
+            previews: PreviewMode::Live,
             preview_rate: 1,
             reduced_motion: false,
             garden_theme: crate::surface::place_styles::DEFAULT_THEME,
@@ -229,8 +229,9 @@ pub async fn home_field(client: &impl SettingsClient) -> HomeFieldSettings {
         .as_deref()
     {
         Some("off") => PreviewMode::Off,
-        Some("live") => PreviewMode::Live,
-        _ => PreviewMode::Static,
+        Some("static") => PreviewMode::Static,
+        // Live is the default at 1 fps within the existing 1–4 fps cap; off/static stay.
+        _ => PreviewMode::Live,
     };
     let preview_rate = client
         .get(PREVIEW_RATE_KEY)
@@ -265,64 +266,40 @@ pub async fn home_field(client: &impl SettingsClient) -> HomeFieldSettings {
     }
 }
 
-/// The bundled accents, by the name the schema offers. Names rather than free hex: an accent has
-/// to keep enough contrast against the shell it sits on for text drawn in it to be readable, and
-/// a text field where a person can type `#fefefe` is a text field where they can make their own
-/// desktop illegible. `"default"` (and anything unrecognised) keeps the palette's own.
-const ACCENTS: &[(&str, u32)] = &[
-    ("teal", 0x000e_7482),
-    ("blue", 0x001d_5fb8),
-    ("violet", 0x006a_3fb5),
-    ("green", 0x001f_7a4a),
-    ("amber", 0x008a_5a09),
-    ("red", 0x00a8_2f28),
-];
+use templar_types::appearance::{Appearance, Palette};
 
 /// The palette the shell should draw with, from `shell.appearance.*`.
 ///
 /// Unreadable settings are the light palette, which is the schema's default and the look this
 /// shell has always had: a session whose daemon has not started yet must still draw.
-pub async fn appearance(client: &impl SettingsClient) -> crate::surface::design::Palette {
-    let palette = match client
+pub async fn appearance(client: &impl SettingsClient) -> Palette {
+    let theme = client
         .get(THEME_KEY)
         .await
         .ok()
         .as_deref()
         .and_then(parse_choice)
-        .as_deref()
-    {
-        Some("dark") => crate::surface::design::DARK,
-        _ => crate::surface::design::LIGHT,
-    };
+        .unwrap_or_default();
     let accent = client
         .get(ACCENT_KEY)
         .await
         .ok()
         .as_deref()
         .and_then(parse_choice)
-        .and_then(|name| {
-            ACCENTS
-                .iter()
-                .find_map(|(known, colour)| (*known == name).then_some(*colour))
-        });
-    match accent {
-        Some(accent) => crate::surface::design::with_accent(palette, accent),
-        None => palette,
-    }
+        .unwrap_or_default();
+    Appearance::from_settings(&theme, &accent, false).palette
 }
 
 /// The palette from `Settings1`, or the light one when the daemon is not answering.
 ///
-/// Read once, before the first frame. The palette is fixed for the life of the process because
-/// changing it means invalidating every cached widget bitmap, and the shell restarts in about
-/// half a second — the compositor is the only thing that cannot.
-pub async fn load_appearance() -> crate::surface::design::Palette {
+/// Re-read after appearance-setting notifications; the host invalidates drawings, not layout.
+pub async fn load_appearance() -> Palette {
     match crate::data::session().await {
         Ok(connection) => match SettingsProxy::new(&connection).await {
             Ok(proxy) => appearance(&proxy).await,
-            Err(_) => crate::surface::design::LIGHT,
+            Err(_) => templar_types::appearance::LIGHT,
         },
-        Err(_) => crate::surface::design::LIGHT,
+        Err(_) => templar_types::appearance::LIGHT,
     }
 }
 
@@ -358,6 +335,133 @@ pub fn recent_apps_json(ids: &[String]) -> String {
     serde_json::json!({ "type": "str-list", "value": ids }).to_string()
 }
 
+/// Committed keys of the corner-following window tab policy (planning doc §3).
+pub const TABS_PLACEMENT_KEY: &str = "windows.tabs.placement";
+pub const TABS_FOLLOW_POINTER_KEY: &str = "windows.tabs.follow-pointer";
+pub const TABS_FIXED_CORNER_KEY: &str = "windows.tabs.fixed-corner";
+pub const TABS_CONTROLS_KEY: &str = "windows.tabs.controls";
+pub const TABS_TITLE_KEY: &str = "windows.tabs.title";
+pub const TABS_DEFAULT_CORNER_KEY: &str = "windows.tabs.default-corner";
+
+/// One corner of a window, by the name the schema and the protocol use.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TabCorner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl TabCorner {
+    /// Parse the schema spelling; `None` for anything else.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "top-left" => Some(Self::TopLeft),
+            "top-right" => Some(Self::TopRight),
+            "bottom-left" => Some(Self::BottomLeft),
+            "bottom-right" => Some(Self::BottomRight),
+            _ => None,
+        }
+    }
+
+    /// The schema spelling.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::TopLeft => "top-left",
+            Self::TopRight => "top-right",
+            Self::BottomLeft => "bottom-left",
+            Self::BottomRight => "bottom-right",
+        }
+    }
+}
+
+/// How a window's title and controls are arranged, by the schema spelling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TabPlacement {
+    SameCorner,
+    OppositeCorners,
+}
+
+impl TabPlacement {
+    /// Parse the schema spelling; `None` for anything else.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "same-corner" => Some(Self::SameCorner),
+            "opposite-corners" => Some(Self::OppositeCorners),
+            _ => None,
+        }
+    }
+}
+
+/// The window tab policy the shell forwards to the compositor: each field falls back to
+/// its schema default on its own, so Set/Reset/undo/restart converge on the same policy
+/// however many keys changed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TabSettings {
+    pub placement: TabPlacement,
+    pub follow_pointer: bool,
+    pub fixed_corner: TabCorner,
+    pub controls_always: bool,
+    pub title_always: bool,
+    pub default_corner: TabCorner,
+}
+
+impl Default for TabSettings {
+    fn default() -> Self {
+        Self {
+            placement: TabPlacement::SameCorner,
+            follow_pointer: true,
+            fixed_corner: TabCorner::TopRight,
+            controls_always: false,
+            title_always: true,
+            default_corner: TabCorner::TopRight,
+        }
+    }
+}
+
+/// Read the tab policy from committed settings, field by field.
+pub async fn tabs(client: &impl SettingsClient) -> TabSettings {
+    let defaults = TabSettings::default();
+    let placement = client.get(TABS_PLACEMENT_KEY).await.ok();
+    let follow_pointer = client.get(TABS_FOLLOW_POINTER_KEY).await.ok();
+    let fixed_corner = client.get(TABS_FIXED_CORNER_KEY).await.ok();
+    let controls = client.get(TABS_CONTROLS_KEY).await.ok();
+    let title = client.get(TABS_TITLE_KEY).await.ok();
+    let default_corner = client.get(TABS_DEFAULT_CORNER_KEY).await.ok();
+    TabSettings {
+        placement: placement
+            .as_deref()
+            .and_then(parse_choice)
+            .as_deref()
+            .and_then(TabPlacement::parse)
+            .unwrap_or(defaults.placement),
+        follow_pointer: follow_pointer
+            .as_deref()
+            .and_then(parse_bool)
+            .unwrap_or(defaults.follow_pointer),
+        fixed_corner: fixed_corner
+            .as_deref()
+            .and_then(parse_choice)
+            .as_deref()
+            .and_then(TabCorner::parse)
+            .unwrap_or(defaults.fixed_corner),
+        controls_always: controls
+            .as_deref()
+            .and_then(parse_choice)
+            .is_some_and(|choice| choice == "always"),
+        title_always: title
+            .as_deref()
+            .and_then(parse_choice)
+            .is_none_or(|choice| choice != "hover"),
+        default_corner: default_corner
+            .as_deref()
+            .and_then(parse_choice)
+            .as_deref()
+            .and_then(TabCorner::parse)
+            .unwrap_or(defaults.default_corner),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,10 +478,7 @@ mod tests {
         }
     }
 
-    /// A per-key fake, because the appearance read asks two different questions and a client
-    /// that answers both with the same string cannot tell them apart.
     struct Keyed(std::collections::HashMap<&'static str, String>);
-
     #[async_trait]
     impl SettingsClient for Keyed {
         async fn get(&self, key: &str) -> Result<String> {
@@ -388,69 +489,38 @@ mod tests {
         }
     }
 
-    fn keyed(pairs: &[(&'static str, &str)]) -> Keyed {
-        Keyed(
-            pairs
-                .iter()
-                .map(|(key, value)| {
-                    (
-                        *key,
-                        serde_json::json!({"type": "choice", "value": value}).to_string(),
-                    )
-                })
-                .collect(),
-        )
-    }
-
-    /// The shell must draw before sessiond is up, so an unreadable setting is the light palette
-    /// — the schema's default, and the look this shell has always had.
     #[tokio::test]
-    async fn appearance_defaults_to_light_when_unreadable() {
+    async fn previews_default_to_live_at_1fps_with_off_and_static_kept() {
+        assert_eq!(HomeFieldSettings::default().previews, PreviewMode::Live);
+        assert_eq!(HomeFieldSettings::default().preview_rate, 1);
+        let with = |previews: &str, rate: i64| {
+            let mut pairs = std::collections::HashMap::new();
+            pairs.insert(
+                PREVIEWS_KEY,
+                format!(r#"{{"type":"choice","value":"{previews}"}}"#),
+            );
+            pairs.insert(
+                PREVIEW_RATE_KEY,
+                format!(r#"{{"type":"int","value":{rate}}}"#),
+            );
+            Keyed(pairs)
+        };
+        assert_eq!(home_field(&with("off", 4)).await.previews, PreviewMode::Off);
         assert_eq!(
-            appearance(&Fake(Err(()))).await,
-            crate::surface::design::LIGHT
+            home_field(&with("static", 4)).await.previews,
+            PreviewMode::Static
         );
-        assert_eq!(appearance(&keyed(&[])).await, crate::surface::design::LIGHT);
-        // A value the schema does not offer is not a reason to draw nothing.
         assert_eq!(
-            appearance(&keyed(&[(THEME_KEY, "solarized")])).await,
-            crate::surface::design::LIGHT
+            home_field(&with("live", 4)).await.previews,
+            PreviewMode::Live
         );
-    }
-
-    #[tokio::test]
-    async fn appearance_reads_the_theme_and_the_named_accent() {
+        assert_eq!(home_field(&with("live", 99)).await.preview_rate, 4);
+        assert_eq!(home_field(&with("live", 0)).await.preview_rate, 1);
         assert_eq!(
-            appearance(&keyed(&[(THEME_KEY, "dark")])).await,
-            crate::surface::design::DARK
+            home_field(&with("projector", 2)).await.previews,
+            PreviewMode::Live
         );
-        // "default" keeps the palette's own accent; a named one replaces it and takes the soft
-        // accent with it, so the two can never disagree.
-        assert_eq!(
-            appearance(&keyed(&[(THEME_KEY, "dark"), (ACCENT_KEY, "default")])).await,
-            crate::surface::design::DARK
-        );
-        let violet = appearance(&keyed(&[(ACCENT_KEY, "violet")])).await;
-        assert_eq!(violet.accent, 0x006a_3fb5);
-        assert_ne!(
-            violet.accent_soft,
-            crate::surface::design::LIGHT.accent_soft
-        );
-        assert_eq!(violet.ground, crate::surface::design::LIGHT.ground);
-        // Every accent the schema offers has to resolve to its own colour, or a Settings row
-        // does nothing. Teal is the light palette's own accent, which is the point of it being
-        // the default rather than a reason to leave it out of the list.
-        for (name, colour) in ACCENTS {
-            let palette = appearance(&keyed(&[(ACCENT_KEY, name)])).await;
-            assert_eq!(palette.accent, *colour, "the {name} accent did not resolve");
-        }
-        assert_eq!(
-            ACCENTS
-                .iter()
-                .find_map(|(name, colour)| (*name == "teal").then_some(*colour)),
-            Some(crate::surface::design::LIGHT.accent),
-            "teal is the default accent, so the two must be the same colour"
-        );
+        assert_eq!(home_field(&Fake(Err(()))).await.previews, PreviewMode::Live);
     }
 
     #[test]
@@ -524,5 +594,75 @@ mod tests {
     async fn missing_recents_are_an_empty_list_not_an_error() {
         let fake = Fake(Err(()));
         assert!(load_recent_apps(&fake).await.ids().is_empty());
+    }
+
+    /// Child 4 (`settings-converge`, shell half): unreadable settings are the proposed
+    /// defaults, set keys are honoured field by field, and garbage in one field does not
+    /// move the others.
+    #[tokio::test]
+    async fn tabs_read_the_policy_and_fall_back_field_by_field() {
+        assert_eq!(tabs(&Fake(Err(()))).await, TabSettings::default());
+        assert_eq!(TabSettings::default().default_corner, TabCorner::TopRight);
+
+        let choice = |value: &str| format!(r#"{{"type":"choice","value":"{value}"}}"#);
+        let flag = |value: bool| format!(r#"{{"type":"bool","value":{value}}}"#);
+        let full = Keyed(
+            [
+                (TABS_PLACEMENT_KEY, choice("opposite-corners")),
+                (TABS_FOLLOW_POINTER_KEY, flag(false)),
+                (TABS_FIXED_CORNER_KEY, choice("bottom-left")),
+                (TABS_CONTROLS_KEY, choice("always")),
+                (TABS_TITLE_KEY, choice("hover")),
+                (TABS_DEFAULT_CORNER_KEY, choice("bottom-right")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let settings = tabs(&full).await;
+        assert_eq!(
+            settings,
+            TabSettings {
+                placement: TabPlacement::OppositeCorners,
+                follow_pointer: false,
+                fixed_corner: TabCorner::BottomLeft,
+                controls_always: true,
+                title_always: false,
+                default_corner: TabCorner::BottomRight,
+            }
+        );
+
+        let partial = Keyed(
+            [
+                (TABS_PLACEMENT_KEY, choice("diagonal")),
+                (TABS_DEFAULT_CORNER_KEY, choice("bottom-left")),
+                (TABS_TITLE_KEY, choice("sometimes")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let settings = tabs(&partial).await;
+        assert_eq!(settings.placement, TabPlacement::SameCorner);
+        assert_eq!(settings.default_corner, TabCorner::BottomLeft);
+        assert!(settings.follow_pointer);
+        assert!(settings.title_always);
+    }
+
+    #[test]
+    fn tab_names_round_trip() {
+        for (name, corner) in [
+            ("top-left", TabCorner::TopLeft),
+            ("top-right", TabCorner::TopRight),
+            ("bottom-left", TabCorner::BottomLeft),
+            ("bottom-right", TabCorner::BottomRight),
+        ] {
+            assert_eq!(TabCorner::parse(name), Some(corner));
+            assert_eq!(corner.name(), name);
+        }
+        assert_eq!(TabCorner::parse("middle"), None);
+        assert_eq!(
+            TabPlacement::parse("opposite-corners"),
+            Some(TabPlacement::OppositeCorners)
+        );
+        assert_eq!(TabPlacement::parse("diagonal"), None);
     }
 }

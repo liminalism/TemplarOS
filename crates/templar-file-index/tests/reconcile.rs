@@ -464,3 +464,53 @@ fn a_subtree_repair_on_a_current_root_leaves_it_current_and_leaves_the_rest_alon
         "a subtree pass tombstoned an entry outside its subtree"
     );
 }
+
+#[test]
+fn parent_identity_survives_take_on_trust_and_cross_directory_moves() {
+    use templar_file_index::{EntryMeta, Mutation, MutationBatch};
+    let temp = tempfile::tempdir().unwrap();
+    let (index, root, tree, mut owner) = seeded(&temp);
+    fs::create_dir_all(tree.join("other")).unwrap();
+    let policy = index.root_policy(root).unwrap();
+    for trigger in [Trigger::Requested, Trigger::NamespaceOnly, Trigger::Requested] {
+        let (_, report) = reconcile::reconcile(&index, &mut owner, root, ScanScope::Root,
+            &trigger, ScanOptions::reconcile(policy.clone())).unwrap();
+        if trigger == Trigger::NamespaceOnly { assert!(report.dirs_proven_unchanged > 0); }
+        let root_path = NativePath::from_path(&tree);
+        let root_row = index.entry(root, &root_path).unwrap().unwrap();
+        assert_eq!(root_row.parent, None, "the indexed root has no indexed ancestor");
+        let children = index.children(root, &root_path).unwrap();
+        assert_eq!(children.len(), 2, "only direct children, not the descendant range");
+        for row in children {
+            assert_eq!(row.parent, Some(root_row.entry_id));
+            for leaf in index.children(root, &row.path).unwrap() {
+                assert_eq!(leaf.parent, Some(row.entry_id));
+            }
+        }
+    }
+    let from = tree.join("notes");
+    let to = tree.join("other/moved-notes");
+    fs::rename(&from, &to).unwrap();
+    let meta = EntryMeta::from_symlink_metadata(&to, &to.symlink_metadata().unwrap());
+    index.apply(MutationBatch::new(MutationSource::Watcher, vec![Mutation::Move {
+        root, from: NativePath::from_path(&from), to: NativePath::from_path(&to), meta,
+    }])).unwrap();
+    let other = index.entry(root, &NativePath::from_path(&tree.join("other"))).unwrap().unwrap();
+    let moved = index.entry(root, &NativePath::from_path(&to)).unwrap().unwrap();
+    assert_eq!(moved.parent, Some(other.entry_id));
+    let moved_children = index.children(root, &moved.path).unwrap();
+    assert_eq!(moved_children.len(), 2);
+    assert!(moved_children.iter().all(|row| row.parent == Some(moved.entry_id)));
+    assert_eq!(index.children(root, &NativePath::from_path(&tree)).unwrap().len(), 1);
+    let first = to.join("first.txt");
+    let destination = tree.join("first.txt");
+    fs::rename(&first, &destination).unwrap();
+    let meta = EntryMeta::from_symlink_metadata(&destination, &destination.symlink_metadata().unwrap());
+    index.apply(MutationBatch::new(MutationSource::Watcher, vec![Mutation::Move {
+        root, from: NativePath::from_path(&first), to: NativePath::from_path(&destination), meta,
+    }])).unwrap();
+    let root_row = index.entry(root, &NativePath::from_path(&tree)).unwrap().unwrap();
+    let moved_file = index.entry(root, &NativePath::from_path(&destination)).unwrap().unwrap();
+    assert_eq!(moved_file.parent, Some(root_row.entry_id));
+    assert_eq!(index.children(root, &moved.path).unwrap().len(), 1);
+}

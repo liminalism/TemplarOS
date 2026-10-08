@@ -8,8 +8,10 @@ folder (exact brokered terminal CWD, then the window's Place association, then i
 most recent folder in the structured Recent feed), with remembered soft folder centroids.
 Cards keep their positions — parking, restoring or activating a window never moves a card.
 Terminals, file managers and image viewers are resolved from catalogue categories and provider roles. Windows that do not
-fit are counted on one "+N windows" card that opens the window overview. Clicking activates
-the same window or restores it from minimization and leaves Home; closing removes its transient card without
+fit are counted on one "+N windows" card that opens the window overview. Clicking (press and release
+without moving) activates the same window or restores it from minimization and leaves Home; dragging
+a card past the lift threshold moves it onto free cells instead, where it stays as other windows come
+and go (an in-memory hint, not a field tile; a blocked drop or Escape snaps it back). Closing removes its transient card without
 clearing recents or Places. Alt-Tab keeps the compositor's frozen order and key/release behavior;
 the shell now paints its live-preview/icon switcher on a Presentation surface, with the compositor's
 text HUD retained when the shell is absent. Cards never edit the field document, so window lifecycle

@@ -3,6 +3,10 @@
 templaros-settings
 pcmanfm-qt
 qt6-wayland
+qt5-gtk-platformtheme
+qt6-gtk-platformtheme
+gnome-themes-extra-data
+fonts-dejavu-core
 kitty
 gsimplecal
 flatpak

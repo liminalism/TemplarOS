@@ -2,7 +2,7 @@
 //! file opening, shared between `--print` and the graphical Home Surface.
 //!
 //! `Drawer::WindowShelf` is deliberately not handled here: its data comes from the live
-//! `templar_shell_v1` connection (`crate::wayland_bridge`), not a D-Bus session, and the callers
+//! `templar_shell_v2` connection (`crate::wayland_bridge`), not a D-Bus session, and the callers
 //! already have their own toplevel snapshot.
 
 use templar_client::proxies::{
@@ -465,12 +465,23 @@ pub async fn fetch_notifications_widget() -> (
             })
         })
         .collect();
+    notification_widget(structured)
+}
+
+/// Shared projection of one consistent notification model for graphical and text hosts.
+pub fn notification_widget(
+    structured: Vec<crate::surface::widgets::notifications::NotificationRow>,
+) -> (
+    crate::surface::widgets::WidgetSnapshot,
+    Vec<crate::surface::widgets::notifications::NotificationRow>,
+) {
+    use crate::surface::widgets::WidgetSnapshot;
     let detail = structured
         .iter()
         .map(|row| format!("{} — {}", row.app, row.summary))
         .collect();
     let snapshot = WidgetSnapshot {
-        headline: match rows.len() {
+        headline: match structured.len() {
             0 => "All caught up".to_owned(),
             1 => "1 notification".to_owned(),
             count => format!("{count} notifications"),
@@ -563,54 +574,6 @@ pub fn describe_operation(
 /// draws inert instead of vanishing, so a person is not left wondering where the control went.
 const AUDIO_CONTROLS: [&str; 3] = ["volume.decrease", "volume.increase", "volume.mute"];
 const BACKLIGHT_CONTROLS: [&str; 2] = ["brightness.decrease", "brightness.increase"];
-
-/// The Settings widget's content: the battery, volume and brightness readings on one snapshot,
-/// with the controls of any absent service refused.
-///
-/// One fetch over one connection, because it is one tile. Three separate widgets meant three
-/// connections and three chances for the shelf to disagree with itself about whether the session
-/// bus was there.
-/// The session's screen-off delay in seconds, from `org.templaros.Power1`'s stored profile for
-/// whichever power source the machine is on. Zero means never — and so does an unreachable
-/// service, because a shell that cannot read the policy must not invent one.
-///
-/// The two fields read here mirror `templar_session_core::power::PowerProfile` (`screen_off_after`,
-/// a `serde`-encoded `Option<Duration>`) and `templar_client::status::BatteryState::on_mains`.
-/// They are read as JSON rather than through `templar-session-core` deliberately: that crate carries
-/// `rusqlite`, and a shell has no business linking SQLite to learn one number.
-pub async fn fetch_idle_timeout() -> u32 {
-    let Ok(connection) = session().await else {
-        return 0;
-    };
-    let on_mains = async {
-        let proxy = BatteryProxy::new(&connection).await.ok()?;
-        let json = proxy.get().await.ok()?;
-        serde_json::from_str::<templar_client::status::BatteryState>(&json)
-            .ok()
-            .map(|state| state.on_mains)
-    }
-    .await
-    // A machine with no battery service is a machine on mains.
-    .unwrap_or(true);
-    let source = if on_mains { "mains" } else { "battery" };
-
-    let profile = async {
-        let proxy = templar_client::proxies::PowerProxy::new(&connection)
-            .await
-            .ok()?;
-        let json = proxy.get_profile(source).await.ok()?;
-        serde_json::from_str::<serde_json::Value>(&json).ok()
-    }
-    .await;
-
-    profile
-        .as_ref()
-        .and_then(|profile| profile.get("screen_off_after"))
-        .and_then(|value| value.get("secs"))
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|secs| u32::try_from(secs).ok())
-        .unwrap_or(0)
-}
 
 /// What the machine is doing right now: charge, volume, backlight. `None` for a service that did
 /// not answer, which is a different thing from a service that answered "not present".
@@ -1000,7 +963,7 @@ pub async fn file_thumbnail(path: &std::path::Path) -> Option<pixelkit_raster::B
     let proxy = templar_client::proxies::files::FilesPreviewsProxy::new(&connection)
         .await
         .ok()?;
-    let (_, png) = proxy.render(&path.to_string_lossy(), 256).await.ok()?;
+    let (_, png) = proxy.render(path.to_str()?, 256).await.ok()?;
     if png.is_empty() {
         return None;
     }
@@ -1011,12 +974,13 @@ pub async fn browse_directory(
     path: &std::path::Path,
     show_hidden: bool,
 ) -> Result<DirectoryListing, String> {
+    let target = path.to_str().ok_or_else(|| "Directory browsing requires a UTF-8 path; use a native URI with the external file manager".to_owned())?;
     let connection = session().await?;
     let proxy = FilesBrowseProxy::new(&connection)
         .await
         .map_err(|error| format!("file service unavailable: {error}"))?;
     let json = proxy
-        .list_directory(&path.to_string_lossy(), show_hidden, 500)
+        .list_directory(target, show_hidden, 500)
         .await
         .map_err(|error| format!("could not list {}: {error}", path.display()))?;
     serde_json::from_str(&json)
@@ -1081,13 +1045,13 @@ pub struct OpenFileResult {
 
 #[async_trait::async_trait]
 pub trait BrowserAssociations: Send + Sync {
-    async fn resolve_file(&self, path: &str) -> Result<(String, String, String), String>;
+    async fn resolve_file_uri(&self, uri: &str) -> Result<(String, String, String), String>;
 }
 
 #[async_trait::async_trait]
 impl BrowserAssociations for AssociationsProxy<'_> {
-    async fn resolve_file(&self, path: &str) -> Result<(String, String, String), String> {
-        self.resolve_file(path, "")
+    async fn resolve_file_uri(&self, uri: &str) -> Result<(String, String, String), String> {
+        self.resolve_file_uri_v1(uri, "")
             .await
             .map_err(|error| error.to_string())
     }
@@ -1095,13 +1059,13 @@ impl BrowserAssociations for AssociationsProxy<'_> {
 
 #[async_trait::async_trait]
 pub trait BrowserLauncher: Send + Sync {
-    async fn launch(&self, app_id: &str, arguments: Vec<String>) -> Result<String, String>;
+    async fn launch_files(&self, app_id: &str, file_uris: Vec<String>) -> Result<String, String>;
 }
 
 #[async_trait::async_trait]
 impl BrowserLauncher for LauncherProxy<'_> {
-    async fn launch(&self, app_id: &str, arguments: Vec<String>) -> Result<String, String> {
-        self.launch(app_id, arguments, "")
+    async fn launch_files(&self, app_id: &str, file_uris: Vec<String>) -> Result<String, String> {
+        self.launch_files_v1(app_id, file_uris, "")
             .await
             .map_err(|error| error.to_string())
     }
@@ -1114,9 +1078,16 @@ pub async fn brokered_file_open(
     launcher: &impl BrowserLauncher,
     path: &std::path::Path,
 ) -> Result<OpenFileResult, String> {
-    let target = path.to_string_lossy().into_owned();
+    let path = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| error.to_string())?
+            .join(path)
+    };
+    let target = templar_types::uri_list::encode_path(&path);
     let (app_id, mime, reason) = associations
-        .resolve_file(&target)
+        .resolve_file_uri(&target)
         .await
         .map_err(|error| format!("could not resolve {}: {error}", path.display()))?;
     if app_id.is_empty() {
@@ -1131,7 +1102,7 @@ pub async fn brokered_file_open(
         ));
     }
     let instance = launcher
-        .launch(&app_id, vec![target])
+        .launch_files(&app_id, vec![target])
         .await
         .map_err(|error| format!("could not open {} with {app_id}: {error}", path.display()))?;
     Ok(OpenFileResult {
@@ -1150,14 +1121,11 @@ pub async fn open_file(path: &std::path::Path) -> Result<OpenFileResult, String>
         .await
         .map_err(|error| format!("launcher unavailable: {error}"))?;
     let result = brokered_file_open(&associations, &launcher, path).await?;
-    if let Ok(recents) = FilesRecentsProxy::new(&connection).await {
+    if let Some(target) = path.to_str()
+        && let Ok(recents) = FilesRecentsProxy::new(&connection).await
+    {
         let _ = recents
-            .record(
-                &path.to_string_lossy(),
-                &result.app_id,
-                "opened",
-                &result.mime,
-            )
+            .record(target, &result.app_id, "opened", &result.mime)
             .await;
     }
     // The same fact, told to the garden: an open under a directory is evidence the place
@@ -1175,7 +1143,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl BrowserAssociations for FakeAssociations {
-        async fn resolve_file(&self, _path: &str) -> Result<(String, String, String), String> {
+        async fn resolve_file_uri(&self, _uri: &str) -> Result<(String, String, String), String> {
             Ok(self.0.clone())
         }
     }
@@ -1185,8 +1153,15 @@ mod tests {
 
     #[async_trait::async_trait]
     impl BrowserLauncher for FakeLauncher {
-        async fn launch(&self, app_id: &str, arguments: Vec<String>) -> Result<String, String> {
-            self.0.lock().unwrap().push((app_id.to_owned(), arguments));
+        async fn launch_files(
+            &self,
+            app_id: &str,
+            file_uris: Vec<String>,
+        ) -> Result<String, String> {
+            self.0
+                .lock()
+                .expect("file launch records")
+                .push((app_id.to_owned(), file_uris));
             Ok("instance-1".to_owned())
         }
     }
@@ -1276,12 +1251,34 @@ mod tests {
         assert_eq!(result.app_id, "org.example.Reader");
         assert_eq!(result.instance, "instance-1");
         assert_eq!(
-            *launcher.0.lock().unwrap(),
+            *launcher.0.lock().expect("file launch records"),
             vec![(
                 "org.example.Reader".into(),
-                vec!["/home/test/paper.pdf".into()]
+                vec!["file:///home/test/paper.pdf".into()]
             )]
         );
+    }
+
+    #[tokio::test]
+    async fn file_open_consumer_keeps_distinct_native_names_lossless() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let associations = FakeAssociations((
+            "org.example.Reader".into(),
+            "application/pdf".into(),
+            "global-mime-default".into(),
+        ));
+        let launcher = FakeLauncher::default();
+        for byte in [0xff, 0xfe] {
+            let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(
+                [b"/home/test/name-".as_slice(), &[byte], b".pdf"].concat(),
+            ));
+            brokered_file_open(&associations, &launcher, &path)
+                .await
+                .unwrap();
+        }
+        let calls = launcher.0.lock().expect("file launch records");
+        assert_eq!(calls[0].1, ["file:///home/test/name-%FF.pdf"]);
+        assert_eq!(calls[1].1, ["file:///home/test/name-%FE.pdf"]);
     }
 
     #[tokio::test]
@@ -1334,6 +1331,6 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("No application is associated"));
         assert!(error.contains("ask-user"));
-        assert!(launcher.0.lock().unwrap().is_empty());
+        assert!(launcher.0.lock().expect("file launch records").is_empty());
     }
 }

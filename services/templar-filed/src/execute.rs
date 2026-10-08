@@ -70,6 +70,8 @@ pub struct ExecutorConfig {
     /// The shared file index's sink, if one is wired up. `None` in every context that has no
     /// index open (most tests, and any build without `templar-file-index` wired into `main`).
     pub index_sink: Option<Arc<dyn IndexSink>>,
+    /// Required for a guarded Copy inverse; the source operation stays in its actual journal.
+    pub journal: Option<Arc<dyn crate::journal::Journal>>,
 }
 
 impl Default for ExecutorConfig {
@@ -84,6 +86,7 @@ impl Default for ExecutorConfig {
             reserve_percent: 5,
             progress_interval: Duration::from_millis(250),
             index_sink: None,
+            journal: None,
         }
     }
 }
@@ -108,7 +111,8 @@ pub fn check_reserve(operation: &Operation, config: &ExecutorConfig) -> Result<R
 fn destination_dir_of(step: &Step) -> Option<PathBuf> {
     match step {
         Step::CopyToTemporary { temporary, .. } => temporary.parent().map(Path::to_path_buf),
-        Step::CreateDirectory { destination } => destination.parent().map(Path::to_path_buf),
+        Step::CreateDirectory { destination } | Step::CreateDirectoryExclusive { destination, .. } =>
+            destination.parent().map(Path::to_path_buf),
         _ => None,
     }
 }
@@ -143,6 +147,9 @@ pub fn run(
     on_progress(operation);
 
     let mut last_report = Instant::now();
+    // Committed records are immutable. Retain the referenced journal record once per run,
+    // rather than deserializing its complete planned tree again for every root.
+    let mut original_copy: Option<Operation> = None;
     while operation.cursor < operation.steps.len() {
         if cancel.is_cancelled() {
             operation.state = OperationState::Cancelled;
@@ -155,7 +162,26 @@ pub fn run(
         // journals it along with the rest of the operation.
         let cursor = operation.cursor;
         let conflict = operation.options.conflict;
-        if let Err(error) = apply(&mut operation.steps[cursor], conflict, config) {
+        let outcome = (|| {
+            if let OperationKind::UndoCopyV1 { original_operation, .. } = &operation.kind {
+                if original_copy.is_none() {
+                    let journal = config.journal.as_ref().context("copy undo requires its actual operation journal")?;
+                    original_copy = Some(journal.get(*original_operation)?.context("original copy journal record is unavailable")?);
+                }
+                let original = original_copy.as_ref().context("copy undo journal record was not loaded")?;
+                match &operation.steps[cursor] {
+                    Step::VerifyCopyUndoV1 { original_operation: step_original } => {
+                        if step_original != original_operation { bail!("copy inverse journal reference mismatch"); }
+                        return crate::transfer_undo::validate(original);
+                    }
+                    Step::MoveToTrash { path, trashed: None } if path.symlink_metadata().is_ok() =>
+                        crate::transfer_undo::validate_root(original, path)?,
+                    _ => {}
+                }
+            }
+            apply(&mut operation.steps[cursor], conflict, config)
+        })();
+        if let Err(error) = outcome {
             operation.state = OperationState::Failed;
             operation.error = Some(format!("{error:#}"));
             on_progress(operation);
@@ -182,9 +208,20 @@ pub fn run(
             operation.state = OperationState::Verified;
         }
 
-        if boundary || last_report.elapsed() >= config.progress_interval {
+        if boundary || matches!(operation.steps[cursor],
+            Step::CreateDirectoryExclusive { .. } | Step::VerifyCopyUndoV1 { .. })
+            || last_report.elapsed() >= config.progress_interval {
             last_report = Instant::now();
             on_progress(operation);
+        }
+    }
+    match crate::transfer_undo::capture(operation) {
+        Ok(created) => operation.created = created,
+        Err(error) => {
+            operation.state = OperationState::Failed;
+            operation.error = Some(format!("could not record destination snapshot: {error:#}"));
+            on_progress(operation);
+            return Err(error);
         }
     }
 
@@ -210,7 +247,29 @@ fn remaining_is_only_source_removal(operation: &Operation) -> bool {
 /// only by doing it, and that is what undo later reads.
 fn apply(step: &mut Step, conflict: ConflictPolicy, config: &ExecutorConfig) -> Result<()> {
     match step {
+        Step::VerifyCopyUndoV1 { original_operation } => {
+            let journal = config.journal.as_ref().context("copy undo requires its actual operation journal")?;
+            let original = journal.get(*original_operation)?.context("original copy journal record is unavailable")?;
+            crate::transfer_undo::validate(&original)
+        }
+        Step::CreateDirectoryExclusive { destination, created_identity } => {
+            use std::os::unix::fs::MetadataExt;
+            if let Some((dev, ino)) = created_identity {
+                let metadata = destination.symlink_metadata()?;
+                if !metadata.is_dir() || metadata.dev() != *dev || metadata.ino() != *ino {
+                    bail!("the created transfer root was replaced: {}", destination.display());
+                }
+            } else {
+                fs::create_dir(&*destination).with_context(|| format!("creating new transfer root {}", destination.display()))?;
+                let metadata = destination.symlink_metadata()?;
+                *created_identity = Some((metadata.dev(), metadata.ino()));
+            }
+            Ok(())
+        }
+        Step::CopySymlink { source, destination, created_identity } =>
+            copy_symlink(source, destination, created_identity, conflict),
         Step::MoveToTrash { path, trashed } => {
+            if trashed.is_some() { return Ok(()); }
             // Probed from the nearest surviving ancestor, because on the resume path below the
             // file is already gone and a vanished path has no device to pick a trash from.
             let directory = trash::trash_dir_for(&existing_ancestor(path), &config.data_home)?;
@@ -218,8 +277,9 @@ fn apply(step: &mut Step, conflict: ConflictPolicy, config: &ExecutorConfig) -> 
                 // Already trashed — a crash between the rename and the journal write. The move
                 // really happened, so recover the name it was given; leaving this unset would
                 // cost the item its undo.
+                *trashed = trash::find_trashed(path, &directory);
                 if trashed.is_none() {
-                    *trashed = trash::find_trashed(path, &directory);
+                    bail!("{} is absent and has no recoverable Trash record", path.display());
                 }
                 return Ok(());
             }
@@ -264,10 +324,6 @@ fn apply_read_only(step: &Step, conflict: ConflictPolicy) -> Result<()> {
         Step::CreateDirectory { destination } => fs::create_dir_all(destination)
             .with_context(|| format!("creating {}", destination.display())),
 
-        Step::CopySymlink {
-            source,
-            destination,
-        } => copy_symlink(source, destination, conflict),
 
         Step::CopyToTemporary {
             source,
@@ -299,7 +355,8 @@ fn apply_read_only(step: &Step, conflict: ConflictPolicy) -> Result<()> {
         // `apply` handles these two. Reaching here would mean it had stopped recording where
         // the trash put an item, so it fails loudly rather than quietly costing that item its
         // undo — the exact failure this split exists to prevent.
-        Step::MoveToTrash { .. } | Step::RestoreFromTrash { .. } => {
+        Step::MoveToTrash { .. } | Step::RestoreFromTrash { .. } | Step::CopySymlink { .. }
+            | Step::VerifyCopyUndoV1 { .. } | Step::CreateDirectoryExclusive { .. } => {
             bail!("a trash step reached the read-only executor, which cannot record where it went")
         }
     }
@@ -315,26 +372,27 @@ fn existing_ancestor(path: &Path) -> PathBuf {
         .map_or_else(|| path.to_path_buf(), Path::to_path_buf)
 }
 
-fn copy_symlink(source: &Path, destination: &Path, conflict: ConflictPolicy) -> Result<()> {
-    let target =
-        fs::read_link(source).with_context(|| format!("reading the link {}", source.display()))?;
-    match destination.symlink_metadata() {
-        // Already the same link: nothing to do.
-        Ok(metadata)
-            if metadata.file_type().is_symlink()
-                && fs::read_link(destination).ok().as_ref() == Some(&target) =>
-        {
-            Ok(())
+fn copy_symlink(source: &Path, destination: &Path, created_identity: &mut Option<(u64, u64)>,
+    conflict: ConflictPolicy) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if let Some((dev, ino)) = created_identity {
+        let metadata = destination.symlink_metadata()?;
+        if !metadata.file_type().is_symlink() || metadata.dev() != *dev || metadata.ino() != *ino {
+            bail!("the created transfer symlink was replaced: {}", destination.display());
         }
-        Ok(_) if conflict == ConflictPolicy::Replace => {
-            fs::remove_file(destination).ok();
-            std::os::unix::fs::symlink(&target, destination)
-                .with_context(|| format!("linking {}", destination.display()))
-        }
-        Ok(_) => bail!("{} already exists", destination.display()),
-        Err(_) => std::os::unix::fs::symlink(&target, destination)
-            .with_context(|| format!("linking {}", destination.display())),
+        return Ok(());
     }
+    let target = fs::read_link(source).with_context(|| format!("reading the link {}", source.display()))?;
+    if conflict == ConflictPolicy::Replace && destination.symlink_metadata().is_ok() {
+        fs::remove_file(destination).with_context(|| format!("replacing {}", destination.display()))?;
+    }
+    // symlink(2) creates exclusively, even for an existing link with the same target. A resume
+    // without a persisted created_identity refuses an ambiguous entry rather than owning it.
+    std::os::unix::fs::symlink(&target, destination)
+        .with_context(|| format!("linking {}", destination.display()))?;
+    let metadata = destination.symlink_metadata()?;
+    *created_identity = Some((metadata.dev(), metadata.ino()));
+    Ok(())
 }
 
 fn copy_to_temporary(source: &Path, temporary: &Path, bytes: u64) -> Result<()> {
@@ -375,7 +433,12 @@ fn expose(temporary: &Path, destination: &Path, conflict: ConflictPolicy) -> Res
     if destination.symlink_metadata().is_ok() && conflict != ConflictPolicy::Replace {
         bail!("{} already exists", destination.display());
     }
-    fs::rename(temporary, destination).with_context(|| {
+    let exposed = if conflict == ConflictPolicy::Replace {
+        fs::rename(temporary, destination)
+    } else {
+        crate::native_fs::rename_no_replace(temporary, destination)
+    };
+    exposed.with_context(|| {
         format!(
             "exposing {} as {}",
             temporary.display(),
@@ -394,7 +457,12 @@ fn rename_in_place(from: &Path, to: &Path, conflict: ConflictPolicy) -> Result<(
     if let Some(parent) = to.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::rename(from, to).with_context(|| format!("renaming {} to {}", from.display(), to.display()))
+    let renamed = if conflict == ConflictPolicy::Replace {
+        fs::rename(from, to)
+    } else {
+        crate::native_fs::rename_no_replace(from, to)
+    };
+    renamed.with_context(|| format!("renaming {} to {}", from.display(), to.display()))
 }
 
 fn remove_file_if_present(source: &Path) -> Result<()> {
@@ -1328,5 +1396,117 @@ mod tests {
             check_reserve(&operation, &configuration).unwrap(),
             ReserveVerdict::Ok
         );
+    }
+
+    #[test]
+    fn copy_undo_rechecks_changed_files_and_new_children_after_its_preflight_step() {
+        use crate::journal::{Journal, MemoryJournal};
+        for change in ["file", "child"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let source = fixture.path().join("from/tree");
+            let destination = fixture.path().join("Desktop");
+            write(&source.join("body"), b"original");
+            fs::create_dir(&destination).unwrap();
+            let journal: Arc<dyn Journal> = Arc::new(MemoryJournal::default());
+            let configuration = ExecutorConfig { journal: Some(journal.clone()), ..config(fixture.path()) };
+            let mut copied = planned(OperationKind::Copy { sources: vec![source.clone()],
+                destination_dir: destination.clone() }, &[source.clone()], Some(&destination));
+            journal.put(&copied, None).unwrap();
+            run(&mut copied, &configuration, &Cancel::new(), |record| journal.progress(record).unwrap()).unwrap();
+            let root = destination.join("tree");
+            crate::transfer_undo::validate(&journal.get(copied.id).unwrap().unwrap()).unwrap();
+            let mut inverse = plan(OperationId::new(), OperationKind::UndoCopyV1 {
+                original_operation: copied.id, roots: vec![root.clone()],
+            }, &Survey::default(), Options::default());
+            journal.put(&inverse, None).unwrap();
+            let result = run(&mut inverse, &configuration, &Cancel::new(), |record| {
+                journal.progress(record).unwrap();
+                if record.cursor == 1 {
+                    fs::write(root.join(if change == "file" { "body" } else { "new-child" }), b"changed after preflight").unwrap();
+                }
+            });
+            assert!(result.is_err(), "{change}");
+            assert_eq!(inverse.state, OperationState::Failed);
+            assert!(root.exists());
+            assert_eq!(fs::read(source.join("body")).unwrap(), b"original");
+            assert!(trash::list(&trash::home_trash(&configuration.data_home)).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn resumed_copy_inverse_checks_remaining_roots_without_requiring_already_trashed_roots() {
+        use crate::journal::{Journal, MemoryJournal};
+        let fixture = tempfile::tempdir().unwrap();
+        let destination = fixture.path().join("Desktop");
+        fs::create_dir(&destination).unwrap();
+        let sources: Vec<_> = ["one", "two"].into_iter().map(|name| {
+            let root = fixture.path().join("from").join(name);
+            write(&root.join("body"), name.as_bytes());
+            root
+        }).collect();
+        let journal: Arc<dyn Journal> = Arc::new(MemoryJournal::default());
+        let configuration = ExecutorConfig { journal: Some(journal.clone()), ..config(fixture.path()) };
+        let mut copied = planned(OperationKind::Copy { sources: sources.clone(), destination_dir: destination.clone() },
+            &sources, Some(&destination));
+        journal.put(&copied, None).unwrap();
+        run(&mut copied, &configuration, &Cancel::new(), |record| journal.progress(record).unwrap()).unwrap();
+        let mut inverse = plan(OperationId::new(), OperationKind::UndoCopyV1 {
+            original_operation: copied.id, roots: vec![destination.join("one"), destination.join("two")],
+        }, &Survey::default(), Options::default());
+        let cancel = Cancel::new();
+        let mut saved = None;
+        run(&mut inverse, &configuration, &cancel, |record| {
+            if record.cursor == 2 && record.state == OperationState::Running {
+                saved = Some(record.clone());
+                cancel.cancel();
+            }
+        }).unwrap();
+        let mut resumed = saved.unwrap();
+        assert!(!destination.join("one").exists());
+        assert_eq!(trash::list(&trash::home_trash(&configuration.data_home)).unwrap().len(), 1);
+        fs::write(destination.join("two/new-child"), b"new").unwrap();
+        assert!(resume(&mut resumed, &configuration, &Cancel::new(), |_| {}).is_err());
+        assert_eq!(fs::read(destination.join("two/new-child")).unwrap(), b"new");
+        assert_eq!(trash::list(&trash::home_trash(&configuration.data_home)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cross_device_native_tree_move_and_exact_inverse_keep_symlinks_and_refuse_recreated_original() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt, os::unix::fs::symlink};
+        let fixture = tempfile::tempdir().unwrap();
+        let from = fixture.path().join("from");
+        let destination = fixture.path().join("Desktop");
+        fs::create_dir(&from).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let root = from.join(OsString::from_vec(b"tree-\xff".to_vec()));
+        let child = OsString::from_vec(b"child-\xfe".to_vec());
+        write(&root.join("nested").join(&child), b"body");
+        symlink(PathBuf::from("nested").join(&child), root.join("link")).unwrap();
+        let mut surveyed = survey(std::slice::from_ref(&root), Some(&destination));
+        surveyed.sources[0].same_device = false; // Deterministically exercise copy/verify/delete.
+        let mut moving = plan(OperationId::new(), OperationKind::Move {
+            sources: vec![root.clone()], destination_dir: destination.clone(),
+        }, &surveyed, Options { verify: Verification::Checksum, ..Options::default() });
+        execute(&mut moving, fixture.path()).unwrap();
+        assert_eq!(moving.state, OperationState::Committed);
+        assert!(!root.exists());
+        let moved = destination.join(root.file_name().unwrap());
+        assert_eq!(fs::read(moved.join("nested").join(&child)).unwrap(), b"body");
+        assert_eq!(fs::read_link(moved.join("link")).unwrap(), PathBuf::from("nested").join(&child));
+        let inverse = undo_of(&moving).unwrap();
+        let mut restoring = plan(OperationId::new(), inverse.clone(),
+            &survey(std::slice::from_ref(&moved), Some(&from)), Options::default());
+        write(&root.join("recreated"), b"do not overwrite");
+        assert!(execute(&mut restoring, fixture.path()).is_err());
+        assert_eq!(fs::read(root.join("recreated")).unwrap(), b"do not overwrite");
+        assert!(moved.exists());
+        fs::remove_file(root.join("recreated")).unwrap();
+        fs::remove_dir(&root).unwrap();
+        let mut restoring = plan(OperationId::new(), inverse,
+            &survey(std::slice::from_ref(&moved), Some(&from)), Options::default());
+        execute(&mut restoring, fixture.path()).unwrap();
+        assert_eq!(fs::read(root.join("nested").join(&child)).unwrap(), b"body");
+        assert_eq!(fs::read_link(root.join("link")).unwrap(), PathBuf::from("nested").join(&child));
+        assert!(!moved.exists());
     }
 }

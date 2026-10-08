@@ -1,0 +1,11 @@
+{
+  "name":"templaros-garden",
+  "displayName":"TemplarOS Garden workspace linking",
+  "description":"Report local workspace folders from the editor's verified application cgroup.",
+  "version":"1.0.0",
+  "publisher":"templaros",
+  "engines":{"vscode":"^1.75.0"},
+  "main":"./extension.js",
+  "activationEvents":["onStartupFinished"],
+  "extensionKind":["ui"]
+}

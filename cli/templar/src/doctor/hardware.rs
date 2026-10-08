@@ -378,7 +378,7 @@ fn detect_profile(context: &Context) -> String {
 }
 
 fn gpu_mode(context: &Context, profile: &str) -> Finding {
-    let path = context.path("etc/templaros/hardware/gpu-mode");
+    let path = context.path("var/lib/templaros/hardware/gpu-mode");
     let Ok(contents) = fs::read_to_string(&path) else {
         return Finding {
             id: "gpu-mode",
@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn gpu_mode_checks_the_declared_mode_against_the_profile() {
         let dir = tempfile::tempdir().unwrap();
-        let mode = dir.path().join("etc/templaros/hardware");
+        let mode = dir.path().join("var/lib/templaros/hardware");
         fs::create_dir_all(&mode).unwrap();
         fs::write(mode.join("gpu-mode"), "hybrid\n").unwrap();
         let finding = gpu_mode(&context(dir.path(), true), "hybrid-intel-nvidia");

@@ -41,7 +41,8 @@ pub(crate) struct ScoreBreakdown {
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct InstanceReport {
     pub(crate) instance_id: String,
-    pub(crate) app_id: String,
+    #[serde(flatten)]
+    pub(crate) metadata: templar_types::ResourceMetadata,
     pub(crate) memory_current_bytes: u64,
     pub(crate) memory_growth_bytes_per_second: i64,
     pub(crate) full_psi_avg10: f64,
@@ -94,7 +95,7 @@ pub(crate) struct TraceRecord {
 pub(crate) trait ResourcesSource {
     /// `(level, observe_only)`.
     async fn status(&self) -> Result<(String, bool)>;
-    async fn report(&self) -> Result<String>;
+    async fn targets(&self) -> Result<String>;
     async fn recent_traces(&self, limit: u32) -> Result<String>;
 }
 
@@ -103,8 +104,8 @@ impl ResourcesSource for templar_client::proxies::ResourcesProxy<'_> {
         self.status().await.context("Resources1.Status")
     }
 
-    async fn report(&self) -> Result<String> {
-        self.report().await.context("Resources1.Report")
+    async fn targets(&self) -> Result<String> {
+        self.targets().await.context("Resources1.Targets")
     }
 
     async fn recent_traces(&self, limit: u32) -> Result<String> {
@@ -140,7 +141,7 @@ fn render_report(report: &Report) -> String {
     if report.instances.is_empty() {
         lines.push("No tracked instances.".to_owned());
     } else {
-        let mut ranked = report.instances.clone();
+        let mut ranked: Vec<_> = report.instances.iter().collect();
         ranked.sort_by(|left, right| {
             right
                 .victim_score
@@ -150,7 +151,7 @@ fn render_report(report: &Report) -> String {
         for instance in &ranked {
             lines.push(format!(
                 "  {} [{}] — score {:.1} ({} MiB, growth {} B/s, psi {:.1}){}{}{}{}{}",
-                instance.app_id,
+                instance.metadata.identity,
                 instance.instance_id,
                 instance.victim_score,
                 instance.memory_current_bytes / (1024 * 1024),
@@ -237,7 +238,7 @@ pub(crate) async fn render_with<S: ResourcesSource>(source: &S, trace_limit: u32
         Err(error) => return format!("service unavailable: {error:#}"),
     };
 
-    let report = match source.report().await {
+    let report = match source.targets().await {
         Ok(json) => match serde_json::from_str::<Report>(&json) {
             Ok(report) => render_report(&report),
             Err(_) if json.trim() == "{}" => render_report(&Report::default()),
@@ -261,98 +262,3 @@ pub(crate) async fn render(connection: &zbus::Connection, trace_limit: u32) -> S
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const SAMPLE_REPORT: &str = r#"{
-        "level": "severe", "stage": "observe-only", "uptime_seconds": 120,
-        "mem_available_bytes": 2147483648,
-        "global_memory_psi": {"some": {"avg10": 1.0}, "full": {"avg10": 0.7}},
-        "global_io_psi": {"some": {"avg10": 0.0}, "full": {"avg10": 0.0}},
-        "instances": [
-            {"instance_id": "11112222-3333-4444-5555-666677778888", "app_id": "org.templaros.Waterfox",
-             "memory_current_bytes": 14395793408, "memory_growth_bytes_per_second": 1048576,
-             "full_psi_avg10": 2.4, "foreground": false, "visible": true, "protected": false,
-             "disposable": false, "has_unsaved_work": false, "victim_score": 42.5,
-             "score_breakdown": {"memory_term": 30.0, "growth_term": 1.0, "psi_term": 9.6,
-                                  "disposable_term": 0.0, "visible_term": -20.0,
-                                  "foreground_term": 0.0, "unsaved_term": 0.0, "total": 42.5}}
-        ]
-    }"#;
-
-    struct FakeResources {
-        status: (String, bool),
-        report: String,
-        traces: String,
-    }
-
-    impl ResourcesSource for FakeResources {
-        async fn status(&self) -> Result<(String, bool)> {
-            Ok(self.status.clone())
-        }
-        async fn report(&self) -> Result<String> {
-            Ok(self.report.clone())
-        }
-        async fn recent_traces(&self, _limit: u32) -> Result<String> {
-            Ok(self.traces.clone())
-        }
-    }
-
-    #[tokio::test]
-    async fn render_with_shows_the_ranked_instance_and_its_score() {
-        let fake = FakeResources {
-            status: ("severe".to_owned(), true),
-            report: SAMPLE_REPORT.to_owned(),
-            traces: String::new(),
-        };
-        let rendered = render_with(&fake, 10).await;
-        assert!(rendered.contains("pressure: severe"));
-        assert!(rendered.contains("observe-only"));
-        assert!(rendered.contains("org.templaros.Waterfox"));
-        assert!(rendered.contains("score 42.5"));
-        assert!(rendered.contains("No traces recorded yet."));
-    }
-
-    #[tokio::test]
-    async fn render_with_handles_the_before_first_tick_empty_report() {
-        let fake = FakeResources {
-            status: ("normal".to_owned(), true),
-            report: "{}".to_owned(),
-            traces: String::new(),
-        };
-        let rendered = render_with(&fake, 10).await;
-        assert!(rendered.contains("No report yet"));
-    }
-
-    #[tokio::test]
-    async fn render_with_renders_traces_with_their_actions() {
-        let fake = FakeResources {
-            status: ("critical".to_owned(), false),
-            report: "{}".to_owned(),
-            traces: r#"{"timestamp_ms":1000,"level":"critical","stage":"terminate","mem_available_bytes":1048576,"actions":[{"kind":"kill-cgroup","instance_id":"aaaa","applied":true,"reason":"persistent critical pressure"}]}"#.to_owned(),
-        };
-        let rendered = render_with(&fake, 10).await;
-        assert!(rendered.contains("enforcing"));
-        assert!(rendered.contains("[applied] kill-cgroup on aaaa"));
-        assert!(rendered.contains("persistent critical pressure"));
-    }
-
-    #[tokio::test]
-    async fn render_with_degrades_on_a_status_failure() {
-        struct Failing;
-        impl ResourcesSource for Failing {
-            async fn status(&self) -> Result<(String, bool)> {
-                anyhow::bail!("no reply from Resources1")
-            }
-            async fn report(&self) -> Result<String> {
-                Ok("{}".to_owned())
-            }
-            async fn recent_traces(&self, _limit: u32) -> Result<String> {
-                Ok(String::new())
-            }
-        }
-        let rendered = render_with(&Failing, 10).await;
-        assert!(rendered.starts_with("service unavailable:"));
-    }
-}

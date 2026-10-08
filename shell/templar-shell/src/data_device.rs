@@ -5,12 +5,12 @@
 //! be got exactly right and tested exhaustively with no compositor at all, and everything that
 //! genuinely needs a live seat is confined here.
 //!
-//! # What the compositor already provides
+//! # Compositor transport
 //!
-//! Nothing was needed on the `templar-comp` side. It implements `DataDeviceHandler`,
-//! `SelectionHandler`, `WaylandDndGrabHandler` and `DndGrabHandler`, constructs a
-//! `DataDeviceState`, and `smithay::delegate_dispatch2!` wires every one of them — so
-//! `wl_data_device_manager` has been advertised all along and the shell simply never bound it.
+//! `templar-comp` advertises `wl_data_device_manager` through Smithay's data-device delegates.
+//! Its DnD lifecycle installs a genuine `DnDGrab`, rejects locked-session starts, and keeps the
+//! native file source alive while Home reveals. The shell uses a held pointer press serial on
+//! the matching origin surface; clipboard ownership and serials never stand in for a drag.
 //!
 //! # The one rule that decides when a copy lands
 //!
@@ -277,9 +277,195 @@ impl ForeignSelection {
     }
 }
 
+/// Parse an entire native drop, rejecting mixed local/remote or malformed URI lists.
+/// Unlike clipboard convenience parsing, a file operation cannot silently omit a source.
+pub fn paths_from_drop(payload: &str) -> Result<Vec<PathBuf>, String> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut paths = Vec::new();
+    for line in payload
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+    {
+        let bytes = line.as_bytes();
+        for (index, byte) in bytes.iter().enumerate() {
+            if *byte == b'%'
+                && (index + 2 >= bytes.len()
+                    || !bytes[index + 1].is_ascii_hexdigit()
+                    || !bytes[index + 2].is_ascii_hexdigit())
+            {
+                return Err("Drop contains malformed URI escaping".into());
+            }
+        }
+        let path = templar_types::uri_list::decode_uri(line)
+            .ok_or_else(|| "Only local file URIs can be dropped onto Desktop".to_owned())?;
+        if path.as_os_str().as_bytes().contains(&0) {
+            return Err("Drop contains a NUL path byte".into());
+        }
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    if paths.is_empty() {
+        return Err("Drop did not contain any local files".into());
+    }
+    Ok(paths)
+}
+
+/// Worker-only, complete-or-error transfer. A partial payload never starts a file operation.
+pub fn read_drop_transfer(read_end: OwnedFd) -> Result<Vec<PathBuf>, String> {
+    use std::os::fd::AsRawFd;
+    let raw = read_end.as_raw_fd();
+    // SAFETY: this function owns the live descriptor; only its status flags change.
+    #[allow(unsafe_code)]
+    unsafe {
+        let flags = libc::fcntl(raw, libc::F_GETFL);
+        if flags < 0 || libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+    }
+    let mut file = std::fs::File::from(read_end);
+    let mut out = Vec::new();
+    let mut buffer = [0u8; 8192];
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => {
+                if out.len() + read > TRANSFER_LIMIT {
+                    return Err("Drop exceeds the 4 MiB path-list limit".into());
+                }
+                out.extend_from_slice(&buffer[..read]);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(
+                        "Drop source did not complete the transfer within five seconds".into(),
+                    );
+                }
+                let mut fd = libc::pollfd {
+                    fd: raw,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: one initialized pollfd, borrowed while `file` owns its descriptor.
+                #[allow(unsafe_code)]
+                let ready = unsafe {
+                    libc::poll(&raw mut fd, 1, remaining.as_millis().min(5000) as i32 + 1)
+                };
+                if ready < 0
+                    && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+                {
+                    return Err(std::io::Error::last_os_error().to_string());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        if Instant::now() >= deadline {
+            return Err("Drop transfer timed out".into());
+        }
+    }
+    let payload =
+        String::from_utf8(out).map_err(|_| "Drop URI list is not valid UTF-8".to_owned())?;
+    paths_from_drop(&payload)
+}
+
+/// Worker-only bounded delivery; retain the payload while a foreign receiver reads it.
+pub fn write_drop_transfer(write_end: OwnedFd, mut bytes: &[u8]) -> std::io::Result<()> {
+    use std::{io::Write, os::fd::AsRawFd};
+    let raw = write_end.as_raw_fd();
+    // SAFETY: the live descriptor is owned throughout; only status flags change.
+    #[allow(unsafe_code)]
+    unsafe {
+        let flags = libc::fcntl(raw, libc::F_GETFL);
+        if flags < 0 || libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    let mut file = std::fs::File::from(write_end);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !bytes.is_empty() {
+        match file.write(bytes) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "Foreign file receiver closed",
+                ));
+            }
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Foreign file receiver did not finish",
+                    ));
+                }
+                let mut fd = libc::pollfd {
+                    fd: raw,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                // SAFETY: one initialized pollfd, borrowed while `file` owns its descriptor.
+                #[allow(unsafe_code)]
+                let ready = unsafe {
+                    libc::poll(&raw mut fd, 1, remaining.as_millis().min(5000) as i32 + 1)
+                };
+                if ready < 0
+                    && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+        if Instant::now() >= deadline && !bytes.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Foreign file receiver timed out",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_drop_rejects_remote_mixed_and_malformed_paths_without_partial_operations() {
+        for payload in [
+            "file:///local/a\nhttps://example.test/b\n",
+            "file://remote/share/a\n",
+            "file:///tmp/%ZZ\n",
+            "file:///tmp/%00\n",
+            "file:///tmp/incomplete%\n",
+        ] {
+            assert!(paths_from_drop(payload).is_err(), "{payload}");
+        }
+    }
+    #[test]
+    fn native_drop_preserves_raw_names_newlines_and_localhost() {
+        use std::os::unix::ffi::OsStrExt;
+        let paths = paths_from_drop(
+            "# comment\r\nfile:///tmp/name-%FF%0A.pdf\r\nfile://localhost/tmp/b\r\n",
+        )
+        .unwrap();
+        assert_eq!(paths[0].as_os_str().as_bytes(), b"/tmp/name-\xff\n.pdf");
+        assert_eq!(paths[1], PathBuf::from("/tmp/b"));
+    }
+    #[test]
+    fn native_drop_reader_requires_complete_utf8_transfer() {
+        use std::io::Write;
+        let (read, mut write) = std::os::unix::net::UnixStream::pair().unwrap();
+        write.write_all(b"file:///tmp/a\n\xff").unwrap();
+        drop(write);
+        assert!(read_drop_transfer(OwnedFd::from(read)).is_err());
+    }
 
     fn clipboard() -> Clipboard {
         Clipboard::copy(vec![

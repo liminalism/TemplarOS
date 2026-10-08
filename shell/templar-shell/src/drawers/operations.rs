@@ -14,73 +14,7 @@ use crate::format;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
-use templar_client::proxies::FilesOperationsProxy;
-
-/// Mirrors the `kind` tag of `services/templar-filed/src/operations.rs::OperationKind`. Only the
-/// fields used to name the operation are decoded.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case", tag = "kind")]
-pub enum OperationKind {
-    Copy {
-        sources: Vec<PathBuf>,
-        destination_dir: PathBuf,
-    },
-    Move {
-        sources: Vec<PathBuf>,
-        destination_dir: PathBuf,
-    },
-    Rename {
-        path: PathBuf,
-        new_name: String,
-    },
-    Trash {
-        paths: Vec<PathBuf>,
-    },
-    RestoreFromTrash {
-        paths: Vec<PathBuf>,
-    },
-    Delete {
-        paths: Vec<PathBuf>,
-    },
-}
-
-impl OperationKind {
-    /// One phrase naming what this operation does, matching `OperationKind::summary`'s register
-    /// in the service.
-    pub fn summary(&self) -> String {
-        fn names(paths: &[PathBuf]) -> String {
-            match paths {
-                [] => "nothing".to_owned(),
-                [one] => display_name(one),
-                many => format!("{} items", many.len()),
-            }
-        }
-        match self {
-            Self::Copy {
-                sources,
-                destination_dir,
-            } => format!("Copy {} to {}", names(sources), destination_dir.display()),
-            Self::Move {
-                sources,
-                destination_dir,
-            } => format!("Move {} to {}", names(sources), destination_dir.display()),
-            Self::Rename { path, new_name } => {
-                format!("Rename {} to {new_name}", display_name(path))
-            }
-            Self::Trash { paths } => format!("Move {} to Trash", names(paths)),
-            Self::RestoreFromTrash { paths } => format!("Restore {} from Trash", names(paths)),
-            Self::Delete { paths } => format!("Delete {} permanently", names(paths)),
-        }
-    }
-}
-
-fn display_name(path: &Path) -> String {
-    path.file_name().map_or_else(
-        || path.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    )
-}
+use templar_client::{files::OperationRequest, proxies::FilesOperationsProxy};
 
 /// Mirrors `services/templar-filed/src/operations.rs::Operation`, decoding only what the drawer
 /// renders. `#[serde(default)]` on the counters keeps a record written by an older or newer
@@ -88,7 +22,7 @@ fn display_name(path: &Path) -> String {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Operation {
     pub id: String,
-    pub kind: OperationKind,
+    pub kind: OperationRequest,
     pub state: String,
     #[serde(default)]
     pub total_bytes: u64,
@@ -221,9 +155,12 @@ mod tests {
     fn a_service_shaped_fixture_parses_every_kind() {
         let operations = parse(FIXTURE).unwrap();
         assert_eq!(operations.len(), 3);
-        assert!(matches!(operations[0].kind, OperationKind::Copy { .. }));
-        assert!(matches!(operations[1].kind, OperationKind::Trash { .. }));
-        assert!(matches!(operations[2].kind, OperationKind::Delete { .. }));
+        assert!(matches!(operations[0].kind, OperationRequest::Copy { .. }));
+        assert!(matches!(operations[1].kind, OperationRequest::Trash { .. }));
+        assert!(matches!(
+            operations[2].kind,
+            OperationRequest::Delete { .. }
+        ));
     }
 
     #[test]

@@ -233,6 +233,10 @@ pub fn open_repo(root: PathBuf) -> repo::Repo {
 /// cannot be written — which means "run this step as root", and says so.
 pub fn repo_init(root: PathBuf, sysroot: &Path, install_source: bool) -> Result<String> {
     let repo = open_repo(root);
+    let native = install::is_native_root(sysroot)?;
+    if native && install_source {
+        bail!("native source configuration belongs to the candidate; omit --install-source and use templar dev install/deploy");
+    }
     let mut out = repo.init()?;
     out.push('\n');
     if install_source {
@@ -240,6 +244,8 @@ pub fn repo_init(root: PathBuf, sysroot: &Path, install_source: bool) -> Result<
         for path in written {
             let _ = writeln!(out, "  wrote {}", path.display());
         }
+    } else if native {
+        out.push_str("  native archive ready; its public key/source are copied into the next hostd candidate, never the running root\n");
     } else {
         let _ = writeln!(
             out,
@@ -386,6 +392,14 @@ fn open_installer(repo_root: PathBuf, root: &Path) -> install::Installer {
 
 fn run_install(installer: &install::Installer, target: &str, dry_run: bool) -> Result<String> {
     let plan = installer.plan(target)?;
+    if install::is_native_root(&installer.root)? {
+        let mut out = format!("build set {target}\n  queue {} pinned package(s) in a hostd candidate; no live apt or unit activation\n", plan.pinned.len());
+        if dry_run { out.push_str("dry run: no transaction queued\n"); return Ok(out); }
+        if !install::is_root(&installer.root) { bail!("publishing/installing a system build set requires root authority"); }
+        let id = installer.queue_candidate(&plan)?;
+        let _ = writeln!(out, "queued {id}; not yet staged or installed. Inspect templar update status/history; reboot only after awaiting-reboot.");
+        return Ok(out);
+    }
     let mut out = format!(
         "build set {target}
 "
@@ -469,8 +483,17 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
     })?;
     let matrix = load_matrix(root);
     let mut out = format!("deploying build set {}\n", set.id);
+    let native = install::is_native_root(root)?;
+    if native && options.snapshot_state {
+        bail!("--snapshot-state is a legacy overlay recovery operation; native updates preserve State/Work and refuse incompatible readers instead of promising a profile downgrade");
+    }
 
     if options.dry_run {
+        if native {
+            out.push_str("1. publish the signed set into the persistent archive\n2. hostd Plan stages pinned packages and paired dpkg/APT metadata in a Btrfs candidate\n3. preserve the live desktop; verify transaction status, then reboot the trial; boot-health owns promotion/rollback\n");
+            out.push_str("dry run: nothing published, queued, installed or restarted\n");
+            return Ok(out);
+        }
         return Ok(deploy_plan(
             &repo_root,
             root,
@@ -488,6 +511,19 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
     // The gates run before the install, not after: refusing a set that could not be rolled back
     // is only useful while it is still true that nothing has changed.
     let deployed = gates::deployed_set(&open_repo(repo_root.clone()))?;
+    if native {
+        // Snapshot-state is an overlay recovery aid, not permission to downgrade
+        // application profiles in the native route.
+        let gate = gates::run(&matrix, &set, deployed.as_ref(), gates::hostd_busy(root), false)?;
+        for note in &gate.notes { let _ = writeln!(out, "  {note}"); }
+        out.push_str(&repo_publish(repo_root.clone(), &options.build_set)?);
+        let installer = open_installer(repo_root, root);
+        let plan = installer.plan(&set.id)?;
+        let id = installer.queue_candidate(&plan)?;
+        let _ = writeln!(out, "queued {id} for {} pinned packages; the running root and desktop were not activated.", plan.pinned.len());
+        out.push_str("This is accepted work, not staging success. Use templar update status/history; reboot only after awaiting-reboot. Boot-health owns trial promotion and rollback.\n");
+        return Ok(out);
+    }
     if options.snapshot_state {
         for path in gates::snapshot_stores(root, &set.id)? {
             let _ = writeln!(out, "snapshot: {}", path.display());

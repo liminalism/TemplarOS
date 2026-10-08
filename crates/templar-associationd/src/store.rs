@@ -20,6 +20,11 @@ const MIMEAPPS_IMPORTED_KEY: &str = "_internal.associations.mimeapps-imported";
 /// Load the whole association database.
 pub fn load_db(store: &Store) -> Result<AssociationDb> {
     let connection = store.lock();
+    load_db_within(&connection)
+}
+
+/// Read a staged association view without reacquiring the Store lock.
+pub fn load_db_within(connection: &rusqlite::Connection) -> Result<AssociationDb> {
     let mut db = AssociationDb::default();
 
     let mut mime = connection

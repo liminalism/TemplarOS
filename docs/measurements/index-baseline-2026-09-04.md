@@ -89,16 +89,15 @@ directory), never the user's home. Full raw JSON: `docs/measurements/workloads-1
 | DB size on disk (after full suite, incl. WAL) | — | — | 221,861,200 bytes (≈212 MiB) for 90,152 live entries |
 | 2,000,000-entry initial index | — | **not run** | see below |
 
-The five watched workloads (touch/rename/delete/build/clean) are each dominated by
-`drain_watcher`'s settle window (six consecutive 100 ms polls with nothing pending, ≈0.6 s), which
-this harness uses to prove the kernel's event queue has caught up — **this measures
-watcher-pump-apply latency without the production coalescing debounce window**
-(`services/templar-filed/src/watcher.rs`, owned by another lane): each pumped batch is applied
-immediately here, not held for quiet time, so these numbers are a different — and generally lower
-— quantity than end-to-end production latency (create/rename/delete to searchable). They are the
-right number for "does this crate's own watch-and-apply path keep up", not for the plan's p95 < 250
-ms production target, which needs the coalescer in the loop and is a claim for whichever lane owns
-that integration test.
+These historical watched timings used six empty 100 ms mutation polls as a settle window and
+applied batches without the production debounce. **That did not prove complete maintenance:**
+the old harness ignored repair requests, pending rename halves and apply errors. Keep the numbers
+as historical observations, not as evidence that all stated operations became queryable or that
+the production p95 target passed. The corrected 2026-10-06 drain uses the daemon's watch-before-read
+repair protocol, waits for pending rename halves and complete/current roots, and propagates
+apply/source/offline/incomplete/deadline failures. Its 120-second maintenance deadline is
+cooperative during reconciliation; blocking filesystem/database calls are not forcibly preempted.
+This remains immediate pump/apply/repair cost, not production coalescer latency.
 
 **2,000,000-entry case: not run.** The harness supports it
 (`index-bench workloads --allow-two-million --release`, which refuses a debug build and generates a
@@ -235,3 +234,75 @@ filesystem-wide mode this measurement did not test.
 - `docs/measurements/workloads-100k.json` — the full timed-workload suite, 100,000-entry fixture.
 - `docs/measurements/idle-before-be57fad.json` — idle sample, pre-`6522e10` binary.
 - `docs/measurements/idle-after-head.json` — idle sample, this session's `HEAD` (`80bac65`).
+
+## Native maintenance and idle correction (2026-10-06)
+
+This section supersedes completeness claims from the historical drain and helper-process sampler,
+not their recorded timing observations. Ubuntu 26.04.1 LTS, kernel `7.0.0-31-generic`, Rust/Cargo
+1.97.1, D-Bus 1.16.2 and GLib 2.88.0 were used. The explicitly selected executable was
+`target/native/ubuntu-26.04/debug/templar-filed` (SHA-256
+`c447cfffa8c5b1746e275a0d0c00bf48ba3372750b30fa48e6308df734bfea05`), with index schema 7,
+scanner/snapshot format 1 and the FTS5-trigram planner. Actual kernel inotify limits were
+257,001 watches, 16,384 queued events and 128 instances; the owner budget is half the watch limit.
+
+The genuine stalled-reader regression initially lost 7,952 of 10,000 created names while claiming
+Current. A separate actual private daemon, stopped with SIGSTOP while 12,000 files were created,
+returned only 3,118 of those names after overflow repair. The cause was not the settle window alone:
+watcher directory Touch refreshed mtime/ctime after unknown event loss, and reconciliation trusted
+those timestamps as if they proved the cached child list complete. Repairs across unknown history
+(overflow, downtime, exhausted watches, ambiguous arrival and returned mounts), or an untrustworthy
+previous namespace, now enumerate membership. Known namespace-only policy repair retains its honest
+metadata-unverified behavior.
+
+After the correction:
+
+- The three drain regressions passed: genuine bounded-handoff overflow preserves all 10,000 names
+  and subsequent 100 renames/deletes; apply failure is an error; watch exhaustion/partial truth and
+  deadline exhaustion cannot become quiet success (`cargo test -p xtask drain_tests -- --nocapture`).
+- The actual private daemon fixture began with 25,252 entries/251 watches. Create/rename/delete of
+  a Unicode/metacharacter name became queryable in 0.802 s for the complete sequential journey.
+  All 12,000 overflow-created names were found after repair, with a complete 37,252-entry namespace,
+  verified metadata and recorded overflow count 1. Root signals exposed stale `watcher-overflow`,
+  building `reconcile`, then current; the previous sentinel remained queryable during repair.
+- Warm restart returned the previous generation 6 and 37,252 rows in 22.283 ms, while state was
+  building/reconcile and `last_scan_ms` still named the previous commit. A useful previous-generation
+  search took 2.246 ms before asynchronous downtime repair finished. Downtime create/delete then
+  converged. This is no synchronous startup rescan, not a claim that downtime needs no repair.
+- An affected pinned cursor refused paging with `SnapshotRequired`. Closing the actual bus client
+  and allowing the production 60-second grace to expire yielded zero kernel watches; a new consumer
+  first observed stale/unwatched and then a current 37,253-entry namespace including a dormant
+  mutation. A restart with `--index-max-entries 1` retained all 37,253 prior rows, reported
+  stale `budget:entries`, `complete=false`, metadata unverified, and still answered the sentinel.
+- Namespace-only bulk/metadata acceptance reuses the already executed actual private-bus
+  `bulk_and_metadata_search_repair_namespace_only_truth_on_private_bus` result (artifact 495,
+  1 test, 1.89 s), not a confirmation rerun. Existing current two-million-entry evidence is also
+  retained; this run did not regenerate that fixture.
+
+The corrected idle sampler directly owns both children, uses the existing typed Index1 observation
+and Roots protocol, waits for complete/current/verified settlement, and keeps the observation alive
+through sampling. It sets private HOME and every XDG path, points session **and system** bus addresses
+at the owned bus, and kills/reaps both exact Child handles on success or error. DB existence plus
+a guessed startup sleep and process-name matching are no longer acceptance mechanisms.
+
+```
+env CARGO_TARGET_DIR=target/native/ubuntu-26.04 cargo build -p xtask -p templar-filed
+target/native/ubuntu-26.04/debug/xtask index-bench idle \
+  --binary target/native/ubuntu-26.04/debug/templar-filed \
+  --entries 50000 --seconds 60 --label native-ubuntu-26.04-current \
+  --out .agent/scratch/index-idle-native-20261006.json
+```
+
+Actual settled namespace: 50,001 entries, 10,001 armed watches, zero refused, generation 1,
+current/complete/verified. Over 60 seconds watcher `schedstat` pcount and voluntary context switches,
+process `read_bytes`, `syscw` and `wchar` all changed by **0**. Roots before/after were identical,
+including generation, reconciliation timestamps and scan timestamp: no periodic scan was observed.
+The idle bus PID 1037899 and daemon PID 1037900 were both reaped. The lifecycle proof reaped daemon
+PIDs 1038144, 1038213 and 1039491 plus private bus PID 1038140. Raw private fixture records are
+`.agent/scratch/index-idle-native-20261006.json` and
+`.agent/scratch/index-lifecycle-native-20261006.json`; parent integration records the durable AKR
+evidence. No user service manager, installed desktop, live bus, deployment or root device was changed.
+
+**Not established:** physical Btrfs downtime metadata delta/checkpoint lineage across a reboot,
+real removable-device behavior, installed graphical-consumer journeys, or a new two-million-entry
+measurement. The bounded physical checkpoint proposal remains unadopted; private inotify fixtures
+are not a substitute for those hardware gates.

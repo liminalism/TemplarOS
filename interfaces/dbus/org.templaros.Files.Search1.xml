@@ -8,6 +8,8 @@
      larger privacy surface than the drawers need. -->
 <node>
   <interface name="org.templaros.Files.Search1">
+    <!-- Register/persist and queue the only watcher, never a synchronous recursive walk.
+         entries is the last committed count; Index1.Roots exposes queued repair freshness. -->
     <method name="IndexRoot">
       <arg name="root" type="s" direction="in"/>
       <arg name="entries" type="u" direction="out"/>

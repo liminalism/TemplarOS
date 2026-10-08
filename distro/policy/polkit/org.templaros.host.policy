@@ -87,4 +87,15 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+  <!-- Self only: hostd resolves the caller uid from its bus name. No other user's
+       password, no root account and no background credential rewrite is exposed. -->
+  <action id="org.templaros.host.account">
+    <description>Change your own login password</description>
+    <message>Authentication is required to change your login password</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

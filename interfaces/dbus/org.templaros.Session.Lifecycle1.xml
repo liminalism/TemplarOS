@@ -39,7 +39,7 @@
 
          This is why Lock returns as soon as the request is out rather than once the screen is
          covered: the caller has asked for a lock, and the surface appears a frame or two later.
-         A caller that needs to know the session is locked watches the compositor, not this. -->
+         A caller needing confirmed coverage watches Locked, emitted from NotifyLocked. -->
     <method name="Lock"/>
 
     <!-- Somebody asked for the session to be locked (Lock, or `templar session lock`).
@@ -55,9 +55,9 @@
          actually being used, and no existing signal says so. These four are that record.
 
          SessionStarted fires once, when templar-sessiond has claimed its bus name: a new session.
-         Locked fires when a lock is *asked for* (Lock, or `templar session lock`), not when the
-         screen is confirmed covered - sessiond speaks no Wayland and cannot observe the latter
-         (see Lock above). Unlocked fires from NotifyUnlocked. Sleeping carries true on the way
+         Locked fires only after the trusted shell observes the compositor's protected-frame
+         acknowledgment covering all active outputs. Unlocked fires from NotifyUnlocked.
+         Sleeping carries true on the way
          down and false on the way back, mirroring logind's PrepareForSleep, which sessiond
          watches with one match rule and no polling.
 
@@ -87,6 +87,9 @@
          boundary for Logout and PowerOff, which are unguarded - but a stray caller would corrupt
          the session-time record for everything downstream, and there is no reason to accept one. -->
     <method name="NotifyUnlocked"/>
+
+    <!-- Only templar-shell.service may report the compositor's confirmed lock barrier. -->
+    <method name="NotifyLocked"/>
 
     <!-- The screen went off for want of input (true), or came back on (false). Only the
          compositor may say so: templar-comp sees every input event and is the only honest idle

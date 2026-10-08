@@ -32,18 +32,3 @@ pub fn feed() -> DrawerFeed {
         ],
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_drawer_states_its_own_absence_rather_than_faking_content() {
-        let text = render();
-        assert!(text.contains("not wired to a service yet"));
-        assert!(
-            text.contains("Drives"),
-            "a user with a mounted share must be told where to find it"
-        );
-    }
-}

@@ -16,8 +16,19 @@ pub trait FilesBrowse {
     /// A `BrowserSources` JSON snapshot: XDG places and service-approved drives.
     fn roots(&self) -> zbus::Result<String>;
 
+    /// Canonical base64 encoding of the lexical configured XDG Desktop path, or empty if disabled.
+    fn desktop_directory_v1(&self) -> zbus::Result<String>;
+
+    /// Native-path immediate listing; lexical path_b64 entries plus resolved watch directory/dev.
+    fn list_directory_native_v1(
+        &self, directory_b64: &str, show_hidden: bool, limit: u32,
+    ) -> zbus::Result<String>;
+
     /// Add/remove a persistent folder bookmark. Never changes the folder itself.
     fn set_bookmark(&self, path: &str, bookmarked: bool) -> zbus::Result<()>;
+
+    /// Explicit additive GTK bookmark export with backup and ownership record, as JSON.
+    fn export_bookmarks(&self) -> zbus::Result<String>;
 
     /// A `DirectoryListing` JSON snapshot: immediate children, folder-first natural order.
     fn list_directory(
@@ -43,6 +54,9 @@ pub trait FilesBrowse {
 pub trait FilesPreviews {
     /// `(PreviewMetadata JSON, bounded PNG bytes)`; both are empty for unsupported files.
     fn render(&self, path: &str, max_edge: u32) -> zbus::Result<(String, Vec<u8>)>;
+
+    /// Lossless counterpart of Render for URI-list/native-byte clients.
+    fn render_native_v1(&self, path_b64: &str, max_edge: u32) -> zbus::Result<(String, Vec<u8>)>;
 }
 
 #[proxy(
@@ -178,6 +192,13 @@ pub trait FilesIndex {
     /// path bytes are base64 in a `path_b64` field beside a lossy `display` string.
     fn roots(&self) -> zbus::Result<String>;
 
+    /// Caller-owned token, released independently on false or unique-name loss; no renewal polling.
+    fn observe(&self, observing: bool, observation: u64) -> zbus::Result<()>;
+
+    fn root_policy(&self, path_b64: &str, expected_hash: &str) -> zbus::Result<String>;
+    fn configure_root(&self, path_b64: &str, policy_json: &str, expected_hash: &str) -> zbus::Result<i64>;
+    fn remove_root(&self, path_b64: &str, expected_hash: &str) -> zbus::Result<()>;
+
     /// One JSON `Query` argument, so filters/sort/field-mask can grow without a signature
     /// change. `(cursor, generation, page_json)`.
     fn search(&self, query_json: &str) -> zbus::Result<(String, u64, String)>;
@@ -196,9 +217,9 @@ pub trait FilesIndex {
     /// retained floor.
     fn changes_since(&self, seq: u64, limit: u32) -> zbus::Result<String>;
 
-    /// Schedules a background repair of the given roots (a JSON array of root ids; empty means
-    /// every registered root) and returns an opaque request id immediately. Progress is observed
-    /// through `roots()` and the signals below.
+    /// Schedules repair for `{cache_identity, roots:[id,...]}` from observed Roots; an empty
+    /// roots list means every registered root. Replacement/recycled IDs require a fresh snapshot.
+    /// Progress is observed through roots() and signals.
     fn reconcile(&self, roots_json: &str) -> zbus::Result<String>;
 
     /// A generation committed.
@@ -218,6 +239,9 @@ pub trait FilesIndex {
 pub trait FilesActions {
     /// `canonical`, `as-shown`, `uri`, `shell-quoted`, `parent-directory` or `name`.
     fn render(&self, path: &str, form: &str) -> zbus::Result<String>;
+
+    /// Absolute native path as canonical base64; URI/ANSI-C quoting preserve raw bytes.
+    fn render_native(&self, path_b64: &str, form: &str) -> zbus::Result<String>;
 
     fn forms(&self) -> zbus::Result<Vec<String>>;
 

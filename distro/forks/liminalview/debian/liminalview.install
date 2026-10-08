@@ -1,0 +1,3 @@
+package-root/usr/bin/liminalview usr/bin
+package-root/usr/share/applications/org.liminalview.LiminalView.desktop usr/share/applications
+source-provenance.json usr/share/doc/liminalview

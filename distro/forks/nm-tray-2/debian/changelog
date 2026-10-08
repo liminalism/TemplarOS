@@ -1,3 +1,11 @@
+templaros-nm-tray (0.5.1+templaros2-1) resolute; urgency=medium
+
+  * Display the real network menu as a native window for brokered requests.
+  * Scope singleton ownership to the session bus and report forwarding errors.
+  * Carry the source delta as a quilt patch over the manifest's pinned fork.
+
+ -- TemplarOS contributors <dev@templaros.org>  Wed, 07 Oct 2026 12:00:00 +0000
+
 templaros-nm-tray (0.5.1+templaros1) resolute; urgency=medium
 
   * First TemplarOS package of the nm-tray-alt fork. Built from the pin in

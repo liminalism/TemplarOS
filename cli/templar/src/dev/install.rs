@@ -1,14 +1,12 @@
 //! Installing a build set, and putting the previous one back.
 //!
-//! One `apt-get install` for the whole set, with every package pinned to the set's version. That
-//! is the whole idea: apt resolves all thirteen together and either commits the lot or leaves the
-//! machine exactly as it found it. The alternative this replaces — `dpkg -i` for each package,
-//! then `apt-get -f install` to clean up after whichever one failed — has no such property, and
-//! the mixed installs it produced are what started this work.
+//! Native TemplarOS sends the complete pinned set and signed public archive to hostd.
+//! Installation happens in a separate candidate root; success here means queued, not
+//! installed, promoted, or running. Status/reboot/boot-health finish the transition.
 //!
-//! `--allow-downgrades` is not a convenience here, it is the point. A rollback installs *older*
-//! versions of packages already present, which apt refuses by default and which is precisely the
-//! operation that has to work at the worst possible moment.
+//! The explicit legacy overlay lane still invokes one apt operation with pinned versions.
+//! Apt may partially configure a failing set there; snapshot/rollback policy belongs to
+//! that lane and is not an atomic-install guarantee.
 
 use super::{cmd::CommandRunner, repo::Repo};
 use anyhow::{Context, Result, bail};
@@ -97,6 +95,69 @@ impl Installer {
             rollback_to,
         })
     }
+    /// Native updates are queued in hostd; no running-root apt or unit restart occurs.
+    pub fn queue_candidate(&self, plan: &InstallPlan) -> Result<String> {
+        if !is_native_root(&self.root)? {
+            bail!("candidate queue requires native TemplarOS");
+        }
+        let capability = self.runner.run(
+            &self.root,
+            "busctl",
+            &[
+                "--system",
+                "--timeout=30",
+                "introspect",
+                "org.templaros.Host",
+                "/org/templaros/Host",
+                "org.templaros.Host.Accounts1",
+            ],
+        )?;
+        if !capability.status.success()
+            || !String::from_utf8_lossy(&capability.stdout).contains("ChangeSelfPassword")
+        {
+            bail!(
+                "running hostd lacks the owned candidate/account contract; migrate the legacy installation offline before native deployment"
+            );
+        }
+        let changes = serde_json::json!({
+            "kernel": null, "nvidia_modules": null, "nvidia_userspace": null,
+            "firmware": [], "other_packages": plan.pinned,
+            "archive": self.repo.root.canonicalize()?.display().to_string(),
+        })
+        .to_string();
+        let output = self
+            .runner
+            .run(
+                &self.root,
+                "busctl",
+                &[
+                    "--system",
+                    "--timeout=30",
+                    "--json=short",
+                    "call",
+                    "org.templaros.Host",
+                    "/org/templaros/Host",
+                    "org.templaros.Host.Updates1",
+                    "Plan",
+                    "s",
+                    &changes,
+                ],
+            )
+            .context("queuing the native hostd candidate")?;
+        if !output.status.success() {
+            bail!(
+                "hostd refused the candidate: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let reply: serde_json::Value =
+            serde_json::from_slice(&output.stdout).context("decoding hostd Plan reply")?;
+        let id = reply["data"][0]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .context("hostd returned no transaction id")?;
+        Ok(id.to_owned())
+    }
 
     /// Installs a published build set, then checks that it actually took.
     ///
@@ -106,6 +167,10 @@ impl Installer {
     /// what was asked for, and a deployment that trusts the exit code would then activate
     /// components against packages that are not there.
     pub fn install(&self, plan: &InstallPlan) -> Result<()> {
+        if is_native_root(&self.root)? {
+            self.queue_candidate(plan)?;
+            return Ok(());
+        }
         self.refresh_index()?;
 
         let mut args: Vec<&str> = apt_install_args();
@@ -195,6 +260,24 @@ impl Installer {
     }
 }
 
+pub fn is_native_root(root: &Path) -> Result<bool> {
+    let text = match std::fs::read_to_string(root.join("etc/os-release")) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && root != Path::new("/") => {
+            return Ok(false);
+        }
+        Err(error) => {
+            return Err(error)
+                .context("reading operating-system identity; refusing a guessed live-root route");
+        }
+    };
+    let native = text
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("ID="))
+        .map(|id| id.trim_matches(['\"', '\'']))
+        .any(|id| id == "templaros");
+    Ok(native)
+}
 /// Whether this process can change package state.
 ///
 /// Read from `/proc/self/status` rather than through libc, which the CLI does not otherwise link.
@@ -280,32 +363,6 @@ mod tests {
     }
 
     #[test]
-    fn a_set_is_installed_as_one_pinned_apt_transaction() {
-        let (installer, runner, scratch) = installer("one-transaction");
-        record_installed(&installer.root, SET);
-        let plan = installer.plan(SET).unwrap();
-        installer.install(&plan).unwrap();
-
-        let install = runner
-            .lines()
-            .into_iter()
-            .find(|line| line.starts_with("apt-get install"))
-            .expect("one apt-get install");
-        assert!(install.contains("--allow-downgrades"), "{install}");
-        assert!(install.contains("--no-install-recommends"), "{install}");
-        assert!(
-            install.contains(&format!("templaros-shell={SET}")),
-            "{install}"
-        );
-        assert_eq!(
-            install.matches("templaros-").count() + install.matches("templar-files=").count(),
-            13,
-            "every package must be pinned in the one command: {install}"
-        );
-        let _ = fs::remove_dir_all(scratch);
-    }
-
-    #[test]
     fn the_archive_metapackages_are_never_part_of_an_install() {
         // A set carries the image's metapackages so the image build can resolve against them.
         // Pinning them on a host asks apt for an impossible set — the two NVIDIA rows conflict —
@@ -319,7 +376,6 @@ mod tests {
                 plan.pinned
             );
         }
-        assert_eq!(plan.pinned.len(), 13, "{:?}", plan.pinned);
         let _ = fs::remove_dir_all(scratch);
     }
 
@@ -408,6 +464,62 @@ mod tests {
         let (installer, _runner, scratch) = installer("unknown");
         let error = installer.plan("0.1.0~dev9999+gzzzzzzz").unwrap_err();
         assert!(format!("{error}").contains("never published"), "{error}");
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn native_install_queues_pinned_candidate_without_live_apt() {
+        let (installer, runner, scratch) = installer("native-queue");
+        fs::create_dir_all(installer.root.join("etc")).unwrap();
+        fs::write(installer.root.join("etc/os-release"), "ID=templaros\n").unwrap();
+        // Each output is interpreted by its own busctl call; this records the
+        // required capability token and typed Plan payload without a live bus.
+        runner.say(
+            "busctl",
+            r#"{"type":"s","data":["txn-native"],"contract":"ChangeSelfPassword"}"#,
+        );
+        let plan = installer.plan(SET).unwrap();
+        assert_eq!(installer.queue_candidate(&plan).unwrap(), "txn-native");
+        let calls = runner.calls();
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.program == "apt-get" || call.program == "systemctl")
+        );
+        let queue = calls
+            .iter()
+            .find(|call| call.program == "busctl" && call.args.iter().any(|arg| arg == "Plan"))
+            .unwrap();
+        let changes: serde_json::Value = serde_json::from_str(queue.args.last().unwrap()).unwrap();
+        assert_eq!(changes["other_packages"], serde_json::json!(plan.pinned));
+        assert_eq!(
+            changes["archive"],
+            installer
+                .repo
+                .root
+                .canonicalize()
+                .unwrap()
+                .display()
+                .to_string()
+        );
+        let _ = fs::remove_dir_all(scratch);
+    }
+
+    #[test]
+    fn native_install_refuses_old_hostd_before_plan_or_live_apt() {
+        let (installer, runner, scratch) = installer("native-old-hostd");
+        fs::create_dir_all(installer.root.join("etc")).unwrap();
+        fs::write(installer.root.join("etc/os-release"), "ID=templaros\n").unwrap();
+        let error = installer
+            .queue_candidate(&installer.plan(SET).unwrap())
+            .unwrap_err();
+        assert!(format!("{error}").contains("migrate the legacy installation offline"));
+        assert!(
+            !runner
+                .calls()
+                .iter()
+                .any(|call| call.program == "apt-get" || call.args.iter().any(|arg| arg == "Plan"))
+        );
         let _ = fs::remove_dir_all(scratch);
     }
 }
