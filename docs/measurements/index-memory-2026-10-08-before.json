@@ -1,0 +1,100 @@
+{
+  "label": "before-lanes-shards",
+  "daemon_entries": 100000,
+  "phases": [
+    {
+      "name": "a: cold index",
+      "before": {
+        "vm_hwm_kib": 0,
+        "vm_rss_kib": 0,
+        "pss_kib": 0,
+        "private_kib": 0,
+        "threads": 0
+      },
+      "peak": {
+        "vm_hwm_kib": 26916,
+        "vm_rss_kib": 26916,
+        "pss_kib": 24297,
+        "private_kib": 24256,
+        "threads": 24
+      },
+      "after": {
+        "vm_hwm_kib": 26916,
+        "vm_rss_kib": 26916,
+        "pss_kib": 24297,
+        "private_kib": 24256,
+        "threads": 24
+      },
+      "elapsed_ms": 2512.807043,
+      "detail": "100002 entries indexed"
+    },
+    {
+      "name": "b: arrays build",
+      "before": {
+        "vm_hwm_kib": 26916,
+        "vm_rss_kib": 26916,
+        "pss_kib": 24297,
+        "private_kib": 24256,
+        "threads": 24
+      },
+      "peak": {
+        "vm_hwm_kib": 50376,
+        "vm_rss_kib": 50376,
+        "pss_kib": 47934,
+        "private_kib": 47892,
+        "threads": 25
+      },
+      "after": {
+        "vm_hwm_kib": 50680,
+        "vm_rss_kib": 50680,
+        "pss_kib": 47934,
+        "private_kib": 47892,
+        "threads": 24
+      },
+      "elapsed_ms": 303.794224,
+      "detail": "answered by arrays"
+    },
+    {
+      "name": "c: 2 clients + snapshot + rebuild",
+      "before": {
+        "vm_hwm_kib": 50680,
+        "vm_rss_kib": 50680,
+        "pss_kib": 47934,
+        "private_kib": 47892,
+        "threads": 24
+      },
+      "peak": {
+        "vm_hwm_kib": 80632,
+        "vm_rss_kib": 76040,
+        "pss_kib": 73402,
+        "private_kib": 73360,
+        "threads": 28
+      },
+      "after": {
+        "vm_hwm_kib": 80632,
+        "vm_rss_kib": 64096,
+        "pss_kib": 61350,
+        "private_kib": 61308,
+        "threads": 24
+      },
+      "elapsed_ms": 181.170658,
+      "detail": "snapshot 100002 entries, memfd 19070447 bytes"
+    }
+  ],
+  "snapshot_scales": [
+    {
+      "entries": 100001,
+      "payload_bytes": 20768086,
+      "writer_peak_delta_kib": 19360,
+      "reader_peak_delta_kib": 25716,
+      "elapsed_ms": 174.192747
+    },
+    {
+      "entries": 1000001,
+      "payload_bytes": 211668088,
+      "writer_peak_delta_kib": 204688,
+      "reader_peak_delta_kib": 294244,
+      "elapsed_ms": 1861.1418529999999
+    }
+  ]
+}

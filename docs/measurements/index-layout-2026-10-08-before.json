@@ -1,0 +1,130 @@
+{
+  "label": "before-lanes-shards",
+  "entries": 100000,
+  "shape": "synthetic",
+  "rows": 100001,
+  "build_ms": 74.99596799999999,
+  "build_peak_delta_kib": 11864,
+  "total_bytes": 6495076,
+  "capacity_bytes": 8415760,
+  "bytes_per_row": 64.95011049889501,
+  "columns": [
+    {
+      "name": "ids",
+      "bytes": 800008,
+      "capacity_bytes": 1048576
+    },
+    {
+      "name": "root_slot",
+      "bytes": 200002,
+      "capacity_bytes": 262144
+    },
+    {
+      "name": "names",
+      "bytes": 575004,
+      "capacity_bytes": 1048576
+    },
+    {
+      "name": "name_end",
+      "bytes": 400004,
+      "capacity_bytes": 524288
+    },
+    {
+      "name": "subtree_start",
+      "bytes": 400004,
+      "capacity_bytes": 524288
+    },
+    {
+      "name": "subtree_end",
+      "bytes": 400004,
+      "capacity_bytes": 524288
+    },
+    {
+      "name": "kind",
+      "bytes": 100001,
+      "capacity_bytes": 131072
+    },
+    {
+      "name": "flags",
+      "bytes": 100001,
+      "capacity_bytes": 131072
+    },
+    {
+      "name": "size",
+      "bytes": 800008,
+      "capacity_bytes": 1048576
+    },
+    {
+      "name": "mtime",
+      "bytes": 800008,
+      "capacity_bytes": 1048576
+    },
+    {
+      "name": "dirs_by_id",
+      "bytes": 320016,
+      "capacity_bytes": 524288
+    },
+    {
+      "name": "by_mtime_desc",
+      "bytes": 400004,
+      "capacity_bytes": 400004
+    },
+    {
+      "name": "by_name",
+      "bytes": 400004,
+      "capacity_bytes": 400004
+    },
+    {
+      "name": "name_rank",
+      "bytes": 400004,
+      "capacity_bytes": 400004
+    },
+    {
+      "name": "by_size",
+      "bytes": 400004,
+      "capacity_bytes": 400004
+    }
+  ],
+  "queries": [
+    [
+      "d",
+      {
+        "samples": 50,
+        "p50_ms": 1.29855,
+        "p95_ms": 1.492457,
+        "p99_ms": 2.009882,
+        "max_ms": 2.009882
+      }
+    ],
+    [
+      "f1",
+      {
+        "samples": 50,
+        "p50_ms": 0.918609,
+        "p95_ms": 1.133165,
+        "p99_ms": 1.481654,
+        "max_ms": 1.481654
+      }
+    ],
+    [
+      "txt",
+      {
+        "samples": 50,
+        "p50_ms": 1.154282,
+        "p95_ms": 1.2366759999999999,
+        "p99_ms": 1.295489,
+        "max_ms": 1.295489
+      }
+    ],
+    [
+      "f12.txt",
+      {
+        "samples": 50,
+        "p50_ms": 0.687866,
+        "p95_ms": 0.799639,
+        "p99_ms": 0.8381270000000001,
+        "max_ms": 0.8381270000000001
+      }
+    ]
+  ]
+}
