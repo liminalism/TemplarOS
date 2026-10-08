@@ -1115,7 +1115,7 @@ Home work card placement keeps a soft per-folder position hint across output cha
 
 ### Hands-on 2026-10-07: Alt+Tab shown while held, a bar row of separate cards with parked windows, larger chip icons, draggable Home cards, PCManFM-Qt icons and Terminal role
 
-`active` · `@legeos.work.hands-on-fixes-20261007/1` · part of `@legeos.work.desktop-polish-and-test-infrastructure-backlog-20261004/2`
+`active` · `@legeos.work.hands-on-fixes-20261007/1` · part of `@legeos.work.desktop-polish-and-test-infrastructure-backlog-20261004/2` · **at risk**
 
 User request 2026-10-07 from the installed TemplarOS session. (1) Alt+Tab appeared for one frame and could not be cycled: the shell's Layer::Presentation switcher surface was hidden by WindowService::is_visible outside Taskfield while the compositor's text HUD stood down for any mapped Presentation surface; the walk is now a WindowService state (set_switch_walk) that shows the surface, and the text HUD yields only to a visible one; every switcher row is titled. (2) The bottom bar's second row stacked windows over each other and kitty got no row: the overlapping fan becomes a row of separate titled cards, and a unit's parked windows (terminals put away by the drop-down chord) count toward the row, never toward the Taskfield handover. (3) Bar chip icons 30% larger (26 to 34 px; chips 40 px tall). (4) Homegarden work cards open on release and can be dragged to free cells, kept as an in-memory pin plus the persisted per-folder hint, never a field tile. (5) PCManFM-Qt showed no icons (FallbackIconThemeName=oxygen, not installed) and launched xterm (not installed): templar-terminal launches the Terminal role provider through sessiond in the folder, /etc/xdg default and a sessiond start-up repair rewrite only invalid Terminal/FallbackIconThemeName values. (6) Rebuild every package so the next login runs the new modules.
 
@@ -1128,6 +1128,8 @@ User request 2026-10-07 from the installed TemplarOS session. (1) Alt+Tab appear
 | `home-card-drag` | command | **satisfied** by `@legeos.evidence.hands-on-20261007-tests/1` |
 | `installed-session` | manual | not satisfied — no evidence |
 | `pcmanfm-terminal-and-icons` | command | **satisfied** by `@legeos.evidence.hands-on-20261007-pcmanfm-terminal/1` |
+
+> **At risk** at depth 1 via `derived_from` → `@legeos.observation.shell-switcher-surface-hidden-outside-taskfield-20261007/1` (stale: `watches "crates/templar-window/src/service.rs"` was matched by `bebca9dc`, which touched `crates/templar-window/src/service.rs`.). See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#hands-on-2026-10-07-alttab-shown-while-held-a-bar-row-of-separate-cards-with-parked-windows-larger-chip-icons-draggable-home-cards-pcmanfm-qt-icons-and-terminal-role).
 
 ## [X1 — a usable FileChooser, an OpenURI portal, the portal in the nested session, and an auditable daily-driver capability matrix](ACTIVE-WORK.md#x1--a-usable-filechooser-an-openuri-portal-the-portal-in-the-nested-session-and-an-auditable-daily-driver-capability-matrix) `@legeos.work.developer-edition-daily-driver/2`
 
@@ -1845,7 +1847,7 @@ crates/lege-file-index/src/lib.rs Index::children (~575-598) retrieves and decod
 
 ### hostd stages candidates at @deployments/<id> and its boot entries name that subvolume, as layout.toml declares
 
-`proposed` · `@legeos.work.hostd-deployments-follow-the-layout-20261002/1` · part of `@legeos.work.ownership-tiers-20261002/1`
+`proposed` · `@legeos.work.hostd-deployments-follow-the-layout-20261002/1` · part of `@legeos.work.ownership-tiers-20261002/1` · **at risk**
 
 Fix @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume.
 - hostd's real configuration derives the deployments location from layout.toml's subvolume_template and the /.deployments mount the provisioner writes, not from state_dir.join("deployments"); the mounted directory (where snapshots are created) and the btrfs subvolume path (what rootflags=subvol= names) are two separate values in Deployment, never one path printed twice.
@@ -1861,6 +1863,8 @@ Fix @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments
 | `config-from-layout` | command | not satisfied — no evidence |
 | `entries-name-the-subvolume` | command | not satisfied — no evidence |
 | `image-path` | command | not satisfied — no evidence |
+
+> **At risk** at depth 1 via `derived_from` → `@legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/4` (stale: `watches "services/templar-hostd/src/**"` was matched by `bebca9dc`, which touched `services/templar-hostd/src/accounts.rs`.). See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#hostd-stages-candidates-at-deploymentsid-and-its-boot-entries-name-that-subvolume-as-layouttoml-declares).
 
 ### The ownership tiers as data the build checks: every subvolume, state path and component names its tier and owner, and every crossing is a declared exception
 
@@ -1899,7 +1903,7 @@ Remove the System-tier leaks in @legeos.observation.the-system-root-is-mutable-i
 | `only-hostd-writes-a-deployment` | command | not satisfied — no evidence |
 | `owner-runs-it` | manual | not satisfied — no evidence |
 
-> **At risk** at depth 1 via `derived_from` → `@legeos.observation.the-system-root-is-mutable-in-place-and-its-package-database-lives-in-var/1` (stale: `watches "installer/provision.sh"` was matched by `98492696`, which touched `installer/provision.sh`.). See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#the-booted-deployment-is-read-only-its-package-database-moves-with-it-and-apt-reaches-the-system-only-through-a-hostd-transaction).
+> **At risk** at depth 1 via `derived_from` → `@legeos.observation.the-system-root-is-mutable-in-place-and-its-package-database-lives-in-var/1` (stale: `watches "distro/deploy/layout.toml"` was matched by `bebca9dc`, which touched `distro/deploy/layout.toml`.). See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#the-booted-deployment-is-read-only-its-package-database-moves-with-it-and-apt-reaches-the-system-only-through-a-hostd-transaction).
 
 ### Work started from a terminal runs in its own unit with an identity that names the application that spawned it, and resourced sees workloads and Flatpak scopes
 

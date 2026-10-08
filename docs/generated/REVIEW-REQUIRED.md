@@ -7,7 +7,7 @@
 
 What should not be trusted without re-checking: records the build flagged `stale` or `at_risk`. Neither flag means a record is wrong (D-003); both mean look at it. This view is generated on every successful build, including one that exits 0 with a long queue (D-024). An empty file on an active project is more often a sign the `watches` globs are wrong than a sign the knowledge is perfect.
 
-## Stale (28)
+## Stale (40)
 
 ### Hands-on run after logout/login: usable but rough — placement, inert tiling menu, no tile drag, widget sprawl, label noise, no drive route
 
@@ -105,12 +105,6 @@ What should not be trusted without re-checking: records the build flagged `stale
 
 **Cause** — `watches "services/templar-sessiond/src/apis/homegarden.rs"` was matched by `504079b7`, which touched `services/templar-sessiond/src/apis/homegarden.rs`.
 
-### A press just below a framed window's visible bottom-right corner lands on Close; the resize corner is a whole tag height lower
-
-`verified` · `@legeos.observation.close-tag-sits-under-the-client-bottom-right-corner/1` · observation · **stale** · [A press just below a framed window's visible bottom-right corner lands on Close; the resize corner is a whole tag height lower](CURRENT-STATE.md#a-press-just-below-a-framed-windows-visible-bottom-right-corner-lands-on-close-the-resize-corner-is-a-whole-tag-height-lower)
-
-**Cause** — `watches "crates/templar-window/src/service.rs"` was matched by `54ca1988`, which touched `crates/templar-window/src/service.rs`.
-
 ### Third hands-on run at the installed desktop: Files object inert by pointer, band over client content, no window controls, no resize route
 
 `verified` · `@legeos.observation.hands-on-run-3-findings-20260903/3` · observation · **stale** · [Third hands-on run at the installed desktop: Files object inert by pointer, band over client content, no window controls, no resize route](CURRENT-STATE.md#third-hands-on-run-at-the-installed-desktop-files-object-inert-by-pointer-band-over-client-content-no-window-controls-no-resize-route)
@@ -171,19 +165,121 @@ What should not be trusted without re-checking: records the build flagged `stale
 
 **Cause** — `watches "session/units/user/templar-sessiond.service"` was matched by `98492696`, which touched `session/units/user/templar-sessiond.service`.
 
+### A role-tied autostart entry with its own desktop id imports a second variant the role gate never matches
+
+`verified` · `@legeos.observation.autostart-role-gate-splits-app-and-autostart-variants/1` · observation · **stale** · [A role-tied autostart entry with its own desktop id imports a second variant the role gate never matches](CURRENT-STATE.md#a-role-tied-autostart-entry-with-its-own-desktop-id-imports-a-second-variant-the-role-gate-never-matches)
+
+**Cause** — `watches "services/templar-sessiond/src/background/autostart.rs"` was matched by `bebca9dc`, which touched `services/templar-sessiond/src/background/autostart.rs`.
+
+### Owner temporarily deferred Claude login and external-agent Resume validation
+
+`verified` · `@legeos.observation.claude-validation-deferred-20261008/2` · observation · **stale** · [Owner temporarily deferred Claude login and external-agent Resume validation](CURRENT-STATE.md#owner-temporarily-deferred-claude-login-and-external-agent-resume-validation)
+
+**Cause** — `watches "services/templar-sessiond/src/apis/homegarden.rs"` was matched by `bebca9dc`, which touched `services/templar-sessiond/src/apis/homegarden.rs`.
+
+### A press just below a framed window's visible bottom-right corner lands on Close; the resize corner is a whole tag height lower
+
+`verified` · `@legeos.observation.close-tag-sits-under-the-client-bottom-right-corner/1` · observation · **stale** · [A press just below a framed window's visible bottom-right corner lands on Close; the resize corner is a whole tag height lower](CURRENT-STATE.md#a-press-just-below-a-framed-windows-visible-bottom-right-corner-lands-on-close-the-resize-corner-is-a-whole-tag-height-lower)
+
+**Cause** — `watches "crates/templar-window/src/geometry.rs"` was matched by `bebca9dc`, which touched `crates/templar-window/src/geometry.rs`.
+
+### Desktop import drops vim on TryExec and ignores Terminal, leaving text handlerless
+
+`verified` · `@legeos.observation.desktop-import-skips-vim-ignores-terminal/1` · observation · **stale** · [Desktop import drops vim on TryExec and ignores Terminal, leaving text handlerless](CURRENT-STATE.md#desktop-import-drops-vim-on-tryexec-and-ignores-terminal-leaving-text-handlerless)
+
+**Cause** — `watches "crates/templar-appd/src/desktop_entry.rs"` was matched by `bebca9dc`, which touched `crates/templar-appd/src/desktop_entry.rs`.
+
+### Selected conservative native desktop forks and owner-controlled activation
+
+`verified` · `@legeos.observation.desktop-polish-selected-forks-20261005/2` · observation · **stale** · [Selected conservative native desktop forks and owner-controlled activation](CURRENT-STATE.md#selected-conservative-native-desktop-forks-and-owner-controlled-activation)
+
+**Cause** — `watches "scripts/reinstall-templaros-desktop.sh"` was matched by `bebca9dc`, which touched `scripts/reinstall-templaros-desktop.sh`.
+
+### legeos.observation.home-garden-external-tend-refresh-20261008
+
+`verified` · `@legeos.observation.home-garden-external-tend-refresh-20261008/2` · observation · **stale** · [legeos.observation.home-garden-external-tend-refresh-20261008](CURRENT-STATE.md#legeosobservationhome-garden-external-tend-refresh-20261008)
+
+**Cause** — `watches "shell/templar-shell/src/surface/app.rs"` was matched by `bebca9dc`, which touched `shell/templar-shell/src/surface/app.rs`.
+
+### Real native guest candidate, rollback and interrupted-stage boot pass; installed/reference hardware gates remain unproven
+
+`verified` · `@legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/4` · observation · **stale** · [Real native guest candidate, rollback and interrupted-stage boot pass; installed/reference hardware gates remain unproven](CURRENT-STATE.md#real-native-guest-candidate-rollback-and-interrupted-stage-boot-pass-installedreference-hardware-gates-remain-unproven)
+
+**Cause** — `watches "services/templar-hostd/src/**"` was matched by `bebca9dc`, which touched `services/templar-hostd/src/accounts.rs`.
+
+### LiminalView native package closes real local sources without fictional Git provenance
+
+`verified` · `@legeos.observation.liminalview-local-source-package-closure-20261006/2` · observation · **stale** · [LiminalView native package closes real local sources without fictional Git provenance](CURRENT-STATE.md#liminalview-native-package-closes-real-local-sources-without-fictional-git-provenance)
+
+**Cause** — `watches "distro/forks/**"` was matched by `bebca9dc`, which touched `distro/forks/README.md`.
+
+### Native manifest provides claims are silently dropped: the schema promises a field the struct lacks
+
+`verified` · `@legeos.observation.native-manifest-provides-claims-are-silently-dropped/1` · observation · **stale** · [Native manifest provides claims are silently dropped: the schema promises a field the struct lacks](CURRENT-STATE.md#native-manifest-provides-claims-are-silently-dropped-the-schema-promises-a-field-the-struct-lacks)
+
+**Cause** — `watches "crates/templar-types/src/app.rs"` was matched by `bebca9dc`, which touched `crates/templar-types/src/app.rs`.
+
+### The shell's Alt+Tab surface was mapped but never drawn: is_visible hid Presentation outside Taskfield while the text HUD stood down for it
+
+`verified` · `@legeos.observation.shell-switcher-surface-hidden-outside-taskfield-20261007/1` · observation · **stale** · [The shell's Alt+Tab surface was mapped but never drawn: is_visible hid Presentation outside Taskfield while the text HUD stood down for it](CURRENT-STATE.md#the-shells-alttab-surface-was-mapped-but-never-drawn-is_visible-hid-presentation-outside-taskfield-while-the-text-hud-stood-down-for-it)
+
+**Cause** — `watches "crates/templar-window/src/service.rs"` was matched by `bebca9dc`, which touched `crates/templar-window/src/service.rs`.
+
+### Windowless launches linger invisibly: no failed-startup detection, dead instances persist, and the default variant cannot be pinned
+
+`verified` · `@legeos.observation.surfaceless-launches-are-invisible-and-unflagged/1` · observation · **stale** · [Windowless launches linger invisibly: no failed-startup detection, dead instances persist, and the default variant cannot be pinned](CURRENT-STATE.md#windowless-launches-linger-invisibly-no-failed-startup-detection-dead-instances-persist-and-the-default-variant-cannot-be-pinned)
+
+**Cause** — `watches "services/templar-sessiond/src/reconcile.rs"` was matched by `bebca9dc`, which touched `services/templar-sessiond/src/reconcile.rs`.
+
 ### The booted system root is read-write, three routes run apt against it in place, and its dpkg database lives in the shared @var
 
 `verified` · `@legeos.observation.the-system-root-is-mutable-in-place-and-its-package-database-lives-in-var/1` · observation · **stale** · [The booted system root is read-write, three routes run apt against it in place, and its dpkg database lives in the shared @var](CURRENT-STATE.md#the-booted-system-root-is-read-write-three-routes-run-apt-against-it-in-place-and-its-dpkg-database-lives-in-the-shared-var)
 
-**Cause** — `watches "installer/provision.sh"` was matched by `98492696`, which touched `installer/provision.sh`.
+**Cause** — `watches "distro/deploy/layout.toml"` was matched by `bebca9dc`, which touched `distro/deploy/layout.toml`.
 
-## At risk (18)
+### A MIME type no handler declares cannot gain a default through any GUI
+
+`verified` · `@legeos.observation.types-without-handlers-cannot-gain-defaults/1` · observation · **stale** · [A MIME type no handler declares cannot gain a default through any GUI](CURRENT-STATE.md#a-mime-type-no-handler-declares-cannot-gain-a-default-through-any-gui)
+
+**Cause** — `watches "crates/templar-associationd/src/engine.rs"` was matched by `bebca9dc`, which touched `crates/templar-associationd/src/engine.rs`.
+
+### On the installed TemplarOS, home plus the project drive need about 0.91x of the index's inotify watch budget, so watcher exhaustion is no longer the expected outcome
+
+`verified` · `@legeos.observation.watch-budget-fits-home-and-project-drive-on-templaros/2` · observation · **stale** · [On the installed TemplarOS, home plus the project drive need about 0.91x of the index's inotify watch budget, so watcher exhaustion is no longer the expected outcome](CURRENT-STATE.md#on-the-installed-templaros-home-plus-the-project-drive-need-about-091x-of-the-indexs-inotify-watch-budget-so-watcher-exhaustion-is-no-longer-the-expected-outcome)
+
+**Cause** — `watches "crates/templar-file-index/src/watch.rs"` was matched by `bebca9dc`, which touched `crates/templar-file-index/src/watch.rs`.
+
+## At risk (23)
+
+### Committed desktop software, native packages and honest owner review boundaries
+
+`verified` · `@legeos.assessment.desktop-polish-software-delivery-and-live-review-20261005/3` · assessment · **depth 1** · [Committed desktop software, native packages and honest owner review boundaries](CURRENT-STATE.md#committed-desktop-software-native-packages-and-honest-owner-review-boundaries)
+
+**Via** `derived_from` → `@legeos.observation.desktop-polish-selected-forks-20261005/2` (stale: `watches "scripts/reinstall-templaros-desktop.sh"` was matched by `bebca9dc`, which touched `scripts/reinstall-templaros-desktop.sh`.)
 
 ### Local state has one authoritative owner with recoverable state-and-event delivery
 
 `active` · `@legeos.decision.event-driven-service-authorities/1` · decision · **depth 1** · [Local state has one authoritative owner with recoverable state-and-event delivery](DECISION-HISTORY.md#revision-1--local-state-has-one-authoritative-owner-with-recoverable-state-and-event-delivery)
 
 **Via** `supported_by` → `@legeos.observation.lege-client-links-rusqlite-through-the-shared-index-types/2` (stale: `watches "crates/templar-client/Cargo.toml"` was matched by `8b2ae246`, which touched `crates/templar-client/Cargo.toml`.)
+
+### inotify stays the index's event backend; fanotify ships behind EventSource as a measured, unadopted alternative
+
+`proposed` · `@legeos.decision.inotify-remains-the-index-event-backend/1` · decision · **depth 1** · [inotify stays the index's event backend; fanotify ships behind EventSource as a measured, unadopted alternative](DECISION-HISTORY.md#revision-1--inotify-stays-the-indexs-event-backend-fanotify-ships-behind-eventsource-as-a-measured-unadopted-alternative)
+
+**Via** `depends_on` → `@legeos.observation.watch-budget-fits-home-and-project-drive-on-templaros/2` (stale: `watches "crates/templar-file-index/src/watch.rs"` was matched by `bebca9dc`, which touched `crates/templar-file-index/src/watch.rs`.)
+
+### TemplarOS has three ownership tiers — System, Applications and workloads, Work — and each crossing between them is declared, owned and checked
+
+`active` · `@legeos.decision.three-ownership-tiers/2` · decision · **depth 1** · [TemplarOS has three ownership tiers — System, Applications and workloads, Work — and each crossing between them is declared, owned and checked](DECISION-HISTORY.md#revision-2--templaros-has-three-ownership-tiers--system-applications-and-workloads-work--and-each-crossing-between-them-is-declared-owned-and-checked)
+
+**Via** `supported_by` → `@legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/4` (stale: `watches "services/templar-hostd/src/**"` was matched by `bebca9dc`, which touched `services/templar-hostd/src/accounts.rs`.)
+
+### Hands-on 2026-10-07: Alt+Tab shown while held, a bar row of separate cards with parked windows, larger chip icons, draggable Home cards, PCManFM-Qt icons and Terminal role
+
+`active` · `@legeos.work.hands-on-fixes-20261007/1` · work · **depth 1** · [Hands-on 2026-10-07: Alt+Tab shown while held, a bar row of separate cards with parked windows, larger chip icons, draggable Home cards, PCManFM-Qt icons and Terminal role](ACTIVE-WORK.md#hands-on-2026-10-07-alttab-shown-while-held-a-bar-row-of-separate-cards-with-parked-windows-larger-chip-icons-draggable-home-cards-pcmanfm-qt-icons-and-terminal-role)
+
+**Via** `derived_from` → `@legeos.observation.shell-switcher-surface-hidden-outside-taskfield-20261007/1` (stale: `watches "crates/templar-window/src/service.rs"` was matched by `bebca9dc`, which touched `crates/templar-window/src/service.rs`.)
 
 ### Act on the second hands-on run: adjustable windows, visible tiling, body-drag tiles, concise labels, a route to drives, one Settings widget
 
@@ -209,11 +305,17 @@ What should not be trusted without re-checking: records the build flagged `stale
 
 **Via** `derived_from` → `@legeos.observation.homegarden-produced-no-visible-place-or-bloom-during-an-hour-of-development-20260908/3` (stale: `watches "services/templar-sessiond/src/apis/homegarden.rs"` was matched by `504079b7`, which touched `services/templar-sessiond/src/apis/homegarden.rs`.)
 
+### hostd stages candidates at @deployments/<id> and its boot entries name that subvolume, as layout.toml declares
+
+`proposed` · `@legeos.work.hostd-deployments-follow-the-layout-20261002/1` · work · **depth 1** · [hostd stages candidates at @deployments/<id> and its boot entries name that subvolume, as layout.toml declares](ACTIVE-WORK.md#hostd-stages-candidates-at-deploymentsid-and-its-boot-entries-name-that-subvolume-as-layouttoml-declares)
+
+**Via** `derived_from` → `@legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/4` (stale: `watches "services/templar-hostd/src/**"` was matched by `bebca9dc`, which touched `services/templar-hostd/src/accounts.rs`.)
+
 ### The booted deployment is read-only, its package database moves with it, and apt reaches the system only through a hostd transaction
 
 `proposed` · `@legeos.work.read-only-system-deployment-20261002/1` · work · **depth 1** · [The booted deployment is read-only, its package database moves with it, and apt reaches the system only through a hostd transaction](ACTIVE-WORK.md#the-booted-deployment-is-read-only-its-package-database-moves-with-it-and-apt-reaches-the-system-only-through-a-hostd-transaction)
 
-**Via** `derived_from` → `@legeos.observation.the-system-root-is-mutable-in-place-and-its-package-database-lives-in-var/1` (stale: `watches "installer/provision.sh"` was matched by `98492696`, which touched `installer/provision.sh`.)
+**Via** `derived_from` → `@legeos.observation.the-system-root-is-mutable-in-place-and-its-package-database-lives-in-var/1` (stale: `watches "distro/deploy/layout.toml"` was matched by `bebca9dc`, which touched `distro/deploy/layout.toml`.)
 
 ### Work started from a terminal runs in its own unit with an identity that names the application that spawned it, and resourced sees workloads and Flatpak scopes
 

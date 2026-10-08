@@ -101,6 +101,8 @@ While smoke-testing `lege trash empty --yes` end to end, the implementing agent 
 
 A role-tied autostart entry whose desktop id differs from its application's desktop id can never autostart once provider claims are honored. services/templar-sessiond/src/background/autostart.rs run() resolves an entry to an existing manifest only by desktop-id match; nm-tray-autostart.desktop does not match the nm-tray.desktop application manifest, so it imports a second variant (desktop-import.nm-tray-autostart.desktop) and ties the role gate to that id. The provider role resolves to the application variant, so plan() returns SkippedNotSelectedProvider for the autostart variant however the person answers the approval: the entry is dead on arrival. Unblocking nm-tray's login autostart needs the two ids unified (one desktop id for app and autostart entry) or the autostart resolution to match by executable/variant rather than by desktop id alone. Observed while fixing the network-status-ui role (live: no autostart file installed, so the chip launches on demand and this is latent, not live).
 
+> **Stale** — `watches "services/templar-sessiond/src/background/autostart.rs"` was matched by `bebca9dc`, which touched `services/templar-sessiond/src/background/autostart.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#a-role-tied-autostart-entry-with-its-own-desktop-id-imports-a-second-variant-the-role-gate-never-matches).
+
 ### Bar and Apps-rail chips fell back to letters for four reasons visible in the code, none confirmed against the installed session's logs
 
 `verified` · `@legeos.observation.bar-chip-icons-missed-for-four-code-reasons-20261004/1`
@@ -133,13 +135,15 @@ On 2026-10-08 the owner explicitly deferred Claude CLI login and the genuine ext
 
 **supersedes** `@legeos.observation.claude-validation-deferred-20261008/1`
 
+> **Stale** — `watches "services/templar-sessiond/src/apis/homegarden.rs"` was matched by `bebca9dc`, which touched `services/templar-sessiond/src/apis/homegarden.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#owner-temporarily-deferred-claude-login-and-external-agent-resume-validation).
+
 ### A press just below a framed window's visible bottom-right corner lands on Close; the resize corner is a whole tag height lower
 
 `verified` · `@legeos.observation.close-tag-sits-under-the-client-bottom-right-corner/1`
 
 Read from the code at 50af378. A framed window's frame is its client plus a TAG_HEIGHT (32) strip below it: WindowService::client_area (crates/templar-window/src/service.rs:1130) returns geometry::client_area(frame), which subtracts the strip from the bottom (geometry.rs:504-511), and tag_strip (geometry.rs:405-414) is the frame's bottom 32 rows. chrome::layout::control_tags (compositor/templar-comp/src/chrome/layout.rs:220-244) packs Park, Maximize, Close against the strip's right edge, so Close is the 32x32 square directly beneath the client's bottom-right 32 pixels. press_target_at (compositor/templar-comp/src/input.rs:276-311) tests a point inside the frame against the control tags before anything else, and resize_edges_at (geometry.rs:544-580) answers only outside the frame, so the bottom-right resize corner begins at frame.bottom(), 32 px below the corner the person can see. A press aimed at the visible bottom-right corner from below or a little inside therefore closes the window; one aimed at the bottom-left corner grabs the name tag (a move or a pin). Inferred from code reading, not reproduced with a pointer; no test in the tree presses the visible client corners through press_target_at.
 
-> **Stale** — `watches "crates/templar-window/src/service.rs"` was matched by `54ca1988`, which touched `crates/templar-window/src/service.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#a-press-just-below-a-framed-windows-visible-bottom-right-corner-lands-on-close-the-resize-corner-is-a-whole-tag-height-lower).
+> **Stale** — `watches "crates/templar-window/src/geometry.rs"` was matched by `bebca9dc`, which touched `crates/templar-window/src/geometry.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#a-press-just-below-a-framed-windows-visible-bottom-right-corner-lands-on-close-the-resize-corner-is-a-whole-tag-height-lower).
 
 ### Nested, the machine cluster once received no pointer events while its input region was declared; the measurement was confounded and the user verifies it by hand
 
@@ -191,6 +195,8 @@ out of the box there is no usable handler for text/plain or
 text/markdown, which combines with the no-chooser dead end (see the
 undeclared-types observation) to make text files unopenable from Files.
 
+> **Stale** — `watches "crates/templar-appd/src/desktop_entry.rs"` was matched by `bebca9dc`, which touched `crates/templar-appd/src/desktop_entry.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#desktop-import-drops-vim-on-tryexec-and-ignores-terminal-leaving-text-handlerless).
+
 ### Selected conservative native desktop forks and owner-controlled activation
 
 `verified` · `@legeos.observation.desktop-polish-selected-forks-20261005/2` · scope `path "scripts/build-elan-fingerprint-deb.py"`, `path "scripts/configure-desktop-access.py"`, `path "scripts/reinstall-templaros-desktop.sh"`, `path "tools/xtask/src/build_set.rs"`
@@ -198,6 +204,8 @@ undeclared-types observation) to make text files unopenable from Files.
 The user explicitly accepted one atomic desktop protocol/presentation cutover while retaining separate archive, login and infrastructure commits, then delegated further choices without another prompt. This run kept installation/logout and physical fingerprint enrollment owner-controlled; chose the pinned owner-supplied OpenSSL-3 ELAN 0.0.8 TOD driver without importing biometric data; implemented owner-applied opt-in internal automount only for active/local dk and explicitly selected Second UUID 2EEE1B6CEE1B2C19; preserved an existing login hint while bootstrapping only a missing one; and retained target/debian as package staging while isolating Cargo caches by OS and worktree. Revisitable forks: separate desktop feature history if protocol/data dependencies are disentangled; replace the vendor TOD plugin only when another implementation supports this exact sensor revision; explicitly opt additional data UUIDs into automount rather than broaden authority; use per-OS package staging only if the deployment workflow is changed end to end. Native DRM smoothness/black-band diagnosis and real fingerprint authentication remain physical next-login observations, not inferred successes. The final addon rebuild also normalized package directories to 0755 and files to 0644 under umask 077; its staging parent remains private. Re-observed against 9619b40 after final release packages and dry-run selection completed.
 
 **supersedes** `@legeos.observation.desktop-polish-selected-forks-20261005/1`
+
+> **Stale** — `watches "scripts/reinstall-templaros-desktop.sh"` was matched by `bebca9dc`, which touched `scripts/reinstall-templaros-desktop.sh`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#selected-conservative-native-desktop-forks-and-owner-controlled-activation).
 
 ### fanotify refuses a filesystem mark on a Btrfs subvolume, and one group cannot hold marks on two subvolumes at all — so it cannot cover LegeOS's declared layout
 
@@ -311,6 +319,8 @@ The change subscribes to both relevant public signals before the initial snapsho
 
 **supersedes** `@legeos.observation.home-garden-external-tend-refresh-20261008/1`
 
+> **Stale** — `watches "shell/templar-shell/src/surface/app.rs"` was matched by `bebca9dc`, which touched `shell/templar-shell/src/surface/app.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#legeosobservationhome-garden-external-tend-refresh-20261008).
+
 ### Home's three-second refresh profiled: what was fixed, and the two service-side costs that remain
 
 `verified` · `@legeos.observation.home-refresh-costs-profiled-20260902/3` · scope `path "services/templar-sessiond/src/apis/audio.rs"`, `path "services/templar-sessiond/src/apis/lifecycle.rs"`, `path "shell/templar-shell/**"`
@@ -382,6 +392,8 @@ Runtime initramfs overlays supplied fresh native hostd and owned observer servic
 
 **supersedes** `@legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/3` · **verified_by** `@legeos.evidence.hostd-native-name-readiness-20261006/1`, `@legeos.evidence.s17-native-interrupted-staging-firmware-known-good-20261006/1`, `@legeos.evidence.s17-s18-owned-native-full-stage-boot-rollback-20261006/1`
 
+> **Stale** — `watches "services/templar-hostd/src/**"` was matched by `bebca9dc`, which touched `services/templar-hostd/src/accounts.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#real-native-guest-candidate-rollback-and-interrupted-stage-boot-pass-installedreference-hardware-gates-remain-unproven).
+
 ### Identity never resolves in a nested session, so the fan, the chip count, grouping and the launcher's running count can only be seen offscreen or on hardware
 
 `verified` · `@legeos.observation.identity-never-resolves-in-a-nested-session/1` · scope `path "crates/templar-window/src/task.rs"`, `path "shell/templar-shell/src/taskbar.rs"`
@@ -451,6 +463,8 @@ separate claims not implied by the package/source closure proof.
 
 **supersedes** `@legeos.observation.liminalview-local-source-package-closure-20261006/1` · **derived_from** `@legeos.work.integration-stabilization-20261005/1` · **verified_by** `@legeos.evidence.liminalview-closed-native-package-20261006/1`, `@legeos.evidence.liminalview-selected-build-set-source-20261006/1`
 
+> **Stale** — `watches "distro/forks/**"` was matched by `bebca9dc`, which touched `distro/forks/README.md`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#liminalview-native-package-closes-real-local-sources-without-fictional-git-provenance).
+
 ### Live USB sessiond failed 226/NAMESPACE because ~/.config/templaros did not exist
 
 `verified` · `@legeos.observation.live-casper-sessiond-namespace-20260911/1` · scope `path "distro/iso/live/customize.sh"`, `path "session/units/user/templar-sessiond.service"`
@@ -492,6 +506,8 @@ To make the comparison honest, take both readings the same way: freshly logged i
 `verified` · `@legeos.observation.native-manifest-provides-claims-are-silently-dropped/1`
 
 A native application manifest cannot claim an exclusive provider role: interfaces/schemas/app-manifest.schema.json documents a provides array (provider-capability items), but templar_types::AppManifest has no such field, so serde silently drops it and nothing downstream ever sees the claim. Only desktop-entry X-TemplarOS-Provides claims (honored by sessiond's claimed-role pass) and live Providers1.Declare calls reach the registry. Adding the field means touching every literal AppManifest construction; until then the schema over-promises and any native provides entry is dead configuration.
+
+> **Stale** — `watches "crates/templar-types/src/app.rs"` was matched by `bebca9dc`, which touched `crates/templar-types/src/app.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#native-manifest-provides-claims-are-silently-dropped-the-schema-promises-a-field-the-struct-lacks).
 
 ### legeos.observation.one-developer-tool-froze-the-machine-for-45-minutes-20260908
 
@@ -621,11 +637,15 @@ already makes for the power controls.
 
 In the installed g1853e26 session every Alt+Tab walk mapped the shell's full-output Layer::Presentation switcher surface about 20 ms after the first press (journal 2026-10-07 00:47: froze targets, trusted-shell surface claim applied, toplevel mapped, committed on release, toplevel destroyed), and the compositor's own steps and commits worked (a two-second hold committed the fifth target). Nothing was visible after the first frame because WindowService::is_visible returned true for Layer::Presentation only under Presentation::Taskfield, so space_sync never put the switcher surface in Space, while chrome::collect_output_chrome suppressed the text HUD for any merely mapped Presentation surface. The person saw the text HUD for one frame and then nothing, and could not tell the selection was moving.
 
+> **Stale** — `watches "crates/templar-window/src/service.rs"` was matched by `bebca9dc`, which touched `crates/templar-window/src/service.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#the-shells-alttab-surface-was-mapped-but-never-drawn-is_visible-hid-presentation-outside-taskfield-while-the-text-hud-stood-down-for-it).
+
 ### Windowless launches linger invisibly: no failed-startup detection, dead instances persist, and the default variant cannot be pinned
 
 `verified` · `@legeos.observation.surfaceless-launches-are-invisible-and-unflagged/1` · scope `path "crates/templar-appd/src/variants.rs"`, `path "services/templar-sessiond/src/background/desktop_import.rs"`, `path "services/templar-sessiond/src/reconcile.rs"`, `path "shell/templar-shell/src/app_search.rs"`, `path "shell/templar-shell/src/data.rs"`, `path "shell/templar-shell/src/surface/field_screen.rs"`
 
 Five launches of Haruna (built from source, installed to ~/.local/bin) all failed within one second with `QQmlApplicationEngine failed to load component` / `module "org.kde.desktop" is not installed`, because only Qt/KF6 -dev packages were installed and the QML runtime modules (qml6-module-org-kde-desktop, -kitemmodels, -kquickcontrols) were missing. Haruna's main.cpp calls engine.loadFromModule() and then unconditionally enters QApplication::exec() with no rootObjects check, so each failed launch kept running as a windowless process in its own app-templaros-desktop-import.org.kde.haruna.desktop@*.service unit. The five zombies were invisible everywhere in the GUI (the compositor and shell only know surfaces, and none were ever committed) yet fully present in the process model: `templar app instances` listed all five, `templar res status` scored them, one even marked visible. Three gaps follow. (1) No failed-startup detection exists: a launch that never maps a surface is indistinguishable from a healthy tray app or daemon, and nothing correlates "launched long ago + zero windows + errors in its unit log" into a warning or an exit. (2) Dead instances linger: the failed flatpak Firefox unit from the same morning was still listed by `templar app instances` hours later, because forget_instance runs only in the startup reconciler (services/templar-sessiond/src/reconcile.rs). (3) The res `visible` flag reads true for windowless processes (the Haruna zombies and nm-tray alike), so it does not mean "has a mapped window". The per-copy origin menu (right-click tile, field_screen.rs context choices fed by fetch_variants) already exists for telling copies apart, but the main search row shows no origin or copy-count hint until that menu is opened, `templar app list` prints bare variant IDs, and default-variant election (variants.rs default_rank: displayable, System-over-User trust, origin order, oldest, id) has no user pinning, so the broken Flatpak Firefox outranks the working tarball with no recourse.
+
+> **Stale** — `watches "services/templar-sessiond/src/reconcile.rs"` was matched by `bebca9dc`, which touched `services/templar-sessiond/src/reconcile.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#windowless-launches-linger-invisibly-no-failed-startup-detection-dead-instances-persist-and-the-default-variant-cannot-be-pinned).
 
 ### Everything a terminal starts is the terminal: identity is the launch unit's cgroup, there is no workload, and the governor sees only Templar launch units
 
@@ -677,7 +697,7 @@ Bootstrapping the medium with legeos-nvidia-open in the include list fails the w
 
 At 50af378. The deployment command line is rootflags=subvol=@ rw (distro/deploy/layout.toml:97) and fstab mounts / from subvol=@ (installer/provision.sh, fstab block around :1219); the first known-good deployment is @ itself (provision.sh around :1481). apt changes that root in place by three routes: the provisioner's chrooted apt-get (provision.sh :1333-1402), templar dev deploy's pinned apt-get install --allow-downgrades on the live / (cli/templar/src/dev/install.rs:110-120), and the owner, whom scripts/update-templaros.sh:44-46 tells to run sudo apt-get upgrade for inherited packages. hostd's own transaction does it the intended way (snapshot, apt-get --root into the candidate, seal read-only: services/templar-hostd/src/updates.rs:280-313, apt.rs:63-84). /var is the separate @var subvolume (provision.sh fstab), so /var/lib/dpkg — the record of what is installed in @ — lives outside @ and outside any snapshot of it; hostd reads it from apt_root/var/lib/dpkg/status (services/templar-hostd/src/state.rs:209,225). [INFERENCE] after a rollback to an older @, the shared dpkg database still describes the newer one. No document states that OS updates must not touch /home; that holds only because @home is its own subvolume, and hostd does reach into @home for file-index checkpoints (services/templar-hostd/src/index_checkpoint.rs:96, polkit allow_active).
 
-> **Stale** — `watches "installer/provision.sh"` was matched by `98492696`, which touched `installer/provision.sh`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#the-booted-system-root-is-read-write-three-routes-run-apt-against-it-in-place-and-its-dpkg-database-lives-in-the-shared-var).
+> **Stale** — `watches "distro/deploy/layout.toml"` was matched by `bebca9dc`, which touched `distro/deploy/layout.toml`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#the-booted-system-root-is-read-write-three-routes-run-apt-against-it-in-place-and-its-dpkg-database-lives-in-the-shared-var).
 
 ### The reference laptop has one 55.9 GiB free tail, a 100 MiB ESP, and a provisioner that only takes a whole disk
 
@@ -718,6 +738,8 @@ within one 15s rescan and accepts a default normally. Scope of impact:
 any type without a declaring handler; text/plain was equally affected
 (see the desktop-import observation).
 
+> **Stale** — `watches "crates/templar-associationd/src/engine.rs"` was matched by `bebca9dc`, which touched `crates/templar-associationd/src/engine.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#a-mime-type-no-handler-declares-cannot-gain-a-default-through-any-gui).
+
 ### Ubuntu 26.04 has no linux-modules-extra; it splits linux-firmware per vendor and lifts some drivers into linux-modules-<name>-generic packages of their own
 
 `verified` · `@legeos.observation.ubuntu-2604-splits-firmware-and-modules-into-per-vendor-packages/2` · scope `path "distro/seeds/selection.toml"`, `path "docs/measurements/hardware-inventory-*"`
@@ -741,6 +763,8 @@ Measured on the reference laptop (kernel 6.17, ext4, uid 1000, no capabilities) 
 Measured on the installed TemplarOS (reference laptop, /home on btrfs @home) on 2026-10-01 with `cargo run -q -p xtask --release -- index-bench dirs`, which counts through the index's own RootPolicy: /home/dk holds 6,445 directories after the skip list, and /mnt/second (the NTFS project drive, ntfs-3g fuseblk) holds 110,258. fs.inotify.max_user_watches is 257,001, so WatchBudget is 128,500; fanotify max_user_marks is 273,909. Home alone needs 0.05x the budget, the project drive 0.86x, and both together about 0.91x, so on this machine neither root nor their sum exhausts the watch budget. The 2026-09-04 premise (189,089 home directories plus 172,681 on the project drive) described the old Lubuntu home and does not hold here; it returns only if the old home is migrated wholesale or another large root is added.
 
 **supersedes** `@legeos.observation.watch-budget-fits-home-and-project-drive-on-templaros/1`
+
+> **Stale** — `watches "crates/templar-file-index/src/watch.rs"` was matched by `bebca9dc`, which touched `crates/templar-file-index/src/watch.rs`. See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#on-the-installed-templaros-home-plus-the-project-drive-need-about-091x-of-the-indexs-inotify-watch-budget-so-watcher-exhaustion-is-no-longer-the-expected-outcome).
 
 ## Assessments
 
@@ -771,6 +795,8 @@ An independent advisor pass (packet ad-9afae8b350d5, result rs-9198dc49c727, fil
 Software cutover is committed and rebuilt for owner next-login review, not deployed into the running desktop. A1-A6 share icon/activity/parked/title rendering, single folder plates, aligned/aspect-preserving Home cards, shell Presentation switcher, symbolic System actions/tooltips and overlapping member chips. A7 relays reduced motion and refines park/unpark geometry; native DRM feel remains unobserved. A8 removes opaque empty-bar fallback frames, but the reported black-band cause was not reproduced and is not claimed fixed. T1 separates native OS caches and worktree targets; only the current Ubuntu 26.04 build was executed, not a Lubuntu-hosted rebuild. T2 passed private X11 input switch/restore and private Wayland-host launcher start/stop. T3 has dropped-completion ownership/rearm/late-event fault tests; real continuous-motion cursor behavior remains a seat check. T4 actual non-TTY logging emits one INFO miss per app without ANSI. T5 structured recents carry exact paths/app/time/MIME through consumers; T6 per-verified-instance prompt-hook cwd changes update Home clusters; T7 persists normalized per-folder hints separately from field tiles and survived process/output changes. Installed Recent clicks, real terminal cd, project zoom and full surface/tooltip/fallback interactions remain manual acceptance, not inferred from fixtures. T8 display-only unverified claims remain marked and cannot acquire trusted grouping/authority. T9 inherited Wayland object/request version checks pass. T10 supported revisions removed pre-rename path/package diagnostics from 149 live records; 29 formerly completed heads were honestly reopened for revalidation rather than repinning historical evidence. Historical missing-test/command warnings and 29 stale/23 at-risk records remain review debt. T11 archive/login/infra slices plus the explicitly approved atomic desktop cutover and corrective source prefixes all pass native just check, including 9619b40. T12 generated the grouped outstanding-manual checklist. Last-user storage persists only StartSessionSuccess, with a missing-only first-upgrade seed and actual greeter restart proof. Native ELAN packaging uses the exact owner Lenovo OpenSSL-3 SHA-pinned plugin and sensor-revision no-autosuspend rule, without migrating biometric data. PAM information/error acknowledgments, queued cancel and password fallback are supported; real fingerprint verification needs owner installation/enrollment/touch. Session-owned lxqt-policykit-agent and udiskie plus active/local dk and explicit UUID 2EEE1B6CEE1B2C19 policy/config address authorization and Second automount; protected live policy activation and actual mounting are owner-run. All 21 native release packages are built at 0.1.0~dev1791205563+g1853e26 in target/debian, plus the supported pinned nm-tray fork Debian package and final permission-normalized ELAN addon. The following source commit 9619b40 changes only fingerprint package staging and its documentation; later ledger commits do not change those runtime artifacts. The owner reinstaller dry-run selected all 13 final binary packages plus nm-tray and executed nothing. Owner sequence: scripts/reinstall-templaros-desktop.sh --skip-build; install the ELAN addon and follow session/units/greetd/README.md for PAM backup/template and fprintd list/enroll/verify; run sudo scripts/configure-desktop-access.py --user dk --mount-uuid 2EEE1B6CEE1B2C19; then owner logout/login and just predeploy-checklist. Revisit forks recorded in desktop-polish-selected-forks-20261005: split desktop history only after protocol dependencies disentangle; replace vendor TOD once exact sensor revision works upstream; expand storage UUIDs explicitly rather than broad grants; change package output layout only end-to-end. The user-provided monitor-dev integration ZIP is preserved as a future proposal, not silently added to this task. No installed desktop service was restarted, no live user-bus development owner started, and no deployment or logout was performed. Final authoritative post-commit strict akr validate at 1368c08 exited 1 for 39 historical G024/G025 command warnings; parsing, typing, linking, resolution and generated views passed, and no G022/G023 rename diagnostics remained. The earlier dirty-ledger no-diagnostics output is retained as an observation, not a final clean-validation claim; the omission/reappearance was reported as a tool papercut. These diagnostics are explicitly disclosed rather than historical evidence being rewritten as new proof.
 
 **supported_by** `@legeos.evidence.committed-greeter-last-user-20261005/1`, `@legeos.evidence.committed-predeploy-checklist-20261005/1`, `@legeos.evidence.committed-source-prefix-checks-20261005/1`, `@legeos.evidence.committed-work-position-memory-20261005/1`, `@legeos.evidence.final-elan-package-permissions-20261005/1`, `@legeos.evidence.final-native-build-set-20261005/1`, `@legeos.evidence.final-reinstaller-dry-run-20261005/1`, `@legeos.evidence.final-release-desktop-journey-20261005/1` · **supersedes** `@legeos.assessment.desktop-polish-software-delivery-and-live-review-20261005/2` · **derived_from** `@legeos.observation.desktop-polish-selected-forks-20261005/2`
+
+> **At risk** at depth 1 via `derived_from` → `@legeos.observation.desktop-polish-selected-forks-20261005/2` (stale: `watches "scripts/reinstall-templaros-desktop.sh"` was matched by `bebca9dc`, which touched `scripts/reinstall-templaros-desktop.sh`.). See [REVIEW-REQUIRED.md](REVIEW-REQUIRED.md#committed-desktop-software-native-packages-and-honest-owner-review-boundaries).
 
 ### Desktop scope: existing captures and broken notification arrival signals; tab counts need app binding; corner-following revises old proposal
 
