@@ -12,7 +12,6 @@ use zbus::fdo;
 /// WirePlumber's name for "whatever the user is listening through".
 const DEFAULT_SINK: &str = "@DEFAULT_AUDIO_SINK@";
 
-
 /// What this interface needs from WirePlumber.
 #[async_trait]
 pub trait AudioControl: Send + Sync + std::fmt::Debug {
@@ -55,27 +54,40 @@ pub fn parse_inventory(json: &str) -> Result<AudioInventory> {
         }
     }
     for object in &objects {
-        if object["type"] != "PipeWire:Interface:Node" { continue; }
+        if object["type"] != "PipeWire:Interface:Node" {
+            continue;
+        }
         let props = &object["info"]["props"];
         let direction = match props["media.class"].as_str() {
             Some("Audio/Sink") => AudioDirection::Output,
             Some("Audio/Source") => AudioDirection::Input,
             _ => continue,
         };
-        let Some(name) = props["node.name"].as_str() else { continue; };
-        let Some(id) = object["id"].as_u64().and_then(|id| u32::try_from(id).ok()) else { continue; };
-        let Some(serial) = props["object.serial"].as_u64() else { continue; };
+        let Some(name) = props["node.name"].as_str() else {
+            continue;
+        };
+        let Some(id) = object["id"].as_u64().and_then(|id| u32::try_from(id).ok()) else {
+            continue;
+        };
+        let Some(serial) = props["object.serial"].as_u64() else {
+            continue;
+        };
         let default = match direction {
             AudioDirection::Output => &inventory.default_output,
             AudioDirection::Input => &inventory.default_input,
         };
         inventory.devices.push(AudioDevice {
-            id, serial, name: name.into(), direction,
+            id,
+            serial,
+            name: name.into(),
+            direction,
             description: props["node.description"].as_str().unwrap_or(name).into(),
             is_default: default.as_deref() == Some(name),
         });
     }
-    inventory.devices.sort_by(|left, right| left.name.cmp(&right.name));
+    inventory
+        .devices
+        .sort_by(|left, right| left.name.cmp(&right.name));
     Ok(inventory)
 }
 
@@ -132,16 +144,23 @@ pub struct AudioApi {
 
 impl AudioApi {
     pub fn new(control: Arc<dyn AudioControl>, store: Store) -> Self {
-        Self { control, store, writes: tokio::sync::Mutex::new(()) }
+        Self {
+            control,
+            store,
+            writes: tokio::sync::Mutex::new(()),
+        }
     }
 
     /// No readable default is unavailable, not a fabricated zero-volume device.
     pub async fn state(&self) -> AudioState {
         let output = match self.control.wpctl(&["get-volume", DEFAULT_SINK]).await {
             Ok(output) => output,
-            Err(error) => return AudioState {
-                unavailable_reason: Some(error.to_string()), ..AudioState::default()
-            },
+            Err(error) => {
+                return AudioState {
+                    unavailable_reason: Some(error.to_string()),
+                    ..AudioState::default()
+                };
+            }
         };
         match parse_volume(&output) {
             Ok((volume_percent, muted)) => AudioState {
@@ -154,7 +173,10 @@ impl AudioApi {
             // worth a log line, but it is still not a reason to claim the volume is zero.
             Err(error) => {
                 tracing::warn!(%error, "could not read the default sink's volume");
-                AudioState { unavailable_reason: Some(error.to_string()), ..AudioState::default() }
+                AudioState {
+                    unavailable_reason: Some(error.to_string()),
+                    ..AudioState::default()
+                }
             }
         }
     }
@@ -172,11 +194,17 @@ impl AudioApi {
     }
 
     fn preference(&self, direction: AudioDirection) -> Result<Option<String>> {
-        let json: Option<String> = self.store.lock().query_row(
-            "SELECT value_json FROM settings_values WHERE key = ?1",
-            [preference_key(direction)], |row| row.get(0)
-        ).optional()?;
-        json.map(|json| serde_json::from_str(&json).map_err(Into::into)).transpose()
+        let json: Option<String> = self
+            .store
+            .lock()
+            .query_row(
+                "SELECT value_json FROM settings_values WHERE key = ?1",
+                [preference_key(direction)],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|json| serde_json::from_str(&json).map_err(Into::into))
+            .transpose()
     }
 
     async fn inventory_state(&self) -> Result<AudioInventory> {
@@ -189,10 +217,14 @@ impl AudioApi {
     async fn select(&self, direction: AudioDirection, name: &str) -> Result<()> {
         let _write = self.writes.lock().await;
         let inventory = self.control.inventory().await?;
-        let device = inventory.devices.iter().find(|device|
-            device.direction == direction && device.name == name
-        ).context("audio device disappeared or belongs to a different direction")?;
-        self.control.wpctl(&["set-default", &device.id.to_string()]).await?;
+        let device = inventory
+            .devices
+            .iter()
+            .find(|device| device.direction == direction && device.name == name)
+            .context("audio device disappeared or belongs to a different direction")?;
+        self.control
+            .wpctl(&["set-default", &device.id.to_string()])
+            .await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         loop {
             let observed = self.control.inventory().await?;
@@ -200,7 +232,9 @@ impl AudioApi {
                 AudioDirection::Output => observed.default_output,
                 AudioDirection::Input => observed.default_input,
             };
-            if applied.as_deref() == Some(name) { break; }
+            if applied.as_deref() == Some(name) {
+                break;
+            }
             if tokio::time::Instant::now() >= deadline {
                 bail!("WirePlumber did not apply the requested audio device");
             }
@@ -238,11 +272,14 @@ impl AudioApi {
     }
 
     async fn select_device(
-        &self, direction: &str, name: &str,
+        &self,
+        direction: &str,
+        name: &str,
         #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
     ) -> fdo::Result<()> {
         let direction = match direction {
-            "output" => AudioDirection::Output, "input" => AudioDirection::Input,
+            "output" => AudioDirection::Output,
+            "input" => AudioDirection::Input,
             _ => return Err(fdo::Error::InvalidArgs("expected input or output".into())),
         };
         self.select(direction, name).await.map_err(failed)?;
@@ -333,9 +370,11 @@ pub fn spawn_watch(connection: zbus::Connection) {
                 // the last working route. Repeated reconnect failures are the same transition.
                 if !disconnected {
                     disconnected = true;
-                    if let Ok(interface) = connection.object_server().interface::<_, AudioApi>(
-                        templar_types::dbus::session::AUDIO_PATH,
-                    ).await {
+                    if let Ok(interface) = connection
+                        .object_server()
+                        .interface::<_, AudioApi>(templar_types::dbus::session::AUDIO_PATH)
+                        .await
+                    {
                         let _ = AudioApi::changed(interface.signal_emitter()).await;
                     }
                 }
@@ -346,49 +385,76 @@ pub fn spawn_watch(connection: zbus::Connection) {
 }
 
 async fn watch_once(connection: &zbus::Connection, disconnected: &mut bool) -> Result<()> {
-    use tokio::io::AsyncReadExt as _;
     use std::{collections::HashSet, process::Stdio};
-    let mut child = tokio::process::Command::new("pw-dump").arg("--monitor")
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
-        .kill_on_drop(true).spawn().context("starting PipeWire monitor")?;
+    use tokio::io::AsyncReadExt as _;
+    let mut child = tokio::process::Command::new("pw-dump")
+        .arg("--monitor")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .context("starting PipeWire monitor")?;
     let mut stdout = child.stdout.take().context("monitor stdout unavailable")?;
-    let interface = connection.object_server().interface::<_, AudioApi>(
-        templar_types::dbus::session::AUDIO_PATH
-    ).await?;
+    let interface = connection
+        .object_server()
+        .interface::<_, AudioApi>(templar_types::dbus::session::AUDIO_PATH)
+        .await?;
     let mut previous = None;
     let mut known = HashSet::<u64>::new();
     let mut frames = MonitorFrames::default();
     let mut chunk = [0u8; 8192];
     loop {
         let count = stdout.read(&mut chunk).await?;
-        if count == 0 { bail!("PipeWire monitor exited: {}", child.wait().await?); }
+        if count == 0 {
+            bail!("PipeWire monitor exited: {}", child.wait().await?);
+        }
         let mut relevant = false;
         frames.push(&chunk[..count], |objects| {
             for object in objects {
-                let Some(id) = object["id"].as_u64() else { continue; };
+                let Some(id) = object["id"].as_u64() else {
+                    continue;
+                };
                 let interesting = object["type"] == "PipeWire:Interface:Node"
                     || (object["type"] == "PipeWire:Interface:Metadata"
                         && object["props"]["metadata.name"] == "default");
-                if interesting { known.insert(id); }
+                if interesting {
+                    known.insert(id);
+                }
                 if interesting || known.contains(&id) {
                     relevant = true;
-                    if object["info"].is_null() && object["type"].is_null() { known.remove(&id); }
+                    if object["info"].is_null() && object["type"].is_null() {
+                        known.remove(&id);
+                    }
                 }
             }
         })?;
-        if !relevant { continue; }
+        if !relevant {
+            continue;
+        }
         let api = interface.get().await;
         let inventory = api.inventory_state().await?;
         // A saved stable preference is reapplied only at startup or when its device reappears,
         // never on a volume/default edit by another application.
         for (direction, preference) in [
-            (AudioDirection::Output, inventory.preferred_output.as_deref()),
+            (
+                AudioDirection::Output,
+                inventory.preferred_output.as_deref(),
+            ),
             (AudioDirection::Input, inventory.preferred_input.as_deref()),
         ] {
             if let Some(name) = preference
-                && inventory.devices.iter().any(|device| device.name == name && device.direction == direction)
-                && previous.as_ref().is_none_or(|(_, old): &(AudioState, AudioInventory)|
-                    !old.devices.iter().any(|device| device.name == name && device.direction == direction))
+                && inventory
+                    .devices
+                    .iter()
+                    .any(|device| device.name == name && device.direction == direction)
+                && previous
+                    .as_ref()
+                    .is_none_or(|(_, old): &(AudioState, AudioInventory)| {
+                        !old.devices
+                            .iter()
+                            .any(|device| device.name == name && device.direction == direction)
+                    })
                 && let Err(error) = api.select(direction, name).await
             {
                 tracing::warn!(%error, ?direction, "could not restore audio device preference");
@@ -397,8 +463,9 @@ async fn watch_once(connection: &zbus::Connection, disconnected: &mut bool) -> R
         let state = api.state().await;
         let inventory = api.inventory_state().await?;
         *disconnected = false;
-        if previous.as_ref().is_none_or(|(old_state, old_inventory)|
-            old_state != &state || old_inventory != &inventory) {
+        if previous.as_ref().is_none_or(|(old_state, old_inventory)| {
+            old_state != &state || old_inventory != &inventory
+        }) {
             previous = Some((state, inventory));
             let _ = AudioApi::changed(interface.signal_emitter()).await;
         }
@@ -416,18 +483,31 @@ struct MonitorFrames {
 impl MonitorFrames {
     fn push(&mut self, chunk: &[u8], mut frame: impl FnMut(Vec<serde_json::Value>)) -> Result<()> {
         for &byte in chunk {
-            if self.bytes.is_empty() && byte.is_ascii_whitespace() { continue; }
-            if self.bytes.len() == 8 * 1024 * 1024 { bail!("PipeWire monitor frame exceeded 8 MiB"); }
+            if self.bytes.is_empty() && byte.is_ascii_whitespace() {
+                continue;
+            }
+            if self.bytes.len() == 8 * 1024 * 1024 {
+                bail!("PipeWire monitor frame exceeded 8 MiB");
+            }
             self.bytes.push(byte);
             if self.quoted {
-                if self.escaped { self.escaped = false; }
-                else if byte == b'\\' { self.escaped = true; }
-                else if byte == b'\"' { self.quoted = false; }
+                if self.escaped {
+                    self.escaped = false;
+                } else if byte == b'\\' {
+                    self.escaped = true;
+                } else if byte == b'\"' {
+                    self.quoted = false;
+                }
             } else {
                 match byte {
                     b'\"' => self.quoted = true,
                     b'[' | b'{' => self.depth += 1,
-                    b']' | b'}' => self.depth = self.depth.checked_sub(1).context("malformed monitor frame")?,
+                    b']' | b'}' => {
+                        self.depth = self
+                            .depth
+                            .checked_sub(1)
+                            .context("malformed monitor frame")?
+                    }
                     _ => {}
                 }
             }
@@ -466,7 +546,6 @@ mod tests {
         assert_eq!(step_to(0, -5), 0);
     }
 
-
     #[test]
     fn wpctls_real_output_shapes_parse() {
         assert_eq!(parse_volume("Volume: 0.45\n").unwrap(), (45, false));
@@ -479,5 +558,4 @@ mod tests {
             assert!(parse_volume(rubbish).is_err(), "{rubbish:?}");
         }
     }
-
 }

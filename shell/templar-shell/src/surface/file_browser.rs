@@ -32,7 +32,7 @@ pub fn theme_icon_key(name: &str) -> String {
 }
 const TOOLBAR_HEIGHT: i32 = 42;
 const COLUMNS_HEIGHT: i32 = 28;
-const ENTRY_HEIGHT: i32 = 38;
+pub(super) const ENTRY_HEIGHT: i32 = 38;
 
 /// The ordinary file verbs, named once so the keyboard and the pointer reach the same thing.
 ///
@@ -185,6 +185,7 @@ pub struct FileBrowserData<'a> {
     pub status: Option<&'a str>,
     pub search_query: Option<&'a str>,
     pub search_entries: Option<&'a [BrowseEntry]>,
+    pub search_pages: Option<&'a crate::surface::search_pages::SearchPages>,
     pub search_error: Option<&'a str>,
     /// The rows a feed location shows, already rendered by `crate::drawers`.
     pub feeds: &'a HashMap<crate::home_surface::Drawer, crate::drawers::DrawerFeed>,
@@ -203,6 +204,8 @@ pub struct FileBrowserData<'a> {
 /// the dialogue that is on screen right now.
 #[derive(Debug, Default)]
 pub struct FilesBrowseView {
+    pub search_visible: (usize, usize),
+    entry_heights: Vec<i32>,
     /// The open rename dialogue, if any.
     rename: Option<RenameDialog>,
     /// The secondary-click menu over a row or over the ground between rows. The field's widget
@@ -327,7 +330,9 @@ impl FilesBrowseView {
             );
             &ordered
         };
-        state.retain_selection(visible_entries);
+        if data.search_pages.is_none() {
+            state.retain_selection(visible_entries);
+        }
         if !pending {
             state.observe(listing.map(|listing| listing.directory.as_path()));
         }
@@ -366,7 +371,15 @@ impl FilesBrowseView {
             } else {
                 1
             };
-            action = self.handle_keys(ui, state, data.sources, listing, visible_entries, columns);
+            action = self.handle_keys(
+                ui,
+                state,
+                data.sources,
+                listing,
+                visible_entries,
+                columns,
+                data.search_pages,
+            );
         }
 
         ui.panel(area);
@@ -397,7 +410,8 @@ impl FilesBrowseView {
                 Align::Left,
             );
         } else if searching {
-            if visible_entries.is_empty() {
+            if visible_entries.is_empty() && data.search_pages.is_none_or(|rows| rows.retained == 0)
+            {
                 ui.label(
                     entries_area.inset(ui.px(12)),
                     "No matches.",
@@ -405,7 +419,14 @@ impl FilesBrowseView {
                     Align::Left,
                 );
             } else {
-                let drawn = self.draw_entries(ui, entries_area, state, visible_entries, false);
+                let drawn = self.draw_entries(
+                    ui,
+                    entries_area,
+                    state,
+                    visible_entries,
+                    false,
+                    data.search_pages,
+                );
                 if action.is_none() {
                     action = drawn;
                 }
@@ -421,7 +442,14 @@ impl FilesBrowseView {
             let drawn = if state.view == ViewMode::Thumbnails {
                 self.draw_thumbnails(ui, entries_area, state, visible_entries, data.thumbnails)
             } else {
-                self.draw_entries(ui, entries_area, state, visible_entries, listing.truncated)
+                self.draw_entries(
+                    ui,
+                    entries_area,
+                    state,
+                    visible_entries,
+                    listing.truncated,
+                    None,
+                )
             };
             if action.is_none() {
                 action = drawn;
@@ -673,11 +701,33 @@ impl FilesBrowseView {
         listing: Option<&DirectoryListing>,
         entries: &[BrowseEntry],
         columns: usize,
+        pages: Option<&crate::surface::search_pages::SearchPages>,
     ) -> Option<FileBrowserAction> {
         let mut action = None;
         let modifiers = ui.input.modifiers();
         let directory = listing.map(|listing| listing.directory.as_path());
-        let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
+        let count = pages.map_or(entries.len(), |rows| rows.retained as usize);
+        let entry_at =
+            |index: usize| pages.map_or_else(|| entries.get(index), |rows| rows.entry(index));
+        let focus_entry = |state: &mut FilesSurfaceState, index: usize, extend: bool| {
+            if pages.is_none() {
+                state.focus_entry(index, entries, extend);
+                return;
+            }
+            let previous = state.focus;
+            state.focus = index.min(count.saturating_sub(1));
+            if let Some(entry) = entry_at(state.focus) {
+                if extend {
+                    let order: Vec<_> = (previous.min(state.focus)..=previous.max(state.focus))
+                        .filter_map(entry_at)
+                        .map(|entry| entry.path.clone())
+                        .collect();
+                    state.selection.extend_to(&order, entry.path.clone());
+                } else {
+                    state.selection.replace(entry.path.clone());
+                }
+            }
+        };
         for key in ui.input.keys() {
             match key {
                 KeyInput::Left if modifiers.alt => {
@@ -711,7 +761,7 @@ impl FilesBrowseView {
                     } else {
                         state.focus.saturating_add(1)
                     };
-                    state.focus_entry(to, entries, modifiers.shift);
+                    focus_entry(state, to, modifiers.shift);
                 }
 
                 // The ordinary file verbs. Surface-local accelerators, exactly like Ctrl+G and
@@ -761,7 +811,7 @@ impl FilesBrowseView {
                     }
                     FocusArea::Entries => {
                         let to = state.focus.saturating_sub(columns);
-                        state.focus_entry(to, entries, modifiers.shift);
+                        focus_entry(state, to, modifiers.shift);
                     }
                 },
                 KeyInput::Down => match state.focus_area {
@@ -771,29 +821,29 @@ impl FilesBrowseView {
                     }
                     FocusArea::Entries => {
                         let to = state.focus.saturating_add(columns);
-                        state.focus_entry(to, entries, modifiers.shift);
+                        focus_entry(state, to, modifiers.shift);
                     }
                 },
                 KeyInput::Home => match state.focus_area {
                     FocusArea::Pinned => state.pinned_focus = 0,
-                    FocusArea::Entries => state.focus_entry(0, entries, modifiers.shift),
+                    FocusArea::Entries => focus_entry(state, 0, modifiers.shift),
                 },
                 KeyInput::End => match state.focus_area {
                     FocusArea::Pinned => {
                         state.pinned_focus = sources.pinned.len().saturating_sub(1);
                     }
                     FocusArea::Entries => {
-                        state.focus_entry(
-                            entries.len().saturating_sub(1),
-                            entries,
-                            modifiers.shift,
-                        );
+                        focus_entry(state, count.saturating_sub(1), modifiers.shift);
                     }
                 },
                 KeyInput::Backspace => {
                     state.go_up(listing.and_then(|listing| listing.parent.as_deref()));
                 }
                 KeyInput::Character('a' | 'A') if modifiers.control => {
+                    let order: Vec<_> = (0..count)
+                        .filter_map(entry_at)
+                        .map(|entry| entry.path.clone())
+                        .collect();
                     state.selection.select_all(&order);
                     state.focus = 0;
                     state.focus_area = FocusArea::Entries;
@@ -805,7 +855,7 @@ impl FilesBrowseView {
                         }
                     }
                     FocusArea::Entries => {
-                        if let Some(entry) = entries.get(state.focus) {
+                        if let Some(entry) = entry_at(state.focus) {
                             action = activate(state, entry);
                         }
                     }
@@ -1500,8 +1550,10 @@ impl FilesBrowseView {
         state: &mut FilesSurfaceState,
         entries: &[BrowseEntry],
         truncated: bool,
+        pages: Option<&crate::surface::search_pages::SearchPages>,
     ) -> Option<FileBrowserAction> {
-        if entries.is_empty() {
+        let count = pages.map_or(entries.len(), |rows| rows.retained as usize);
+        if count == 0 {
             ui.label(
                 area.inset(ui.px(12)),
                 "This folder is empty.",
@@ -1510,13 +1562,33 @@ impl FilesBrowseView {
             );
             return None;
         }
-        Self::reveal_keyboard_focus(ui, state, area, ui.px(ENTRY_HEIGHT), 1, entries.len());
-        let heights = vec![ui.px(ENTRY_HEIGHT); entries.len()];
+        Self::reveal_keyboard_focus(ui, state, area, ui.px(ENTRY_HEIGHT), 1, count);
+        self.entry_heights
+            .resize(entries.len(), ui.px(ENTRY_HEIGHT));
+        if self
+            .entry_heights
+            .first()
+            .is_some_and(|height| *height != ui.px(ENTRY_HEIGHT))
+        {
+            self.entry_heights.fill(ui.px(ENTRY_HEIGHT));
+        }
+        let heights = pages.map_or(self.entry_heights.as_slice(), |rows| {
+            rows.heights.as_slice()
+        });
         let mut selected = None;
         let mut secondary: Option<(i32, i32)> = None;
-        let order: Vec<PathBuf> = entries.iter().map(|entry| entry.path.clone()).collect();
-        ui.scroll_list(&mut state.entry_scroll, area, &heights, |ui, index, row| {
-            let entry = &entries[index];
+        let entry_at =
+            |index: usize| pages.map_or_else(|| entries.get(index), |rows| rows.entry(index));
+        let list = ui.scroll_list(&mut state.entry_scroll, area, heights, |ui, index, row| {
+            let Some(entry) = entry_at(index) else {
+                ui.label(
+                    row.inset(ui.px(7)),
+                    "Loading matches…",
+                    ui.theme.text_dim,
+                    Align::Left,
+                );
+                return;
+            };
             let focused = state.focus_area == FocusArea::Entries && state.focus == index;
             let in_selection = state.selection.contains(&entry.path);
             if focused || in_selection {
@@ -1589,10 +1661,14 @@ impl FilesBrowseView {
                     state.selection.toggle(entry.path.clone());
                 } else if modifiers.shift {
                     if state.selection.is_empty()
-                        && let Some(anchor) = entries.get(previous)
+                        && let Some(anchor) = entry_at(previous)
                     {
                         state.selection.replace(anchor.path.clone());
                     }
+                    let order: Vec<_> = (previous.min(index)..=previous.max(index))
+                        .filter_map(entry_at)
+                        .map(|entry| entry.path.clone())
+                        .collect();
                     state.selection.extend_to(&order, entry.path.clone());
                 } else if state.selection.len() == 1 && state.selection.contains(&entry.path) {
                     // The second press on the one selected row opens it. The first press only
@@ -1605,6 +1681,11 @@ impl FilesBrowseView {
                 }
             }
         });
+        self.search_visible = if pages.is_some() {
+            list.visible
+        } else {
+            (0, 0)
+        };
         if let Some(at) = secondary {
             let target = crate::surface::context_menu::FilesTarget {
                 row: true,
@@ -1640,6 +1721,45 @@ fn activate(state: &mut FilesSurfaceState, entry: &BrowseEntry) -> Option<FileBr
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn paged_search_scrolls_past_258_to_the_final_native_match() {
+        use crate::surface::search_pages::SearchPages;
+        let mut h = Harness::new();
+        h.state.replace(FilesLocation::Search {
+            root: h.listing.directory.clone(),
+            query: "paging-".into(),
+        });
+        h.state.focus_area = FocusArea::Entries;
+        let entry = |n: usize| BrowseEntry {
+            path: PathBuf::from(format!("/native/paging-{n:04}.txt")),
+            name: format!("paging-{n:04}.txt"),
+            kind: crate::file_browser::EntryKind::File,
+            hidden: false,
+            is_symlink: false,
+            size_bytes: 4,
+            mtime_ms: 0,
+        };
+        let first: Vec<_> = (0..100).map(entry).collect();
+        let mut pages = SearchPages::new(9, 2000, first.iter().cloned().map(Some).collect());
+        pages.heights.fill(ENTRY_HEIGHT);
+        h.input.key(KeyInput::End);
+        h.frame_paged(Some("paging-"), Some(&first), Some(&pages));
+        assert_eq!(h.state.focus, 1999);
+        assert_eq!(h.screen.search_visible.1, 2000);
+        assert!(pages.request(h.screen.search_visible).contains(&19));
+        assert!(pages.accept(9, 19, (1900..2000).map(|n| Some(entry(n))).collect()));
+        h.frame_paged(Some("paging-"), Some(&first), Some(&pages));
+        h.input.key(KeyInput::Enter);
+        assert_eq!(
+            h.frame_paged(Some("paging-"), Some(&first), Some(&pages)),
+            Some(FileBrowserAction::Open(PathBuf::from(
+                "/native/paging-1999.txt"
+            )))
+        );
+        if let Some(path) = std::env::var_os("TEMPLAR_PAGED_RENDER_ARTIFACT") {
+            crate::surface::offscreen::write_png(Path::new(&path), &h.buffer).unwrap();
+        }
+    }
     use super::*;
     use crate::file_browser::EntryKind;
     use crate::files_surface::{PinnedKind, PinnedLocation};
@@ -1679,6 +1799,7 @@ mod tests {
                 status: None,
                 search_query: None,
                 search_entries: None,
+                search_pages: None,
                 search_error: None,
                 feeds: &feeds,
                 thumbnails: &thumbnails,
@@ -1799,6 +1920,15 @@ mod tests {
             search_query: Option<&str>,
             search_entries: Option<&[BrowseEntry]>,
         ) -> Option<FileBrowserAction> {
+            self.frame_paged(search_query, search_entries, None)
+        }
+
+        fn frame_paged(
+            &mut self,
+            search_query: Option<&str>,
+            search_entries: Option<&[BrowseEntry]>,
+            pages: Option<&crate::surface::search_pages::SearchPages>,
+        ) -> Option<FileBrowserAction> {
             let empty_thumbnails = std::collections::HashMap::new();
             let empty_feeds = std::collections::HashMap::new();
             let here = FilesLocation::Directory(self.listing.directory.clone());
@@ -1810,6 +1940,7 @@ mod tests {
                 status: None,
                 search_query,
                 search_entries,
+                search_pages: pages,
                 search_error: None,
                 feeds: &empty_feeds,
                 thumbnails: &empty_thumbnails,

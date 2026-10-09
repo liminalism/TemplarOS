@@ -23,8 +23,14 @@ pub fn recompute_outputs<B: Backend + 'static>(state: &mut TemplarCompState<B>) 
 
 /// Worker transaction snapshots repair window geometry without invalidating their own
 /// pending preview; real hotplug still uses `recompute_outputs` with topology=true.
-pub(crate) fn recompute_outputs_with_event<B: Backend + 'static>(state: &mut TemplarCompState<B>, topology_event: bool) {
-    state.session_lock.outputs_changed(state.space.outputs(), state.backend_data.unknown_physical_outputs());
+pub(crate) fn recompute_outputs_with_event<B: Backend + 'static>(
+    state: &mut TemplarCompState<B>,
+    topology_event: bool,
+) {
+    state.session_lock.outputs_changed(
+        state.space.outputs(),
+        state.backend_data.unknown_physical_outputs(),
+    );
     let outputs: Vec<templar_window::Output> = state
         .space
         .outputs()

@@ -1,7 +1,11 @@
 //! Async portal requests and compatible main-thread PixelKit Wayland/X11 hosts.
 use crate::dialog;
 use pixelkit_windowing::{PixelApp, Waker, WindowConfig};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use tokio::sync::oneshot;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -38,15 +42,28 @@ impl Client {
         let abandoned = Arc::new(AtomicBool::new(false));
         // Dropping the awaiting D-Bus future (Close, caller loss or deadline)
         // must retire its window, even if it has not been opened yet.
-        let _guard = Abandon { abandoned: abandoned.clone(), waker: self.waker.clone() };
-        self.sender.send(Pending { model, answer, abandoned })
+        let _guard = Abandon {
+            abandoned: abandoned.clone(),
+            waker: self.waker.clone(),
+        };
+        self.sender
+            .send(Pending {
+                model,
+                answer,
+                abandoned,
+            })
             .map_err(|_| UiError("graphical host stopped".into()))?;
         self.waker.wake();
-        received.await.map_err(|_| UiError("graphical response channel closed".into()))?
+        received
+            .await
+            .map_err(|_| UiError("graphical response channel closed".into()))?
     }
 }
 
-struct Abandon { abandoned: Arc<AtomicBool>, waker: Waker }
+struct Abandon {
+    abandoned: Arc<AtomicBool>,
+    waker: Waker,
+}
 impl Drop for Abandon {
     fn drop(&mut self) {
         self.abandoned.store(true, Ordering::Release);
@@ -55,16 +72,17 @@ impl Drop for Abandon {
 }
 
 fn window(pending: Pending) -> (WindowConfig, Box<dyn PixelApp>) {
-    let mut config = WindowConfig::new(pending.model.title(), 720.0, 560.0)
-        .min_size(560.0, 440.0);
+    let mut config = WindowConfig::new(pending.model.title(), 720.0, 560.0).min_size(560.0, 440.0);
     config.activation_token = pending.model.activation_token().map(str::to_owned);
     (config, dialog::application(pending))
 }
 
 pub fn receive(receiver: &mpsc::Receiver<Pending>) -> Vec<(WindowConfig, Box<dyn PixelApp>)> {
-    receiver.try_iter()
+    receiver
+        .try_iter()
         .filter(|pending| !pending.abandoned.load(Ordering::Acquire) && !pending.answer.is_closed())
-        .map(window).collect()
+        .map(window)
+        .collect()
 }
 
 /// Winit chooses one display protocol for a process. Use an owned process only
@@ -79,9 +97,12 @@ async fn request_x11(spec: dialog::Spec) -> UiResult<dialog::Answer> {
     let owner = libc::pid_t::try_from(std::process::id())
         .map_err(|_| UiError("invalid native picker owner PID".into()))?;
     let mut command = tokio::process::Command::new(executable);
-    command.arg("--x11-dialog")
+    command
+        .arg("--x11-dialog")
         .env_remove("WAYLAND_DISPLAY")
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
         .kill_on_drop(true);
     // SAFETY: only async-signal-safe syscalls/error construction run between
     // fork and exec. Recheck PPID to close the race before the death signal was armed.
@@ -96,16 +117,28 @@ async fn request_x11(spec: dialog::Spec) -> UiResult<dialog::Answer> {
             Ok(())
         });
     }
-    let mut child = command.spawn()
+    let mut child = command
+        .spawn()
         .map_err(|error| UiError(format!("starting native X11 picker: {error}")))?;
     {
-        let mut input = child.stdin.take().ok_or_else(|| UiError("X11 picker input unavailable".into()))?;
-        input.write_all(&bytes).await.map_err(|error| UiError(format!("sending X11 picker request: {error}")))?;
+        let mut input = child
+            .stdin
+            .take()
+            .ok_or_else(|| UiError("X11 picker input unavailable".into()))?;
+        input
+            .write_all(&bytes)
+            .await
+            .map_err(|error| UiError(format!("sending X11 picker request: {error}")))?;
     }
-    let output = child.wait_with_output().await
+    let output = child
+        .wait_with_output()
+        .await
         .map_err(|error| UiError(format!("waiting for X11 picker: {error}")))?;
     if !output.status.success() {
-        return Err(UiError(format!("native X11 picker exited: {}", output.status)));
+        return Err(UiError(format!(
+            "native X11 picker exited: {}",
+            output.status
+        )));
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|error| UiError(format!("reading native X11 picker answer: {error}")))?
@@ -116,14 +149,19 @@ async fn request_x11(spec: dialog::Spec) -> UiResult<dialog::Answer> {
 pub(crate) fn run_x11_dialog() -> anyhow::Result<()> {
     use std::io::Write as _;
     let spec: dialog::Spec = serde_json::from_reader(std::io::stdin().lock())?;
-    anyhow::ensure!(matches!(spec.parent(), crate::parent::Parent::X11(_)), "X11 helper requires an X11 parent");
+    anyhow::ensure!(
+        matches!(spec.parent(), crate::parent::Parent::X11(_)),
+        "X11 helper requires an X11 parent"
+    );
     let (answer, received) = oneshot::channel();
     let pending = Pending {
-        model: spec.into_model(), answer,
+        model: spec.into_model(),
+        answer,
         abandoned: Arc::new(AtomicBool::new(false)),
     };
     let result = match pixelkit_windowing::run_windows(vec![window(pending)]) {
-        Ok(()) => received.blocking_recv()
+        Ok(()) => received
+            .blocking_recv()
             .unwrap_or_else(|_| Err(UiError("X11 graphical response channel closed".into()))),
         Err(error) => Err(UiError(format!("native X11 graphical host: {error}"))),
     };
@@ -132,4 +170,3 @@ pub(crate) fn run_x11_dialog() -> anyhow::Result<()> {
     output.flush()?;
     Ok(())
 }
-

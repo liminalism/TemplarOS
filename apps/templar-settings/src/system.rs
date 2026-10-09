@@ -132,7 +132,6 @@ pub(crate) async fn read<S: SystemSource>(source: &S) -> SystemState {
     }
 }
 
-
 /// The line under a heading when its service did not answer — never a blank, and never a zero.
 pub(crate) fn silent(interface: &str) -> String {
     format!("{interface} is not answering; this reading is unavailable")
@@ -233,4 +232,3 @@ pub(crate) async fn render(connection: &zbus::Connection) -> String {
         Err(error) => format!("service unavailable: {error:#}"),
     }
 }
-

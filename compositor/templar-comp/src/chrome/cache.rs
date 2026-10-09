@@ -17,11 +17,11 @@ use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
+            ImportMem,
             element::{
                 Kind,
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             },
-            ImportMem,
         },
     },
     utils::{Physical, Point, Rectangle, Size, Transform},
@@ -103,13 +103,18 @@ impl CachedWidget {
         Self::with_format(Fourcc::Argb8888)
     }
     fn with_format(format: Fourcc) -> Self {
-        Self { key: None, logical_size: (0, 0), buffer_scale: 1, format, buffer: MemoryRenderBuffer::new(format, (1, 1), 1, Transform::Normal, None) }
+        Self {
+            key: None,
+            logical_size: (0, 0),
+            buffer_scale: 1,
+            format,
+            buffer: MemoryRenderBuffer::new(format, (1, 1), 1, Transform::Normal, None),
+        }
     }
     /// Keep the imported buffer allocation, but repaint it under the new shared appearance.
     pub fn invalidate(&mut self) {
         self.key = None;
     }
-
 
     /// Repaint only if `key`, `logical_size` or `output_scale` differ from the last call's, then
     /// return a render element positioned at `location` (physical pixels). `paint` receives a
@@ -132,7 +137,10 @@ impl CachedWidget {
         scratch: &mut WindowBuffer,
         renderer: &mut R,
         paint: impl FnOnce(&mut Painter<'_>, i32, i32),
-    ) -> Option<MemoryRenderBufferRenderElement<R>> where R::TextureId: Clone + Send + 'static {
+    ) -> Option<MemoryRenderBufferRenderElement<R>>
+    where
+        R::TextureId: Clone + Send + 'static,
+    {
         if logical_size.0 <= 0 || logical_size.1 <= 0 {
             return None;
         }
@@ -184,19 +192,27 @@ impl CachedWidget {
 
         // Scale is immutable buffer metadata; appearance and size changes keep its identity.
         if self.buffer_scale != buffer_scale {
-            self.buffer = MemoryRenderBuffer::new(self.format, (pixel_w, pixel_h), buffer_scale, Transform::Normal, None);
+            self.buffer = MemoryRenderBuffer::new(
+                self.format,
+                (pixel_w, pixel_h),
+                buffer_scale,
+                Transform::Normal,
+                None,
+            );
         }
         let mut context = self.buffer.render();
         if self.buffer_scale == buffer_scale && self.logical_size != logical_size {
             context.resize((pixel_w, pixel_h));
         }
         let whole = Rectangle::from_size(Size::from((pixel_w, pixel_h)));
-        context.draw(|bytes| {
-            for (destination, pixel) in bytes.chunks_exact_mut(4).zip(&scratch.pixels) {
-                destination.copy_from_slice(&pixel.to_le_bytes());
-            }
-            Ok::<_, std::convert::Infallible>(vec![whole])
-        }).unwrap();
+        context
+            .draw(|bytes| {
+                for (destination, pixel) in bytes.chunks_exact_mut(4).zip(&scratch.pixels) {
+                    destination.copy_from_slice(&pixel.to_le_bytes());
+                }
+                Ok::<_, std::convert::Infallible>(vec![whole])
+            })
+            .unwrap();
         // Calibration is ARGB and must not occlude the scene behind its transparent center.
         context.update_opaque_regions((self.format == Fourcc::Xrgb8888).then(|| vec![whole]));
     }
@@ -206,8 +222,10 @@ impl CachedWidget {
 mod tests {
     use super::*;
     use smithay::backend::renderer::{
-        damage::OutputDamageTracker, element::{Element, Id}, pixman::PixmanRenderer,
         Bind, ExportMem, Offscreen,
+        damage::OutputDamageTracker,
+        element::{Element, Id},
+        pixman::PixmanRenderer,
     };
 
     fn draw_calibration(
@@ -217,24 +235,51 @@ mod tests {
         palette: &templar_types::appearance::Palette,
     ) -> (u32, u32, Id) {
         let mut scratch = WindowBuffer::new(size.0 as u32, size.1 as u32);
-        let element = cache.ensure(
-            WidgetKey::new("calibration", super::super::paint::opaque(palette.text)),
-            size, 1.0, (0.0, 0.0).into(), &mut scratch, renderer,
-            |painter, width, height| super::super::identification::paint(
-                painter, width, height, 1, "", true,
-                templar_types::display::Insets::symmetric(20, 10), None, palette,
-            ),
-        ).expect("native Pixman import");
+        let element = cache
+            .ensure(
+                WidgetKey::new("calibration", super::super::paint::opaque(palette.text)),
+                size,
+                1.0,
+                (0.0, 0.0).into(),
+                &mut scratch,
+                renderer,
+                |painter, width, height| {
+                    super::super::identification::paint(
+                        painter,
+                        width,
+                        height,
+                        1,
+                        "",
+                        true,
+                        templar_types::display::Insets::symmetric(20, 10),
+                        None,
+                        palette,
+                    )
+                },
+            )
+            .expect("native Pixman import");
         let id = element.id().clone();
-        let mut target = renderer.create_buffer(Fourcc::Argb8888, size.into()).unwrap();
+        let mut target = renderer
+            .create_buffer(Fourcc::Argb8888, size.into())
+            .unwrap();
         let mut framebuffer = renderer.bind(&mut target).unwrap();
         let mut tracker = OutputDamageTracker::new(size, 1.0, Transform::Normal);
-        tracker.render_output(
-            renderer, &mut framebuffer, 0, &[element], [0.0, 0.0, 1.0, 1.0],
-        ).unwrap();
-        let mapping = renderer.copy_framebuffer(
-            &framebuffer, Rectangle::from_size(size.into()), Fourcc::Argb8888,
-        ).unwrap();
+        tracker
+            .render_output(
+                renderer,
+                &mut framebuffer,
+                0,
+                &[element],
+                [0.0, 0.0, 1.0, 1.0],
+            )
+            .unwrap();
+        let mapping = renderer
+            .copy_framebuffer(
+                &framebuffer,
+                Rectangle::from_size(size.into()),
+                Fourcc::Argb8888,
+            )
+            .unwrap();
         let bytes = renderer.map_texture(&mapping).unwrap();
         let pixel = |x: usize, y: usize| {
             let offset = (y * size.0 as usize + x) * 4;
@@ -254,11 +299,17 @@ mod tests {
             ((400, 240), &templar_types::appearance::DARK),
         ] {
             let (scene, mark, id) = draw_calibration(&mut cache, &mut renderer, size, palette);
-            assert_eq!(scene, 0xff00_00ff, "transparent calibration must preserve the scene");
+            assert_eq!(
+                scene, 0xff00_00ff,
+                "transparent calibration must preserve the scene"
+            );
             assert_eq!(mark >> 24, 0xff, "calibration marks must remain opaque");
             assert_ne!(mark, scene, "a corner mark must be visible over the scene");
-            assert_eq!(&id, first_id.get_or_insert(id.clone()), "appearance and resize must retain the imported buffer");
+            assert_eq!(
+                &id,
+                first_id.get_or_insert(id.clone()),
+                "appearance and resize must retain the imported buffer"
+            );
         }
     }
 }
-

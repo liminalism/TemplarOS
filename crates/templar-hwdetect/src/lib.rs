@@ -230,7 +230,9 @@ pub mod dpkg {
         for line in text.lines().chain(std::iter::once("")) {
             if line.is_empty() {
                 if let (Some(n), Some(v)) = (name.take(), version.take()) {
-                    let installed = status.take().is_some_and(|s| s.split_ascii_whitespace().nth(2) == Some("installed"));
+                    let installed = status
+                        .take()
+                        .is_some_and(|s| s.split_ascii_whitespace().nth(2) == Some("installed"));
                     packages.push(InstalledPackage {
                         name: n,
                         version: v,
@@ -454,7 +456,10 @@ mod tests {
         assert!(lrm_present(&packages));
         assert!(dpkg::find_installed(&packages, "nvidia-dkms-").is_empty());
         fs::write(&status, "Package: linux-modules-nvidia-580-open-generic\nStatus: unknown ok not-installed\nVersion: 580.1-0ubuntu1\n\n").unwrap();
-        assert!(!lrm_present(&dpkg::scan_status(&status)), "not-installed is not installed");
+        assert!(
+            !lrm_present(&dpkg::scan_status(&status)),
+            "not-installed is not installed"
+        );
 
         assert!(dpkg::scan_status(&root.join("missing")).is_empty());
         let _ = fs::remove_dir_all(&root);

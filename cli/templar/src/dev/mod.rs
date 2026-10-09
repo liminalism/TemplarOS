@@ -235,7 +235,9 @@ pub fn repo_init(root: PathBuf, sysroot: &Path, install_source: bool) -> Result<
     let repo = open_repo(root);
     let native = install::is_native_root(sysroot)?;
     if native && install_source {
-        bail!("native source configuration belongs to the candidate; omit --install-source and use templar dev install/deploy");
+        bail!(
+            "native source configuration belongs to the candidate; omit --install-source and use templar dev install/deploy"
+        );
     }
     let mut out = repo.init()?;
     out.push('\n');
@@ -393,11 +395,22 @@ fn open_installer(repo_root: PathBuf, root: &Path) -> install::Installer {
 fn run_install(installer: &install::Installer, target: &str, dry_run: bool) -> Result<String> {
     let plan = installer.plan(target)?;
     if install::is_native_root(&installer.root)? {
-        let mut out = format!("build set {target}\n  queue {} pinned package(s) in a hostd candidate; no live apt or unit activation\n", plan.pinned.len());
-        if dry_run { out.push_str("dry run: no transaction queued\n"); return Ok(out); }
-        if !install::is_root(&installer.root) { bail!("publishing/installing a system build set requires root authority"); }
+        let mut out = format!(
+            "build set {target}\n  queue {} pinned package(s) in a hostd candidate; no live apt or unit activation\n",
+            plan.pinned.len()
+        );
+        if dry_run {
+            out.push_str("dry run: no transaction queued\n");
+            return Ok(out);
+        }
+        if !install::is_root(&installer.root) {
+            bail!("publishing/installing a system build set requires root authority");
+        }
         let id = installer.queue_candidate(&plan)?;
-        let _ = writeln!(out, "queued {id}; not yet staged or installed. Inspect templar update status/history; reboot only after awaiting-reboot.");
+        let _ = writeln!(
+            out,
+            "queued {id}; not yet staged or installed. Inspect templar update status/history; reboot only after awaiting-reboot."
+        );
         return Ok(out);
     }
     let mut out = format!(
@@ -485,7 +498,9 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
     let mut out = format!("deploying build set {}\n", set.id);
     let native = install::is_native_root(root)?;
     if native && options.snapshot_state {
-        bail!("--snapshot-state is a legacy overlay recovery operation; native updates preserve State/Work and refuse incompatible readers instead of promising a profile downgrade");
+        bail!(
+            "--snapshot-state is a legacy overlay recovery operation; native updates preserve State/Work and refuse incompatible readers instead of promising a profile downgrade"
+        );
     }
 
     if options.dry_run {
@@ -514,13 +529,25 @@ pub fn deploy(repo_root: PathBuf, root: &Path, options: &DeployOptions) -> Resul
     if native {
         // Snapshot-state is an overlay recovery aid, not permission to downgrade
         // application profiles in the native route.
-        let gate = gates::run(&matrix, &set, deployed.as_ref(), gates::hostd_busy(root), false)?;
-        for note in &gate.notes { let _ = writeln!(out, "  {note}"); }
+        let gate = gates::run(
+            &matrix,
+            &set,
+            deployed.as_ref(),
+            gates::hostd_busy(root),
+            false,
+        )?;
+        for note in &gate.notes {
+            let _ = writeln!(out, "  {note}");
+        }
         out.push_str(&repo_publish(repo_root.clone(), &options.build_set)?);
         let installer = open_installer(repo_root, root);
         let plan = installer.plan(&set.id)?;
         let id = installer.queue_candidate(&plan)?;
-        let _ = writeln!(out, "queued {id} for {} pinned packages; the running root and desktop were not activated.", plan.pinned.len());
+        let _ = writeln!(
+            out,
+            "queued {id} for {} pinned packages; the running root and desktop were not activated.",
+            plan.pinned.len()
+        );
         out.push_str("This is accepted work, not staging success. Use templar update status/history; reboot only after awaiting-reboot. Boot-health owns trial promotion and rollback.\n");
         return Ok(out);
     }

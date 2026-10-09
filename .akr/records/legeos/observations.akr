@@ -1574,7 +1574,7 @@ record legeos.observation.hostd-stages-candidates-outside-the-declared-deploymen
 
 record legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/4 : observation {
     title "Real native guest candidate, rollback and interrupted-stage boot pass; installed/reference hardware gates remain unproven"
-    state verified
+    state superseded
     statement """
         At source commit 7c68786687bea7b20dbc382bdacc2804e7284b70 plus the integration working tree, production hostd real_config reads DeploymentLayout rather than state_dir/deployments. Candidate mounts resolve the declared deployment mount, independently from @deployments/{id} and ESP-relative boot identities. The engine persists that identity and refuses to reinterpret resumed transactions under changed layout; the historical 50af378 mismatch is absent.
         Actual unprivileged QEMU TCG/OVMF guests with GPT/Btrfs/FAT ESP, real Ubuntu kernel/systemd/bootctl/dpkg/APT and an owned signed archive staged package2.0 from known-good1.0, booted the candidate through firmware, resumed AwaitingReboot as Trial from the actual kernel deployment ID, performed native rollback, and booted known-good1.0. Root and dpkg stayed read-only; Home/profile hashes, candidate-created document and shared runtime state survived. A separate actual Staging transaction was interrupted by killing only guest-hostd.service; the persisted journal remained Staging with no candidate, and subsequent unchanged firmware selection booted known-good rather than an incomplete candidate.
@@ -1596,6 +1596,27 @@ record legeos.observation.hostd-stages-candidates-outside-the-declared-deploymen
         @legeos.evidence.s17-native-interrupted-staging-firmware-known-good-20261006/1,
         @legeos.evidence.s17-s18-owned-native-full-stage-boot-rollback-20261006/1
     ]
+    author "dk"
+}
+
+record legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/5 : observation {
+    title "Current native deployment layout fixtures pass; earlier guest boot evidence remains historical and installed gates open"
+    state verified
+    statement """
+        Revalidated on 2026-10-08 at Git12295f351ab14e649f900573190060cd88a7251e plus the shared working tree, with exact source hashes in docs/measurements/index-closure-2026-10-08-wp17.json. Production hostd real_config reads DeploymentLayout rather than state_dir/deployments. The current native factory fixture changes installed candidate/subvolume/ESP declarations and checks both the real factory and engine paths; layout, boot entry, transaction and root-paired account tests pass in the native109-test hostd run. Current xtask64 declaration tests pass. Mounted candidate location, @deployments/{id} boot identity and ESP identity remain distinct; no historical /var path is silently treated as a boot subvolume.
+        The earlier owned QEMU candidate/rollback/interrupted-stage observations remain historical evidence from revision4 and its retained native guest artifacts. Those guest boot journeys were not rerun at this current source snapshot. This revision supplies current source/owned-fixture evidence for the declared layout and temporary development/provisioning exceptions, not a new installed or hardware result. Full installed writer/promotion-health/schema-upgrade, Canonical shim/GRUB Secure Boot, reference laptop and physical daily-driver acceptance remain open. Root read-only and guest-only results are not promoted to laptop qualification.
+        """
+    observed_at git:12295f351ab14e649f900573190060cd88a7251e
+    method command
+    watches [
+        "services/templar-hostd/src/**",
+        "distro/deploy/layout.toml",
+        "distro/deploy/components.toml"
+    ]
+    supersedes [
+        @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/4
+    ]
+    verified_by [ @legeos.evidence.index-wp17-cli-hostd-xtask-20261008/1 ]
     author "dk"
 }
 

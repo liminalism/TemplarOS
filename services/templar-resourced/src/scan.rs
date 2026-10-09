@@ -3,12 +3,12 @@
 
 use crate::cgroup::{CGROUP_ROOT, Cgroup};
 use anyhow::Result;
+use std::os::unix::fs::MetadataExt;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 use templar_types::{ResourceId, ResourceIdentity, unit};
-use std::os::unix::fs::MetadataExt;
 
 /// One discovered instance cgroup.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,20 +53,50 @@ pub fn discover(slice: &Path) -> Result<Vec<DiscoveredInstance>> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error.into()),
         };
-        if !metadata.is_dir() { continue; }
+        if !metadata.is_dir() {
+            continue;
+        }
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        let (instance_id, identity) = if let Some((app_id, instance_id)) = unit::parse_unit_name(name) {
+        let (instance_id, identity) = if let Some((app_id, instance_id)) =
+            unit::parse_unit_name(name)
+        {
             (instance_id.into(), ResourceIdentity::Application { app_id })
-        } else if let Some((spawned_by, workload_id, class)) = unit::parse_workload_unit_name(name) {
-            (workload_id.into(), ResourceIdentity::Workload { workload_id, spawned_by, class })
-        } else if let Some(rest) = name.strip_prefix("app-flatpak-").and_then(|rest| rest.strip_suffix(".scope")) {
-            let Some((claim, suffix)) = rest.rsplit_once('-') else { continue; };
-            if claim.is_empty() || suffix.is_empty() { continue; }
-            (ResourceId::external_unit(name, metadata.ino()), ResourceIdentity::Flatpak { claimed_app_id: claim.to_owned() })
-        } else { continue; };
-        found.push(DiscoveredInstance { identity, instance_id, cgroup: Cgroup::from_directory(path) });
+        } else if let Some((spawned_by, workload_id, class)) = unit::parse_workload_unit_name(name)
+        {
+            (
+                workload_id.into(),
+                ResourceIdentity::Workload {
+                    workload_id,
+                    spawned_by,
+                    class,
+                },
+            )
+        } else if let Some(rest) = name
+            .strip_prefix("app-flatpak-")
+            .and_then(|rest| rest.strip_suffix(".scope"))
+        {
+            let Some((claim, suffix)) = rest.rsplit_once('-') else {
+                continue;
+            };
+            if claim.is_empty() || suffix.is_empty() {
+                continue;
+            }
+            (
+                ResourceId::external_unit(name, metadata.ino()),
+                ResourceIdentity::Flatpak {
+                    claimed_app_id: claim.to_owned(),
+                },
+            )
+        } else {
+            continue;
+        };
+        found.push(DiscoveredInstance {
+            identity,
+            instance_id,
+            cgroup: Cgroup::from_directory(path),
+        });
     }
 
     found.sort_by_key(|instance| instance.instance_id);
@@ -89,12 +119,20 @@ mod tests {
         fs::write(dir.join("cgroup.procs"), "").unwrap();
 
         let found = discover(&dir).unwrap();
-        assert_eq!(found.iter().filter(|row| matches!(&row.identity,
-            ResourceIdentity::Flatpak { claimed_app_id } if claimed_app_id == "org.example")).count(), 1);
-        let application = found.iter().find(|row| row.identity.application() == Some(&app)).unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .filter(|row| matches!(&row.identity,
+            ResourceIdentity::Flatpak { claimed_app_id } if claimed_app_id == "org.example"))
+                .count(),
+            1
+        );
+        let application = found
+            .iter()
+            .find(|row| row.identity.application() == Some(&app))
+            .unwrap();
         assert_eq!(application.instance_id, ResourceId::from(id));
         assert!(discover(&dir.join("missing")).unwrap().is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
-
 }

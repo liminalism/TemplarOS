@@ -629,12 +629,17 @@ async fn render_path(path: &Path) -> Result<String> {
     if !path.is_absolute() {
         bail!("file path must be absolute: {}", path.display());
     }
-    let path_text = path.to_str().context("Path is not UTF-8; it cannot be copied as plain text")?;
+    let path_text = path
+        .to_str()
+        .context("Path is not UTF-8; it cannot be copied as plain text")?;
     let connection = session().await?;
     let renderer = FilesActionsProxy::new(&connection)
         .await
         .context("Files.Actions1")?;
-    renderer.render(path_text, "as-shown").await.context("rendering path through Files.Actions1")
+    renderer
+        .render(path_text, "as-shown")
+        .await
+        .context("rendering path through Files.Actions1")
 }
 
 async fn start_operation(
@@ -946,7 +951,6 @@ mod tests {
         }
     }
 
-
     /// A project id travels through D-Bus, the CLI and a state database, so it is a slug of the
     /// folder's name — and never empty, whatever the folder is called. The *name* stays the
     /// folder's own, because that is what the person calls this place.
@@ -1040,5 +1044,4 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("absolute"));
     }
-
 }

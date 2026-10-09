@@ -67,9 +67,7 @@ pub enum OperationKind {
         destination_dir: PathBuf,
     },
     /// Exact move inverse, including original directories and KeepBoth filenames.
-    RestoreMoveV1 {
-        entries: Vec<TransferMapping>,
-    },
+    RestoreMoveV1 { entries: Vec<TransferMapping> },
     /// Guarded inverse references the original persisted destination snapshots.
     UndoCopyV1 {
         original_operation: OperationId,
@@ -121,7 +119,10 @@ impl OperationKind {
                 sources,
                 destination_dir,
             } => format!("Move {} to {}", names(sources), destination_dir.display()),
-            Self::RestoreMoveV1 { entries } => format!("Restore {} moved items to their original locations", entries.len()),
+            Self::RestoreMoveV1 { entries } => format!(
+                "Restore {} moved items to their original locations",
+                entries.len()
+            ),
             Self::UndoCopyV1 { .. } => "Undo copy (move created files to Trash)".to_owned(),
             Self::Rename { path, new_name } => {
                 format!("Rename {} to {new_name}", display_name(path))
@@ -148,36 +149,12 @@ pub fn validate(kind: &OperationKind) -> Result<()> {
             sources,
             destination_dir,
         } => {
-            require_nonempty(sources, "source")?;
-            require_absolute(destination_dir, "destination directory")?;
-            if !destination_dir.is_dir() {
-                bail!(
-                    "destination is not a directory: {}",
-                    destination_dir.display()
-                );
-            }
-            let destination =
-                std::fs::canonicalize(destination_dir).unwrap_or_else(|_| destination_dir.clone());
-            let mut unique = BTreeSet::new();
-            for source in sources {
-                require_existing_removable(source, "source")?;
-                if !unique.insert(source) {
-                    bail!("duplicate source: {}", source.display());
-                }
-                if source.symlink_metadata()?.is_dir() {
-                    let source = std::fs::canonicalize(source).unwrap_or_else(|_| source.clone());
-                    if destination.starts_with(&source) {
-                        bail!(
-                            "destination {} is inside source directory {}",
-                            destination_dir.display(),
-                            source.display()
-                        );
-                    }
-                }
-            }
+            validate_transfer(sources, destination_dir)?;
         }
         OperationKind::RestoreMoveV1 { entries } => {
-            if entries.is_empty() { bail!("at least one restore mapping is required"); }
+            if entries.is_empty() {
+                bail!("at least one restore mapping is required");
+            }
             let mut sources = BTreeSet::new();
             let mut destinations = BTreeSet::new();
             for entry in entries {
@@ -186,12 +163,21 @@ pub fn validate(kind: &OperationKind) -> Result<()> {
                 if !sources.insert(&entry.source) || !destinations.insert(&entry.destination) {
                     bail!("duplicate restore mapping");
                 }
-                let parent = entry.destination.parent().ok_or_else(|| anyhow::anyhow!("restore destination has no parent"))?;
-                if !parent.is_dir() { bail!("restore destination parent is unavailable"); }
-                if entry.destination.symlink_metadata().is_ok() {
-                    bail!("restore destination already exists; undo would overwrite it: {}", entry.destination.display());
+                let parent = entry
+                    .destination
+                    .parent()
+                    .ok_or_else(|| anyhow::anyhow!("restore destination has no parent"))?;
+                if !parent.is_dir() {
+                    bail!("restore destination parent is unavailable");
                 }
-                let source = std::fs::canonicalize(&entry.source).unwrap_or_else(|_| entry.source.clone());
+                if entry.destination.symlink_metadata().is_ok() {
+                    bail!(
+                        "restore destination already exists; undo would overwrite it: {}",
+                        entry.destination.display()
+                    );
+                }
+                let source =
+                    std::fs::canonicalize(&entry.source).unwrap_or_else(|_| entry.source.clone());
                 let parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
                 if entry.source.symlink_metadata()?.is_dir() && parent.starts_with(&source) {
                     bail!("restore destination is inside its source");
@@ -228,6 +214,37 @@ pub fn validate(kind: &OperationKind) -> Result<()> {
             require_nonempty(paths, "path")?;
             for path in paths {
                 require_removable_path(path, "restore path")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_transfer(sources: &[PathBuf], destination_dir: &Path) -> Result<()> {
+    require_nonempty(sources, "source")?;
+    require_absolute(destination_dir, "destination directory")?;
+    if !destination_dir.is_dir() {
+        bail!(
+            "destination is not a directory: {}",
+            destination_dir.display()
+        );
+    }
+    let destination =
+        std::fs::canonicalize(destination_dir).unwrap_or_else(|_| destination_dir.to_path_buf());
+    let mut unique = BTreeSet::new();
+    for source in sources {
+        require_existing_removable(source, "source")?;
+        if !unique.insert(source) {
+            bail!("duplicate source: {}", source.display());
+        }
+        if source.symlink_metadata()?.is_dir() {
+            let source = std::fs::canonicalize(source).unwrap_or_else(|_| source.clone());
+            if destination.starts_with(&source) {
+                bail!(
+                    "destination {} is inside source directory {}",
+                    destination_dir.display(),
+                    source.display()
+                );
             }
         }
     }
@@ -490,8 +507,10 @@ pub fn notify_index(sink: &dyn crate::execute::IndexSink, step: &Step) {
                 sink.created(restored_to);
             }
         }
-        Step::CopyToTemporary { .. } | Step::FlushTemporary { .. } | Step::VerifyCopy { .. }
-            | Step::VerifyCopyUndoV1 { .. } => {}
+        Step::CopyToTemporary { .. }
+        | Step::FlushTemporary { .. }
+        | Step::VerifyCopy { .. }
+        | Step::VerifyCopyUndoV1 { .. } => {}
     }
 }
 
@@ -622,16 +641,21 @@ pub fn survey(sources: &[PathBuf], destination_dir: Option<&Path>) -> Survey {
             survey.errors.push(format!("{}: {error}", root.display()));
             continue;
         }
-        let same_device = match (root.symlink_metadata().ok().map(|metadata| {
-            use std::os::unix::fs::MetadataExt;
-            metadata.dev()
-        }), destination_device) {
+        let same_device = match (
+            root.symlink_metadata().ok().map(|metadata| {
+                use std::os::unix::fs::MetadataExt;
+                metadata.dev()
+            }),
+            destination_device,
+        ) {
             (Some(source), Some(destination)) => source == destination,
             _ => false,
         };
-        let destination_exists = destination_dir.is_some_and(|dir| root.file_name().is_some_and(|name| {
-            survey.destination_names.contains(name) || dir.join(name).symlink_metadata().is_ok()
-        }));
+        let destination_exists = destination_dir.is_some_and(|dir| {
+            root.file_name().is_some_and(|name| {
+                survey.destination_names.contains(name) || dir.join(name).symlink_metadata().is_ok()
+            })
+        });
         survey.sources.push(SurveyedSource {
             root: root.clone(),
             entries,
@@ -702,15 +726,27 @@ pub fn plan(id: OperationId, kind: OperationKind, survey: &Survey, options: Opti
         ),
         OperationKind::RestoreMoveV1 { entries } => {
             for entry in entries {
-                if let Some(source) = survey.sources.iter().find(|source| source.root == entry.source) {
+                if let Some(source) = survey
+                    .sources
+                    .iter()
+                    .find(|source| source.root == entry.source)
+                {
                     transfers.push(entry.clone());
                     plan_source_transfer(id, true, &entry.destination, source, options, &mut steps);
                 }
             }
         }
-        OperationKind::UndoCopyV1 { original_operation, roots } => {
-            steps.push(Step::VerifyCopyUndoV1 { original_operation: *original_operation });
-            steps.extend(roots.iter().map(|path| Step::MoveToTrash { path: path.clone(), trashed: None }));
+        OperationKind::UndoCopyV1 {
+            original_operation,
+            roots,
+        } => {
+            steps.push(Step::VerifyCopyUndoV1 {
+                original_operation: *original_operation,
+            });
+            steps.extend(roots.iter().map(|path| Step::MoveToTrash {
+                path: path.clone(),
+                trashed: None,
+            }));
         }
         OperationKind::Rename { path, new_name } => steps.push(Step::RenameInPlace {
             from: path.clone(),
@@ -764,7 +800,7 @@ pub fn plan(id: OperationId, kind: OperationKind, survey: &Survey, options: Opti
         cursor: 0,
         skipped,
         transfers,
-        created: Default::default(),
+        created: std::collections::BTreeMap::default(),
         error: None,
     }
 }
@@ -788,80 +824,91 @@ fn plan_transfer(
             continue;
         };
         let destination_root = destination_dir.join(&name);
-        transfers.push(TransferMapping { source: source.root.clone(), destination: destination_root.clone() });
+        transfers.push(TransferMapping {
+            source: source.root.clone(),
+            destination: destination_root.clone(),
+        });
         plan_source_transfer(id, is_move, &destination_root, source, options, steps);
     }
 }
 
-fn plan_source_transfer(id: OperationId, is_move: bool, destination_root: &Path,
-    source: &SurveyedSource, options: Options, steps: &mut Vec<Step>) {
+fn plan_source_transfer(
+    id: OperationId,
+    is_move: bool,
+    destination_root: &Path,
+    source: &SurveyedSource,
+    options: Options,
+    steps: &mut Vec<Step>,
+) {
+    // Same-device move of a whole tree: one rename, no traversal, no copy. That is the
+    // difference between "instant" and "twenty minutes" on a large directory, and it is
+    // atomic, so a crash cannot leave a half-move behind.
+    if is_move && source.same_device && !source.destination_exists {
+        steps.push(Step::RenameInPlace {
+            from: source.root.clone(),
+            to: destination_root.to_path_buf(),
+        });
+        return;
+    }
 
-        // Same-device move of a whole tree: one rename, no traversal, no copy. That is the
-        // difference between "instant" and "twenty minutes" on a large directory, and it is
-        // atomic, so a crash cannot leave a half-move behind.
-        if is_move && source.same_device && !source.destination_exists {
-            steps.push(Step::RenameInPlace {
-                from: source.root.clone(),
-                to: destination_root.to_path_buf(),
-            });
-            return;
-        }
-
-        for entry in &source.entries {
-            let destination = if entry.relative.as_os_str().is_empty() {
-                destination_root.to_path_buf()
+    for entry in &source.entries {
+        let destination = if entry.relative.as_os_str().is_empty() {
+            destination_root.to_path_buf()
+        } else {
+            destination_root.join(&entry.relative)
+        };
+        if entry.is_dir {
+            if options.conflict == ConflictPolicy::Replace {
+                steps.push(Step::CreateDirectory { destination });
             } else {
-                destination_root.join(&entry.relative)
-            };
-            if entry.is_dir {
-                if options.conflict != ConflictPolicy::Replace {
-                    steps.push(Step::CreateDirectoryExclusive { destination, created_identity: None });
-                } else {
-                    steps.push(Step::CreateDirectory { destination });
-                }
-            } else if entry.is_symlink {
-                steps.push(Step::CopySymlink {
-                    source: entry.path.clone(),
+                steps.push(Step::CreateDirectoryExclusive {
                     destination,
                     created_identity: None,
                 });
-            } else {
-                let temporary = temporary_for(&destination, id);
-                steps.push(Step::CopyToTemporary {
-                    source: entry.path.clone(),
-                    temporary: temporary.clone(),
-                    bytes: entry.bytes,
-                });
-                steps.push(Step::FlushTemporary {
-                    temporary: temporary.clone(),
-                });
-                steps.push(Step::VerifyCopy {
-                    source: entry.path.clone(),
-                    temporary: temporary.clone(),
-                    verify: options.verify,
-                });
-                steps.push(Step::ExposeAtomically {
-                    temporary,
-                    destination,
-                });
             }
+        } else if entry.is_symlink {
+            steps.push(Step::CopySymlink {
+                source: entry.path.clone(),
+                destination,
+                created_identity: None,
+            });
+        } else {
+            let temporary = temporary_for(&destination, id);
+            steps.push(Step::CopyToTemporary {
+                source: entry.path.clone(),
+                temporary: temporary.clone(),
+                bytes: entry.bytes,
+            });
+            steps.push(Step::FlushTemporary {
+                temporary: temporary.clone(),
+            });
+            steps.push(Step::VerifyCopy {
+                source: entry.path.clone(),
+                temporary: temporary.clone(),
+                verify: options.verify,
+            });
+            steps.push(Step::ExposeAtomically {
+                temporary,
+                destination,
+            });
         }
+    }
 
-        // Sources disappear only after every destination is exposed — children first, so a
-        // directory is empty by the time it is removed.
-        if is_move {
-            for entry in source.entries.iter().rev() {
-                if entry.is_dir {
-                    steps.push(Step::RemoveDirectory {
-                        path: entry.path.clone(),
-                    });
-                } else {
-                    steps.push(Step::DeleteSource {
-                        source: entry.path.clone(),
-                    });
-                }
+    // Sources disappear only after every destination is exposed — children first, so a
+    // directory is empty by the time it is removed.
+    if is_move {
+        for entry in source.entries.iter().rev() {
+            if entry.is_dir {
+                steps.push(Step::RemoveDirectory {
+                    path: entry.path.clone(),
+                });
+            } else {
+                steps.push(Step::DeleteSource {
+                    source: entry.path.clone(),
+                });
             }
         }
+    }
 }
 
 /// The destination name to use, honouring the conflict policy. `None` means skip this source.
@@ -892,15 +939,20 @@ fn resolve_name(
 /// the file still opens with the right application.
 fn free_name(name: &OsStr, taken: &BTreeSet<OsString>) -> OsString {
     let bytes = name.as_bytes();
-    let split = bytes.iter().rposition(|byte| *byte == b'.').filter(|index| *index > 0);
-    let (stem, extension) = split.map_or((bytes, &[][..]), |index| (&bytes[..index], &bytes[index..]));
+    let split = bytes
+        .iter()
+        .rposition(|byte| *byte == b'.')
+        .filter(|index| *index > 0);
+    let (stem, extension) =
+        split.map_or((bytes, &[][..]), |index| (&bytes[..index], &bytes[index..]));
     let candidate = |suffix: &str| {
         let mut name = stem.to_vec();
         name.extend_from_slice(suffix.as_bytes());
         name.extend_from_slice(extension);
         OsString::from_vec(name)
     };
-    (2..1_000).map(|index| candidate(&format!(" ({index})")))
+    (2..1_000)
+        .map(|index| candidate(&format!(" ({index})")))
         .find(|candidate| !taken.contains(candidate))
         .unwrap_or_else(|| candidate(&format!(" ({})", Uuid::new_v4().simple())))
 }
@@ -937,16 +989,32 @@ pub fn undo_of(operation: &Operation) -> Option<OperationKind> {
     }
     match &operation.kind {
         OperationKind::Move { .. } | OperationKind::RestoreMoveV1 { .. } => {
-            if operation.options.conflict == ConflictPolicy::Replace || operation.transfers.is_empty() { return None; }
-            Some(OperationKind::RestoreMoveV1 { entries: operation.transfers.iter().map(|entry| TransferMapping {
-                source: entry.destination.clone(), destination: entry.source.clone(),
-            }).collect() })
+            if operation.options.conflict == ConflictPolicy::Replace
+                || operation.transfers.is_empty()
+            {
+                return None;
+            }
+            Some(OperationKind::RestoreMoveV1 {
+                entries: operation
+                    .transfers
+                    .iter()
+                    .map(|entry| TransferMapping {
+                        source: entry.destination.clone(),
+                        destination: entry.source.clone(),
+                    })
+                    .collect(),
+            })
         }
         OperationKind::Rename { path, .. } => {
-            if operation.options.conflict == ConflictPolicy::Replace { return None; }
+            if operation.options.conflict == ConflictPolicy::Replace {
+                return None;
+            }
             operation.steps.iter().find_map(|step| match step {
                 Step::RenameInPlace { to, .. } => Some(OperationKind::RestoreMoveV1 {
-                    entries: vec![TransferMapping { source: to.clone(), destination: path.clone() }],
+                    entries: vec![TransferMapping {
+                        source: to.clone(),
+                        destination: path.clone(),
+                    }],
                 }),
                 _ => None,
             })
@@ -977,9 +1045,16 @@ pub fn undo_of(operation: &Operation) -> Option<OperationKind> {
             (!restored.is_empty()).then_some(OperationKind::Trash { paths: restored })
         }
         OperationKind::Copy { .. } => {
-            if operation.options.conflict == ConflictPolicy::Replace || operation.transfers.is_empty()
-                || operation.created.is_empty() { return None; }
-            Some(OperationKind::UndoCopyV1 { original_operation: operation.id, roots: Vec::new() })
+            if operation.options.conflict == ConflictPolicy::Replace
+                || operation.transfers.is_empty()
+                || operation.created.is_empty()
+            {
+                return None;
+            }
+            Some(OperationKind::UndoCopyV1 {
+                original_operation: operation.id,
+                roots: Vec::new(),
+            })
         }
         OperationKind::Delete { .. } => None,
     }
@@ -1235,12 +1310,24 @@ mod tests {
 
     #[test]
     fn keep_both_skips_names_already_taken() {
-        let mut taken: BTreeSet<OsString> =
-            [OsString::from("report (2).pdf"), OsString::from("report (3).pdf")].into();
-        assert_eq!(free_name(OsStr::new("report.pdf"), &taken), OsString::from("report (4).pdf"));
+        let mut taken: BTreeSet<OsString> = [
+            OsString::from("report (2).pdf"),
+            OsString::from("report (3).pdf"),
+        ]
+        .into();
+        assert_eq!(
+            free_name(OsStr::new("report.pdf"), &taken),
+            OsString::from("report (4).pdf")
+        );
         taken.clear();
-        assert_eq!(free_name(OsStr::new("archive"), &taken), OsString::from("archive (2)"));
-        assert_eq!(free_name(OsStr::new(".hidden"), &taken), OsString::from(".hidden (2)"));
+        assert_eq!(
+            free_name(OsStr::new("archive"), &taken),
+            OsString::from("archive (2)")
+        );
+        assert_eq!(
+            free_name(OsStr::new(".hidden"), &taken),
+            OsString::from(".hidden (2)")
+        );
     }
 
     #[test]
@@ -1282,7 +1369,9 @@ mod tests {
         assert_eq!(undo_of(&operation), None, "an uncommitted move has no undo");
         operation.state = OperationState::Committed;
         let inverse = undo_of(&operation).unwrap();
-        let OperationKind::RestoreMoveV1 { entries } = inverse else { panic!("missing exact move inverse"); };
+        let OperationKind::RestoreMoveV1 { entries } = inverse else {
+            panic!("missing exact move inverse");
+        };
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].source, Path::new("/b/report.pdf"));
         assert_eq!(entries[0].destination, Path::new("/a/report.pdf"));

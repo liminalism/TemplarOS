@@ -74,9 +74,12 @@ impl SettingsSchema {
             .specs
             .get(key)
             .ok_or_else(|| SettingError::UnknownKey(key.to_owned()))?;
-        if key == WALLPAPER_CONFIG_KEY && let SettingValue::Str(json) = value {
+        if key == WALLPAPER_CONFIG_KEY
+            && let SettingValue::Str(json) = value
+        {
             parse_wallpaper_config(json).map_err(|error| SettingError::InvalidConfiguration {
-                key: key.to_owned(), reason: format!("{error:#}"),
+                key: key.to_owned(),
+                reason: format!("{error:#}"),
             })?;
         }
         match (&spec.default, value) {
@@ -261,10 +264,11 @@ fn add_appearance_specs(schema: &mut SettingsSchema) {
     });
     schema.add(SettingSpec {
         key: "shell.appearance.third-party".into(),
-        description: "Align supported GTK and Qt gtk3 fonts, icons, light/dark theme and GTK motion \
+        description:
+            "Align supported GTK and Qt gtk3 fonts, icons, light/dark theme and GTK motion \
                       for future launches. Turning this off restores Templar-owned keys without \
                       overwriting external edits; existing application reload is not guaranteed"
-            .into(),
+                .into(),
         default: SettingValue::Bool(false),
         choices: vec![],
         min: None,
@@ -770,14 +774,20 @@ pub fn revert_within(
     key: &str,
     old_json: Option<&str>,
 ) -> Result<Option<SettingValue>> {
-    let previous: Option<String> = tx.query_row(
-        "SELECT value_json FROM settings_values WHERE key = ?1", [key], |row| row.get(0),
-    ).optional()?;
+    let previous: Option<String> = tx
+        .query_row(
+            "SELECT value_json FROM settings_values WHERE key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .optional()?;
     if let Some(json) = old_json {
         let value: SettingValue =
             serde_json::from_str(json).context("parsing a settings change_log's stored value")?;
         if key == WALLPAPER_CONFIG_KEY {
-            let SettingValue::Str(config) = &value else { anyhow::bail!("wallpaper history value is not a configuration string"); };
+            let SettingValue::Str(config) = &value else {
+                anyhow::bail!("wallpaper history value is not a configuration string");
+            };
             parse_wallpaper_config(config)?;
         }
         tx.execute(
@@ -814,15 +824,20 @@ pub const WINDOW_TABS_TITLE_KEY: &str = "windows.tabs.title";
 pub const WINDOW_TABS_DEFAULT_CORNER_KEY: &str = "windows.tabs.default-corner";
 
 pub fn parse_wallpaper_config(json: &str) -> Result<templar_types::wallpaper::WallpaperConfig> {
-    anyhow::ensure!(json.len() <= 65_536, "wallpaper configuration exceeds 64 KiB");
+    anyhow::ensure!(
+        json.len() <= 65_536,
+        "wallpaper configuration exceeds 64 KiB"
+    );
     let config = serde_json::from_str(json).context("parsing WallpaperConfig")?;
     templar_wallpaper::config::validate(&config)?;
     Ok(config)
 }
 
 /// Read only committed effective settings; actions never create a second policy authority.
-pub fn wallpaper_policy(schema: &SettingsSchema, values: &SettingsValues)
-    -> Result<(bool, templar_types::wallpaper::WallpaperConfig)> {
+pub fn wallpaper_policy(
+    schema: &SettingsSchema,
+    values: &SettingsValues,
+) -> Result<(bool, templar_types::wallpaper::WallpaperConfig)> {
     let Some(SettingValue::Bool(enabled)) = values.effective(schema, WALLPAPER_ENABLED_KEY) else {
         anyhow::bail!("wallpaper enable setting is not a boolean");
     };
@@ -904,7 +919,6 @@ mod tests {
             Err(SettingError::WrongType { .. })
         ));
     }
-
 
     #[test]
     fn apply_persists_validates_and_reset_returns_the_default() {
@@ -997,7 +1011,9 @@ mod tests {
             .unwrap();
         match restored {
             Some(value) => values.set("resources.mode", value),
-            None => { values.reset("resources.mode"); }
+            None => {
+                values.reset("resources.mode");
+            }
         }
         assert_eq!(
             values.effective(&schema, "resources.mode"),
@@ -1068,20 +1084,29 @@ mod tests {
     fn window_tab_schema_carries_the_policy_with_proposed_defaults() {
         let schema = baseline_schema();
         for (key, default) in [
-            (WINDOW_TABS_PLACEMENT_KEY, SettingValue::Choice("same-corner".into())),
+            (
+                WINDOW_TABS_PLACEMENT_KEY,
+                SettingValue::Choice("same-corner".into()),
+            ),
             (WINDOW_TABS_FOLLOW_POINTER_KEY, SettingValue::Bool(true)),
             (
                 WINDOW_TABS_FIXED_CORNER_KEY,
                 SettingValue::Choice("top-right".into()),
             ),
-            (WINDOW_TABS_CONTROLS_KEY, SettingValue::Choice("hover".into())),
+            (
+                WINDOW_TABS_CONTROLS_KEY,
+                SettingValue::Choice("hover".into()),
+            ),
             (WINDOW_TABS_TITLE_KEY, SettingValue::Choice("always".into())),
             (
                 WINDOW_TABS_DEFAULT_CORNER_KEY,
                 SettingValue::Choice("top-right".into()),
             ),
         ] {
-            let spec = schema.specs.get(key).unwrap_or_else(|| panic!("{key} missing"));
+            let spec = schema
+                .specs
+                .get(key)
+                .unwrap_or_else(|| panic!("{key} missing"));
             assert_eq!(spec.default, default, "{key} default");
             assert_eq!(schema.validate(key, &default), Ok(()));
         }
@@ -1160,14 +1185,33 @@ mod tests {
         let schema = baseline_schema();
         let mut config = templar_types::wallpaper::WallpaperConfig {
             sources: vec![vec![b'/', b'a', 255, b'.', b'p', b'n', b'g']],
-            interval_seconds: Some(300), ..Default::default()
+            interval_seconds: Some(300),
+            ..Default::default()
         };
         let json = serde_json::to_string(&config).unwrap();
         assert_eq!(parse_wallpaper_config(&json).unwrap(), config);
-        assert_eq!(schema.validate(WALLPAPER_CONFIG_KEY, &SettingValue::Str(json)), Ok(()));
+        assert_eq!(
+            schema.validate(WALLPAPER_CONFIG_KEY, &SettingValue::Str(json)),
+            Ok(())
+        );
         config.interval_seconds = Some(299);
-        assert!(schema.validate(WALLPAPER_CONFIG_KEY, &SettingValue::Str(serde_json::to_string(&config).unwrap())).is_err());
-        assert!(schema.validate(WALLPAPER_CONFIG_KEY, &SettingValue::Str("{broken".into())).is_err());
-        assert!(schema.validate(WALLPAPER_CONFIG_KEY, &SettingValue::Bool(true)).is_err());
+        assert!(
+            schema
+                .validate(
+                    WALLPAPER_CONFIG_KEY,
+                    &SettingValue::Str(serde_json::to_string(&config).unwrap())
+                )
+                .is_err()
+        );
+        assert!(
+            schema
+                .validate(WALLPAPER_CONFIG_KEY, &SettingValue::Str("{broken".into()))
+                .is_err()
+        );
+        assert!(
+            schema
+                .validate(WALLPAPER_CONFIG_KEY, &SettingValue::Bool(true))
+                .is_err()
+        );
     }
 }

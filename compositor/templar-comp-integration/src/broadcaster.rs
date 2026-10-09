@@ -43,7 +43,11 @@ pub fn snapshot<I: IdentityCache>(
     // Counts participate in snapshot equality, so a count-only update wakes the
     // broadcaster just like a title change. Keep parked and ordinary projections
     // on the same committed metadata, including unknown after invalidation.
-    for window in snapshot.toplevels.iter_mut().chain(snapshot.shelf.iter_mut()) {
+    for window in snapshot
+        .toplevels
+        .iter_mut()
+        .chain(snapshot.shelf.iter_mut())
+    {
         window.tab_count = tab_counts.get(&window.window_id).cloned();
     }
     snapshot
@@ -184,34 +188,55 @@ mod tests {
             vec![Output::new("test", Rect::new(0, 0, 1920, 1080), 1000)],
         );
         let window = service.on_toplevel_mapped(
-            42, ClientKind::Application, WindowClaims::default(),
-            "unchanging title".into(), Rect::new(0, 0, 100, 100),
+            42,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "unchanging title".into(),
+            Rect::new(0, 0, 100, 100),
         );
         service.shelve(window);
         struct CountSink(tokio::sync::mpsc::UnboundedSender<ShellStateSnapshot>);
         impl ShellStateSink for CountSink {
-            fn send(&mut self, snapshot: ShellStateSnapshot) { self.0.send(snapshot).unwrap(); }
+            fn send(&mut self, snapshot: ShellStateSnapshot) {
+                self.0.send(snapshot).unwrap();
+            }
         }
         let (sender, mut received) = tokio::sync::mpsc::unbounded_channel();
-        let broadcaster = ShellStateBroadcaster::spawn(
-            &tokio::runtime::Handle::current(),
-            CountSink(sender),
-        );
+        let broadcaster =
+            ShellStateBroadcaster::spawn(&tokio::runtime::Handle::current(), CountSink(sender));
         let mut counts = HashMap::new();
         // No geometry, title, stacking, activation or shelf state changes here.
         for next in [None, Some(3), Some(4), None] {
             match next {
                 Some(count) => {
-                    counts.insert(window, TabCount::verified(count, 1, "native".into()).unwrap());
-                },
-                None => { counts.remove(&window); },
+                    counts.insert(
+                        window,
+                        TabCount::verified(count, 1, "native".into()).unwrap(),
+                    );
+                }
+                None => {
+                    counts.remove(&window);
+                }
             }
             broadcaster.publish(snapshot(&service, &counts));
             let snapshot = tokio::time::timeout(std::time::Duration::from_secs(1), received.recv())
-                .await.expect("count-only change must wake the broadcaster")
+                .await
+                .expect("count-only change must wake the broadcaster")
                 .expect("snapshot consumer is connected");
-            assert_eq!(snapshot.toplevels[0].tab_count.as_ref().map(|count| count.count), next);
-            assert_eq!(snapshot.shelf[0].tab_count.as_ref().map(|count| count.count), next);
+            assert_eq!(
+                snapshot.toplevels[0]
+                    .tab_count
+                    .as_ref()
+                    .map(|count| count.count),
+                next
+            );
+            assert_eq!(
+                snapshot.shelf[0]
+                    .tab_count
+                    .as_ref()
+                    .map(|count| count.count),
+                next
+            );
         }
     }
 

@@ -194,7 +194,9 @@ pub fn kitty_focused(ls_json: &str, window_id: &str) -> Option<bool> {
     let windows: Vec<serde_json::Value> = serde_json::from_str(ls_json).ok()?;
     let wanted: u32 = window_id.parse().ok()?;
     for os_window in &windows {
-        let Some(tabs) = os_window["tabs"].as_array() else { continue; };
+        let Some(tabs) = os_window["tabs"].as_array() else {
+            continue;
+        };
         for tab in tabs {
             for window in tab["windows"].as_array()? {
                 if window["id"].as_u64() == Some(u64::from(wanted)) {
@@ -567,9 +569,13 @@ mod tests {
         assert_eq!(kitty_focused("[]", "3"), None);
         assert_eq!(kitty_focused(r#"[{"id": 1}]"#, "3"), None);
         assert_eq!(kitty_focused(&ls(true, true, true), "nope"), None);
-        let mut unrelated: Vec<serde_json::Value> = serde_json::from_str(&ls(true, true, true)).unwrap();
+        let mut unrelated: Vec<serde_json::Value> =
+            serde_json::from_str(&ls(true, true, true)).unwrap();
         unrelated.insert(0, serde_json::json!({"id": 99, "tabs": []}));
-        assert_eq!(kitty_focused(&serde_json::to_string(&unrelated).unwrap(), "3"), Some(true));
+        assert_eq!(
+            kitty_focused(&serde_json::to_string(&unrelated).unwrap(), "3"),
+            Some(true)
+        );
     }
 
     #[test]
@@ -839,7 +845,13 @@ mod tests {
                 "__prior_prompt_probe() {{ printf 'prior-status-%s\\n' \"$?\" >> \"$TRACE_FILE\"; return 0; }}\n\
                  PROMPT_COMMAND=(__prior_prompt_probe)\nsource \"{BASH_HOOK}\"\n"
             )).unwrap();
-            run_bash(tmp.path(), rc.to_str().unwrap(), "TemplarOS", &[], "false\ntrue\n");
+            run_bash(
+                tmp.path(),
+                rc.to_str().unwrap(),
+                "TemplarOS",
+                &[],
+                "false\ntrue\n",
+            );
             let calls = completions(&tmp.path().join("trace"));
             assert_eq!(calls.len(), 2, "{calls:?}");
             assert!(calls[0].contains("--status 1"), "{calls:?}");
@@ -968,14 +980,23 @@ mod tests {
                     let mut chunk = [0; 512];
                     loop {
                         let count = reader.read(&mut chunk).await.unwrap();
-                        assert!(count > 0, "fish exited before its prompt: {:?}",
-                            String::from_utf8_lossy(&received));
+                        assert!(
+                            count > 0,
+                            "fish exited before its prompt: {:?}",
+                            String::from_utf8_lossy(&received)
+                        );
                         received.extend_from_slice(&chunk[..count]);
-                        if received.windows(MARKER.len()).any(|bytes| bytes == MARKER) { break; }
+                        if received.windows(MARKER.len()).any(|bytes| bytes == MARKER) {
+                            break;
+                        }
                     }
-                }).await;
-                assert!(ready.is_ok(), "fish did not reach its prompt; terminal output: {:?}",
-                    String::from_utf8_lossy(&received));
+                })
+                .await;
+                assert!(
+                    ready.is_ok(),
+                    "fish did not reach its prompt; terminal output: {:?}",
+                    String::from_utf8_lossy(&received)
+                );
             }
             if std::process::Command::new("fish")
                 .arg("--version")
@@ -1026,7 +1047,9 @@ mod tests {
             let calls = completions(&tmp.path().join("trace"));
             input.write_all(b"exit 0\n").await.unwrap();
             let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
-                .await.expect("fish PTY session did not exit").unwrap();
+                .await
+                .expect("fish PTY session did not exit")
+                .unwrap();
             assert!(status.success(), "fish PTY session failed: {status}");
             assert_eq!(calls.len(), 1, "{calls:?}");
             assert!(calls[0].contains("--status 1"), "{}", calls[0]);

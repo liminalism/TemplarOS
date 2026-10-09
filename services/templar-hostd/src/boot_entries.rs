@@ -253,7 +253,10 @@ impl Grub {
             Err(error) => return Err(error).context("reading known-good boot identity"),
         };
         let mut lines = text.lines();
-        let id = lines.next().context("empty known-good boot identity")?.trim();
+        let id = lines
+            .next()
+            .context("empty known-good boot identity")?
+            .trim();
         let subvolume = lines.next().unwrap_or("@").trim();
         let read_only = match lines.next() {
             None | Some("false") => false,
@@ -272,9 +275,15 @@ impl Grub {
     pub fn record_known_good(&self, deployment: &Deployment) -> Result<()> {
         fs::create_dir_all(&self.state_dir)
             .with_context(|| format!("creating {}", self.state_dir.display()))?;
-        crate::deploy::write_atomically(&self.known_good_path(),
-            format!("{}\n{}\n{}\n", deployment.id, deployment.subvolume, deployment.read_only).as_bytes())
-            .with_context(|| format!("recording known-good deployment {}", deployment.id))
+        crate::deploy::write_atomically(
+            &self.known_good_path(),
+            format!(
+                "{}\n{}\n{}\n",
+                deployment.id, deployment.subvolume, deployment.read_only
+            )
+            .as_bytes(),
+        )
+        .with_context(|| format!("recording known-good deployment {}", deployment.id))
     }
 
     /// Regenerate the entries file: the known-good deployment first, so a person reading the menu
@@ -435,7 +444,10 @@ mod tests {
         // What GRUB is asked to boot is exactly what the entry is named.
         assert_eq!(
             commands.calls().last().unwrap().args,
-            [format!("--boot-directory={}", dir.path().join("boot").display()), "txn-20260903T120000Z".into()]
+            [
+                format!("--boot-directory={}", dir.path().join("boot").display()),
+                "txn-20260903T120000Z".into()
+            ]
         );
 
         // A rollback leaves the previous deployment as the only entry.

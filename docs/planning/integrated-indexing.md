@@ -1,26 +1,41 @@
 # Integrated indexing — what remains and how to finish it
 
 **Status:** plan, derived from the AKR ledger
-**Date:** 2026-10-01
+**Date:** 2026-10-08 continuation (historical assessment below: 2026-10-01)
 **Plan of record it completes:** [`shared-incremental-file-index.md`](shared-incremental-file-index.md)
 (design, contract, acceptance gates). This document does not restate that design. It records how
 far the work has got and orders what is left.
 
-Ledger records this plan draws on (`akr get <key>`):
+The current implementation plan is
+[WP0–WP17](../indexing-dev/implementation-plan.md), which refines the overlapping
+Phases B–F below. [The continuation](../indexing-dev/continuation-2026-10-08.md)
+records native commands, measurements and the open installed/hardware checks.
+Historical completed labels were reopened during ledger provenance migration;
+an active record alone does not establish a runtime regression.
+
+Current ledger heads (`akr get <key>`):
 
 | Record | State | Role |
 | --- | --- | --- |
-| `legeos.work.shared-incremental-file-index` | completed | Core, maintenance, freshness, one owner, warm start, 2M scale |
-| `legeos.work.file-index-core` (F1), `legeos.work.file-index-maintenance` (F2) | completed | Phases 0–2 of the plan of record |
-| `legeos.work.adaptive-index-maintenance` | completed | Coverage tiers, split freshness, idle watcher, backend choice |
-| `legeos.work.memory-polling-indexing-effectiveness-20260909` | active | Astra fix set; 7 of 9 children done (the other 2 are the deferred records below), parent checks unrun |
+| `legeos.work.shared-incremental-file-index/3` | active | Broader installed/scale closure remains open |
+| `legeos.work.file-index-core/3` (F1), `legeos.work.file-index-maintenance/3` (F2) | active | Implemented core/maintenance; provenance and broad acceptance remain open |
+| `legeos.work.adaptive-index-maintenance/3` | active | Coverage tiers, split freshness and measured event backend |
+| `legeos.work.memory-polling-indexing-effectiveness-20260909/2` | completed | Astra correctness/bounded-work campaign; later scale/consumer work continues separately |
 | `legeos.work.btrfs-delta-baseline-checkpoint-protocol-20260909` | proposed (deferred) | Delta backend baseline lineage |
 | `legeos.work.index-children-parent-id-contract-20260909` | proposed (deferred) | `Index::children` by indexed parent |
-| `legeos.work.silvaview-and-fsearch-share-the-index` | proposed | The two external consumers; the only open plan-of-record gate |
-| `legeos.decision.inotify-remains-the-index-event-backend` | proposed, at-risk | Event backend |
+| `legeos.work.silvaview-and-fsearch-share-the-index/1` | proposed | WP15 binary completed; WP14 comparison/WP16 adoption owner-deferred; future own Index1 GUI and installed sharing open |
+| `legeos.decision.inotify-remains-the-index-event-backend/1` | proposed, at-risk | Inotify is the wired backend; stale historical supporting observations remain explicit |
 | `legeos.decision.btrfs-delta-is-an-opt-in-catch-up-backend-not-the-default` | active | Downtime catch-up on btrfs |
 | `legeos.observation.home-tree-exceeds-the-inotify-watch-budget/2` | stale | Premise of the inotify decision |
-| `legeos.observation.lege-client-links-rusqlite-through-the-shared-index-types` | stale | Consumer types still link the store |
+| `legeos.observation.lege-client-links-rusqlite-through-the-shared-index-types` | stale | Historical observation; current normal consumer graphs are store-free |
+
+Settings Files already owns policy/freshness/volume/diagnostic controls. Native Index1 paging
+is implemented and qualified in headless/private fixtures; ordinary shell folders now use
+PCManFM. The TemplarOS FSearch DEB and actual software nested Silvaview binary have retained
+runtime evidence. The owner deferred the old shell/FSearch generation comparison and fork
+adoption in favor of a future own integrated Index1 GUI with a large FSearch-style window.
+WP17 precise owned process-crash checks pass; the coherent package-set and
+owner's real developer day remain open. Keep the WP8 writer oracle until actual closure.
 
 ## Source handoff — 2026-10-05
 

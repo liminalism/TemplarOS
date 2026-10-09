@@ -145,6 +145,42 @@
     "title": "Homegarden — an activity-grown Home (planning document, 2026-09-07)"
   },
   {
+    "added_at": "2026-10-08",
+    "availability": "full",
+    "byte_len": 24507,
+    "content_hash": "sha256:30422af9198267bd288b2c2a9e53f5a9f2c7a4b1a2bbdc50a56c3b11d0d1fce2",
+    "id": "indexing-completion-plan-20261008",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/indexing-completion-plan-20261008--30422af9.md",
+    "scope": "docs/indexing-dev/**",
+    "title": "indexing-completion-plan-20261008"
+  },
+  {
+    "added_at": "2026-10-08",
+    "availability": "full",
+    "byte_len": 37309,
+    "content_hash": "sha256:a5d9ab40be97ec9aa5fda05fd20e5d739f6ef6a75aeb0c4f00e956274d8bf12a",
+    "id": "indexing-design-20261008",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/indexing-design-20261008--a5d9ab40.md",
+    "scope": "crates/templar-file-index/**",
+    "title": "indexing-design-20261008"
+  },
+  {
+    "added_at": "2026-10-08",
+    "availability": "full",
+    "byte_len": 75366,
+    "content_hash": "sha256:2c4b73c7408c980ce1cce9cf6c0bbcf519936b62408b2316333ee8bec6d35d3b",
+    "id": "indexing-source-audit-20261008",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/indexing-source-audit-20261008--2c4b73c7.md",
+    "scope": "crates/templar-file-index/**",
+    "title": "indexing-source-audit-20261008"
+  },
+  {
     "added_at": "2026-09-07",
     "availability": "cited-only",
     "byte_len": 38729,

@@ -158,22 +158,38 @@ pub struct VersionLock {
 pub fn derive_lock(root: &Path) -> Result<VersionLock> {
     let (kernel, _) = crate::deploy::matching_kernel_pair(&root.join("boot"))
         .context("driver lock requires a matching candidate kernel/initramfs pair")?;
-    let abi = kernel.file_name().and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix("vmlinuz-")).context("invalid selected kernel ABI")?;
+    let abi = kernel
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("vmlinuz-"))
+        .context("invalid selected kernel ABI")?;
     let packages = templar_hwdetect::dpkg::read_status(&root.join("var/lib/dpkg/status"))
         .context("reading deployment-paired package metadata")?;
-    let mut userspace = packages.iter().filter(|package| package.installed && package.name.starts_with("nvidia-driver-"));
+    let mut userspace = packages
+        .iter()
+        .filter(|package| package.installed && package.name.starts_with("nvidia-driver-"));
     let userspace_version = userspace.next().map(|package| package.version.as_str());
-    anyhow::ensure!(userspace.all(|package| Some(package.version.as_str()) == userspace_version),
-        "installed NVIDIA userspace branches have different versions");
-    let mut modules = packages.iter().filter(|package| package.installed
-        && package.name.starts_with("linux-modules-nvidia-")
-        && package.name.strip_suffix(abi).is_some_and(|prefix| prefix.ends_with('-')));
+    anyhow::ensure!(
+        userspace.all(|package| Some(package.version.as_str()) == userspace_version),
+        "installed NVIDIA userspace branches have different versions"
+    );
+    let mut modules = packages.iter().filter(|package| {
+        package.installed
+            && package.name.starts_with("linux-modules-nvidia-")
+            && package
+                .name
+                .strip_suffix(abi)
+                .is_some_and(|prefix| prefix.ends_with('-'))
+    });
     let modules_version = modules.next().map(|package| package.version.as_str());
-    anyhow::ensure!(modules.all(|package| Some(package.version.as_str()) == modules_version),
-        "selected kernel ABI has conflicting NVIDIA module versions");
-    anyhow::ensure!(modules_version.is_some() == userspace_version.is_some(),
-        "selected kernel ABI and NVIDIA userspace are not paired");
+    anyhow::ensure!(
+        modules.all(|package| Some(package.version.as_str()) == modules_version),
+        "selected kernel ABI has conflicting NVIDIA module versions"
+    );
+    anyhow::ensure!(
+        modules_version.is_some() == userspace_version.is_some(),
+        "selected kernel ABI and NVIDIA userspace are not paired"
+    );
     Ok(VersionLock {
         kernel: Some(abi.to_owned()),
         nvidia_lrm: modules_version.map(str::to_owned),
@@ -184,7 +200,9 @@ pub fn derive_lock(root: &Path) -> Result<VersionLock> {
 pub fn derive_candidate_lock(candidate_root: &Path) -> Result<()> {
     let lock = derive_lock(candidate_root)?;
     let path = candidate_root.join("etc/templaros/hardware/version-lock.toml");
-    if read_version_lock(&path)? == lock { return Ok(()); }
+    if read_version_lock(&path)? == lock {
+        return Ok(());
+    }
     write_version_lock(&path, &lock)
 }
 
@@ -222,20 +240,30 @@ pub fn version_lock_violations(
     let mut violations = Vec::new();
     if let Some(expected) = &lock.nvidia_lrm {
         let mut found = false;
-        for package in packages.iter().filter(|package| package.installed
-            && package.name.starts_with("linux-modules-nvidia-")
-            && lock.kernel.as_ref().is_none_or(|abi|
-                package.name.strip_suffix(abi).is_some_and(|prefix| prefix.ends_with('-')))) {
+        for package in packages.iter().filter(|package| {
+            package.installed
+                && package.name.starts_with("linux-modules-nvidia-")
+                && lock.kernel.as_ref().is_none_or(|abi| {
+                    package
+                        .name
+                        .strip_suffix(abi)
+                        .is_some_and(|prefix| prefix.ends_with('-'))
+                })
+        }) {
             found = true;
             if &package.version != expected {
                 violations.push(SupportViolation::VersionLockMismatch {
-                    component: "nvidia-lrm".to_owned(), expected: expected.clone(), installed: package.version.clone(),
+                    component: "nvidia-lrm".to_owned(),
+                    expected: expected.clone(),
+                    installed: package.version.clone(),
                 });
             }
         }
         if !found {
             violations.push(SupportViolation::VersionLockMismatch {
-                component: "nvidia-lrm".to_owned(), expected: expected.clone(), installed: "(absent for selected ABI)".to_owned(),
+                component: "nvidia-lrm".to_owned(),
+                expected: expected.clone(),
+                installed: "(absent for selected ABI)".to_owned(),
             });
         }
     }
@@ -257,10 +285,15 @@ fn check_locked(
     violations: &mut Vec<SupportViolation>,
 ) {
     let Some(expected) = expected else { return };
-    let mut installed = packages.iter().filter(|package| package.installed && package.name.starts_with(prefix)).peekable();
+    let mut installed = packages
+        .iter()
+        .filter(|package| package.installed && package.name.starts_with(prefix))
+        .peekable();
     if installed.peek().is_none() {
         violations.push(SupportViolation::VersionLockMismatch {
-            component: component.to_owned(), expected: expected.clone(), installed: "(absent)".to_owned(),
+            component: component.to_owned(),
+            expected: expected.clone(),
+            installed: "(absent)".to_owned(),
         });
     }
     for package in installed {
@@ -354,10 +387,15 @@ mod tests {
 
     #[test]
     fn retained_kernel_lrm_does_not_mask_or_invent_active_abi_drift() {
-        let lock = VersionLock { kernel: Some("7.0.0-31-generic".into()),
-            nvidia_lrm: Some("31.31".into()), nvidia_userspace: Some("580.2".into()) };
+        let lock = VersionLock {
+            kernel: Some("7.0.0-31-generic".into()),
+            nvidia_lrm: Some("31.31".into()),
+            nvidia_userspace: Some("580.2".into()),
+        };
         let package = |name: &str, version: &str| InstalledPackage {
-            name: name.into(), version: version.into(), installed: true,
+            name: name.into(),
+            version: version.into(),
+            installed: true,
         };
         let mut packages = vec![
             package("linux-modules-nvidia-580-open-7.0.0-14-generic", "14.14"),
@@ -366,12 +404,16 @@ mod tests {
         ];
         assert!(version_lock_violations(&lock, &packages).is_empty());
         packages[1].version = "31.30".into();
-        assert!(matches!(version_lock_violations(&lock, &packages).as_slice(),
+        assert!(
+            matches!(version_lock_violations(&lock, &packages).as_slice(),
             [SupportViolation::VersionLockMismatch { component, installed, .. }]
-            if component == "nvidia-lrm" && installed == "31.30"));
+            if component == "nvidia-lrm" && installed == "31.30")
+        );
         packages.remove(1);
-        assert!(matches!(version_lock_violations(&lock, &packages).as_slice(),
+        assert!(
+            matches!(version_lock_violations(&lock, &packages).as_slice(),
             [SupportViolation::VersionLockMismatch { component, installed, .. }]
-            if component == "nvidia-lrm" && installed == "(absent for selected ABI)"));
+            if component == "nvidia-lrm" && installed == "(absent for selected ABI)")
+        );
     }
 }

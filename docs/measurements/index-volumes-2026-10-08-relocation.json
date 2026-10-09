@@ -1,0 +1,43 @@
+{
+  "head": "12295f351ab14e649f900573190060cd88a7251e",
+  "date": "2026-10-08",
+  "working_tree": true,
+  "command": "CARGO_BUILD_JOBS=2 bash .agent/scratch/index-wp0/capped.sh cargo test -p templar-file-index --test volumes",
+  "results": {
+    "passed": 13,
+    "failed": 0,
+    "ignored": 0
+  },
+  "source_sha256": {
+    "crates/templar-file-index/src/volume.rs": "9cbcc617b744f44833a7d89e63a44dea7e4da21408740c0ef0703ee983fbcb62",
+    "crates/templar-file-index/src/lib.rs": "4e339f1e1b81799865596f9148bbac0c0836fa2ddcc6ae8f429e9de8c9147081",
+    "crates/templar-file-index/src/model.rs": "a95b2f0c12b3291ea06993b0649267601666c8692ff8b44f00d328f8bde25ff3",
+    "crates/templar-file-index/tests/volumes.rs": "d92c15066b403b8d6a6543da063df39a1ca45bfc44f32b0e79b7f5adf0c08e1a",
+    "services/templar-filed/src/mounts.rs": "5be218ca519863e47e7953498789e86543c97dbae007681b610e8e987cb568e5",
+    "services/templar-filed/src/index_host.rs": "951936d0648960b7d1e5665000bea3a75d0919dde291b9a222d9c636a1e0298f",
+    "services/templar-filed/examples/index_volume_fixture.rs": "d8da37950267010d5e0a136c337fc3534b95479e25a1a15616762da2ed66f6ac",
+    "apps/templar-settings/src/files.rs": "f5a3825580e2934d38429a47fef557b70883887bd02d4825ee0c646dbd609386",
+    "crates/templar-client/src/file_index.rs": "691823193fdf3719964cfce3cee92f8fc31cc12b6fe56b5e5caeed000967374b"
+  },
+  "behavior": [
+    "Only strongly identified UUID plus matching mount-root candidates produce hints",
+    "Candidate mount ID must match the observed table; multiple locations produce no hint",
+    "Offline original registration, cached rows, policy and generation are retained",
+    "Native non-UTF8 subdirectory bytes survive relocation",
+    "Hints clear on absent candidates, unreadable observations, original-volume return or changed identity",
+    "Settings uses the canonical base64 path for an explicit ConfigureRoot then fenced RemoveRoot; full rescan",
+    "The observed-location action rechecks the offline original identity and the new registration UUID/mount-root before removing the old root; mismatch retains both registrations"
+  ],
+  "limits": [
+    "Injected providers; no host mounts changed",
+    "Real loopback, physical NTFS unplug/return and installed Settings remain owner-run",
+    "Discovery is a cached location hint, not automatic relocation or a presence guarantee"
+  ],
+  "settings_confirmation": {
+    "passed": 75,
+    "failed": 0,
+    "ignored": 0,
+    "command": "CARGO_BUILD_JOBS=2 bash .agent/scratch/index-wp0/capped.sh scripts/test-nonzero.sh -p templar-settings",
+    "source_sha256": "d1777de2aeaad587f002c5489ca9f4d9001ffb31805b6be38763a32eb572e902"
+  }
+}

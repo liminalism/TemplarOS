@@ -90,7 +90,6 @@ impl AssociationEngine {
         crate::export::export_mimeapps(&self.db, self.catalog.as_ref(), destination)
     }
 
-
     /// Replace the whole database at once — used after `History1.Undo` reverses a persisted
     /// change, to bring the in-memory engine back in sync with `templar-state` without needing a
     /// bespoke in-memory inverse for every kind of change.

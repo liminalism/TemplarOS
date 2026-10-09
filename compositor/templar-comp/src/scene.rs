@@ -34,11 +34,11 @@ use crate::chrome::{ChromeInputs, ChromeState};
 use crate::wallpaper::WallpaperRenderer;
 use smithay::{
     backend::renderer::{
+        ImportAll, ImportMem,
         element::{
             AsRenderElements, memory::MemoryRenderBufferRenderElement,
             surface::WaylandSurfaceRenderElement,
         },
-        ImportAll, ImportMem,
     },
     desktop::{Space, Window},
     output::Output,
@@ -121,7 +121,10 @@ pub fn collect<R: ImportAll + ImportMem + WallpaperRenderer>(
     inputs: &ChromeInputs<'_>,
     output: &Output,
     renderer: &mut R,
-) -> Vec<SceneElement<R>> where R::TextureId: Clone + Send + 'static {
+) -> Vec<SceneElement<R>>
+where
+    R::TextureId: Clone + Send + 'static,
+{
     let Some(output_geometry) = crate::viewport::output_geometry(&inputs.space, output) else {
         return Vec::new();
     };
@@ -136,7 +139,8 @@ pub fn collect<R: ImportAll + ImportMem + WallpaperRenderer>(
     let mut background = Vec::new();
     let (overlay, windows_get_chrome) =
         crate::chrome::collect_output_chrome(chrome, inputs, output, renderer, &mut background);
-    let mut elements: Vec<SceneElement<R>> = overlay.into_iter().map(SceneElement::Chrome).collect();
+    let mut elements: Vec<SceneElement<R>> =
+        overlay.into_iter().map(SceneElement::Chrome).collect();
 
     if inputs.session_lock.locked {
         // Never import or render ordinary surfaces while locked, even if fallback chrome fails.
@@ -237,10 +241,12 @@ pub fn collect<R: ImportAll + ImportMem + WallpaperRenderer>(
     // Taskfield so it stays mapped; inserting the scrim after the cards puts it above Home and
     // below the cards, which is the ground they stand on.
     elements.extend(background.into_iter().map(SceneElement::Chrome));
-    elements.extend(wallpaper.elements(renderer, output).into_iter().map(|element| match element {
-        crate::wallpaper::WallpaperScene::Image(image) => SceneElement::Wallpaper(image),
-        crate::wallpaper::WallpaperScene::Ground(ground) => SceneElement::Ground(ground),
-    }));
+    elements.extend(wallpaper.elements(renderer, output).into_iter().map(
+        |element| match element {
+            crate::wallpaper::WallpaperScene::Image(image) => SceneElement::Wallpaper(image),
+            crate::wallpaper::WallpaperScene::Ground(ground) => SceneElement::Ground(ground),
+        },
+    ));
 
     retain_visible_chrome(chrome, inputs, live_chrome);
     elements
@@ -312,7 +318,9 @@ fn append_leftovers<R: ImportAll + ImportMem + WallpaperRenderer>(
     output_scale: f64,
     renderer: &mut R,
     elements: &mut Vec<SceneElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     if matches!(
         inputs.window_service.presentation(),
         templar_window::Presentation::Taskfield(_)
@@ -414,7 +422,9 @@ fn surface_elements<R: ImportAll + ImportMem + WallpaperRenderer>(
     alpha: f32,
     renderer: &mut R,
     elements: &mut Vec<SceneElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     let geometry = window.geometry();
     if let Some(card) = presentation {
         let (origin, k) = card_placement(
@@ -429,9 +439,7 @@ fn surface_elements<R: ImportAll + ImportMem + WallpaperRenderer>(
             output_scale,
         );
         elements.extend(
-            AsRenderElements::<R>::render_elements::<
-                WaylandSurfaceRenderElement<R>,
-            >(
+            AsRenderElements::<R>::render_elements::<WaylandSurfaceRenderElement<R>>(
                 window,
                 renderer,
                 smithay::utils::Point::from((origin.0.round() as i32, origin.1.round() as i32)),
@@ -457,9 +465,9 @@ fn surface_elements<R: ImportAll + ImportMem + WallpaperRenderer>(
     let scale = Scale::from(output_scale);
     let physical = (render_location - output_geometry.loc).to_physical_precise_round(scale);
     elements.extend(
-        AsRenderElements::<R>::render_elements::<
-            WaylandSurfaceRenderElement<R>,
-        >(window, renderer, physical, scale, alpha)
+        AsRenderElements::<R>::render_elements::<WaylandSurfaceRenderElement<R>>(
+            window, renderer, physical, scale, alpha,
+        )
         .into_iter()
         .map(SceneElement::Surface),
     );

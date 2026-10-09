@@ -72,9 +72,14 @@ impl SettingsApi {
         if native_requested || appearance_requested {
             let snapshot = self.snapshot().await?;
             if appearance_requested {
-                out.insert(APPEARANCE_NAMESPACE.to_owned(), standard_appearance(&snapshot)?);
+                out.insert(
+                    APPEARANCE_NAMESPACE.to_owned(),
+                    standard_appearance(&snapshot)?,
+                );
             }
-            if native_requested { out.insert(NAMESPACE.to_owned(), snapshot); }
+            if native_requested {
+                out.insert(NAMESPACE.to_owned(), snapshot);
+            }
         }
         Ok(out)
     }
@@ -82,7 +87,8 @@ impl SettingsApi {
     #[zbus(name = "Read")]
     async fn read(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
         if namespace == APPEARANCE_NAMESPACE {
-            return standard_appearance(&self.snapshot().await?)?.remove(key)
+            return standard_appearance(&self.snapshot().await?)?
+                .remove(key)
                 .ok_or_else(|| zbus::fdo::Error::Failed(format!("unknown appearance key {key}")));
         }
         if namespace != NAMESPACE {
@@ -129,18 +135,33 @@ impl SettingsApi {
     }
 }
 
-fn standard_appearance(values: &HashMap<String, OwnedValue>) -> zbus::fdo::Result<HashMap<String, OwnedValue>> {
-    use templar_types::appearance::{Appearance, THEME_KEY, ACCENT_KEY};
-    let choice = |key: &str| values.get(key).and_then(|value| String::try_from(value.clone()).ok())
-        .ok_or_else(|| zbus::fdo::Error::Failed(format!("appearance readback missing {key}")));
+fn standard_appearance(
+    values: &HashMap<String, OwnedValue>,
+) -> zbus::fdo::Result<HashMap<String, OwnedValue>> {
+    use templar_types::appearance::{ACCENT_KEY, Appearance, THEME_KEY};
+    let choice = |key: &str| {
+        values
+            .get(key)
+            .and_then(|value| String::try_from(value.clone()).ok())
+            .ok_or_else(|| zbus::fdo::Error::Failed(format!("appearance readback missing {key}")))
+    };
     let theme = choice(THEME_KEY)?;
     let accent = choice(ACCENT_KEY)?;
     let appearance = Appearance::from_settings(&theme, &accent, false);
     let colour = appearance.palette.accent;
     Ok(HashMap::from([
-        ("color-scheme".into(), owned_value(if theme == "dark" { 1_u32 } else { 2_u32 })),
-        ("accent-color".into(), owned_value((((colour >> 16) & 255) as f64 / 255.0,
-            ((colour >> 8) & 255) as f64 / 255.0, (colour & 255) as f64 / 255.0))),
+        (
+            "color-scheme".into(),
+            owned_value(if theme == "dark" { 1_u32 } else { 2_u32 }),
+        ),
+        (
+            "accent-color".into(),
+            owned_value((
+                ((colour >> 16) & 255) as f64 / 255.0,
+                ((colour >> 8) & 255) as f64 / 255.0,
+                (colour & 255) as f64 / 255.0,
+            )),
+        ),
     ]))
 }
 
@@ -178,15 +199,28 @@ pub async fn spawn_change_forwarder(connection: zbus::Connection) {
             {
                 tracing::debug!(%error, "failed to forward SettingChanged");
             }
-            if key == templar_types::appearance::THEME_KEY || key == templar_types::appearance::ACCENT_KEY {
-                let api = SettingsApi { settings: Arc::new(crate::clients::LiveSettings(connection.clone())) };
-                match api.snapshot().await.and_then(|values| standard_appearance(&values)) {
-                    Ok(values) => for (key, value) in values {
-                        let body = (APPEARANCE_NAMESPACE.to_owned(), key, value);
-                        if let Err(error) = connection.emit_signal(None::<&str>, PATH, INTERFACE, "SettingChanged", &body).await {
-                            tracing::warn!(%error, "appearance portal notification failed");
+            if key == templar_types::appearance::THEME_KEY
+                || key == templar_types::appearance::ACCENT_KEY
+            {
+                let api = SettingsApi {
+                    settings: Arc::new(crate::clients::LiveSettings(connection.clone())),
+                };
+                match api
+                    .snapshot()
+                    .await
+                    .and_then(|values| standard_appearance(&values))
+                {
+                    Ok(values) => {
+                        for (key, value) in values {
+                            let body = (APPEARANCE_NAMESPACE.to_owned(), key, value);
+                            if let Err(error) = connection
+                                .emit_signal(None::<&str>, PATH, INTERFACE, "SettingChanged", &body)
+                                .await
+                            {
+                                tracing::warn!(%error, "appearance portal notification failed");
+                            }
                         }
-                    },
+                    }
                     Err(error) => tracing::warn!(%error, "appearance portal readback failed"),
                 }
             }
@@ -241,19 +275,44 @@ mod tests {
     }
     #[tokio::test]
     async fn toolkit_appearance_uses_typed_standard_values_not_private_setting_strings() {
-        use templar_types::appearance::{THEME_KEY, ACCENT_KEY, Appearance};
-        let api = SettingsApi { settings: Arc::new(FakeSettings(vec![
-            (THEME_KEY.into(), serde_json::to_string(&SettingValue::Choice("dark".into())).unwrap()),
-            (ACCENT_KEY.into(), serde_json::to_string(&SettingValue::Choice("blue".into())).unwrap()),
-        ])) };
-        let values = api.read_all(vec![APPEARANCE_NAMESPACE.into()]).await.unwrap();
+        use templar_types::appearance::{ACCENT_KEY, Appearance, THEME_KEY};
+        let api = SettingsApi {
+            settings: Arc::new(FakeSettings(vec![
+                (
+                    THEME_KEY.into(),
+                    serde_json::to_string(&SettingValue::Choice("dark".into())).unwrap(),
+                ),
+                (
+                    ACCENT_KEY.into(),
+                    serde_json::to_string(&SettingValue::Choice("blue".into())).unwrap(),
+                ),
+            ])),
+        };
+        let values = api
+            .read_all(vec![APPEARANCE_NAMESPACE.into()])
+            .await
+            .unwrap();
         let appearance = &values[APPEARANCE_NAMESPACE];
-        assert_eq!(u32::try_from(appearance["color-scheme"].clone()).unwrap(), 1);
+        assert_eq!(
+            u32::try_from(appearance["color-scheme"].clone()).unwrap(),
+            1
+        );
         let rgb = zbus::zvariant::Structure::try_from(appearance["accent-color"].clone()).unwrap();
-        let expected = Appearance::from_settings("dark", "blue", false).palette.accent;
-        assert_eq!(f64::try_from(&rgb.fields()[0]).unwrap(), ((expected >> 16) & 255) as f64 / 255.0);
-        assert_eq!(f64::try_from(&rgb.fields()[1]).unwrap(), ((expected >> 8) & 255) as f64 / 255.0);
-        assert_eq!(f64::try_from(&rgb.fields()[2]).unwrap(), (expected & 255) as f64 / 255.0);
+        let expected = Appearance::from_settings("dark", "blue", false)
+            .palette
+            .accent;
+        assert_eq!(
+            f64::try_from(&rgb.fields()[0]).unwrap(),
+            ((expected >> 16) & 255) as f64 / 255.0
+        );
+        assert_eq!(
+            f64::try_from(&rgb.fields()[1]).unwrap(),
+            ((expected >> 8) & 255) as f64 / 255.0
+        );
+        assert_eq!(
+            f64::try_from(&rgb.fields()[2]).unwrap(),
+            (expected & 255) as f64 / 255.0
+        );
         assert!(api.read(APPEARANCE_NAMESPACE, "unavailable").await.is_err());
     }
 }

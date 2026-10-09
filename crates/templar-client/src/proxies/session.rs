@@ -164,7 +164,9 @@ mod associations {
 
         /// Local file MIME/policy resolution, with percent-encoded native filename bytes.
         fn resolve_file_uri_v1(
-            &self, uri: &str, project_id: &str,
+            &self,
+            uri: &str,
+            project_id: &str,
         ) -> zbus::Result<(String, String, String)>;
 
         /// `(canonical_app_id, detected_mime, reason)`

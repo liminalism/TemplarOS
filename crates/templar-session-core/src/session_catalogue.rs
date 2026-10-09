@@ -74,6 +74,23 @@ struct ClaudeInventoryEntry {
     status: Option<String>,
 }
 
+fn inventory_display_state(state: Option<&str>, status: Option<&str>) -> Result<&'static str> {
+    Ok(match state {
+        Some("working") => "running",
+        Some("blocked") => "waiting",
+        Some("done") => "idle",
+        Some("failed") => "failed",
+        Some("stopped") => "ended",
+        None => match status {
+            Some("busy") => "running",
+            Some("waiting") => "waiting",
+            Some("idle") => "idle",
+            _ => bail!("Claude inventory lacks a supported live state"),
+        },
+        _ => bail!("unsupported Claude inventory state"),
+    })
+}
+
 impl Catalogue {
     /// Persisted presentation state is history, not proof of a process surviving daemon restart.
     /// A fresh verified process pass/public inventory will restore genuinely live rows.
@@ -201,20 +218,7 @@ impl Catalogue {
             if !safe_session_id(native_id) {
                 bail!("invalid Claude inventory resume identifier");
             }
-            let state = match entry.state.as_deref() {
-                Some("working") => "running",
-                Some("blocked") => "waiting",
-                Some("done") => "idle",
-                Some("failed") => "failed",
-                Some("stopped") => "ended",
-                None => match entry.status.as_deref() {
-                    Some("busy") => "running",
-                    Some("waiting") => "waiting",
-                    Some("idle") => "idle",
-                    _ => bail!("Claude inventory lacks a supported live state"),
-                },
-                _ => bail!("unsupported Claude inventory state"),
-            };
+            let state = inventory_display_state(entry.state.as_deref(), entry.status.as_deref())?;
             let instance = entry
                 .pid
                 .and_then(|pid| verified_pid_instances.get(&pid))
@@ -311,55 +315,12 @@ impl Catalogue {
                 if before.tty == 0 || before.session != *pid as i32 || before.pgrp != *pid as i32 {
                     continue;
                 }
-                let leader = u32::try_from(before.tpgid).ok();
-                let foreground = leader
-                    .into_iter()
-                    .chain(terminal.pids.iter().copied())
-                    .filter(|member| members.contains(member))
-                    .find_map(|member| {
-                        let path = proc_root.join(member.to_string());
-                        let stat = read_stat(&path).ok()?;
-                        (stat.pgrp == before.tpgid).then_some((member, stat))
-                    });
-                let foreground_pid = foreground.as_ref().map(|(pid, _)| *pid);
-                let mut cwd =
-                    fs::read_link(base.join("cwd")).unwrap_or_else(|_| terminal.cwd.clone());
-                let mut program = "shell".to_owned();
-                let mut running = false;
-                if let Some((foreground_pid, stat)) = foreground {
-                    if stat.pgrp != before.pgrp {
-                        running = true;
-                        program = "command".into();
-                        let path = proc_root.join(foreground_pid.to_string());
-                        match bounded_read(&path.join("cmdline"), 8192) {
-                            Ok(bytes) => {
-                                let words: Vec<_> = bytes
-                                    .split(|byte| *byte == 0)
-                                    .filter_map(|word| std::str::from_utf8(word).ok())
-                                    .collect();
-                                let foreground_cwd = fs::read_link(path.join("cwd")).ok();
-                                if read_stat(&path).is_ok_and(|after| {
-                                    after.start == stat.start && after.pgrp == stat.pgrp
-                                }) {
-                                    program = safe_words(&words);
-                                    if let Some(foreground_cwd) = foreground_cwd {
-                                        cwd = foreground_cwd;
-                                    }
-                                }
-                            }
-                            Err(error)
-                                if error
-                                    .downcast_ref::<std::io::Error>()
-                                    .is_some_and(|error| error.kind() == ErrorKind::NotFound) =>
-                            {
-                                ()
-                            }
-                            Err(error) => errors.push(format!(
-                                "process {foreground_pid} foreground program unavailable: {error}"
-                            )),
-                        }
-                    }
-                }
+                let TerminalContext {
+                    foreground_pid,
+                    cwd,
+                    program,
+                    running,
+                } = foreground_context(proc_root, &base, terminal, &before, &members, &mut errors);
                 if !read_stat(&base)
                     .is_ok_and(|after| after.start == before.start && after.tpgid == before.tpgid)
                 {
@@ -403,28 +364,7 @@ impl Catalogue {
                 row.cwd = cwd;
                 row.program = program;
                 row.state = if running { "running" } else { "idle" }.into();
-                entries.sort_by_key(|entry| entry.sequence);
-                row.commands = entries
-                    .iter()
-                    .rev()
-                    .take(5)
-                    .map(|entry| entry.label.clone())
-                    .collect();
-                row.commands.reverse();
-                if let Some(entry) = entries.last() {
-                    row.exit_status = Some(entry.exit_status);
-                    row.updated_ms = now_ms.saturating_sub(
-                        uptime_ms(proc_root)
-                            .unwrap_or(entry.uptime_ms)
-                            .saturating_sub(entry.uptime_ms),
-                    );
-                    if !running && entry.exit_status != 0 {
-                        row.state = "failed".into();
-                        row.program = entry.label.clone();
-                    }
-                } else {
-                    row.updated_ms = now_ms;
-                }
+                apply_terminal_journal(row, &mut entries, proc_root, now_ms, running);
             }
         }
         let instances: BTreeSet<_> = terminals
@@ -508,6 +448,105 @@ struct ProcessStat {
     tty: i32,
     tpgid: i32,
     start: u64,
+}
+
+struct TerminalContext {
+    foreground_pid: Option<u32>,
+    cwd: PathBuf,
+    program: String,
+    running: bool,
+}
+
+fn foreground_context(
+    proc_root: &Path,
+    base: &Path,
+    terminal: &VerifiedTerminal,
+    before: &ProcessStat,
+    members: &BTreeSet<u32>,
+    errors: &mut Vec<String>,
+) -> TerminalContext {
+    let leader = u32::try_from(before.tpgid).ok();
+    let foreground = leader
+        .into_iter()
+        .chain(terminal.pids.iter().copied())
+        .filter(|member| members.contains(member))
+        .find_map(|member| {
+            let path = proc_root.join(member.to_string());
+            let stat = read_stat(&path).ok()?;
+            (stat.pgrp == before.tpgid).then_some((member, stat))
+        });
+    let foreground_pid = foreground.as_ref().map(|(pid, _)| *pid);
+    let mut cwd = fs::read_link(base.join("cwd")).unwrap_or_else(|_| terminal.cwd.clone());
+    let mut program = "shell".to_owned();
+    let mut running = false;
+    if let Some((foreground_pid, stat)) = foreground
+        && stat.pgrp != before.pgrp
+    {
+        running = true;
+        program = "command".into();
+        let path = proc_root.join(foreground_pid.to_string());
+        match bounded_read(&path.join("cmdline"), 8192) {
+            Ok(bytes) => {
+                let words: Vec<_> = bytes
+                    .split(|byte| *byte == 0)
+                    .filter_map(|word| std::str::from_utf8(word).ok())
+                    .collect();
+                let foreground_cwd = fs::read_link(path.join("cwd")).ok();
+                if read_stat(&path)
+                    .is_ok_and(|after| after.start == stat.start && after.pgrp == stat.pgrp)
+                {
+                    program = safe_words(&words);
+                    if let Some(foreground_cwd) = foreground_cwd {
+                        cwd = foreground_cwd;
+                    }
+                }
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == ErrorKind::NotFound) => {}
+            Err(error) => errors.push(format!(
+                "process {foreground_pid} foreground program unavailable: {error}"
+            )),
+        }
+    }
+    TerminalContext {
+        foreground_pid,
+        cwd,
+        program,
+        running,
+    }
+}
+
+fn apply_terminal_journal(
+    row: &mut SessionRowV1,
+    entries: &mut [JournalEntry],
+    proc_root: &Path,
+    now_ms: u64,
+    running: bool,
+) {
+    entries.sort_by_key(|entry| entry.sequence);
+    row.commands = entries
+        .iter()
+        .rev()
+        .take(5)
+        .map(|entry| entry.label.clone())
+        .collect();
+    row.commands.reverse();
+    if let Some(entry) = entries.last() {
+        row.exit_status = Some(entry.exit_status);
+        row.updated_ms = now_ms.saturating_sub(
+            uptime_ms(proc_root)
+                .unwrap_or(entry.uptime_ms)
+                .saturating_sub(entry.uptime_ms),
+        );
+        if !running && entry.exit_status != 0 {
+            row.state = "failed".into();
+            row.program.clone_from(&entry.label);
+        }
+    } else {
+        row.updated_ms = now_ms;
+    }
 }
 fn parse_stat(text: &str) -> Result<ProcessStat> {
     // comm may contain spaces, '(' and ')': the final ')' closes it, field 3 follows.

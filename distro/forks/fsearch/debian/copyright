@@ -1,0 +1,44 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: FSearch
+Source: https://github.com/cboxdoerfer/fsearch
+Comment: Upstream pin 05ed650ab101ee3d61795fa5eeeb5c32e1e366c3.
+ Downstream source changes are retained in debian/patches, not a claimed published fork.
+
+Files: *
+Copyright: 2016-2026 Christian Boxdoerfer and FSearch contributors
+License: GPL-2.0-or-later
+
+Files: debian/*
+Copyright: 2026 TemplarOS contributors
+License: GPL-2.0-or-later
+
+Files: help/C/*
+Copyright: 2022 Christian Boxdörfer and Dawid Duma (pixel96x)
+License: CC-BY-SA-4.0
+Comment: Upstream help's licence URLs specify CC-BY-SA-4.0. Index mode
+ installs the separate TemplarOS page instead of the upstream syntax guide.
+
+Files: help/C/templaros-index.page
+Copyright: 2026 TemplarOS contributors
+License: GPL-2.0-or-later
+
+Files: data/org.templaros.FSearch.metainfo.xml
+Copyright: 2026 TemplarOS contributors
+License: CC0-1.0
+
+License: GPL-2.0-or-later
+ This program is free software; you can redistribute it and/or modify it
+ under the terms of the GNU General Public License as published by the Free
+ Software Foundation; either version 2 of the License, or (at your option)
+ any later version.
+ .
+ On Debian systems the complete GPL version 2 is in
+ /usr/share/common-licenses/GPL-2.
+
+License: CC0-1.0
+ This metadata is dedicated to the public domain under CC0 1.0 Universal.
+ See https://creativecommons.org/publicdomain/zero/1.0/.
+
+License: CC-BY-SA-4.0
+ Creative Commons Attribution-ShareAlike 4.0 International.
+ See https://creativecommons.org/licenses/by-sa/4.0/legalcode.

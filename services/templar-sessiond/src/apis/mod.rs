@@ -5,20 +5,20 @@
 
 pub mod appearance;
 pub mod audio;
-pub mod bluetooth;
-pub mod device_prompt;
-pub mod displays;
-pub mod input;
 pub mod background;
 pub mod backlight;
 pub mod battery;
+pub mod bluetooth;
+pub mod device_prompt;
+pub mod displays;
 pub mod history;
 pub mod homefield;
 pub mod homegarden;
+pub mod input;
 pub mod lifecycle;
 pub mod location;
-pub mod notifications;
 pub mod network;
+pub mod notifications;
 pub mod power;
 pub mod projects;
 pub mod providers;

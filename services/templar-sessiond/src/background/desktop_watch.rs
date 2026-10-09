@@ -13,7 +13,9 @@
 //! refresh catalogue and provider choices without losing explicit selections.
 
 use parking_lot::RwLock;
-use std::{collections::BTreeMap, os::unix::fs::MetadataExt as _, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap, os::unix::fs::MetadataExt as _, path::PathBuf, sync::Arc, time::Duration,
+};
 use templar_appd::{Registry, desktop_entry::ExecResolver};
 use templar_session_core::providers::ProviderRegistry;
 use templar_state::Store;
@@ -68,8 +70,11 @@ pub async fn run(
                 let mut current = task_providers.write();
                 let mut refreshed = templar_session_core::providers::load_within(&connection)?;
                 refreshed.declare_installed(task_registry.as_ref());
-                let changed: Vec<_> = templar_types::ProviderRole::ALL.iter().copied()
-                    .filter(|role| current.provider(*role) != refreshed.provider(*role)).collect();
+                let changed: Vec<_> = templar_types::ProviderRole::ALL
+                    .iter()
+                    .copied()
+                    .filter(|role| current.provider(*role) != refreshed.provider(*role))
+                    .collect();
                 *current = refreshed;
                 changed
             };
@@ -84,10 +89,16 @@ pub async fn run(
                     announce_applications_changed(&connection).await;
                 }
                 for role in changed_roles {
-                    if let Err(error) = connection.emit_signal(
-                        None::<&str>, templar_types::dbus::session::PROVIDERS_PATH,
-                        "org.templaros.Providers1", "Changed", &(role.as_str(),),
-                    ).await {
+                    if let Err(error) = connection
+                        .emit_signal(
+                            None::<&str>,
+                            templar_types::dbus::session::PROVIDERS_PATH,
+                            "org.templaros.Providers1",
+                            "Changed",
+                            &(role.as_str(),),
+                        )
+                        .await
+                    {
                         tracing::warn!(%error, "catalogue refresh provider notification failed");
                     }
                 }
@@ -122,17 +133,24 @@ fn snapshot_dirs(dirs: &[PathBuf]) -> anyhow::Result<BTreeMap<PathBuf, DesktopSt
         };
         for entry in entries {
             let path = entry?.path();
-            if path.extension() != Some(std::ffi::OsStr::new("desktop")) { continue; }
+            if path.extension() != Some(std::ffi::OsStr::new("desktop")) {
+                continue;
+            }
             let metadata = match std::fs::metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
             };
-            snapshot.insert(path, DesktopStamp {
-                device: metadata.dev(), inode: metadata.ino(), len: metadata.len(),
-                modified: (metadata.mtime(), metadata.mtime_nsec()),
-                changed: (metadata.ctime(), metadata.ctime_nsec()),
-            });
+            snapshot.insert(
+                path,
+                DesktopStamp {
+                    device: metadata.dev(),
+                    inode: metadata.ino(),
+                    len: metadata.len(),
+                    modified: (metadata.mtime(), metadata.mtime_nsec()),
+                    changed: (metadata.ctime(), metadata.ctime_nsec()),
+                },
+            );
         }
     }
     Ok(snapshot)
@@ -141,8 +159,13 @@ fn snapshot_dirs(dirs: &[PathBuf]) -> anyhow::Result<BTreeMap<PathBuf, DesktopSt
 /// Emit `AppIdentity1.ApplicationsChanged`. Best-effort: a listener that misses it re-reads on its
 /// next natural refresh, and failing to announce a change must never abort autostart.
 pub(crate) async fn announce_applications_changed(connection: &zbus::Connection) {
-    if let Ok(associations) = connection.object_server()
-        .interface::<_, templar_associationd::dbus::AssociationApi>(templar_types::dbus::session::ASSOCIATIONS_PATH).await {
+    if let Ok(associations) = connection
+        .object_server()
+        .interface::<_, templar_associationd::dbus::AssociationApi>(
+            templar_types::dbus::session::ASSOCIATIONS_PATH,
+        )
+        .await
+    {
         associations.get().await.refresh_catalog();
     }
     let emitter = match zbus::object_server::SignalEmitter::new(

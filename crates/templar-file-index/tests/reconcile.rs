@@ -19,7 +19,10 @@ fn open(dir: &std::path::Path) -> Index {
 
 fn hits(index: &Index, text: &str) -> usize {
     index
-        .search(&Query::new(text))
+        .search(
+            &Query::new(text),
+            &templar_file_index::CallContext::internal(),
+        )
         .expect("a search")
         .hits
         .len()
@@ -118,12 +121,19 @@ fn a_namespace_only_repair_is_current_over_metadata_it_did_not_verify() {
     // A query that depends on metadata is answered anyway, and told which roots it cannot trust.
     let mut sized = Query::new("first");
     sized.require_metadata = true;
-    let result = index.search(&sized).expect("a search");
+    let result = index
+        .search(&sized, &templar_file_index::CallContext::internal())
+        .expect("a search");
     assert_eq!(result.hits.len(), 1, "the query is served, never blocked");
     assert_eq!(result.stale_metadata_roots, vec![root]);
 
     // And an ordinary filename search neither pays for the distinction nor hears about it.
-    let plain = index.search(&Query::new("first")).expect("a search");
+    let plain = index
+        .search(
+            &Query::new("first"),
+            &templar_file_index::CallContext::internal(),
+        )
+        .expect("a search");
     assert!(plain.stale_metadata_roots.is_empty());
 
     // A full pass restores both axes.
@@ -466,21 +476,45 @@ fn a_subtree_repair_on_a_current_root_leaves_it_current_and_leaves_the_rest_alon
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey checks stable parent identity across repair and moves"
+)]
 fn parent_identity_survives_take_on_trust_and_cross_directory_moves() {
     use templar_file_index::{EntryMeta, Mutation, MutationBatch};
     let temp = tempfile::tempdir().unwrap();
     let (index, root, tree, mut owner) = seeded(&temp);
     fs::create_dir_all(tree.join("other")).unwrap();
     let policy = index.root_policy(root).unwrap();
-    for trigger in [Trigger::Requested, Trigger::NamespaceOnly, Trigger::Requested] {
-        let (_, report) = reconcile::reconcile(&index, &mut owner, root, ScanScope::Root,
-            &trigger, ScanOptions::reconcile(policy.clone())).unwrap();
-        if trigger == Trigger::NamespaceOnly { assert!(report.dirs_proven_unchanged > 0); }
+    for trigger in [
+        Trigger::Requested,
+        Trigger::NamespaceOnly,
+        Trigger::Requested,
+    ] {
+        let (_, report) = reconcile::reconcile(
+            &index,
+            &mut owner,
+            root,
+            ScanScope::Root,
+            &trigger,
+            ScanOptions::reconcile(policy.clone()),
+        )
+        .unwrap();
+        if trigger == Trigger::NamespaceOnly {
+            assert!(report.dirs_proven_unchanged > 0);
+        }
         let root_path = NativePath::from_path(&tree);
         let root_row = index.entry(root, &root_path).unwrap().unwrap();
-        assert_eq!(root_row.parent, None, "the indexed root has no indexed ancestor");
+        assert_eq!(
+            root_row.parent, None,
+            "the indexed root has no indexed ancestor"
+        );
         let children = index.children(root, &root_path).unwrap();
-        assert_eq!(children.len(), 2, "only direct children, not the descendant range");
+        assert_eq!(
+            children.len(),
+            2,
+            "only direct children, not the descendant range"
+        );
         for row in children {
             assert_eq!(row.parent, Some(root_row.entry_id));
             for leaf in index.children(root, &row.path).unwrap() {
@@ -492,25 +526,222 @@ fn parent_identity_survives_take_on_trust_and_cross_directory_moves() {
     let to = tree.join("other/moved-notes");
     fs::rename(&from, &to).unwrap();
     let meta = EntryMeta::from_symlink_metadata(&to, &to.symlink_metadata().unwrap());
-    index.apply(MutationBatch::new(MutationSource::Watcher, vec![Mutation::Move {
-        root, from: NativePath::from_path(&from), to: NativePath::from_path(&to), meta,
-    }])).unwrap();
-    let other = index.entry(root, &NativePath::from_path(&tree.join("other"))).unwrap().unwrap();
-    let moved = index.entry(root, &NativePath::from_path(&to)).unwrap().unwrap();
+    index
+        .apply(MutationBatch::new(
+            MutationSource::Watcher,
+            vec![Mutation::Move {
+                root,
+                from: NativePath::from_path(&from),
+                to: NativePath::from_path(&to),
+                meta,
+            }],
+        ))
+        .unwrap();
+    let other = index
+        .entry(root, &NativePath::from_path(&tree.join("other")))
+        .unwrap()
+        .unwrap();
+    let moved = index
+        .entry(root, &NativePath::from_path(&to))
+        .unwrap()
+        .unwrap();
     assert_eq!(moved.parent, Some(other.entry_id));
     let moved_children = index.children(root, &moved.path).unwrap();
     assert_eq!(moved_children.len(), 2);
-    assert!(moved_children.iter().all(|row| row.parent == Some(moved.entry_id)));
-    assert_eq!(index.children(root, &NativePath::from_path(&tree)).unwrap().len(), 1);
+    assert!(
+        moved_children
+            .iter()
+            .all(|row| row.parent == Some(moved.entry_id))
+    );
+    assert_eq!(
+        index
+            .children(root, &NativePath::from_path(&tree))
+            .unwrap()
+            .len(),
+        1
+    );
     let first = to.join("first.txt");
     let destination = tree.join("first.txt");
     fs::rename(&first, &destination).unwrap();
-    let meta = EntryMeta::from_symlink_metadata(&destination, &destination.symlink_metadata().unwrap());
-    index.apply(MutationBatch::new(MutationSource::Watcher, vec![Mutation::Move {
-        root, from: NativePath::from_path(&first), to: NativePath::from_path(&destination), meta,
-    }])).unwrap();
-    let root_row = index.entry(root, &NativePath::from_path(&tree)).unwrap().unwrap();
-    let moved_file = index.entry(root, &NativePath::from_path(&destination)).unwrap().unwrap();
+    let meta =
+        EntryMeta::from_symlink_metadata(&destination, &destination.symlink_metadata().unwrap());
+    index
+        .apply(MutationBatch::new(
+            MutationSource::Watcher,
+            vec![Mutation::Move {
+                root,
+                from: NativePath::from_path(&first),
+                to: NativePath::from_path(&destination),
+                meta,
+            }],
+        ))
+        .unwrap();
+    let root_row = index
+        .entry(root, &NativePath::from_path(&tree))
+        .unwrap()
+        .unwrap();
+    let moved_file = index
+        .entry(root, &NativePath::from_path(&destination))
+        .unwrap()
+        .unwrap();
     assert_eq!(moved_file.parent, Some(root_row.entry_id));
     assert_eq!(index.children(root, &moved.path).unwrap().len(), 1);
+}
+
+/// A second root registered at `tree/notes`, tracked and fully reconciled, then the container
+/// reconciled again — the order filed's watcher queues them in.
+fn nest_notes(
+    index: &Index,
+    owner: &mut WatchOwner<FakeSource>,
+    container: RootId,
+    tree: &std::path::Path,
+) -> RootId {
+    let notes = tree.join("notes");
+    let policy = RootPolicy::default_home();
+    let nested = index
+        .add_root(&NativePath::from_path(&notes), policy.clone())
+        .unwrap()
+        .root;
+    owner.track_root(nested, &notes, policy.clone());
+    for (root, path) in [(nested, notes.as_path()), (container, tree)] {
+        owner.forget_root(root);
+        owner.track_root(root, path, policy.clone());
+        let (outcome, _) = reconcile::reconcile(
+            index,
+            owner,
+            root,
+            ScanScope::Root,
+            &Trigger::Requested,
+            ScanOptions::reconcile(policy.clone()),
+        )
+        .unwrap();
+        assert!(outcome.complete);
+    }
+    nested
+}
+
+#[test]
+fn a_nested_root_owns_its_subtree_and_the_container_tombstones_its_old_copy() {
+    let temp = tempfile::tempdir().unwrap();
+    let (index, root, tree, mut owner) = seeded(&temp);
+    let first = NativePath::from_path(&tree.join("notes/first.txt"));
+    assert!(index.entry(root, &first).unwrap().is_some());
+
+    let nested = nest_notes(&index, &mut owner, root, &tree);
+
+    assert!(
+        index.entry(root, &first).unwrap().is_none(),
+        "the container kept its copy"
+    );
+    assert!(
+        index
+            .entry(root, &NativePath::from_path(&tree.join("notes")))
+            .unwrap()
+            .is_none(),
+        "the boundary directory belongs to the nested root"
+    );
+    assert!(index.entry(nested, &first).unwrap().is_some());
+    let status = index.root_status(nested).unwrap();
+    assert_eq!(status.nested_in, Some(root));
+    assert_eq!(index.root_status(root).unwrap().contains, vec![nested]);
+}
+
+#[test]
+fn forgetting_a_nested_root_hands_its_subtree_back_to_the_container() {
+    let temp = tempfile::tempdir().unwrap();
+    let (index, root, tree, mut owner) = seeded(&temp);
+    let nested = nest_notes(&index, &mut owner, root, &tree);
+    index.forget_root(nested).unwrap();
+    owner.forget_root(nested);
+
+    let notes = NativePath::from_path(&tree.join("notes"));
+    let (outcome, _) = reconcile::reconcile(
+        &index,
+        &mut owner,
+        root,
+        ScanScope::Subtree(notes.clone()),
+        &Trigger::Requested,
+        ScanOptions::reconcile(index.root_policy(root).unwrap()),
+    )
+    .unwrap();
+    assert!(outcome.complete);
+    assert!(index.entry(root, &notes).unwrap().is_some());
+    assert!(
+        index
+            .entry(root, &NativePath::from_path(&tree.join("notes/second.txt")))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(hits(&index, "second"), 1);
+}
+
+#[test]
+fn the_container_does_not_watch_inside_a_nested_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let (index, root, tree, owner) = seeded(&temp);
+    fs::create_dir_all(tree.join("notes/deeper")).unwrap();
+    let nested = index
+        .add_root(
+            &NativePath::from_path(&tree.join("notes")),
+            RootPolicy::default_home(),
+        )
+        .unwrap()
+        .root;
+    let mut fresh = WatchOwner::new(FakeSource::new(), WatchBudget { max_watches: 64 });
+    fresh.track_root(root, &tree, RootPolicy::default_home());
+    fresh.track_root(nested, &tree.join("notes"), RootPolicy::default_home());
+    let mut visited = Vec::new();
+    fresh
+        .arm_tree(root, &tree, &mut |entry| {
+            visited.push(entry.path);
+            Ok(())
+        })
+        .unwrap();
+    assert!(fresh.source_mut().watch_for(&tree).is_some());
+    assert!(fresh.source_mut().watch_for(&tree.join("notes")).is_none());
+    assert!(
+        fresh
+            .source_mut()
+            .watch_for(&tree.join("notes/deeper"))
+            .is_none()
+    );
+    assert!(
+        visited
+            .iter()
+            .all(|path| !path.starts_with(&NativePath::from_path(&tree.join("notes"))))
+    );
+    drop(owner);
+}
+
+#[test]
+fn search_never_returns_the_same_path_twice_across_overlapping_registrations() {
+    let temp = tempfile::tempdir().unwrap();
+    let (index, root, tree, mut owner) = seeded(&temp);
+    nest_notes(&index, &mut owner, root, &tree);
+    assert_eq!(hits(&index, "first"), 1);
+    assert_eq!(
+        hits(&index, "notes"),
+        3,
+        "the directory and its two files, once each"
+    );
+
+    let mut frame = Vec::new();
+    index
+        .write_snapshot(
+            &mut std::io::Cursor::new(&mut frame),
+            &templar_file_index::snapshot::SnapshotRequest::default(),
+            &templar_file_index::snapshot::SnapshotLimits::default(),
+            &templar_file_index::CallContext::internal(),
+        )
+        .unwrap();
+    let reader = templar_file_index::snapshot::SnapshotReader::new(&frame).unwrap();
+    let mut paths = reader
+        .entry_paths_iter()
+        .unwrap()
+        .map(|path| templar_file_index::NativePath::from_bytes(path.unwrap().to_vec()))
+        .collect::<Vec<_>>();
+    let listed = paths.len();
+    paths.sort();
+    paths.dedup();
+    assert_eq!(paths.len(), listed, "a path appeared under both roots");
 }

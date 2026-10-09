@@ -13,13 +13,13 @@ use crate::psi::Psi;
 use crate::trace::TraceRing;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 use templar_types::{AppId, ResourceId, ResourceMetadata};
-use std::sync::Arc;
 
 /// Enrichment received over D-Bus: who is on screen and what must not be a victim. Defaults are
 /// chosen to be *protective*: an instance the compositor and sessiond have not yet described
@@ -221,12 +221,23 @@ impl Report {
             instances: Vec<Application<'a>>,
         }
         serde_json::to_string(&Applications {
-            level: self.level, stage: self.stage, uptime_seconds: self.uptime_seconds,
+            level: self.level,
+            stage: self.stage,
+            uptime_seconds: self.uptime_seconds,
             mem_available_bytes: self.mem_available_bytes,
-            global_memory_psi: self.global_memory_psi, global_io_psi: self.global_io_psi,
-            instances: self.instances.iter().filter_map(|sample| {
-                sample.metadata.identity.application().map(|app_id| Application { app_id, sample })
-            }).collect(),
+            global_memory_psi: self.global_memory_psi,
+            global_io_psi: self.global_io_psi,
+            instances: self
+                .instances
+                .iter()
+                .filter_map(|sample| {
+                    sample
+                        .metadata
+                        .identity
+                        .application()
+                        .map(|app_id| Application { app_id, sample })
+                })
+                .collect(),
         })
     }
 
@@ -257,7 +268,10 @@ impl Report {
 
     pub fn explain(&self, instance_id: ResourceId) -> Explanation {
         let ranked = self.ranked_candidates();
-        let top_app_id = ranked.first().and_then(|top| top.metadata.identity.application()).cloned();
+        let top_app_id = ranked
+            .first()
+            .and_then(|top| top.metadata.identity.application())
+            .cloned();
 
         let Some(found) = self.instance(instance_id) else {
             return Explanation {
@@ -307,7 +321,10 @@ impl Report {
             match ranked.first() {
                 Some(top) => format!(
                     "{} would not be selected: {} currently scores higher ({:.1} vs {:.1}).",
-                    found.metadata.identity, top.metadata.identity, top.victim_score, found.victim_score,
+                    found.metadata.identity,
+                    top.metadata.identity,
+                    top.victim_score,
+                    found.victim_score,
                 ),
                 None => format!("{} would not be selected.", found.metadata.identity),
             }
@@ -530,7 +547,9 @@ mod tests {
         InstanceReport {
             instance_id: ResourceId::new(),
             metadata: Arc::new(ResourceMetadata {
-                identity: ResourceIdentity::Application { app_id: "org.templaros.Test".parse().unwrap() },
+                identity: ResourceIdentity::Application {
+                    app_id: "org.templaros.Test".parse().unwrap(),
+                },
                 control_group: PathBuf::from("/test.scope"),
             }),
             memory_current_bytes: 0,

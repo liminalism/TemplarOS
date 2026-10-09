@@ -25,7 +25,10 @@
 //! scanout before releasing pending state; this thread never touches DRM or fabricates completion.
 //!
 //! Optionally (`TEMPLAR_COMP_WATCHDOG_ABORT_AFTER_SECS`) a stall that long aborts the process, so a
-//! core dump records every thread's stack — the evidence `/proc` cannot give.
+//! core dump records every thread's stack — the evidence `/proc` cannot give. At critical memory
+//! pressure the expired watchdog exits without a core instead: paging a multi-GiB compositor into
+//! systemd-coredump can delay the display manager's recovery for minutes (October 7 observation).
+//! This does not bound time spent in uninterruptible kernel work or fix the original stall.
 //!
 //! The decisions ([`reports_passed`], [`FlipWatch::observe`], [`parse_abort_after`]) and the
 //! `/proc` parsing are pure and tested below; so is the whole thing, against a real calloop loop.
@@ -110,6 +113,11 @@ pub enum Report {
         stalled: Duration,
         abort_after: Duration,
     },
+    ExitingUnderPressure {
+        stalled: Duration,
+        abort_after: Duration,
+        memory: MemoryPressure,
+    },
 }
 
 /// Where reports go: [`log_report`] in the compositor, a channel in tests.
@@ -160,6 +168,77 @@ pub fn parse_abort_after(raw: Option<&str>) -> Result<Option<Duration>, String> 
             "{raw:?} is not a whole number of seconds ({error})"
         )),
     }
+}
+
+/// One read at the expired-watchdog boundary, not a new periodic pressure monitor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MemoryPressure {
+    pub available_kib: Option<u64>,
+    pub total_kib: Option<u64>,
+    /// Full PSI avg10, in thousandths of a percent (2.000% = 2000).
+    pub full_avg10_milli: Option<u32>,
+}
+impl MemoryPressure {
+    pub fn parse(meminfo: &str, psi: &str) -> Self {
+        let field = |key| {
+            meminfo.lines().find_map(|line| {
+                let mut words = line.split_whitespace();
+                if words.next()? != key {
+                    return None;
+                }
+                let value = words.next()?.parse().ok()?;
+                (words.next()? == "kB").then_some(value)
+            })
+        };
+        let full_avg10_milli = psi.lines().find_map(|line| {
+            let mut words = line.split_whitespace();
+            if words.next()? != "full" {
+                return None;
+            }
+            let value: f64 = words
+                .find_map(|word| word.strip_prefix("avg10="))?
+                .parse()
+                .ok()?;
+            if !value.is_finite() || !(0.0..=100.0).contains(&value) {
+                return None;
+            }
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Some((value * 1000.0).round() as u32)
+        });
+        Self {
+            available_kib: field("MemAvailable:"),
+            total_kib: field("MemTotal:"),
+            full_avg10_milli,
+        }
+    }
+    pub fn read() -> Self {
+        Self::parse(
+            &std::fs::read_to_string("/proc/meminfo").unwrap_or_default(),
+            &std::fs::read_to_string("/proc/pressure/memory").unwrap_or_default(),
+        )
+    }
+    /// Same starting critical thresholds as resourced: 2% of RAM (256 MiB–1.5 GiB),
+    /// or full memory PSI avg10 >= 2%. This is solely a core-collection decision; it neither
+    /// changes resource policy nor infers that HDMI caused the stall. Unknown data supplies no
+    /// pressure claim. Either known measurement is sufficient on its own.
+    pub fn critical(self) -> bool {
+        let threshold = self.total_kib.map_or(1024 * 1024, |total| {
+            (total / 50).clamp(256 * 1024, 1536 * 1024)
+        });
+        self.available_kib
+            .is_some_and(|available| available <= threshold)
+            || self.full_avg10_milli.is_some_and(|full| full >= 2000)
+    }
+}
+
+/// Bypass atexit and unwinding in an already stalled multi-threaded compositor. A nonzero exit
+/// still fails the unit and lets the existing session monitor return to the display manager.
+/// No dump handler is entered; no DRM cleanup is attempted on this watchdog thread.
+#[allow(unsafe_code)]
+fn exit_without_core() -> ! {
+    // SAFETY: _exit terminates only this process; it accepts an ordinary nonzero exit status and
+    // requires no borrowed pointers. It deliberately bypasses potentially stalled user cleanup.
+    unsafe { libc::_exit(70) }
 }
 
 /// The comm name and one-letter state from a `/proc/<pid>/task/<tid>/stat` line.
@@ -583,6 +662,18 @@ pub fn log_report(report: &Report) {
             after_ms = millis(*after),
             "overdue page flip completed"
         ),
+        Report::ExitingUnderPressure {
+            stalled,
+            abort_after,
+            memory,
+        } => tracing::error!(
+            stalled_ms = millis(*stalled),
+            abort_after_secs = abort_after.as_secs(),
+            available_kib = memory.available_kib,
+            total_kib = memory.total_kib,
+            full_avg10_milli = memory.full_avg10_milli,
+            "compositor event loop stalled past the abort threshold under critical memory pressure; exiting without a core to avoid delaying session recovery"
+        ),
         Report::Aborting {
             stalled,
             abort_after,
@@ -661,6 +752,15 @@ fn watch(shared: &Shared, ping: &Ping, config: Config, loop_tid: u32) {
             if let Some(abort_after) = config.abort_after
                 && stalled >= abort_after
             {
+                let memory = MemoryPressure::read();
+                if memory.critical() {
+                    (shared.reporter)(&Report::ExitingUnderPressure {
+                        stalled,
+                        abort_after,
+                        memory,
+                    });
+                    exit_without_core();
+                }
                 (shared.reporter)(&Report::Aborting {
                     stalled,
                     abort_after,
@@ -775,6 +875,50 @@ mod tests {
 
     /// The comm is whatever sits between the first `(` and the last `)` — a thread may put both
     /// in its own name, and spaces too.
+    #[test]
+    fn an_expired_watchdog_skips_core_collection_only_at_critical_pressure() {
+        let info = "MemTotal: 32000000 kB\nMemAvailable: 2000000 kB\n";
+        assert!(!MemoryPressure::parse(info, "full avg10=0.50 avg60=0.20 total=1").critical());
+        assert!(MemoryPressure::parse(info, "full avg10=2.00 avg60=0.20 total=1").critical());
+        assert!(
+            MemoryPressure::parse("MemTotal: 32000000 kB\nMemAvailable: 640000 kB", "").critical()
+        );
+        assert!(
+            !MemoryPressure::parse("MemTotal: 32000000 kB\nMemAvailable: 640001 kB", "").critical()
+        );
+        assert!(
+            MemoryPressure::parse("MemTotal: 1000000 kB\nMemAvailable: 262144 kB", "").critical()
+        );
+        assert!(
+            !MemoryPressure::parse("MemTotal: 1000000000 kB\nMemAvailable: 2000000 kB", "")
+                .critical()
+        );
+        assert!(!MemoryPressure::parse("", "full avg10=NaN").critical());
+        assert!(!MemoryPressure::parse("MemAvailable: -1 kB", "full avg10=101").critical());
+        assert!(MemoryPressure::parse("", "full avg10=2.01").critical());
+    }
+
+    #[test]
+    fn pressure_exit_is_a_failure_status_without_a_core_signal() {
+        const CHILD: &str = "TEMPLAR_OWNED_PRESSURE_EXIT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            exit_without_core();
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "watchdog::tests::pressure_exit_is_a_failure_status_without_a_core_signal",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.code(), Some(70));
+        assert_eq!(status.signal(), None);
+        assert!(!status.core_dumped());
+    }
+
     #[test]
     fn stat_lines_parse_whatever_the_thread_called_itself() {
         assert_eq!(

@@ -3,6 +3,7 @@
 mod archive;
 mod build_set;
 mod index_bench;
+mod index_load;
 mod ownership;
 mod seeds;
 mod signatures;

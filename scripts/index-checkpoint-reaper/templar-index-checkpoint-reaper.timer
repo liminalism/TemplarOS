@@ -1,0 +1,15 @@
+[Unit]
+Description=Hourly sweep of orphaned file-index checkpoints (temporary mitigation)
+Documentation=file://%h/rust-projects/LegeOS/scripts/index-checkpoint-reaper/README.md
+
+[Timer]
+# Orphans pin disk over hours, not minutes, so hourly is plenty; Persistent
+# runs the sweep once after a boot that missed the hour (e.g. right after the
+# crash that orphaned a checkpoint).
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+Unit=templar-index-checkpoint-reaper.service
+
+[Install]
+WantedBy=timers.target

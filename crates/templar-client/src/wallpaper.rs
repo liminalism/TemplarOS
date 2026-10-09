@@ -3,10 +3,14 @@ use crate::proxies::WallpaperProxy;
 use templar_types::wallpaper::WallpaperStatus;
 
 #[derive(Debug)]
-pub struct WallpaperClient<'a> { proxy: WallpaperProxy<'a> }
+pub struct WallpaperClient<'a> {
+    proxy: WallpaperProxy<'a>,
+}
 impl<'a> WallpaperClient<'a> {
     pub async fn new(connection: &'a zbus::Connection) -> anyhow::Result<Self> {
-        Ok(Self { proxy: WallpaperProxy::new(connection).await? })
+        Ok(Self {
+            proxy: WallpaperProxy::new(connection).await?,
+        })
     }
     pub async fn inspect(&self) -> anyhow::Result<WallpaperStatus> {
         Ok(serde_json::from_str(&self.proxy.inspect().await?)?)
@@ -26,5 +30,7 @@ impl<'a> WallpaperClient<'a> {
     pub async fn refresh(&self) -> anyhow::Result<WallpaperStatus> {
         Ok(serde_json::from_str(&self.proxy.refresh().await?)?)
     }
-    pub fn proxy(&self) -> &WallpaperProxy<'a> { &self.proxy }
+    pub fn proxy(&self) -> &WallpaperProxy<'a> {
+        &self.proxy
+    }
 }

@@ -12,8 +12,8 @@
 
 use crate::{
     clients::AppStateClient,
-    request::{owned_value, response, with_request},
     host::{UiError, UiResult},
+    request::{owned_value, response, with_request},
 };
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc, time::Duration};
@@ -60,10 +60,17 @@ impl BackgroundUi for NativeUi {
     async fn ask(&self, app_id: &str, display_name: &str) -> UiResult<u32> {
         let title = "Background access".to_owned();
         let message = format!("Allow {display_name} ({app_id}) to keep running in the background?");
-        match self.0.request(crate::dialog::Spec::Choice {
-            title, message, choices: vec!["Forbid".into(), "Allow".into()],
-            parent: crate::parent::Parent::None, activation_token: None,
-        }).await? {
+        match self
+            .0
+            .request(crate::dialog::Spec::Choice {
+                title,
+                message,
+                choices: vec!["Forbid".into(), "Allow".into()],
+                parent: crate::parent::Parent::None,
+                activation_token: None,
+            })
+            .await?
+        {
             Some(crate::dialog::Answer::Choice(choice)) => Ok(Some(if choice == "Allow" {
                 notify_result::ALLOW
             } else {
@@ -172,7 +179,10 @@ impl BackgroundApi {
         app_id: &str,
         name: &str,
     ) -> zbus::fdo::Result<(u32, HashMap<String, OwnedValue>)> {
-        with_request(connection, &handle, header.sender(), || self.notify(app_id, name)).await
+        with_request(connection, &handle, header.sender(), || {
+            self.notify(app_id, name)
+        })
+        .await
     }
 
     /// Deprecated upstream ("new versions of xdg-desktop-portal will not call this method");

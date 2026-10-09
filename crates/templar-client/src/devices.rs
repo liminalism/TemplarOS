@@ -4,7 +4,15 @@ use templar_types::settings::{Capability, Revision};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum PromptKind { Password, Pin, Passkey, Confirmation, Authorization, DisplayPin, DisplayPasskey }
+pub enum PromptKind {
+    Password,
+    Pin,
+    Passkey,
+    Confirmation,
+    Authorization,
+    DisplayPin,
+    DisplayPasskey,
+}
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DevicePrompt {
     pub token: String,
@@ -39,10 +47,15 @@ pub struct AccessPoint {
 }
 impl AccessPoint {
     pub fn security(&self) -> &'static str {
-        if self.rsn_flags & 0x400 != 0 { "WPA3 Personal" }
-        else if (self.rsn_flags | self.wpa_flags) & 0x100 != 0 { "WPA Personal" }
-        else if !self.privacy { "Open" }
-        else { "Use the existing network provider for enterprise/legacy security" }
+        if self.rsn_flags & 0x400 != 0 {
+            "WPA3 Personal"
+        } else if (self.rsn_flags | self.wpa_flags) & 0x100 != 0 {
+            "WPA Personal"
+        } else if !self.privacy {
+            "Open"
+        } else {
+            "Use the existing network provider for enterprise/legacy security"
+        }
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -70,8 +83,13 @@ pub struct NetworkSnapshot {
 }
 impl NetworkSnapshot {
     pub fn connectivity_label(&self) -> &'static str {
-        match self.connectivity { 1 => "Offline", 2 => "Captive portal — login required",
-            3 => "Limited connectivity", 4 => "Internet connectivity verified by NetworkManager", _ => "Connectivity not checked" }
+        match self.connectivity {
+            1 => "Offline",
+            2 => "Captive portal — login required",
+            3 => "Limited connectivity",
+            4 => "Internet connectivity verified by NetworkManager",
+            _ => "Connectivity not checked",
+        }
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -97,7 +115,11 @@ pub struct BluetoothDevice {
     pub blocked: bool,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RadioBlock { pub name: String, pub software: bool, pub hardware: bool }
+pub struct RadioBlock {
+    pub name: String,
+    pub software: bool,
+    pub hardware: bool,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BluetoothSnapshot {
     pub revision: Revision,
@@ -112,21 +134,34 @@ pub struct BluetoothSnapshot {
 }
 
 pub fn ssid_label(ssid: &[u8]) -> String {
-    if ssid.is_empty() { return "Hidden network".into(); }
+    if ssid.is_empty() {
+        return "Hidden network".into();
+    }
     let mut label = String::with_capacity(ssid.len());
     for character in String::from_utf8_lossy(ssid).chars() {
-        if character.is_control() { label.extend(character.escape_default()); }
-        else { label.push(character); }
+        if character.is_control() {
+            label.extend(character.escape_default());
+        } else {
+            label.push(character);
+        }
     }
     label
 }
 
 pub fn network_device_state(state: u32) -> &'static str {
     match state {
-        10 => "Unmanaged", 20 => "Unavailable", 30 => "Disconnected",
-        40 | 50 => "Activating", 60 => "Credentials required", 70 => "Obtaining addresses",
-        80 => "Checking connection", 90 => "Waiting for secondary connection", 100 => "Connected",
-        110 => "Disconnecting", 120 => "Connection failed", _ => "Device state unknown",
+        10 => "Unmanaged",
+        20 => "Unavailable",
+        30 => "Disconnected",
+        40 | 50 => "Activating",
+        60 => "Credentials required",
+        70 => "Obtaining addresses",
+        80 => "Checking connection",
+        90 => "Waiting for secondary connection",
+        100 => "Connected",
+        110 => "Disconnecting",
+        120 => "Connection failed",
+        _ => "Device state unknown",
     }
 }
 

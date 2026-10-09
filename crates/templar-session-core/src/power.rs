@@ -3,7 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use templar_types::{compositor_control::ActivityObservation, settings::{Capability, Revision}};
+use templar_types::{
+    compositor_control::ActivityObservation,
+    settings::{Capability, Revision},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -77,7 +80,12 @@ impl PowerProfile {
 }
 
 impl PowerSource {
-    pub const fn as_str(self) -> &'static str { match self { Self::Battery => "battery", Self::Mains => "mains" } }
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Battery => "battery",
+            Self::Mains => "mains",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,13 +97,31 @@ pub struct PowerFeature {
 }
 impl PowerFeature {
     pub fn unavailable(reason: impl Into<String>) -> Self {
-        Self { capability: Capability::Unavailable { reason: reason.into() }, armed: false, error: None }
+        Self {
+            capability: Capability::Unavailable {
+                reason: reason.into(),
+            },
+            armed: false,
+            error: None,
+        }
     }
     pub fn unsupported(reason: impl Into<String>) -> Self {
-        Self { capability: Capability::Unsupported { reason: reason.into() }, armed: false, error: None }
+        Self {
+            capability: Capability::Unsupported {
+                reason: reason.into(),
+            },
+            armed: false,
+            error: None,
+        }
     }
     pub fn available(armed: bool) -> Self {
-        Self { capability: Capability::Available { requires_restart: false }, armed, error: None }
+        Self {
+            capability: Capability::Available {
+                requires_restart: false,
+            },
+            armed,
+            error: None,
+        }
     }
 }
 
@@ -130,15 +156,25 @@ pub struct PowerObservation {
 
 /// No saved Locked edge, desired profile or failed inventory can authorize sleep.
 pub fn protected_sleep_ready(activity: &ActivityObservation) -> bool {
-    activity.session_active && activity.locked && activity.lock_generation.is_some()
+    activity.session_active
+        && activity.locked
+        && activity.lock_generation.is_some()
         && activity.protected_covered
         && matches!(activity.idle_control, Capability::Available { .. })
         && matches!(activity.display_control, Capability::Available { .. })
 }
 
 /// One-shot policy deadlines; callers use only a fresh compositor elapsed sample.
-pub fn deadline_after(interval: Option<Duration>, elapsed: Duration, completed: bool) -> Option<Duration> {
-    if completed { None } else { interval.map(|interval| interval.saturating_sub(elapsed)) }
+pub fn deadline_after(
+    interval: Option<Duration>,
+    elapsed: Duration,
+    completed: bool,
+) -> Option<Duration> {
+    if completed {
+        None
+    } else {
+        interval.map(|interval| interval.saturating_sub(elapsed))
+    }
 }
 
 #[cfg(test)]
@@ -146,38 +182,83 @@ mod tests {
     use super::*;
     #[test]
     fn deadlines_do_not_poll_or_rearm_completed_actions() {
-        assert_eq!(deadline_after(Some(Duration::from_secs(5)), Duration::from_secs(2), false), Some(Duration::from_secs(3)));
-        assert_eq!(deadline_after(Some(Duration::from_secs(5)), Duration::from_secs(6), false), Some(Duration::ZERO));
+        assert_eq!(
+            deadline_after(Some(Duration::from_secs(5)), Duration::from_secs(2), false),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(
+            deadline_after(Some(Duration::from_secs(5)), Duration::from_secs(6), false),
+            Some(Duration::ZERO)
+        );
         assert_eq!(deadline_after(None, Duration::from_secs(6), false), None);
-        assert_eq!(deadline_after(Some(Duration::from_secs(5)), Duration::ZERO, true), None);
+        assert_eq!(
+            deadline_after(Some(Duration::from_secs(5)), Duration::ZERO, true),
+            None
+        );
     }
     #[test]
     fn sleep_needs_current_native_generation_and_coverage() {
-        let revision = Revision { owner_epoch: uuid::Uuid::nil(), generation: 0 };
-        let mut activity = ActivityObservation { revision, display_revision: revision, input_revision: revision,
-            activity_serial: 1, idle_elapsed_ms: 500, session_active: true, locked: true, lock_generation: Some(1),
-            protected_covered: true, idle: false, blanked: false, inhibited: false, idle_timeout_ms: None, outputs: Vec::new(),
-            idle_control: Capability::Available { requires_restart: false }, input_control: Capability::Available { requires_restart: false },
-            display_control: Capability::Available { requires_restart: false } };
+        let revision = Revision {
+            owner_epoch: uuid::Uuid::nil(),
+            generation: 0,
+        };
+        let mut activity = ActivityObservation {
+            revision,
+            display_revision: revision,
+            input_revision: revision,
+            activity_serial: 1,
+            idle_elapsed_ms: 500,
+            session_active: true,
+            locked: true,
+            lock_generation: Some(1),
+            protected_covered: true,
+            idle: false,
+            blanked: false,
+            inhibited: false,
+            idle_timeout_ms: None,
+            outputs: Vec::new(),
+            idle_control: Capability::Available {
+                requires_restart: false,
+            },
+            input_control: Capability::Available {
+                requires_restart: false,
+            },
+            display_control: Capability::Available {
+                requires_restart: false,
+            },
+        };
         assert!(protected_sleep_ready(&activity));
-        activity.protected_covered = false; assert!(!protected_sleep_ready(&activity));
-        activity.protected_covered = true; activity.lock_generation = None; assert!(!protected_sleep_ready(&activity));
-        activity.lock_generation = Some(2); activity.session_active = false; assert!(!protected_sleep_ready(&activity));
-        activity.session_active = true; activity.display_control = Capability::Unavailable { reason: "actual readback inaccessible".into() };
+        activity.protected_covered = false;
+        assert!(!protected_sleep_ready(&activity));
+        activity.protected_covered = true;
+        activity.lock_generation = None;
+        assert!(!protected_sleep_ready(&activity));
+        activity.lock_generation = Some(2);
+        activity.session_active = false;
+        assert!(!protected_sleep_ready(&activity));
+        activity.session_active = true;
+        activity.display_control = Capability::Unavailable {
+            reason: "actual readback inaccessible".into(),
+        };
         assert!(!protected_sleep_ready(&activity));
     }
     #[test]
     fn additive_panel_fields_keep_the_original_lid_reader_compatible() {
         #[derive(Deserialize)]
-        struct OriginalLidReader { lid_closed: LidAction, lid_closed_docked: LidAction }
-        let mut original = serde_json::to_value(PowerProfile::default_for(PowerSource::Mains)).unwrap();
+        struct OriginalLidReader {
+            lid_closed: LidAction,
+            lid_closed_docked: LidAction,
+        }
+        let mut original =
+            serde_json::to_value(PowerProfile::default_for(PowerSource::Mains)).unwrap();
         original.as_object_mut().unwrap().remove("lid_panel");
         original.as_object_mut().unwrap().remove("lid_panel_docked");
         let mut current: PowerProfile = serde_json::from_value(original).unwrap();
         assert_eq!(current.lid_panel, PanelPolicy::Keep);
         current.lid_closed = LidAction::Ignore;
         current.lid_panel = PanelPolicy::ExternalOnly;
-        let old: OriginalLidReader = serde_json::from_value(serde_json::to_value(current).unwrap()).unwrap();
+        let old: OriginalLidReader =
+            serde_json::from_value(serde_json::to_value(current).unwrap()).unwrap();
         assert_eq!(old.lid_closed, LidAction::Ignore);
         assert_eq!(old.lid_closed_docked, LidAction::Ignore);
     }

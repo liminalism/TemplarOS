@@ -86,17 +86,28 @@ pub struct ShellToplevelData {
 }
 impl ShellToplevelData {
     fn identify_once(&self) -> bool {
-        !self.identified.swap(true, std::sync::atomic::Ordering::Relaxed)
+        !self
+            .identified
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum PreviewAuthority { Ignore, Continue, Acquire }
+enum PreviewAuthority {
+    Ignore,
+    Continue,
+    Acquire,
+}
 fn preview_authority(owns_home: bool, same_manager: bool, current_alive: bool) -> PreviewAuthority {
-    if !owns_home { PreviewAuthority::Ignore }
-    else if same_manager && current_alive { PreviewAuthority::Continue }
-    else if !current_alive { PreviewAuthority::Acquire }
-    else { PreviewAuthority::Ignore }
+    if !owns_home {
+        PreviewAuthority::Ignore
+    } else if same_manager && current_alive {
+        PreviewAuthority::Continue
+    } else if !current_alive {
+        PreviewAuthority::Acquire
+    } else {
+        PreviewAuthority::Ignore
+    }
 }
 
 /// Global-visibility filter: only the trusted-shell connection ever sees `templar_shell_manager_v2`
@@ -281,16 +292,34 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV2, TemplarCompState<B>>
                 generation,
                 windows,
             } => {
-                let owns_home = state.shell_protocol.layer_surfaces.values().any(|(surface, layer)| {
-                    *layer == Layer::HomeSurface && surface.is_alive()
-                        && surface.client().is_some_and(|owner| owner.id() == client.id())
-                });
-                let same_manager = state.shell_protocol.preview_manager.as_ref() == Some(&resource.id());
-                let current_alive = state.shell_protocol.preview_manager.as_ref().is_some_and(|owner| {
-                    state.shell_protocol.managers.iter().any(|manager| manager.id() == *owner && manager.is_alive())
-                });
+                let owns_home =
+                    state
+                        .shell_protocol
+                        .layer_surfaces
+                        .values()
+                        .any(|(surface, layer)| {
+                            *layer == Layer::HomeSurface
+                                && surface.is_alive()
+                                && surface
+                                    .client()
+                                    .is_some_and(|owner| owner.id() == client.id())
+                        });
+                let same_manager =
+                    state.shell_protocol.preview_manager.as_ref() == Some(&resource.id());
+                let current_alive =
+                    state
+                        .shell_protocol
+                        .preview_manager
+                        .as_ref()
+                        .is_some_and(|owner| {
+                            state
+                                .shell_protocol
+                                .managers
+                                .iter()
+                                .any(|manager| manager.id() == *owner && manager.is_alive())
+                        });
                 match preview_authority(owns_home, same_manager, current_alive) {
-                    PreviewAuthority::Ignore => {},
+                    PreviewAuthority::Ignore => {}
                     PreviewAuthority::Acquire => {
                         // Reset at acquisition, not merely bind: an earlier manager's
                         // invalidation may have advanced its serial after this bind.
@@ -298,7 +327,7 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV2, TemplarCompState<B>>
                         state.screencopy.demand = Some(crate::screencopy::CaptureDemand::default());
                         state.shell_protocol.preview_manager = Some(resource.id());
                         set_preview_demand(state, generation, &windows);
-                    },
+                    }
                     PreviewAuthority::Continue => set_preview_demand(state, generation, &windows),
                 }
             }
@@ -725,16 +754,24 @@ pub fn apply_surface_claims<B: Backend + 'static>(
     // placements follow the toast's own rectangle, so focus changes cannot move it.
     // Output removal falls back to the nearest surviving output through the shared policy.
     let notification_anchor = (layer == Layer::Notification).then(|| {
-        state.window_service.window(window_id)
+        state
+            .window_service
+            .window(window_id)
             .filter(|record| record.role == WindowRole::Notification)
             .map(|record| record.geometry)
-            .or_else(|| state.window_service.windows()
-                .find(|record| record.activated && record.role == WindowRole::Application)
-                .map(|record| record.geometry))
-            .or_else(|| state.seat.get_pointer().map(|pointer| {
-                let location = pointer.current_location();
-                Rect::new(location.x.round() as i32, location.y.round() as i32, 1, 1)
-            }))
+            .or_else(|| {
+                state
+                    .window_service
+                    .windows()
+                    .find(|record| record.activated && record.role == WindowRole::Application)
+                    .map(|record| record.geometry)
+            })
+            .or_else(|| {
+                state.seat.get_pointer().map(|pointer| {
+                    let location = pointer.current_location();
+                    Rect::new(location.x.round() as i32, location.y.round() as i32, 1, 1)
+                })
+            })
             .unwrap_or(requested)
     });
     if let Err(error) = state
@@ -768,11 +805,20 @@ pub fn apply_surface_claims<B: Backend + 'static>(
         .outputs()
         .iter()
         .find(|output| preferred_output.is_some_and(|name| output.name == name))
-        .or_else(|| notification_anchor.and_then(|anchor| {
-            let outputs = state.window_service.outputs();
-            (!outputs.is_empty()).then(|| templar_window::geometry::choose_target_output(anchor, outputs))
-        }))
-        .or_else(|| state.window_service.outputs().iter().find(|output| primary.as_ref().is_some_and(|name| output.name == *name)))
+        .or_else(|| {
+            notification_anchor.and_then(|anchor| {
+                let outputs = state.window_service.outputs();
+                (!outputs.is_empty())
+                    .then(|| templar_window::geometry::choose_target_output(anchor, outputs))
+            })
+        })
+        .or_else(|| {
+            state
+                .window_service
+                .outputs()
+                .iter()
+                .find(|output| primary.as_ref().is_some_and(|name| output.name == *name))
+        })
         .or_else(|| state.window_service.outputs().first())
         .cloned();
     let Some(output) = output else {
@@ -914,7 +960,9 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellToplevelListV1, TemplarCompStat
     }
 }
 
-impl<B: Backend + 'static> Dispatch2<TemplarShellToplevelV1, TemplarCompState<B>> for ShellToplevelData {
+impl<B: Backend + 'static> Dispatch2<TemplarShellToplevelV1, TemplarCompState<B>>
+    for ShellToplevelData
+{
     // One arm per request, like the manager's dispatcher above, and for the same reason.
     #[allow(clippy::too_many_lines)]
     fn request(
@@ -1096,7 +1144,9 @@ fn send_v2_toplevel_events<B: Backend + 'static>(
         return;
     }
     if let Some(identifier) = state.foreign_toplevels.identifier_for(toplevel.window_id)
-        && object.data::<ShellToplevelData>().is_some_and(ShellToplevelData::identify_once)
+        && object
+            .data::<ShellToplevelData>()
+            .is_some_and(ShellToplevelData::identify_once)
     {
         object.identifier(identifier.to_owned());
     }
@@ -1111,11 +1161,13 @@ fn send_new_toplevel<B: Backend + 'static>(
     window_id: WindowId,
 ) {
     let Some(client) = list.client() else { return };
-    let Ok(toplevel) = client.create_resource::<TemplarShellToplevelV1, ShellToplevelData, TemplarCompState<B>>(
-        &state.display_handle,
-        list.version(),
-        ShellToplevelData::default(),
-    ) else {
+    let Ok(toplevel) = client
+        .create_resource::<TemplarShellToplevelV1, ShellToplevelData, TemplarCompState<B>>(
+            &state.display_handle,
+            list.version(),
+            ShellToplevelData::default(),
+        )
+    else {
         return;
     };
     list.toplevel(&toplevel);
@@ -1459,16 +1511,39 @@ mod tests {
 
     #[test]
     fn home_owner_takeover_resets_retired_generation_without_observer_theft() {
-        assert_eq!(preview_authority(false, false, true), PreviewAuthority::Ignore);
-        assert_eq!(preview_authority(false, false, false), PreviewAuthority::Ignore);
-        assert_eq!(preview_authority(true, false, true), PreviewAuthority::Ignore);
-        assert_eq!(preview_authority(true, true, true), PreviewAuthority::Continue);
-        assert_eq!(preview_authority(true, false, false), PreviewAuthority::Acquire);
+        assert_eq!(
+            preview_authority(false, false, true),
+            PreviewAuthority::Ignore
+        );
+        assert_eq!(
+            preview_authority(false, false, false),
+            PreviewAuthority::Ignore
+        );
+        assert_eq!(
+            preview_authority(true, false, true),
+            PreviewAuthority::Ignore
+        );
+        assert_eq!(
+            preview_authority(true, true, true),
+            PreviewAuthority::Continue
+        );
+        assert_eq!(
+            preview_authority(true, false, false),
+            PreviewAuthority::Acquire
+        );
         let mut demand = None;
-        assert!(crate::screencopy::install_demand(&mut demand, 8, vec![WindowId(1)]));
+        assert!(crate::screencopy::install_demand(
+            &mut demand,
+            8,
+            vec![WindowId(1)]
+        ));
         // Acquisition has its own reset, independent of bind/destruction ordering.
         demand = Some(crate::screencopy::CaptureDemand::default());
-        assert!(crate::screencopy::install_demand(&mut demand, 1, vec![WindowId(1)]));
+        assert!(crate::screencopy::install_demand(
+            &mut demand,
+            1,
+            vec![WindowId(1)]
+        ));
         assert_eq!(demand.as_ref().unwrap().generation(), 1);
     }
 

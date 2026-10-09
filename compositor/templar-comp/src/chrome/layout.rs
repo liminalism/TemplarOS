@@ -232,9 +232,7 @@ impl ControlTag {
 /// The three controls with their rectangles, from the shared [`templar_window::WindowLayout`]:
 /// the same rectangles paint and hit-test both use, so the drawn control and the clickable
 /// area can never drift apart. A fixed array — three controls need no heap.
-pub fn tab_control_tags(
-    layout: &templar_window::WindowLayout,
-) -> [(ControlTag, Rect); 3] {
+pub fn tab_control_tags(layout: &templar_window::WindowLayout) -> [(ControlTag, Rect); 3] {
     layout
         .controls
         .map(|(control, rect)| (ControlTag::from_tab(control), rect))
@@ -491,11 +489,7 @@ mod tests {
                 );
                 // Well outside every tab.
                 assert_eq!(
-                    tab_hit_at(
-                        &layout,
-                        shown,
-                        templar_window::Point { x: -100, y: -100 }
-                    ),
+                    tab_hit_at(&layout, shown, templar_window::Point { x: -100, y: -100 }),
                     None
                 );
             }
@@ -543,7 +537,10 @@ mod tests {
         };
         for corner in Corner::ALL {
             let layout = WindowLayout::new(tiny, corner, TabPlacement::SameCorner, output);
-            assert_eq!(tab_hit_at(&layout, shown, layout.title.center()), Some(TabHit::Title));
+            assert_eq!(
+                tab_hit_at(&layout, shown, layout.title.center()),
+                Some(TabHit::Title)
+            );
             for (button, rect) in &tab_control_tags(&layout) {
                 assert_eq!(
                     tab_hit_at(&layout, shown, rect.center()),
@@ -624,14 +621,26 @@ mod tests {
         for theme in ["light", "dark"] {
             for accent in std::iter::once("default").chain(ACCENTS.iter().map(|(name, _)| *name)) {
                 let palette = Appearance::from_settings(theme, accent, false).palette;
-                for background in [palette.ground, palette.shell_fill, palette.shell_low,
-                    palette.system_shell, palette.accent, palette.accent_soft] {
+                for background in [
+                    palette.ground,
+                    palette.shell_fill,
+                    palette.shell_low,
+                    palette.system_shell,
+                    palette.accent,
+                    palette.accent_soft,
+                ] {
                     let ratio = contrast_ratio(background, text_ink_for(background));
-                    assert!(ratio >= 4.5, "{theme}/{accent}: normal text contrast {ratio:.2}:1");
+                    assert!(
+                        ratio >= 4.5,
+                        "{theme}/{accent}: normal text contrast {ratio:.2}:1"
+                    );
                 }
                 for background in [palette.system_shell, palette.accent_soft] {
                     let ratio = contrast_ratio(background, muted_ink_for(background));
-                    assert!(ratio >= 3.0, "{theme}/{accent}: parked switcher contrast {ratio:.2}:1");
+                    assert!(
+                        ratio >= 3.0,
+                        "{theme}/{accent}: parked switcher contrast {ratio:.2}:1"
+                    );
                 }
             }
         }

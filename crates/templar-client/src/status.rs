@@ -27,7 +27,10 @@ pub struct AudioState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum AudioDirection { Output, Input }
+pub enum AudioDirection {
+    Output,
+    Input,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AudioDevice {
@@ -85,7 +88,12 @@ impl AudioState {
     /// volume *is*, and two clients that both render it must not each invent their own wording.
     pub fn headline(&self) -> String {
         if !self.present {
-            return if self.unavailable_reason.is_some() { "Audio unavailable" } else { "No audio" }.to_owned();
+            return if self.unavailable_reason.is_some() {
+                "Audio unavailable"
+            } else {
+                "No audio"
+            }
+            .to_owned();
         }
         let level = format!("{}%{}", self.volume_percent, self.boost_note());
         if self.muted {
@@ -203,17 +211,25 @@ mod tests {
 
     #[test]
     fn a_sink_boosted_past_full_scale_says_so_rather_than_showing_a_bare_number() {
-        let boosted = AudioState { present: true, volume_percent: 126, muted: false, unavailable_reason: None };
+        let boosted = AudioState {
+            present: true,
+            volume_percent: 126,
+            muted: false,
+            unavailable_reason: None,
+        };
         assert!(boosted.boosted());
     }
 
-
     #[test]
     fn full_scale_is_not_boosted() {
-        let state = AudioState { present: true, volume_percent: 100, muted: false, unavailable_reason: None };
+        let state = AudioState {
+            present: true,
+            volume_percent: 100,
+            muted: false,
+            unavailable_reason: None,
+        };
         assert!(!state.boosted());
     }
-
 
     #[test]
     fn the_wire_shapes_match_what_the_services_publish() {
@@ -266,6 +282,4 @@ mod tests {
         };
         assert_eq!(battery.time_remaining(), None);
     }
-
-
 }

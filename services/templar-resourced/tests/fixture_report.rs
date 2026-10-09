@@ -47,7 +47,10 @@ fn a_tick_against_the_checked_in_fixture_tree_reports_severe_pressure_observe_on
 
     assert_eq!(outcome.report.instances.len(), 1);
     let waterfox = &outcome.report.instances[0];
-    assert_eq!(waterfox.metadata.identity.application().unwrap().as_str(), "org.templaros.Waterfox");
+    assert_eq!(
+        waterfox.metadata.identity.application().unwrap().as_str(),
+        "org.templaros.Waterfox"
+    );
     assert!(waterfox.memory_current_bytes > 13 * 1024 * 1024 * 1024);
 
     // Severe decides SetMemoryHigh/Reclaim/TrimCaches for the one unprotected instance, but the
@@ -59,5 +62,4 @@ fn a_tick_against_the_checked_in_fixture_tree_reports_severe_pressure_observe_on
             .iter()
             .any(|action| action.instance_id == waterfox.instance_id)
     );
-
 }

@@ -1,7 +1,11 @@
 //! Native wallpaper policy is hosted by sessiond; pixels remain compositor-owned.
 use zbus::proxy;
 
-#[proxy(interface = "org.templaros.Wallpaper1", default_service = "org.templaros.Session", default_path = "/org/templaros/Wallpaper")]
+#[proxy(
+    interface = "org.templaros.Wallpaper1",
+    default_service = "org.templaros.Session",
+    default_path = "/org/templaros/Wallpaper"
+)]
 pub trait Wallpaper {
     fn inspect(&self) -> zbus::Result<String>;
     fn next(&self) -> zbus::Result<String>;

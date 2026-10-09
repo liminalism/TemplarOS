@@ -3,7 +3,22 @@ set -e
 case "$1" in
     configure)
         install -d -o root -g root -m 0755 /var/lib/templaros/account-maintenance
-        pam-auth-update --package --enable templaros-account-recovery
+        # Older native installations mount all of @var at /var. They have no
+        # account State bind, so enabling the new gate locks out every PAM
+        # caller, including greetd's system account and sudo. Layout migration
+        # is an offline operation, not a package postinst side effect.
+        if [ -f /etc/templaros/install.toml ] &&
+            awk '!/^[[:space:]]*#/ && $2 == "/var" { found=1 } END { exit !found }' /etc/fstab; then
+            if [ -e /var/lib/templaros/account-maintenance/active.json ] ||
+                [ -e /var/lib/templaros/hostd/accounts/intent.json ]; then
+                echo "Pending TemplarOS account maintenance: recover before changing the legacy PAM profile." >&2
+                exit 1
+            fi
+            echo "Legacy TemplarOS /var layout: account maintenance gate requires offline layout migration; retaining standard PAM account checks." >&2
+            pam-auth-update --package --remove templaros-account-recovery
+        else
+            pam-auth-update --package --enable templaros-account-recovery
+        fi
         ;;
 esac
 #DEBHELPER#

@@ -130,7 +130,6 @@ pub struct BaselineProbe {
     root_path: NativePath,
 }
 
-
 /// The candidate snapshot is not published until apply, freshness and watch coverage succeed.
 #[derive(Debug)]
 pub struct CatchUp {
@@ -152,7 +151,11 @@ pub struct DeltaCatchUp {
 impl DeltaCatchUp {
     #[must_use]
     pub fn new(checkpoints: Arc<dyn Checkpoints>, state_path: PathBuf) -> Self {
-        Self { checkpoints, state_path, cap_bytes: cap_bytes() }
+        Self {
+            checkpoints,
+            state_path,
+            cap_bytes: cap_bytes(),
+        }
     }
 
     /// Every doubt falls back to reconciliation. A pending apply marker means a crash may have
@@ -167,86 +170,142 @@ impl DeltaCatchUp {
         if !current.complete {
             return None;
         }
-        let from = self.read_baseline(root.root.0)
-            .filter(|baseline| Path::new(&baseline.subvolume) == subvolume
-                && baseline.root == root.root.0
-                && baseline.generation == current.generation.0
-                && baseline.policy_hash == current.policy_hash
-                && baseline.cache_identity == index.cache_identity())
-            .filter(|baseline| self.checkpoints.list()
-                .is_ok_and(|held| held.iter().any(|c| c.id == baseline.checkpoint)))?;
+        let from = self
+            .read_baseline(root.root.0)
+            .filter(|baseline| {
+                Path::new(&baseline.subvolume) == subvolume
+                    && baseline.root == root.root.0
+                    && baseline.generation == current.generation.0
+                    && baseline.policy_hash == current.policy_hash
+                    && baseline.cache_identity == index.cache_identity()
+            })
+            .filter(|baseline| {
+                self.checkpoints
+                    .list()
+                    .is_ok_and(|held| held.iter().any(|c| c.id == baseline.checkpoint))
+            })?;
         let candidate = self.plant(index, &subvolume, &current)?;
         let (decoded, stream) = self.read_delta(&from, &candidate.baseline)?;
         let policy = index.root_policy(root.root).ok()?;
         let plan = btrfs_delta::plan(&decoded)
-            .map_err(|error| tracing::warn!(%error, "the delta stream did not replay")).ok()?;
+            .map_err(|error| tracing::warn!(%error, "the delta stream did not replay"))
+            .ok()?;
         let target = DeltaTarget {
-            root: root.root, root_path: root.path.clone(),
-            subvolume_path: NativePath::from_path(&subvolume), policy,
+            root: root.root,
+            root_path: root.path.clone(),
+            subvolume_path: NativePath::from_path(&subvolume),
+            policy,
         };
         if !target.root_path.starts_with(&target.subvolume_path) {
             return None;
         }
         let (batch, report) = btrfs_delta::to_mutations(&plan, &target, &FsMetadata);
         Some(CatchUp {
-            rescan: rescan_targets(&batch), batch, report, stream, candidate,
+            rescan: rescan_targets(&batch),
+            batch,
+            report,
+            stream,
+            candidate,
             retire: from.checkpoint,
         })
     }
 
     /// Durably fence the index commit before applying. Failure to fence means do not apply.
     pub fn prepare_apply(&self, catch_up: &CatchUp) -> std::io::Result<()> {
-        atomic_write(&self.pending_path(catch_up.candidate.baseline.root), b"reconcile before replay\n")
+        atomic_write(
+            &self.pending_path(catch_up.candidate.baseline.root),
+            b"reconcile before replay\n",
+        )
     }
 
     /// Publish after apply and watch recovery. Crash recovery is conservative: until both the
     /// atomic pointer and removal of the pending marker are durable, restart reconciles instead.
     pub fn committed(&self, catch_up: &CatchUp, root: &RootStatus) -> std::io::Result<()> {
-        if !root.complete || root.state != templar_file_index::RootState::Current
+        if !root.complete
+            || root.state != templar_file_index::RootState::Current
             || root.root.0 != catch_up.candidate.baseline.root
             || root.policy_hash != catch_up.candidate.baseline.policy_hash
         {
-            return Err(std::io::Error::other("catch-up did not restore a complete current root"));
+            return Err(std::io::Error::other(
+                "catch-up did not restore a complete current root",
+            ));
         }
         let mut baseline = catch_up.candidate.baseline.clone();
         baseline.generation = root.generation.0;
         self.write_baseline(&baseline)?;
-        catch_up.candidate.retained.store(true, std::sync::atomic::Ordering::Relaxed);
+        catch_up
+            .candidate
+            .retained
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         self.clear_pending(root.root.0)?;
         self.retire(&catch_up.retire);
         Ok(())
     }
 
     /// Capture before a full-root pass, never before a subtree repair.
-    pub fn begin_reconcile(&self, index: &Index, root: &RootStatus, mounts: &str) -> Option<BaselineProbe> {
+    pub fn begin_reconcile(
+        &self,
+        index: &Index,
+        root: &RootStatus,
+        mounts: &str,
+    ) -> Option<BaselineProbe> {
         let subvolume = btrfs_subvolume_of(&root.path, mounts)?;
-        Some(BaselineProbe { before: self.plant(index, &subvolume, root)?, root_path: root.path.clone() })
+        Some(BaselineProbe {
+            before: self.plant(index, &subvolume, root)?,
+            root_path: root.path.clone(),
+        })
     }
 
     /// Only a complete, current pass with no overlapping changes between its bounding snapshots
     /// can establish a baseline. A busy root keeps the ordinary watcher/reconcile backend.
-    pub fn complete_reconcile(&self, index: &Index, probe: BaselineProbe, root: &RootStatus) -> bool {
-        if !root.complete || root.state != templar_file_index::RootState::Current
-            || root.root.0 != probe.before.baseline.root || root.path != probe.root_path
-            || root.policy_hash != probe.before.baseline.policy_hash
-            || index.cache_identity() != probe.before.baseline.cache_identity
-            || root.generation.0 <= probe.before.baseline.generation
-        { return false; }
-        let subvolume = Path::new(&probe.before.baseline.subvolume);
-        let Some(candidate) = self.plant(index, subvolume, root) else { return false };
-        let Some((decoded, _)) = self.read_delta(&probe.before.baseline, &candidate.baseline) else { return false };
+    pub fn complete_reconcile(
+        &self,
+        index: &Index,
+        probe: BaselineProbe,
+        root: &RootStatus,
+    ) -> bool {
+        let BaselineProbe { before, root_path } = probe;
+        if !root.complete
+            || root.state != templar_file_index::RootState::Current
+            || root.root.0 != before.baseline.root
+            || root.path != root_path
+            || root.policy_hash != before.baseline.policy_hash
+            || index.cache_identity() != before.baseline.cache_identity
+            || root.generation.0 <= before.baseline.generation
+        {
+            return false;
+        }
+        let subvolume = Path::new(&before.baseline.subvolume);
+        let Some(candidate) = self.plant(index, subvolume, root) else {
+            return false;
+        };
+        let Some((decoded, _)) = self.read_delta(&before.baseline, &candidate.baseline) else {
+            return false;
+        };
         let subvolume_native = NativePath::from_path(subvolume);
         // Validate paths through the existing replay contract. Inspect raw commands too: a
         // create/delete can disappear from the net plan while the walker saw the transient row.
-        if btrfs_delta::plan(&decoded).is_err() || decoded.commands.iter().any(|command| {
-            if matches!(command.cmd, btrfs_delta::SendCmd::Subvol | btrfs_delta::SendCmd::Snapshot | btrfs_delta::SendCmd::End) {
-                return false;
-            }
-            [command.path(), command.path_to(), command.path_link()].into_iter().flatten()
-                .map(|relative| subvolume_native.join(relative))
-                .any(|path| path.starts_with(&probe.root_path) || probe.root_path.starts_with(&path))
-        }) {
-            tracing::info!(root = root.root.0, "root changed during checkpoint acquisition; keeping watcher/reconcile backend");
+        if btrfs_delta::plan(&decoded).is_err()
+            || decoded.commands.iter().any(|command| {
+                if matches!(
+                    command.cmd,
+                    btrfs_delta::SendCmd::Subvol
+                        | btrfs_delta::SendCmd::Snapshot
+                        | btrfs_delta::SendCmd::End
+                ) {
+                    return false;
+                }
+                [command.path(), command.path_to(), command.path_link()]
+                    .into_iter()
+                    .flatten()
+                    .map(|relative| subvolume_native.join(relative))
+                    .any(|path| path.starts_with(&root_path) || root_path.starts_with(&path))
+            })
+        {
+            tracing::info!(
+                root = root.root.0,
+                "root changed during checkpoint acquisition; keeping watcher/reconcile backend"
+            );
             return false;
         }
         let old = self.read_baseline(root.root.0);
@@ -254,27 +313,46 @@ impl DeltaCatchUp {
             tracing::warn!(%error, "could not seed an index checkpoint baseline");
             return false;
         }
-        candidate.retained.store(true, std::sync::atomic::Ordering::Relaxed);
+        candidate
+            .retained
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         if let Err(error) = self.clear_pending(root.root.0) {
             tracing::warn!(%error, "index checkpoint remains fenced; next downtime will reconcile");
             return false;
         }
-        if let Some(old) = old { self.retire(&old.checkpoint); }
+        if let Some(old) = old {
+            self.retire(&old.checkpoint);
+        }
         true
     }
 
-    fn read_delta(&self, from: &Baseline, to: &Baseline) -> Option<(btrfs_delta::SendStream, DeltaStreamInfo)> {
-        let (file, stream) = self.checkpoints.delta_open(&from.checkpoint, &to.checkpoint, Path::new(&to.subvolume))
-            .map_err(|error| tracing::info!(%error, "no delta; reconciling instead")).ok()?;
-        if stream.bytes > self.cap_bytes || stream.from != from.checkpoint
-            || stream.to != to.checkpoint || stream.subvolume != to.subvolume
+    fn read_delta(
+        &self,
+        from: &Baseline,
+        to: &Baseline,
+    ) -> Option<(btrfs_delta::SendStream, DeltaStreamInfo)> {
+        let (file, stream) = self
+            .checkpoints
+            .delta_open(&from.checkpoint, &to.checkpoint, Path::new(&to.subvolume))
+            .map_err(|error| tracing::info!(%error, "no delta; reconciling instead"))
+            .ok()?;
+        if stream.bytes > self.cap_bytes
+            || stream.from != from.checkpoint
+            || stream.to != to.checkpoint
+            || stream.subvolume != to.subvolume
         {
             tracing::info!("delta size or lineage is incompatible; reconciling instead");
             return None;
         }
         let decoded = btrfs_delta::decode_reader_bounded(file, self.cap_bytes)
-            .map_err(|error| tracing::warn!(%error, "the delta stream did not decode")).ok()?;
-        if !decoded.is_incremental() || decoded.commands.iter().any(|command| matches!(command.cmd, btrfs_delta::SendCmd::Unknown(_))) {
+            .map_err(|error| tracing::warn!(%error, "the delta stream did not decode"))
+            .ok()?;
+        if !decoded.is_incremental()
+            || decoded
+                .commands
+                .iter()
+                .any(|command| matches!(command.cmd, btrfs_delta::SendCmd::Unknown(_)))
+        {
             tracing::info!("non-incremental or unsupported delta commands; reconciling instead");
             return None;
         }
@@ -285,13 +363,19 @@ impl DeltaCatchUp {
         // The checkpoint authority's persisted subvolume identity is UTF-8. Unsupported native
         // mount identities reconcile normally; never plant a checkpoint under a lossy identity.
         let subvolume_text = subvolume.to_str()?;
-        let checkpoint = self.checkpoints.create(subvolume)
-            .map_err(|error| tracing::info!(%error, "no index checkpoint; reconciling instead")).ok()?;
+        let checkpoint = self
+            .checkpoints
+            .create(subvolume)
+            .map_err(|error| tracing::info!(%error, "no index checkpoint; reconciling instead"))
+            .ok()?;
         Some(Candidate {
             checkpoints: self.checkpoints.clone(),
             baseline: Baseline {
-                subvolume: subvolume_text.to_owned(), checkpoint: checkpoint.id,
-                root: root.root.0, generation: root.generation.0, policy_hash: root.policy_hash.clone(),
+                subvolume: subvolume_text.to_owned(),
+                checkpoint: checkpoint.id,
+                root: root.root.0,
+                generation: root.generation.0,
+                policy_hash: root.policy_hash.clone(),
                 cache_identity: index.cache_identity().to_owned(),
             },
             retained: std::sync::atomic::AtomicBool::new(false),
@@ -305,13 +389,16 @@ impl DeltaCatchUp {
     }
 
     fn pending_path(&self, root: i64) -> PathBuf {
-        self.state_path.with_extension(format!("root-{root}.pending"))
+        self.state_path
+            .with_extension(format!("root-{root}.pending"))
     }
 
     fn clear_pending(&self, root: i64) -> std::io::Result<()> {
         match std::fs::remove_file(self.pending_path(root)) {
             Ok(()) => {
-                if let Some(parent) = self.state_path.parent() { std::fs::File::open(parent)?.sync_all()?; }
+                if let Some(parent) = self.state_path.parent() {
+                    std::fs::File::open(parent)?.sync_all()?;
+                }
                 Ok(())
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -324,8 +411,10 @@ impl DeltaCatchUp {
     }
 
     fn read_baselines(&self) -> std::collections::BTreeMap<i64, Baseline> {
-        std::fs::read(&self.state_path).ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+        std::fs::read(&self.state_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
     }
 
     fn write_baseline(&self, baseline: &Baseline) -> std::io::Result<()> {
@@ -337,7 +426,9 @@ impl DeltaCatchUp {
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
-    let parent = path.parent().ok_or_else(|| std::io::Error::other("checkpoint has no parent"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("checkpoint has no parent"))?;
     std::fs::create_dir_all(parent)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     file.write_all(bytes)?;
@@ -466,29 +557,49 @@ mod tests {
         seed_baseline(&catch_up, &fixture, &checkpoints, &mounts);
         let original = std::fs::read(&fixture.state).unwrap();
         *checkpoints.stream.lock() = b"invalid stream".to_vec();
-        assert!(catch_up.try_catch_up(&fixture.index, &fixture.root, &mounts).is_none());
+        assert!(
+            catch_up
+                .try_catch_up(&fixture.index, &fixture.root, &mounts)
+                .is_none()
+        );
         assert_eq!(std::fs::read(&fixture.state).unwrap(), original);
         assert_eq!(checkpoints.held.lock().as_slice(), ["index-home-2"]);
         *checkpoints.stream.lock() = one_created_file();
-        let candidate = catch_up.try_catch_up(&fixture.index, &fixture.root, &mounts).unwrap();
+        let candidate = catch_up
+            .try_catch_up(&fixture.index, &fixture.root, &mounts)
+            .unwrap();
         catch_up.prepare_apply(&candidate).unwrap();
         // An actual invalid root batch fails before commit. The marker remains, so even a
         // restarted backend cannot mistake the old pointer for an unapplied delta.
         let mut invalid = candidate.batch.clone();
         invalid.mutations.push(Mutation::Upsert {
-            root: templar_file_index::RootId(-1), path: NativePath::from_path(&fixture.home.path().join("missing")),
+            root: templar_file_index::RootId(-1),
+            path: NativePath::from_path(&fixture.home.path().join("missing")),
             meta: templar_file_index::EntryMeta::default(),
         });
         assert!(fixture.index.apply_atomic(&invalid).is_err());
         assert_eq!(std::fs::read(&fixture.state).unwrap(), original);
         let restarted = DeltaCatchUp::new(checkpoints.clone(), fixture.state.clone());
-        assert!(restarted.try_catch_up(&fixture.index, &fixture.root, &mounts).is_none());
+        assert!(
+            restarted
+                .try_catch_up(&fixture.index, &fixture.root, &mounts)
+                .is_none()
+        );
         drop(candidate);
         // Recovery is a complete root pass, not replay. It reseeds and clears the durable fence.
-        fixture.index.scan_root(fixture.root.root, templar_file_index::ScanOptions::reconcile(RootPolicy::default_home())).unwrap();
+        fixture
+            .index
+            .scan_root(
+                fixture.root.root,
+                templar_file_index::ScanOptions::reconcile(RootPolicy::default_home()),
+            )
+            .unwrap();
         let repaired = seed_baseline(&restarted, &fixture, &checkpoints, &mounts);
         assert!(!restarted.pending_path(repaired.root.0).exists());
-        assert_eq!(restarted.read_baseline(repaired.root.0).unwrap().generation, repaired.generation.0);
+        assert_eq!(
+            restarted.read_baseline(repaired.root.0).unwrap().generation,
+            repaired.generation.0
+        );
     }
 
     #[test]
@@ -498,33 +609,71 @@ mod tests {
         let catch_up = DeltaCatchUp::new(checkpoints.clone(), fixture.state.clone());
         let mounts = mounts_for(&fixture, "btrfs");
         seed_baseline(&catch_up, &fixture, &checkpoints, &mounts);
-        let candidate = catch_up.try_catch_up(&fixture.index, &fixture.root, &mounts).unwrap();
+        let candidate = catch_up
+            .try_catch_up(&fixture.index, &fixture.root, &mounts)
+            .unwrap();
         catch_up.prepare_apply(&candidate).unwrap();
         fixture.index.begin_catch_up(fixture.root.root).unwrap();
         fixture.index.apply_atomic(&candidate.batch).unwrap();
         let restarted = DeltaCatchUp::new(checkpoints.clone(), fixture.state.clone());
-        assert!(restarted.try_catch_up(&fixture.index, &fixture.root, &mounts).is_none());
-        assert_eq!(restarted.read_baseline(fixture.root.root.0).unwrap().checkpoint, "index-home-2");
-        assert!(fixture.index.search(&templar_file_index::Query::new("notes")).unwrap().hits.len() == 1);
+        assert!(
+            restarted
+                .try_catch_up(&fixture.index, &fixture.root, &mounts)
+                .is_none()
+        );
+        assert_eq!(
+            restarted
+                .read_baseline(fixture.root.root.0)
+                .unwrap()
+                .checkpoint,
+            "index-home-2"
+        );
+        assert_eq!(
+            fixture
+                .index
+                .search(
+                    &templar_file_index::Query::new("notes"),
+                    &templar_file_index::CallContext::internal(),
+                )
+                .unwrap()
+                .hits
+                .len(),
+            1,
+        );
     }
 
     #[test]
     fn delta_catch_up_rearms_recursive_watches_before_publishing_current() {
         let fixture = fixture();
         std::fs::create_dir_all(fixture.home.path().join("dk/nested/deep")).unwrap();
-        fixture.index.scan_root(fixture.root.root, templar_file_index::ScanOptions::reconcile(RootPolicy::default_home())).unwrap();
+        fixture
+            .index
+            .scan_root(
+                fixture.root.root,
+                templar_file_index::ScanOptions::reconcile(RootPolicy::default_home()),
+            )
+            .unwrap();
         let current = fixture.index.root_status(fixture.root.root).unwrap();
         let checkpoints = FakeCheckpoints::with_stream(one_created_file());
         let delta = DeltaCatchUp::new(checkpoints.clone(), fixture.state.clone());
         let mounts = mounts_for(&fixture, "btrfs");
         seed_baseline(&delta, &fixture, &checkpoints, &mounts);
-        fixture.index.mark_stale(current.root, &templar_file_index::StaleReason::Unwatched).unwrap();
-        let mut watcher = crate::watcher::WatchLoop::new(fixture.index.clone(), templar_file_index::watch::FakeSource::new());
+        fixture
+            .index
+            .mark_stale(current.root, &templar_file_index::StaleReason::Unwatched)
+            .unwrap();
+        let mut watcher = crate::watcher::WatchLoop::new(
+            fixture.index.clone(),
+            templar_file_index::watch::FakeSource::new(),
+        );
         watcher.attach_delta(delta);
         assert_eq!(watcher.watches_armed(), 0);
         assert!(watcher.catch_up_with_mounts(current.root, &mounts));
         assert_eq!(watcher.watches_armed(), 3);
-        assert_eq!(fixture.index.root_status(current.root).unwrap().state, templar_file_index::RootState::Current);
+        assert_eq!(
+            fixture.index.root_status(current.root).unwrap().state,
+            templar_file_index::RootState::Current
+        );
     }
 
     /// A checkpoint store that hands out streams the test wrote. Every method records its call,
@@ -549,7 +698,8 @@ mod tests {
     impl Checkpoints for FakeCheckpoints {
         fn list(&self) -> anyhow::Result<Vec<Checkpoint>> {
             Ok(self
-                .held.lock()
+                .held
+                .lock()
                 .iter()
                 .map(|id| Checkpoint {
                     id: id.clone(),
@@ -621,9 +771,20 @@ mod tests {
 
         let mut stream = b"btrfs-stream\0".to_vec();
         stream.extend_from_slice(&1u32.to_le_bytes());
-        let header = (2, vec![(15, b"checkpoint".to_vec()), (1, vec![1; 16]),
-            (2, 1u64.to_le_bytes().to_vec()), (20, vec![2; 16]), (21, 1u64.to_le_bytes().to_vec())]);
-        for (cmd, attrs) in std::iter::once(&header).chain(commands.iter()).chain(std::iter::once(&(21u16, vec![]))) {
+        let header = (
+            2,
+            vec![
+                (15, b"checkpoint".to_vec()),
+                (1, vec![1; 16]),
+                (2, 1u64.to_le_bytes().to_vec()),
+                (20, vec![2; 16]),
+                (21, 1u64.to_le_bytes().to_vec()),
+            ],
+        );
+        for (cmd, attrs) in std::iter::once(&header)
+            .chain(commands.iter())
+            .chain(std::iter::once(&(21u16, vec![])))
+        {
             let mut body = Vec::new();
             for (kind, value) in attrs {
                 body.extend_from_slice(&kind.to_le_bytes());
@@ -655,7 +816,7 @@ mod tests {
 
     struct Fixture {
         home: tempfile::TempDir,
-        _cache: tempfile::TempDir,
+        cache: tempfile::TempDir,
         index: Index,
         root: RootStatus,
         state: PathBuf,
@@ -673,29 +834,48 @@ mod tests {
                 RootPolicy::default_home(),
             )
             .unwrap();
-        index.scan_root(root.root, templar_file_index::ScanOptions::reconcile(RootPolicy::default_home())).unwrap();
+        index
+            .scan_root(
+                root.root,
+                templar_file_index::ScanOptions::reconcile(RootPolicy::default_home()),
+            )
+            .unwrap();
         let root = index.root_status(root.root).unwrap();
         std::fs::write(home.path().join("dk/notes.md"), b"hi").unwrap();
         let state = cache.path().join("delta-checkpoint.json");
         Fixture {
             home,
-            _cache: cache,
+            cache,
             index,
             root,
             state,
         }
     }
 
-    fn seed_baseline(catch_up: &DeltaCatchUp, fixture: &Fixture, checkpoints: &FakeCheckpoints, mounts: &str) -> RootStatus {
+    fn seed_baseline(
+        catch_up: &DeltaCatchUp,
+        fixture: &Fixture,
+        checkpoints: &FakeCheckpoints,
+        mounts: &str,
+    ) -> RootStatus {
         // Establish an unchanged real full pass. The subsequent creation is what the stored
         // one-file stream describes; it must not already have been scanned into the baseline.
         let notes = fixture.home.path().join("dk/notes.md");
         std::fs::remove_file(&notes).unwrap();
         let stream = std::mem::replace(&mut *checkpoints.stream.lock(), send_stream(&[]));
         let before = fixture.index.root_status(fixture.root.root).unwrap();
-        let probe = catch_up.begin_reconcile(&fixture.index, &before, mounts).unwrap();
-        fixture.index.scan_root(before.root, templar_file_index::ScanOptions::reconcile(
-            fixture.index.root_policy(before.root).unwrap())).unwrap();
+        let probe = catch_up
+            .begin_reconcile(&fixture.index, &before, mounts)
+            .unwrap();
+        fixture
+            .index
+            .scan_root(
+                before.root,
+                templar_file_index::ScanOptions::reconcile(
+                    fixture.index.root_policy(before.root).unwrap(),
+                ),
+            )
+            .unwrap();
         let current = fixture.index.root_status(before.root).unwrap();
         assert!(catch_up.complete_reconcile(&fixture.index, probe, &current));
         *checkpoints.stream.lock() = stream;
@@ -711,39 +891,98 @@ mod tests {
         let checkpoints = FakeCheckpoints::with_stream(one_created_file());
         let backend = DeltaCatchUp::new(checkpoints.clone(), fixture.state.clone());
         let mounts = mounts_for(&fixture, "btrfs");
-        let probe = backend.begin_reconcile(&fixture.index, &fixture.root, &mounts).unwrap();
-        fixture.index.scan_root(fixture.root.root, templar_file_index::ScanOptions::default()).unwrap();
+        let probe = backend
+            .begin_reconcile(&fixture.index, &fixture.root, &mounts)
+            .unwrap();
+        fixture
+            .index
+            .scan_root(
+                fixture.root.root,
+                templar_file_index::ScanOptions::default(),
+            )
+            .unwrap();
         // Arrived after the walker visited the directory: post-walk-only seeding loses this row.
         std::fs::write(fixture.home.path().join("dk/notes.md"), b"late").unwrap();
         let current = fixture.index.root_status(fixture.root.root).unwrap();
-        assert!(fixture.index.search(&templar_file_index::Query::new("notes")).unwrap().hits.is_empty());
+        assert!(
+            fixture
+                .index
+                .search(
+                    &templar_file_index::Query::new("notes"),
+                    &templar_file_index::CallContext::internal()
+                )
+                .unwrap()
+                .hits
+                .is_empty()
+        );
         assert!(!backend.complete_reconcile(&fixture.index, probe, &current));
         assert!(!fixture.state.exists());
         assert!(checkpoints.held.lock().is_empty());
         *checkpoints.stream.lock() = send_stream(&[]);
-        let probe = backend.begin_reconcile(&fixture.index, &current, &mounts).unwrap();
-        fixture.index.scan_root(current.root, templar_file_index::ScanOptions::default()).unwrap();
+        let probe = backend
+            .begin_reconcile(&fixture.index, &current, &mounts)
+            .unwrap();
+        fixture
+            .index
+            .scan_root(current.root, templar_file_index::ScanOptions::default())
+            .unwrap();
         let repaired = fixture.index.root_status(current.root).unwrap();
         assert!(backend.complete_reconcile(&fixture.index, probe, &repaired));
-        assert_eq!(fixture.index.search(&templar_file_index::Query::new("notes")).unwrap().hits.len(), 1);
+        assert_eq!(
+            fixture
+                .index
+                .search(
+                    &templar_file_index::Query::new("notes"),
+                    &templar_file_index::CallContext::internal()
+                )
+                .unwrap()
+                .hits
+                .len(),
+            1
+        );
         assert_eq!(checkpoints.held.lock().len(), 1);
     }
 
     #[test]
     fn delta_acquisition_refuses_transient_rows_even_when_the_net_plan_is_empty() {
         let fixture = fixture();
-        let stream = send_stream(&[(3, vec![(15, b"dk/transient".to_vec())]),
-            (11, vec![(15, b"dk/transient".to_vec())])]);
-        assert!(btrfs_delta::plan(&btrfs_delta::decode(&stream).unwrap()).unwrap().is_empty());
+        let stream = send_stream(&[
+            (3, vec![(15, b"dk/transient".to_vec())]),
+            (11, vec![(15, b"dk/transient".to_vec())]),
+        ]);
+        assert!(
+            btrfs_delta::plan(&btrfs_delta::decode(&stream).unwrap())
+                .unwrap()
+                .is_empty()
+        );
         let checkpoints = FakeCheckpoints::with_stream(stream);
         let backend = DeltaCatchUp::new(checkpoints.clone(), fixture.state.clone());
         let mounts = mounts_for(&fixture, "btrfs");
-        let probe = backend.begin_reconcile(&fixture.index, &fixture.root, &mounts).unwrap();
+        let probe = backend
+            .begin_reconcile(&fixture.index, &fixture.root, &mounts)
+            .unwrap();
         std::fs::write(fixture.home.path().join("dk/transient"), b"seen").unwrap();
-        fixture.index.scan_root(fixture.root.root, templar_file_index::ScanOptions::default()).unwrap();
+        fixture
+            .index
+            .scan_root(
+                fixture.root.root,
+                templar_file_index::ScanOptions::default(),
+            )
+            .unwrap();
         std::fs::remove_file(fixture.home.path().join("dk/transient")).unwrap();
         let current = fixture.index.root_status(fixture.root.root).unwrap();
-        assert_eq!(fixture.index.search(&templar_file_index::Query::new("transient")).unwrap().hits.len(), 1);
+        assert_eq!(
+            fixture
+                .index
+                .search(
+                    &templar_file_index::Query::new("transient"),
+                    &templar_file_index::CallContext::internal()
+                )
+                .unwrap()
+                .hits
+                .len(),
+            1
+        );
         assert!(!backend.complete_reconcile(&fixture.index, probe, &current));
         assert!(!fixture.state.exists());
     }
@@ -755,13 +994,26 @@ mod tests {
         let backend = DeltaCatchUp::new(checkpoints.clone(), fixture.state.clone());
         let mounts = mounts_for(&fixture, "btrfs");
         let old = seed_baseline(&backend, &fixture, &checkpoints, &mounts);
-        let replacement = Index::open(&fixture._cache.path().join("replacement.sqlite3"), IndexConfig::default()).unwrap();
-        let root = replacement.add_root(&old.path, RootPolicy::default_home()).unwrap();
-        for _ in 0..old.generation.0 {
-            replacement.scan_root(root.root, templar_file_index::ScanOptions::default()).unwrap();
+        let replacement = Index::open(
+            &fixture.cache.path().join("replacement.sqlite3"),
+            IndexConfig::default(),
+        )
+        .unwrap();
+        let root = replacement
+            .add_root(&old.path, RootPolicy::default_home())
+            .unwrap();
+        // Every scan allocates a start generation and publishes a later one, so step until the
+        // replacement's published generation coincides with the old baseline's.
+        while replacement.root_status(root.root).unwrap().generation < old.generation {
+            replacement
+                .scan_root(root.root, templar_file_index::ScanOptions::default())
+                .unwrap();
         }
         let new = replacement.root_status(root.root).unwrap();
-        assert_eq!((old.root, old.generation, &old.policy_hash), (new.root, new.generation, &new.policy_hash));
+        assert_eq!(
+            (old.root, old.generation, &old.policy_hash),
+            (new.root, new.generation, &new.policy_hash)
+        );
         assert_ne!(fixture.index.cache_identity(), replacement.cache_identity());
         assert!(backend.try_catch_up(&replacement, &new, &mounts).is_none());
         assert_eq!(checkpoints.held.lock().len(), 1);
@@ -875,7 +1127,13 @@ mod tests {
             .expect("a delta");
         drop(result);
         assert_eq!(checkpoints.discarded.lock().as_slice(), ["index-home-3"]);
-        assert_eq!(catch_up.read_baseline(fixture.root.root.0).unwrap().checkpoint, "index-home-2");
+        assert_eq!(
+            catch_up
+                .read_baseline(fixture.root.root.0)
+                .unwrap()
+                .checkpoint,
+            "index-home-2"
+        );
     }
 
     #[test]

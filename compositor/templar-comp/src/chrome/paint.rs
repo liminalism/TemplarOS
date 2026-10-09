@@ -23,14 +23,13 @@
 use crate::chrome::layout::{self, PressureChoice};
 use pixelkit_raster::{Painter, Rect as PxRect};
 use pixelkit_text::{FaceId, TextCache, TextStyle, cache::Align};
-use templar_window::Rect as LRect;
 use templar_types::appearance::Palette;
+use templar_window::Rect as LRect;
 
 /// Text and cache together, or nothing at all — the one parameter every drawing function below
 /// threads through instead of taking `Option<&ChromeFonts>` directly, so this module never needs
 /// to know `ChromeFonts`'s own shape.
 pub type Fonts<'a> = Option<(&'a mut TextCache, FaceId)>;
-
 
 /// Scale a *logical* rectangle up to the physical pixel space a widget's own buffer is drawn in
 /// (`chrome/cache.rs`'s `buffer_scale`) — used for anything laid out once in logical coordinates
@@ -91,14 +90,18 @@ pub fn name_tag(
             start -= 1;
             digits[start] = b'0' + (value % 10) as u8;
             value /= 10;
-            if value == 0 { break; }
+            if value == 0 {
+                break;
+            }
         }
         let label = std::str::from_utf8(&digits[start..]).unwrap_or("");
         let padding = (4.0 * scale).round() as i32;
         let badge_width = ((label.len() as f32 * 8.0 + 8.0) * scale).round() as i32;
         let badge = PxRect::new(
-            area.right() - badge_width - padding, area.y + padding,
-            badge_width, (area.h - 2 * padding).max(0),
+            area.right() - badge_width - padding,
+            area.y + padding,
+            badge_width,
+            (area.h - 2 * padding).max(0),
         );
         if badge.x >= left + padding && badge.h > 0 {
             painter.fill_rect(badge, ink);
@@ -169,8 +172,7 @@ fn control_tag_glyph(
     painter.push_clip(rect);
     let side = rect.w.min(rect.h);
     let stroke = ((2.0 * scale).round() as i32).clamp(1, side);
-    let reach = ((10.0 * scale).round() as i32)
-        .clamp(stroke, (side - 2 * stroke).max(stroke));
+    let reach = ((10.0 * scale).round() as i32).clamp(stroke, (side - 2 * stroke).max(stroke));
     let cx = rect.x + rect.w / 2;
     let cy = rect.y + rect.h / 2;
     let left = cx - reach / 2;
@@ -524,7 +526,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn scaled_px_multiplies_every_field() {
         let rect = LRect::new(10, 20, 30, 40);
@@ -543,7 +544,14 @@ mod tests {
             (layout::ControlTag::Maximize, PxRect::new(0, 32, 28, 28)),
             (layout::ControlTag::Park, PxRect::new(0, 64, 28, 28)),
         ];
-        control_tags(&mut Painter::new(&mut buffer), 28, 92, RECOVERY_BAND_COLOR, &tags, 1.0);
+        control_tags(
+            &mut Painter::new(&mut buffer),
+            28,
+            92,
+            RECOVERY_BAND_COLOR,
+            &tags,
+            1.0,
+        );
         for y in [28, 29, 30, 31, 60, 61, 62, 63] {
             for x in 0..28 {
                 assert_eq!(pixel_at(&buffer, x, y), 0);
@@ -565,14 +573,30 @@ mod tests {
             let mut buffer = WindowBuffer::new(size as u32, (3 * size + 8) as u32);
             let tags = [
                 (layout::ControlTag::Close, PxRect::new(0, 0, size, size)),
-                (layout::ControlTag::Maximize, PxRect::new(0, size + 4, size, size)),
-                (layout::ControlTag::Park, PxRect::new(0, 2 * size + 8, size, size)),
+                (
+                    layout::ControlTag::Maximize,
+                    PxRect::new(0, size + 4, size, size),
+                ),
+                (
+                    layout::ControlTag::Park,
+                    PxRect::new(0, 2 * size + 8, size, size),
+                ),
             ];
-            control_tags(&mut Painter::new(&mut buffer), size, 3 * size + 8, 0, &tags, 1.0);
+            control_tags(
+                &mut Painter::new(&mut buffer),
+                size,
+                3 * size + 8,
+                0,
+                &tags,
+                1.0,
+            );
             for y in 0..3 * size + 8 {
                 for x in 0..size {
                     let control_pixel = tags.iter().any(|(_, rect)| rect.contains(x, y));
-                    assert_eq!(pixel_at(&buffer, x, y) >> 24, if control_pixel { 255 } else { 0 });
+                    assert_eq!(
+                        pixel_at(&buffer, x, y) >> 24,
+                        if control_pixel { 255 } else { 0 }
+                    );
                 }
             }
         }
@@ -592,8 +616,17 @@ mod tests {
             let mut unknown = WindowBuffer::new(200, 32);
             let mut known = WindowBuffer::new(200, 32);
             for (buffer, count) in [(&mut unknown, None), (&mut known, Some(7))] {
-                name_tag(&mut Painter::new(buffer), 200, 32, RECOVERY_BAND_COLOR,
-                    "same title", None, count, Some((&mut cache, test_fonts::LATIN)), 1.0);
+                name_tag(
+                    &mut Painter::new(buffer),
+                    200,
+                    32,
+                    RECOVERY_BAND_COLOR,
+                    "same title",
+                    None,
+                    count,
+                    Some((&mut cache, test_fonts::LATIN)),
+                    1.0,
+                );
             }
             assert_ne!(unknown.pixels, known.pixels);
             assert_eq!(pixel_at(&known, 0, 0), RECOVERY_BAND_COLOR);
@@ -625,7 +658,6 @@ mod tests {
             // text drawing must not have overrun and repainted the whole buffer.
             assert_eq!(buffer.pixels[buffer.pixels.len() - 1], RECOVERY_BAND_COLOR);
         }
-
 
         #[test]
         fn long_window_titles_are_elided_to_fit_the_band() {

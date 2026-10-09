@@ -7838,6 +7838,7 @@ mod tests {
                 status: None,
                 search_query: None,
                 search_entries: None,
+                search_pages: None,
                 search_error: None,
                 feeds: drawer_feeds,
                 thumbnails: &empty_thumbnails,

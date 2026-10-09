@@ -322,10 +322,15 @@ pub fn decode_reader(reader: impl std::io::Read) -> Result<SendStream, DeltaErro
 }
 
 /// Read at most `limit` payload bytes and one overflow sentinel, then decode all-or-nothing.
-pub fn decode_reader_bounded(reader: impl std::io::Read, limit: u64) -> Result<SendStream, DeltaError> {
+pub fn decode_reader_bounded(
+    reader: impl std::io::Read,
+    limit: u64,
+) -> Result<SendStream, DeltaError> {
     use std::io::Read as _;
     let mut bytes = Vec::new();
-    reader.take(limit.saturating_add(1)).read_to_end(&mut bytes)
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
         .map_err(|error| DeltaError::Io(error.to_string()))?;
     if bytes.len() as u64 > limit {
         return Err(DeltaError::TooLarge { limit });
@@ -1214,11 +1219,14 @@ mod tests {
 
     #[test]
     fn btrfs_delta_reader_bounds_actual_bytes_even_for_an_infinite_stream() {
-        struct Counted { read: std::sync::Arc<std::sync::atomic::AtomicUsize> }
+        struct Counted {
+            read: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        }
         impl std::io::Read for Counted {
             fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
                 buffer.fill(0);
-                self.read.fetch_add(buffer.len(), std::sync::atomic::Ordering::Relaxed);
+                self.read
+                    .fetch_add(buffer.len(), std::sync::atomic::Ordering::Relaxed);
                 Ok(buffer.len())
             }
         }

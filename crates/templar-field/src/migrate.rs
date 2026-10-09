@@ -62,13 +62,19 @@ pub const DOCUMENT_MIGRATIONS: &[DocumentMigration] = &[DocumentMigration {
 }];
 
 fn migrate_desktop_dock(value: &mut serde_json::Value) {
-    let Some(tiles) = value.get_mut("tiles").and_then(serde_json::Value::as_array_mut) else {
+    let Some(tiles) = value
+        .get_mut("tiles")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
         return;
     };
     for tile in tiles {
         if tile.get("id").and_then(serde_json::Value::as_u64)
             == Some(crate::TileId::for_key("folder:desktop").0)
-            && tile.pointer("/kind/kind").and_then(serde_json::Value::as_str) == Some("folder")
+            && tile
+                .pointer("/kind/kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("folder")
         {
             tile["kind"]["kind"] = "desktop-dock".into();
             tile["kind"]["order"] = serde_json::json!([]);
@@ -275,7 +281,10 @@ mod tests {
     #[test]
     fn current_version_has_no_pending_migrations() {
         assert!(migrations_from(DOCUMENT_VERSION).is_empty());
-        assert_eq!(migrations_from(1), vec!["Independent Desktop dock, retaining placement"]);
+        assert_eq!(
+            migrations_from(1),
+            vec!["Independent Desktop dock, retaining placement"]
+        );
     }
 
     #[test]
@@ -283,19 +292,37 @@ mod tests {
         use crate::{Cell, Located, Placement, Span, TileId, TileKind, folder_tile};
         let mut doc = document();
         let id = TileId::for_key("folder:desktop");
-        let at = Located { container: None, placement: Placement::new(Cell::new(1, 2), Span::new(3, 3)) };
-        doc.tiles.push(folder_tile(id, std::path::Path::new("/home/a/Bureau"), 8, 6));
+        let at = Located {
+            container: None,
+            placement: Placement::new(Cell::new(1, 2), Span::new(3, 3)),
+        };
+        doc.tiles.push(folder_tile(
+            id,
+            std::path::Path::new("/home/a/Bureau"),
+            8,
+            6,
+        ));
         let other = TileId(4);
-        doc.tiles.push(folder_tile(other, std::path::Path::new("/work/Desktop"), 8, 6));
+        doc.tiles.push(folder_tile(
+            other,
+            std::path::Path::new("/work/Desktop"),
+            8,
+            6,
+        ));
         doc.tiles.sort_by_key(|tile| tile.id);
         doc.located.push((id, at));
         doc.version = 1;
         let migrated = load_document(&serde_json::to_string(&doc).unwrap()).unwrap();
         assert_eq!(migrated.version, DOCUMENT_VERSION);
         assert_eq!(migrated.location(id), Some(at));
-        assert!(matches!(&migrated.tile(id).unwrap().kind, TileKind::DesktopDock { path, order }
-            if path == std::path::Path::new("/home/a/Bureau") && order.is_empty()));
-        assert!(matches!(&migrated.tile(other).unwrap().kind, TileKind::Folder { .. }));
+        assert!(
+            matches!(&migrated.tile(id).unwrap().kind, TileKind::DesktopDock { path, order }
+            if path == std::path::Path::new("/home/a/Bureau") && order.is_empty())
+        );
+        assert!(matches!(
+            &migrated.tile(other).unwrap().kind,
+            TileKind::Folder { .. }
+        ));
         assert_eq!(migrated.tiles.len(), doc.tiles.len());
         assert_eq!(migrated.revision, doc.revision);
     }

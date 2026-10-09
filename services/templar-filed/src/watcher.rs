@@ -16,7 +16,7 @@ use std::{
     collections::VecDeque,
     path::Path,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
@@ -55,6 +55,8 @@ pub struct WatcherHandle {
     stop: Arc<AtomicBool>,
     control: WatcherControl,
     thread: Option<JoinHandle<()>>,
+    mounts: Option<crate::mounts::MountMonitor>,
+    pressure: Option<crate::pressure::PressureMonitor>,
 }
 
 impl WatcherHandle {
@@ -66,6 +68,8 @@ impl WatcherHandle {
     /// which on an idle machine is never. (There is no `SIGTERM` handler in `templar-filed` today,
     /// so in production this runs from `Drop` or not at all.)
     pub fn stop(&mut self) {
+        self.pressure.take();
+        self.mounts.take();
         self.stop.store(true, Ordering::Relaxed);
         self.control.wake();
         if let Some(thread) = self.thread.take() {
@@ -96,7 +100,16 @@ pub fn spawn(
     delta: Option<DeltaSetup>,
 ) -> std::io::Result<WatcherHandle> {
     let source = InotifySource::open()?;
-    Ok(spawn_with_source(index, roots, source, delta))
+    let mut handle = spawn_with_source(index.clone(), roots, source, delta);
+    handle.pressure = match crate::pressure::PressureMonitor::spawn(index.clone()) {
+        Ok(monitor) => Some(monitor),
+        Err(error) => {
+            tracing::info!(%error, "cgroup memory pressure notifications unavailable; array cap still applies");
+            None
+        }
+    };
+    handle.mounts = Some(crate::mounts::MountMonitor::spawn(index, handle.control())?);
+    Ok(handle)
 }
 
 /// What the watcher needs to reach `org.templaros.Host.IndexCheckpoint1`, carried rather than
@@ -142,6 +155,8 @@ pub fn spawn_with_source<S: EventSource + 'static>(
         stop,
         control: WatcherControl::new(commands, waker),
         thread: Some(thread),
+        mounts: None,
+        pressure: None,
     }
 }
 
@@ -164,7 +179,7 @@ pub struct WatchLoop<S: EventSource> {
     /// The last status actually written. `WatchStatus` is `Eq`, so "publish on change" is a
     /// comparison rather than a heartbeat — and a heartbeat is precisely what this lane exists to
     /// remove.
-    published: Option<WatchStatus>,
+    published: Option<Vec<(RootId, WatchStatus)>>,
     /// The source is gone. Not a lost event: a lost stream. Latched, because polling a dead
     /// source returns instantly and an unbounded wait that returns instantly is a spin.
     dead: bool,
@@ -189,9 +204,11 @@ impl<S: EventSource> WatchLoop<S> {
         source: S,
         clock: Arc<dyn templar_file_index::coalesce::Clock>,
     ) -> Self {
+        let mut owner = WatchOwner::new(source, WatchBudget::default());
+        owner.set_volume_provider(index.config().volume_provider.clone());
         Self {
             index,
-            owner: WatchOwner::new(source, WatchBudget::default()),
+            owner,
             coalescer: Coalescer::new(CoalesceConfig::default()),
             clock,
             repairs: VecDeque::new(),
@@ -230,7 +247,11 @@ impl<S: EventSource> WatchLoop<S> {
     pub fn start(&mut self, roots: &WatcherRoots) {
         for status in &roots.serve {
             self.track(status);
-            if !self.index.root_policy(status.root).is_ok_and(|policy| policy.monitoring) {
+            if !self
+                .index
+                .root_policy(status.root)
+                .is_ok_and(|policy| policy.monitoring)
+            {
                 let _ = self.index.mark_stale(status.root, &StaleReason::Unwatched);
                 continue;
             }
@@ -241,7 +262,11 @@ impl<S: EventSource> WatchLoop<S> {
         }
         for status in &roots.reconcile {
             self.track(status);
-            if !self.index.root_policy(status.root).is_ok_and(|policy| policy.monitoring) {
+            if !self
+                .index
+                .root_policy(status.root)
+                .is_ok_and(|policy| policy.monitoring)
+            {
                 let _ = self.index.mark_stale(status.root, &StaleReason::Unwatched);
                 continue;
             }
@@ -264,10 +289,15 @@ impl<S: EventSource> WatchLoop<S> {
             .unwrap_or_else(|_| templar_file_index::RootPolicy::default_home());
         self.owner
             .track_root(status.root, &status.path.to_path(), policy.clone());
-        if !policy.monitoring { self.owner.forget_root(status.root); }
+        if !policy.monitoring {
+            self.owner.forget_root(status.root);
+        }
     }
 
     fn arm_only(&mut self, status: &RootStatus) {
+        if templar_file_index::volume::ensure_present(&self.index, status.root).is_err() {
+            return;
+        }
         // Arming the root directory alone is cheap and closes the window on the top of the tree;
         // the repair pass arms the rest as it walks.
         self.owner
@@ -415,14 +445,77 @@ impl<S: EventSource> WatchLoop<S> {
                         self.owner.forget_root(root);
                         self.track(&status);
                         self.enqueue_repair(root, ScanScope::Root, trigger);
+                        // A root registered inside another takes that path over: the container
+                        // re-arms without it, and its next complete pass tombstones the copy it
+                        // acquired there before.
+                        if let Some(container) = status.nested_in
+                            && let Ok(outer) = self.index.root_status(container)
+                        {
+                            self.owner.forget_root(container);
+                            self.track(&outer);
+                            self.enqueue_repair(container, ScanScope::Root, Trigger::Requested);
+                        }
                         self.published = None;
                     }
                 }
                 Command::ForgetRoot(root) => {
+                    let path = self.owner.tracked_path(root);
                     self.owner.forget_root(root);
                     self.repairs.retain(|(queued, _, _)| *queued != root);
                     self.coalescer.take_for_root(root, MutationSource::Watcher);
+                    // The subtree a forgotten nested root owned goes back to whichever root
+                    // contains it, if its policy reaches that far.
+                    if let Some(path) = path {
+                        let native = templar_file_index::NativePath::from_path(&path);
+                        if let Ok(Some(container)) = self.index.root_for_path(&native) {
+                            self.enqueue_repair(
+                                container.root,
+                                ScanScope::Subtree(native),
+                                Trigger::Requested,
+                            );
+                        }
+                    }
                     self.published = None;
+                }
+                Command::VolumeChange(root, _) => {
+                    // The queued observation can be old by dispatch: use the current fence.
+                    if let Ok(templar_file_index::volume::Presence::Present { verified, .. }) =
+                        templar_file_index::volume::presence(&self.index, root)
+                    {
+                        if self.index.root_status(root).is_ok_and(|status| {
+                            status.state == templar_file_index::RootState::Offline
+                        }) && let Ok(status) = self.index.mark_online(root)
+                        {
+                            self.track(&status);
+                            self.enqueue_repair(
+                                root,
+                                ScanScope::Root,
+                                if verified {
+                                    Trigger::MountReturned
+                                } else {
+                                    Trigger::MountReturnedUnverified
+                                },
+                            );
+                        }
+                    } else {
+                        let _ = templar_file_index::volume::ensure_present(&self.index, root);
+                        self.owner.forget_root(root);
+                        self.repairs.retain(|(queued, _, _)| *queued != root);
+                        self.coalescer.take_for_root(root, MutationSource::Watcher);
+                    }
+                    self.published = None;
+                }
+                Command::MountBoundary(root, path) => {
+                    if templar_file_index::volume::ensure_present(&self.index, root).is_err() {
+                        continue;
+                    }
+                    if let Ok(status) = self.index.root_status(root) {
+                        // Remove watches pinned to the shadowed inode before walking the mount.
+                        self.owner.forget_root(root);
+                        self.track(&status);
+                        self.enqueue_repair(root, ScanScope::Subtree(path), Trigger::Requested);
+                        self.published = None;
+                    }
                 }
             }
         }
@@ -462,7 +555,8 @@ impl<S: EventSource> WatchLoop<S> {
                 armed: *armed,
                 refused: *refused,
             },
-            StaleReason::MountDisappeared => Trigger::MountReturned,
+            StaleReason::MountDisappeared | StaleReason::VolumeReturned => Trigger::MountReturned,
+            StaleReason::VolumeReturnedUnverified => Trigger::MountReturnedUnverified,
             StaleReason::PolicyChanged => Trigger::PolicyChanged,
             // Not watching and not running are the same epistemic hole, so they take the same
             // repair. (The remaining catch-all is a pre-existing wart: an unlisted reason is
@@ -560,7 +654,10 @@ impl<S: EventSource> WatchLoop<S> {
         // looking", which is exactly the question two snapshots answer cheaply. Overflow,
         // ambiguity and a policy change are about what the index *believes*, not about a window
         // of missed time, and none of them is fixed by replaying a difference.
-        if *trigger == Trigger::Downtime && scope == ScanScope::Root && self.catch_up(root) {
+        if (*trigger == Trigger::Downtime || *trigger == Trigger::MountReturned)
+            && scope == ScanScope::Root
+            && self.catch_up(root)
+        {
             return;
         }
         let Ok(policy) = self.index.root_policy(root) else {
@@ -577,7 +674,9 @@ impl<S: EventSource> WatchLoop<S> {
                     let _ = self.index.mark_stale(root, &StaleReason::Unwatched);
                 }
                 Ok(_) => {} // Preserve a real budget/permission failure, not a friendlier reason.
-                Err(error) => tracing::warn!(root = root.0, %error, "unmonitored root repair failed"),
+                Err(error) => {
+                    tracing::warn!(root = root.0, %error, "unmonitored root repair failed");
+                }
             }
             return;
         }
@@ -591,7 +690,9 @@ impl<S: EventSource> WatchLoop<S> {
                 let mounts = std::fs::read_to_string("/proc/self/mounts").ok()?;
                 delta.begin_reconcile(&self.index, &status, &mounts)
             })
-        } else { None };
+        } else {
+            None
+        };
         match reconcile::reconcile(&self.index, &mut self.owner, root, scope, trigger, options) {
             Ok((outcome, report)) => {
                 tracing::info!(
@@ -627,6 +728,9 @@ impl<S: EventSource> WatchLoop<S> {
     }
 
     pub(crate) fn catch_up_with_mounts(&mut self, root: RootId, mounts: &str) -> bool {
+        if templar_file_index::volume::ensure_present(&self.index, root).is_err() {
+            return false;
+        }
         let Some(delta) = self.delta.as_ref() else {
             return false;
         };
@@ -672,15 +776,24 @@ impl<S: EventSource> WatchLoop<S> {
         };
         // A dormant tree has no recursive watches, and a directory rename makes old path maps
         // wrong. Rebuild coverage before publishing Current or advancing the checkpoint pointer.
-        let Ok(policy) = self.index.root_policy(root) else { return false };
+        let Ok(policy) = self.index.root_policy(root) else {
+            return false;
+        };
         self.owner.forget_root(root);
         self.owner.track_root(root, &status.path.to_path(), policy);
-        match self.owner.arm_tree(root, &status.path.to_path(), &mut |_| Ok(())) {
+        match self
+            .owner
+            .arm_tree(root, &status.path.to_path(), &mut |_| Ok(()))
+        {
             Ok(coverage) if coverage.complete => {}
             Ok(coverage) => {
-                let _ = self.index.mark_stale(root, &StaleReason::WatcherExhausted {
-                    armed: coverage.dirs_armed, refused: coverage.dirs_refused,
-                });
+                let _ = self.index.mark_stale(
+                    root,
+                    &StaleReason::WatcherExhausted {
+                        armed: coverage.dirs_armed,
+                        refused: coverage.dirs_refused,
+                    },
+                );
                 return false;
             }
             Err(error) => {
@@ -712,7 +825,6 @@ impl<S: EventSource> WatchLoop<S> {
         status.state == templar_file_index::RootState::Current
     }
 
-
     /// Write the watcher's self-report — but only when it says something new.
     ///
     /// This used to run every turn, which was harmless while the loop ticked twice a second and
@@ -720,16 +832,41 @@ impl<S: EventSource> WatchLoop<S> {
     /// does not. There is deliberately no heartbeat to replace the lost ticks: a heartbeat is a
     /// wakeup, and the wakeup is the thing being removed.
     fn publish_status(&mut self) {
-        let status = self.owner.status(self.coalescer.len() as u64);
-        if self.published.as_ref() == Some(&status) {
+        let statuses: Vec<_> = self
+            .index
+            .roots()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|root| {
+                let monitoring = self
+                    .index
+                    .root_policy(root.root)
+                    .is_ok_and(|policy| policy.monitoring);
+                let status = if monitoring {
+                    self.owner
+                        .status_for(root.root, self.coalescer.len() as u64)
+                } else {
+                    WatchStatus {
+                        backend: "disabled".to_owned(),
+                        watches_required: Some(0),
+                        ..WatchStatus::default()
+                    }
+                };
+                (root.root, status)
+            })
+            .collect();
+        if self.published.as_ref() == Some(&statuses) {
             return;
         }
-        for root in self.index.roots().unwrap_or_default() {
-            let monitoring = self.index.root_policy(root.root).is_ok_and(|policy| policy.monitoring);
-            let disabled = WatchStatus { backend: "disabled".to_owned(), ..WatchStatus::default() };
-            let _ = self.index.set_watch_status(root.root, if monitoring { &status } else { &disabled });
+        for (root, status) in &statuses {
+            if !self.published.as_ref().is_some_and(|old| {
+                old.iter()
+                    .any(|(id, previous)| id == root && previous == status)
+            }) {
+                let _ = self.index.set_watch_status(*root, status);
+            }
         }
-        self.published = Some(status);
+        self.published = Some(statuses);
     }
 
     /// Test access to the loop's parts.
@@ -772,7 +909,7 @@ fn repair_weight(trigger: &Trigger) -> u8 {
         Trigger::Periodic => 2,
         Trigger::RenameAmbiguous => 3,
         Trigger::Requested => 4,
-        Trigger::MountReturned => 5,
+        Trigger::MountReturned | Trigger::MountReturnedUnverified => 5,
         Trigger::PolicyChanged => 6,
         Trigger::Exhausted { .. } => 7,
         Trigger::Overflow => 8,
@@ -790,15 +927,29 @@ fn repair_weight(trigger: &Trigger) -> u8 {
 /// skips it without advancing a generation. Doing it in this order — operation first, event
 /// second — is what makes a rename appear in search immediately rather than a coalescing window
 /// later.
+/// Mutations buffered before one commit. A file operation commits one generation per this many
+/// steps instead of one per step; the executor flushes the remainder at every operation exit, so
+/// a 10k-file copy costs ~20 commits, signals and overlay refreshes instead of ~10k. Well under
+/// the index's own `max_batch`, so a flush is never split behind our back.
+const SINK_BATCH_LIMIT: usize = 512;
+
 #[derive(Clone, Debug)]
 pub struct OperationSink {
-    index: Index,
+    /// Read on every hook: an index that becomes available after start is fed from then on, and
+    /// an unavailable one is skipped (the watcher's events and the next repair still cover it).
+    index: Arc<crate::index_slot::IndexSlot>,
+    /// Buffered mutations awaiting `flush`. Shared across clones so every handle feeds — and
+    /// flushes — the same batch.
+    pending: Arc<Mutex<Vec<Mutation>>>,
 }
 
 impl OperationSink {
     #[must_use]
     pub fn new(index: Index) -> Self {
-        Self { index }
+        Self {
+            index: crate::index_slot::IndexSlot::opened(index),
+            pending: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 
     /// The sink `ExecutorConfig` carries.
@@ -807,8 +958,18 @@ impl OperationSink {
         Arc::new(Self::new(index))
     }
 
+    /// The sink over the daemon's index slot.
+    #[must_use]
+    pub fn over_slot(slot: Arc<crate::index_slot::IndexSlot>) -> Arc<dyn IndexSink> {
+        Arc::new(Self {
+            index: slot,
+            pending: Arc::new(Mutex::new(Vec::new())),
+        })
+    }
+
     fn root_of(&self, path: &Path) -> Option<RootId> {
         self.index
+            .current()?
             .root_for_path(&NativePath::from_path(path))
             .ok()
             .flatten()
@@ -816,14 +977,46 @@ impl OperationSink {
     }
 
     fn apply(&self, mutation: Mutation) {
-        if let Err(error) = self.index.apply(MutationBatch {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pending.push(mutation);
+        if pending.len() < SINK_BATCH_LIMIT {
+            return;
+        }
+        let mutations = std::mem::take(&mut *pending);
+        drop(pending);
+        self.commit(mutations);
+    }
+
+    fn commit(&self, mutations: Vec<Mutation>) {
+        if mutations.is_empty() {
+            return;
+        }
+        let Some(index) = self.index.current() else {
+            return;
+        };
+        if let Err(error) = index.apply(MutationBatch {
             source: MutationSource::Operation,
-            mutations: vec![mutation],
+            mutations,
         }) {
             // A file operation must never fail because the index did. The watcher's event and the
             // next repair both still describe this change.
             tracing::warn!(%error, "could not record a file operation in the index");
         }
+    }
+
+    /// Commit whatever the hooks buffered. The executor calls this at every operation exit, so a
+    /// batch is never wider than one operation.
+    fn flush_pending(&self) {
+        let mutations = std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        self.commit(mutations);
     }
 
     fn upsert(&self, path: &Path) {
@@ -910,6 +1103,10 @@ impl IndexSink for OperationSink {
             to: NativePath::from_path(to),
             meta: templar_file_index::EntryMeta::from_symlink_metadata(to, &metadata),
         });
+    }
+
+    fn flush(&self) {
+        self.flush_pending();
     }
 }
 
@@ -999,6 +1196,113 @@ mod tests {
             index.generation().unwrap().0,
             after_operation,
             "an echo must not advance a generation"
+        );
+    }
+
+    /// File-operation hooks buffer instead of committing per step: 600 reports cost two
+    /// generations (one full batch plus the flush), not 600.
+    #[test]
+    fn operation_sink_batches_hooks_into_few_generations() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        let index = Index::open(&dir.path().join("index.sqlite3"), IndexConfig::default()).unwrap();
+        let root = index
+            .add_root(&NativePath::from_path(&tree), RootPolicy::default_home())
+            .unwrap()
+            .root;
+        let files: Vec<_> = (0..600)
+            .map(|n| {
+                let path = tree.join(format!("file-{n:04}.txt"));
+                fs::write(&path, b"contents").unwrap();
+                path
+            })
+            .collect();
+
+        let sink = OperationSink::shared(index.clone());
+        let before = index.generation().unwrap().0;
+        for path in &files {
+            sink.created(path);
+        }
+        // One full 512 batch committed mid-stream; the rest is still buffered.
+        assert_eq!(index.generation().unwrap().0 - before, 1);
+        sink.flush();
+        assert_eq!(index.generation().unwrap().0 - before, 2);
+
+        for path in &files {
+            assert!(
+                index
+                    .entry(root, &NativePath::from_path(path))
+                    .unwrap()
+                    .is_some(),
+                "every buffered report landed: {}",
+                path.display()
+            );
+        }
+    }
+
+    /// One operation commits one batch: the executor flushes at exit, so a small copy costs
+    /// exactly one generation and is searchable before any watcher event arrives.
+    #[test]
+    fn executor_flushes_sink_once_per_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = dir.path().join("tree");
+        let destination = tree.join("out");
+        fs::create_dir_all(tree.join("in")).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        let sources: Vec<_> = (0..3)
+            .map(|n| {
+                let path = tree.join("in").join(format!("report-{n}.txt"));
+                fs::write(&path, b"contents").unwrap();
+                path
+            })
+            .collect();
+
+        let index = Index::open(&dir.path().join("index.sqlite3"), IndexConfig::default()).unwrap();
+        let policy = RootPolicy::default_home();
+        let root = index
+            .add_root(&NativePath::from_path(&tree), policy.clone())
+            .unwrap()
+            .root;
+        index
+            .scan_root(root, ScanOptions::reconcile(policy))
+            .unwrap();
+        let before = index.generation().unwrap().0;
+
+        let surveyed = operations::survey(&sources, Some(&destination));
+        let mut operation = operations::plan(
+            OperationId::new(),
+            OperationKind::Copy {
+                sources: sources.clone(),
+                destination_dir: destination.clone(),
+            },
+            &surveyed,
+            Options::default(),
+        );
+        let config = ExecutorConfig {
+            data_home: dir.path().join("data"),
+            reserve_percent: 0,
+            progress_interval: std::time::Duration::from_millis(0),
+            index_sink: Some(OperationSink::shared(index.clone())),
+            journal: None,
+        };
+        execute::run(&mut operation, &config, &Cancel::new(), |_| {}).unwrap();
+
+        for source in &sources {
+            let copied = destination.join(source.file_name().unwrap());
+            assert!(
+                index
+                    .entry(root, &NativePath::from_path(&copied))
+                    .unwrap()
+                    .is_some(),
+                "the copy is in the index before any watcher event arrives: {}",
+                copied.display()
+            );
+        }
+        assert_eq!(
+            index.generation().unwrap().0 - before,
+            1,
+            "one operation commits one batch"
         );
     }
 
@@ -1460,6 +1764,8 @@ mod tests {
         fs::write(&created, b"still indexed").unwrap();
         let sink = OperationSink::new(loop_.index().clone());
         sink.created(&created);
+        // The executor flushes at every operation exit; this direct drive does it by hand.
+        sink.flush();
 
         assert!(
             loop_

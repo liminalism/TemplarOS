@@ -248,21 +248,31 @@ impl HistoryApi {
         let Some((domain, mut key)) = reverted_domain else {
             return Ok(false);
         };
-        let effects = if domain == "settings" && super::appearance::AppearanceEffects::affects(&key) {
+        let effects = if domain == "settings" && super::appearance::AppearanceEffects::affects(&key)
+        {
             self.appearance.reconcile(guard).await
         } else {
             drop(guard);
             Ok(())
         };
-        if domain == "settings" && super::wallpaper::WallpaperHost::affects(&key) { self.wallpaper.reconcile().await.map_err(failed)?; }
+        if domain == "settings" && super::wallpaper::WallpaperHost::affects(&key) {
+            self.wallpaper.reconcile().await.map_err(failed)?;
+        }
         if let Some(scope) = domain.strip_prefix("associations.") {
             if scope == "project-mime" {
                 key = key.replacen('\u{1f}', ":", 1);
             }
-            if let Err(error) = emitter.connection().emit_signal(
-                None::<&str>, names::ASSOCIATIONS_PATH,
-                "org.templaros.Associations1", "DefaultsChanged", &(scope, key.as_str()),
-            ).await {
+            if let Err(error) = emitter
+                .connection()
+                .emit_signal(
+                    None::<&str>,
+                    names::ASSOCIATIONS_PATH,
+                    "org.templaros.Associations1",
+                    "DefaultsChanged",
+                    &(scope, key.as_str()),
+                )
+                .await
+            {
                 tracing::warn!(%error, "undo committed but association change notification failed");
             }
         }
@@ -272,14 +282,20 @@ impl HistoryApi {
             } else {
                 (names::PROVIDERS_PATH, "org.templaros.Providers1")
             };
-            if let Err(error) = emitter.connection().emit_signal(
-                None::<&str>, path, interface, "Changed", &(key,),
-            ).await {
+            if let Err(error) = emitter
+                .connection()
+                .emit_signal(None::<&str>, path, interface, "Changed", &(key,))
+                .await
+            {
                 tracing::warn!(%error, "undo committed but domain change notification failed");
             }
         }
         let _ = emitter.changed().await;
-        effects.map_err(|error| failed(format!("Undo committed; supported toolkit configuration incomplete: {error:#}")))?;
+        effects.map_err(|error| {
+            failed(format!(
+                "Undo committed; supported toolkit configuration incomplete: {error:#}"
+            ))
+        })?;
         Ok(true)
     }
 

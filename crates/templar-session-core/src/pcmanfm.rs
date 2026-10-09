@@ -105,7 +105,9 @@ impl Host {
         if program.contains('/') {
             return is_executable(Path::new(program));
         }
-        self.path.iter().any(|dir| is_executable(&dir.join(program)))
+        self.path
+            .iter()
+            .any(|dir| is_executable(&dir.join(program)))
     }
 
     fn icon_theme_installed(&self, name: &str) -> bool {
@@ -173,7 +175,10 @@ fn scan(lines: &[&str]) -> Scan {
     let mut in_system = false;
     for (index, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        if let Some(name) = trimmed.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+        if let Some(name) = trimmed
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
             in_system = name.trim() == SECTION;
             if in_system {
                 found.insert_after = Some(index);
@@ -338,7 +343,10 @@ pub fn repair_file(path: &Path, host: &Host, backup: Option<&Path>) -> Result<Ou
             .create_new(true)
             .open(backup)
             .with_context(|| {
-                format!("creating the backup {} (an existing one is never overwritten)", backup.display())
+                format!(
+                    "creating the backup {} (an existing one is never overwritten)",
+                    backup.display()
+                )
             })?;
         file.write_all(bytes)?;
         file.sync_all()?;
@@ -395,7 +403,9 @@ pub fn ensure_terminal_entry(path: &Path) -> Result<bool> {
     let Some(contents) = terminal_entry_text(text) else {
         return Ok(false);
     };
-    let directory = target.parent().context("the terminal list has no parent directory")?;
+    let directory = target
+        .parent()
+        .context("the terminal list has no parent directory")?;
     fs::create_dir_all(directory).with_context(|| format!("creating {}", directory.display()))?;
     publish(&target, directory, original.as_deref(), &contents)?;
     Ok(true)
@@ -419,7 +429,10 @@ fn read_through_links(path: &Path) -> Result<(PathBuf, Option<Vec<u8>>)> {
 /// Write `contents` to `target` through a temporary file in the same directory, refusing if the
 /// file no longer holds `original` (or, for a new file, if one has appeared).
 fn publish(target: &Path, directory: &Path, original: Option<&[u8]>, contents: &str) -> Result<()> {
-    let name = target.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
     let temp = directory.join(format!(
         ".{name}.templaros-{}-{}.tmp",
         std::process::id(),
@@ -440,7 +453,8 @@ fn publish(target: &Path, directory: &Path, original: Option<&[u8]>, contents: &
         drop(file);
         match original {
             Some(original) => {
-                let now = fs::read(target).with_context(|| format!("re-reading {}", target.display()))?;
+                let now =
+                    fs::read(target).with_context(|| format!("re-reading {}", target.display()))?;
                 anyhow::ensure!(
                     now == original,
                     "{} changed while it was being repaired; left as it is now",
@@ -493,7 +507,10 @@ mod tests {
         let profile = root.path().join("config/pcmanfm-qt/default");
         fs::create_dir_all(&profile).unwrap();
         Fixture {
-            host: Host { path: vec![bin], icon_dirs: vec![icons] },
+            host: Host {
+                path: vec![bin],
+                icon_dirs: vec![icons],
+            },
             profile,
             _root: root,
         }
@@ -508,13 +525,20 @@ mod tests {
         assert_eq!(
             out,
             BROKEN
-                .replace("FallbackIconThemeName=oxygen", "FallbackIconThemeName=Papirus")
+                .replace(
+                    "FallbackIconThemeName=oxygen",
+                    "FallbackIconThemeName=Papirus"
+                )
                 .replace("Terminal=xterm", "Terminal=templar-terminal")
         );
         assert_eq!(
             repairs,
             vec![
-                Repair { key: "Terminal", before: Some("xterm".into()), after: TERMINAL.into() },
+                Repair {
+                    key: "Terminal",
+                    before: Some("xterm".into()),
+                    after: TERMINAL.into()
+                },
                 Repair {
                     key: "FallbackIconThemeName",
                     before: Some("oxygen".into()),
@@ -527,12 +551,16 @@ mod tests {
     #[test]
     fn valid_user_choices_are_left_alone() {
         let f = fixture();
-        let text = "[System]\nFallbackIconThemeName=breeze\nTerminal=foot --server\n\n[Window]\nX=1";
+        let text =
+            "[System]\nFallbackIconThemeName=breeze\nTerminal=foot --server\n\n[Window]\nX=1";
         let (out, repairs) = repair_text(text, &f.host);
         assert!(repairs.is_empty());
         assert_eq!(out, text);
         // An absolute path to an executable is as good as a name on PATH.
-        let absolute = format!("[System]\nFallbackIconThemeName=Papirus\nTerminal={}\n", f.host.path[0].join("kitty").display());
+        let absolute = format!(
+            "[System]\nFallbackIconThemeName=Papirus\nTerminal={}\n",
+            f.host.path[0].join("kitty").display()
+        );
         assert!(repair_text(&absolute, &f.host).1.is_empty());
     }
 
@@ -545,8 +573,14 @@ mod tests {
             out,
             "[System]\nArchiver=ark\nTerminal=templar-terminal\nFallbackIconThemeName=Papirus\n\n[Window]\nFixedHeight=480\n"
         );
-        assert_eq!(repairs[0].before, None, "the built-in xterm was what failed");
-        assert_eq!(repairs[1].before, None, "the built-in oxygen was what failed");
+        assert_eq!(
+            repairs[0].before, None,
+            "the built-in xterm was what failed"
+        );
+        assert_eq!(
+            repairs[1].before, None,
+            "the built-in oxygen was what failed"
+        );
     }
 
     #[test]
@@ -566,7 +600,11 @@ mod tests {
         let text = "[Other]\nTerminal=xterm\n\n[System]\nFallbackIconThemeName=Papirus\nTerminal=\"xterm\"\n";
         let (out, repairs) = repair_text(text, &f.host);
         assert_eq!(repairs.len(), 1);
-        assert_eq!(repairs[0].before.as_deref(), Some("xterm"), "QSettings quotes are read past");
+        assert_eq!(
+            repairs[0].before.as_deref(),
+            Some("xterm"),
+            "QSettings quotes are read past"
+        );
         assert_eq!(
             out,
             "[Other]\nTerminal=xterm\n\n[System]\nFallbackIconThemeName=Papirus\nTerminal=templar-terminal\n"
@@ -578,7 +616,10 @@ mod tests {
         let f = fixture();
         let (out, repairs) = repair_text("[System]\nFallbackIconThemeName=\nTerminal=\n", &f.host);
         assert_eq!(repairs.len(), 2);
-        assert_eq!(out, "[System]\nFallbackIconThemeName=Papirus\nTerminal=templar-terminal\n");
+        assert_eq!(
+            out,
+            "[System]\nFallbackIconThemeName=Papirus\nTerminal=templar-terminal\n"
+        );
     }
 
     #[test]
@@ -595,9 +636,15 @@ mod tests {
     fn no_installed_fallback_theme_leaves_the_icon_key_alone() {
         let mut f = fixture();
         f.host.icon_dirs.clear();
-        let (out, repairs) = repair_text("[System]\nFallbackIconThemeName=oxygen\nTerminal=kitty\n", &f.host);
+        let (out, repairs) = repair_text(
+            "[System]\nFallbackIconThemeName=oxygen\nTerminal=kitty\n",
+            &f.host,
+        );
         assert!(repairs.is_empty());
-        assert_eq!(out, "[System]\nFallbackIconThemeName=oxygen\nTerminal=kitty\n");
+        assert_eq!(
+            out,
+            "[System]\nFallbackIconThemeName=oxygen\nTerminal=kitty\n"
+        );
     }
 
     #[test]
@@ -612,11 +659,17 @@ mod tests {
         assert_eq!(fs::read_to_string(&backup).unwrap(), BROKEN);
         let repaired = fs::read_to_string(&path).unwrap();
         assert!(repaired.contains("Terminal=templar-terminal\r\n"));
-        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         // Nothing left behind but the file and its backup.
         assert_eq!(fs::read_dir(&f.profile).unwrap().count(), 2);
         // Run again: already valid, untouched, and the existing backup is not needed.
-        assert_eq!(repair_file(&path, &f.host, Some(&backup)).unwrap(), Outcome::Unchanged);
+        assert_eq!(
+            repair_file(&path, &f.host, Some(&backup)).unwrap(),
+            Outcome::Unchanged
+        );
         assert_eq!(fs::read_to_string(&path).unwrap(), repaired);
     }
 
@@ -629,7 +682,11 @@ mod tests {
         fs::write(&backup, "older").unwrap();
         assert!(repair_file(&path, &f.host, Some(&backup)).is_err());
         assert_eq!(fs::read_to_string(&backup).unwrap(), "older");
-        assert_eq!(fs::read_to_string(&path).unwrap(), BROKEN, "no backup, no rewrite");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            BROKEN,
+            "no backup, no rewrite"
+        );
     }
 
     #[test]
@@ -648,7 +705,10 @@ mod tests {
     fn a_missing_profile_is_left_to_the_system_default() {
         let f = fixture();
         let path = f.profile.join("../../absent/default/settings.conf");
-        assert_eq!(repair_file(&path, &f.host, None).unwrap(), Outcome::NoProfile);
+        assert_eq!(
+            repair_file(&path, &f.host, None).unwrap(),
+            Outcome::NoProfile
+        );
         assert!(!path.exists());
     }
 
@@ -656,11 +716,20 @@ mod tests {
     fn a_symlinked_settings_file_is_repaired_through_the_link() {
         let f = fixture();
         let real = f.profile.join("real.conf");
-        fs::write(&real, "[System]\nTerminal=xterm\nFallbackIconThemeName=Papirus\n").unwrap();
+        fs::write(
+            &real,
+            "[System]\nTerminal=xterm\nFallbackIconThemeName=Papirus\n",
+        )
+        .unwrap();
         let link = f.profile.join("settings.conf");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         repair_file(&link, &f.host, None).unwrap();
-        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(
             fs::read_to_string(&real).unwrap(),
             "[System]\nTerminal=templar-terminal\nFallbackIconThemeName=Papirus\n"
@@ -674,7 +743,10 @@ mod tests {
         assert_eq!(out, format!("{user}\n\n{TERMINAL_ENTRY}"));
         assert_eq!(terminal_entry_text(&out), None);
         // A group the user already edited is theirs.
-        assert_eq!(terminal_entry_text("[templar-terminal]\nopen_arg=-x\n"), None);
+        assert_eq!(
+            terminal_entry_text("[templar-terminal]\nopen_arg=-x\n"),
+            None
+        );
         assert_eq!(terminal_entry_text("").unwrap(), TERMINAL_ENTRY);
     }
 
@@ -684,7 +756,10 @@ mod tests {
         let path = terminals_list_path(root.path());
         assert!(ensure_terminal_entry(&path).unwrap());
         assert_eq!(fs::read_to_string(&path).unwrap(), TERMINAL_ENTRY);
-        assert!(!ensure_terminal_entry(&path).unwrap(), "already present: untouched");
+        assert!(
+            !ensure_terminal_entry(&path).unwrap(),
+            "already present: untouched"
+        );
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
     }
 }

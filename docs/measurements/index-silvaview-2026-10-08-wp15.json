@@ -1,0 +1,193 @@
+{
+  "observed_at": "2026-10-08",
+  "legeos_head": "12295f351ab14e649f900573190060cd88a7251e",
+  "silvaview_head": "413ea0422b37aaf849d501c60ff2d1350d67aab6",
+  "silvaview_worktree_remaining": [
+    " M Cargo.toml",
+    "?? \"Screenshot 2026-08-19 200358.png\""
+  ],
+  "source_sha256": {
+    "Cargo.lock": "d8dc53a4b61c1cb89ca72f4ba49aab9657c2cc35d0304e01fdd8e8226eb7a5ac",
+    "Cargo.toml": "83cb7075466fefcae33ebb80edd9db0e22b6232b3610092e51d1d387e5a9a434",
+    "README.md": "bf21d90fbe00d2c4808f89b1e1bb7c17296f157e3a6dfcf70e7e0e6a950ee2e6",
+    "scripts/index-private-bus.conf": "41944c821384c31054e5e99b681434bec01beb3e32e1c975717a7b607bf29619",
+    "scripts/test-templaros-index.py": "2be44c113ac239865e3d978a647f06a9a5a664c7be69368e44fefc3c1dc1320f",
+    "scripts/test-templaros-index.sh": "7640dc542b59e21eecec800928b15f357792e881c62290a5b0f9c829f6cbb4a7",
+    "scripts/test-templaros-nested.py": "1b28569cf564a8822572a9fe3d86464fe7d847a5f53ea83c3e0b38a1fa78a948",
+    "scripts/test-templaros-nested.sh": "02492e6cd203e494cc0c90e4769ca7e51d99e6456e74958ed27565729ed78ed3",
+    "src/app.rs": "8b60efff8eeb7a87155708a6b3dcc2083adab6d73b5816d81e324bbed66cb27e",
+    "src/bin/index_probe.rs": "22198090ee74fa22fa1cf3a7f45dbc71c72ec8d351d35906c5d23a111d021f23",
+    "src/lib.rs": "1aebe4b4631c9d2298505b04e01ec36f960bd1ce17d4c53349c63442a467a46e",
+    "src/main.rs": "f6630ebe7a9e128a679cede7941a250c686fc9a17528687540167e2bf934afca",
+    "src/render/mod.rs": "890d85f8a22bb1bc41177a4ea4811394e3d3b2f19e55dc1f42fad9bb22988300",
+    "src/render/text.rs": "71b83c0e0ee35237c57a29de43cc479581e6e0a74b9c1211a3339ebb85bd019c",
+    "src/scanner/walk.rs": "a7348e6e8c23d8eba17f7d3ce7b6d46dd28db170ad51b91e828da6f4a11bc1ff",
+    "src/source/mod.rs": "c1b3fd89cc7d4401c830414be3ff6af2828441fd7b44fb77fb8a0abf669b9502",
+    "src/source/service.rs": "e1209a616c1ff38182309999c3cb181029839c1f884b9cedd06d8be1d964a883",
+    "src/tree/arena.rs": "71d5aa3aff38ebab3ffeff8d725ca77f86b14c55b75cd5f5bb39b5321f3deefc",
+    "src/tree/mod.rs": "6880fa72cc3262ec6f1d574ad261fd079374be70256456d4a59517fd27264a3f",
+    "src/ui/overlay.rs": "c81c263cba09905bfc1a76169e923f9e404fddc977b3aec568f5bf0102e9bec3",
+    "src/ui/tooltip.rs": "74f0a1871a6bc167105f1e979ffbfd88ede794b0493205770be64e54ad2273c3"
+  },
+  "tests": {
+    "templaros": {
+      "passed": 44,
+      "failed": 0
+    },
+    "default": {
+      "passed": 30,
+      "failed": 0
+    }
+  },
+  "private": {
+    "direct": {
+      "add_folder": null,
+      "complete": true,
+      "generation": null,
+      "nodes": 5107,
+      "non_utf8_paths_b64": [
+        "L3RtcC90ZW1wbGFyLXdwMTUtbThuZmZtYWQvdHJlZS9zdWIvbmF0aXZlLf8udHh0"
+      ],
+      "source": "scan",
+      "status": "Direct scan \u00b7 logical size (st_size) \u00b7 direct filesystem traversal",
+      "total_bytes": 41251
+    },
+    "summary": {
+      "add_folder": null,
+      "complete": false,
+      "generation": 4,
+      "nodes": 3,
+      "non_utf8_paths_b64": [],
+      "source": "service",
+      "status": "TemplarOS index \u00b7 generation 4 \u00b7 indexed logical size (st_size) \u00b7 /tmp/templar-wp15-m8nffmad/tree: current / metadata verified \u00b7 partial: cached sizes missing, stale or unreadable; expand for materialized rows \u00b7 directory summary, depth \u2264 4",
+      "total_bytes": 1200
+    },
+    "service": {
+      "add_folder": null,
+      "complete": true,
+      "generation": 4,
+      "nodes": 5007,
+      "non_utf8_paths_b64": [
+        "L3RtcC90ZW1wbGFyLXdwMTUtbThuZmZtYWQvdHJlZS9zdWIvbmF0aXZlLf8udHh0"
+      ],
+      "source": "service",
+      "status": "TemplarOS index \u00b7 generation 4 \u00b7 indexed logical size (st_size) \u00b7 /tmp/templar-wp15-m8nffmad/tree: current / metadata verified",
+      "total_bytes": 41251
+    },
+    "refreshed": {
+      "add_folder": null,
+      "complete": true,
+      "generation": 5,
+      "nodes": 5008,
+      "non_utf8_paths_b64": [
+        "L3RtcC90ZW1wbGFyLXdwMTUtbThuZmZtYWQvdHJlZS9zdWIvbmF0aXZlLf8udHh0"
+      ],
+      "source": "service",
+      "status": "TemplarOS index \u00b7 generation 5 \u00b7 indexed logical size (st_size) \u00b7 /tmp/templar-wp15-m8nffmad/tree: current / metadata verified",
+      "total_bytes": 41288
+    },
+    "policy": {
+      "selected_root": "real directory on one fixture filesystem",
+      "child_symlinks": "not followed; their own st_size counted",
+      "hard_links": "counted per path",
+      "hidden": "included",
+      "mounts": "no nested mounts in fixture",
+      "excludes": "no excluded fixture bytes; target is opaque but its cached recursive logical total is included"
+    },
+    "absent_auto": {
+      "add_folder": null,
+      "complete": true,
+      "generation": null,
+      "nodes": 5107,
+      "non_utf8_paths_b64": [
+        "L3RtcC90ZW1wbGFyLXdwMTUtbThuZmZtYWQvdHJlZS9zdWIvbmF0aXZlLf8udHh0"
+      ],
+      "source": "scan",
+      "status": "Direct scan \u00b7 logical size (st_size) \u00b7 No TemplarOS index service is running; direct filesystem traversal",
+      "total_bytes": 41251
+    },
+    "absent_service": {
+      "allows_fallback": true,
+      "error": "No TemplarOS index service is running"
+    },
+    "uncovered_auto": {
+      "add_folder": "L3RtcC90ZW1wbGFyLXdwMTUtbThuZmZtYWQvdW5jb3ZlcmVk",
+      "complete": true,
+      "generation": null,
+      "nodes": 2,
+      "non_utf8_paths_b64": [],
+      "source": "scan",
+      "status": "Direct scan \u00b7 logical size (st_size) \u00b7 This folder is not covered by the TemplarOS index; direct filesystem traversal",
+      "total_bytes": 9
+    },
+    "uncovered_service": {
+      "allows_fallback": true,
+      "error": "This folder is not covered by the TemplarOS index"
+    },
+    "failed_auto": {
+      "allows_fallback": false,
+      "error": "Index unavailable: org.templaros.Files.Index1.Error.Unavailable: fixture service failure"
+    },
+    "watch_fds": {},
+    "getdents_calls": [],
+    "process_exit": 0,
+    "binaries": {
+      "filed": {
+        "path": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/debug/templar-filed",
+        "sha256": "0199ec875a2e63ec767a707f1e68bd754e7c24e7105289e33a600830ce6e4535"
+      },
+      "probe": {
+        "path": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/debug/silvaview-index-probe",
+        "sha256": "82b926b307c298c53062418dee585b3443739952041fc77871de175ab4926c41"
+      }
+    }
+  },
+  "nested": {
+    "source_statuses": [
+      "TemplarOS index \u00b7 generation 4 \u00b7 indexed logical size (st_size) \u00b7 /tmp/templar-wp15-gui-52c95etb/tree: current / metadata verified \u00b7 partial: cached sizes missing, stale or unreadable; expand for materialized rows \u00b7 directory summary, depth \u2264 4 \u00b7 3 nodes \u00b7 total 120 bytes \u00b7 complete=false",
+      "TemplarOS index \u00b7 generation 4 \u00b7 indexed logical size (st_size) \u00b7 /tmp/templar-wp15-gui-52c95etb/tree: current / metadata verified \u00b7 104 nodes \u00b7 total 937 bytes \u00b7 complete=true",
+      "TemplarOS index \u00b7 generation 5 \u00b7 indexed logical size (st_size) \u00b7 /tmp/templar-wp15-gui-52c95etb/tree: current / metadata verified \u00b7 105 nodes \u00b7 total 974 bytes \u00b7 complete=true"
+    ],
+    "generations": [
+      4,
+      4,
+      5
+    ],
+    "summary_bytes": 120,
+    "materialized_bytes": 937,
+    "refreshed_bytes": 974,
+    "watch_fds": {},
+    "directory_reads": [
+      "/dev/disk/by-id",
+      "/etc/vulkan/explicit_layer.d",
+      "/etc/vulkan/implicit_layer.d",
+      "/usr/share/vulkan/explicit_layer.d",
+      "/usr/share/vulkan/implicit_layer.d"
+    ],
+    "nested_identity_verified": false,
+    "client_display": "templaros-nested",
+    "host_display": ":2",
+    "software_icd": "/usr/share/vulkan/icd.d/lvp_icd.json",
+    "binaries": {
+      "silvaview": {
+        "path": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/debug/Silvaview-rs",
+        "sha256": "b8042c628ef8e6bd54db135d9d6bfa6cf1d5880f8d203de587215af8b5bc9874"
+      },
+      "filed": {
+        "path": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/debug/templar-filed",
+        "sha256": "0199ec875a2e63ec767a707f1e68bd754e7c24e7105289e33a600830ce6e4535"
+      },
+      "compositor": {
+        "path": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/debug/templar-comp",
+        "sha256": "a147f04326e17db2a19a42819e65ea4455d6245a2b55ad5c27373a9a92b62350"
+      },
+      "shell": {
+        "path": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/debug/templar-shell",
+        "sha256": "e80e98388762d4a68b85f5cbcb4d0ca85b0c63d010ff60a3d5dac57174eee3b7"
+      }
+    }
+  },
+  "sqlite_in_normal_dependency_graph": false,
+  "g7_compact_tree_adopted": false,
+  "installed_qualification": false
+}

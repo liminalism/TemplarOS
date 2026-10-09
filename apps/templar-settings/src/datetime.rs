@@ -7,73 +7,169 @@ use pixelkit_ui::{ScrollState, TextFieldState, Ui};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
-pub enum Permission { Allowed, Authenticate, Denied, Unavailable(String) }
+pub enum Permission {
+    Allowed,
+    Authenticate,
+    Denied,
+    Unavailable(String),
+}
 impl Permission {
-    fn editable(&self) -> bool { matches!(self, Self::Allowed | Self::Authenticate) }
-    fn label(&self) -> &str { match self {
-        Self::Allowed => "Authorized", Self::Authenticate => "Authentication required when applying",
-        Self::Denied => "Not permitted by system policy", Self::Unavailable(reason) => reason,
-    } }
+    fn editable(&self) -> bool {
+        matches!(self, Self::Allowed | Self::Authenticate)
+    }
+    fn label(&self) -> &str {
+        match self {
+            Self::Allowed => "Authorized",
+            Self::Authenticate => "Authentication required when applying",
+            Self::Denied => "Not permitted by system policy",
+            Self::Unavailable(reason) => reason,
+        }
+    }
 }
 #[derive(Debug)]
 pub struct Clock {
-    pub timezone: String, pub ntp: bool, pub can_ntp: bool, pub synchronized: bool,
-    pub local: String, pub time_permission: Permission, pub zone_permission: Permission,
+    pub timezone: String,
+    pub ntp: bool,
+    pub can_ntp: bool,
+    pub synchronized: bool,
+    pub local: String,
+    pub time_permission: Permission,
+    pub zone_permission: Permission,
     pub ntp_permission: Permission,
 }
 #[derive(Debug, Default)]
 pub struct DateTimeState {
-    pub clock: Option<Clock>, pub zones: Vec<String>, pub locale: Option<String>,
-    pub locales: Vec<String>, pub locale_permission: Option<Permission>,
-    pub errors: Vec<String>, pub message: Option<String>,
+    pub clock: Option<Clock>,
+    pub zones: Vec<String>,
+    pub locale: Option<String>,
+    pub locales: Vec<String>,
+    pub locale_permission: Option<Permission>,
+    pub errors: Vec<String>,
+    pub message: Option<String>,
 }
 #[derive(Debug)]
-pub enum DateTimeCommand { Refresh, SetTime(String), SetTimezone(String), SetNtp(bool), SetLocale(String) }
+pub enum DateTimeCommand {
+    Refresh,
+    SetTime(String),
+    SetTimezone(String),
+    SetNtp(bool),
+    SetLocale(String),
+}
 #[derive(Default)]
-pub struct DateTimeController { connection: Option<zbus::Connection> }
+pub struct DateTimeController {
+    connection: Option<zbus::Connection>,
+}
 async fn timedate(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
-    Ok(zbus::Proxy::new(connection, "org.freedesktop.timedate1", "/org/freedesktop/timedate1", "org.freedesktop.timedate1").await?)
+    Ok(zbus::Proxy::new(
+        connection,
+        "org.freedesktop.timedate1",
+        "/org/freedesktop/timedate1",
+        "org.freedesktop.timedate1",
+    )
+    .await?)
 }
 async fn localed(connection: &zbus::Connection) -> Result<zbus::Proxy<'_>> {
-    Ok(zbus::Proxy::new(connection, "org.freedesktop.locale1", "/org/freedesktop/locale1", "org.freedesktop.locale1").await?)
+    Ok(zbus::Proxy::new(
+        connection,
+        "org.freedesktop.locale1",
+        "/org/freedesktop/locale1",
+        "org.freedesktop.locale1",
+    )
+    .await?)
 }
 async fn permission(connection: &zbus::Connection, action: &str) -> Permission {
     let result: Result<(bool, bool, HashMap<String, String>)> = async {
-        let proxy = zbus::Proxy::new(connection, "org.freedesktop.PolicyKit1", "/org/freedesktop/PolicyKit1/Authority", "org.freedesktop.PolicyKit1.Authority").await?;
-        let name = connection.unique_name().context("system bus unique name unavailable")?;
-        let subject = ("system-bus-name", HashMap::from([("name", zbus::zvariant::Value::from(name.as_str()))]));
-        Ok(proxy.call("CheckAuthorization", &(subject, action, HashMap::<String, String>::new(), 0u32, "")).await?)
-    }.await;
-    match result { Ok((true, _, _)) => Permission::Allowed, Ok((false, true, _)) => Permission::Authenticate,
-        Ok(_) => Permission::Denied, Err(error) => Permission::Unavailable(format!("Permission unavailable: {error:#}")) }
+        let proxy = zbus::Proxy::new(
+            connection,
+            "org.freedesktop.PolicyKit1",
+            "/org/freedesktop/PolicyKit1/Authority",
+            "org.freedesktop.PolicyKit1.Authority",
+        )
+        .await?;
+        let name = connection
+            .unique_name()
+            .context("system bus unique name unavailable")?;
+        let subject = (
+            "system-bus-name",
+            HashMap::from([("name", zbus::zvariant::Value::from(name.as_str()))]),
+        );
+        Ok(proxy
+            .call(
+                "CheckAuthorization",
+                &(subject, action, HashMap::<String, String>::new(), 0u32, ""),
+            )
+            .await?)
+    }
+    .await;
+    match result {
+        Ok((true, _, _)) => Permission::Allowed,
+        Ok((false, true, _)) => Permission::Authenticate,
+        Ok(_) => Permission::Denied,
+        Err(error) => Permission::Unavailable(format!("Permission unavailable: {error:#}")),
+    }
 }
 fn local_microseconds(text: &str, timezone: &str, database: &TimeZoneDatabase) -> Result<i64> {
     let date = DateTime::strptime("%Y-%m-%d %H:%M:%S", text).context("Use YYYY-MM-DD HH:MM:SS")?;
-    let zone = database.get(timezone).context("System zoneinfo does not contain the current timezone")?;
+    let zone = database
+        .get(timezone)
+        .context("System zoneinfo does not contain the current timezone")?;
     // Neither silently move a nonexistent spring time nor guess which autumn occurrence was meant.
     Ok(zone.to_ambiguous_timestamp(date).unambiguous().context("Local time is ambiguous or nonexistent at a daylight-saving transition; choose an unambiguous time")?.as_microsecond())
 }
 fn time_locale(values: &[String]) -> Option<String> {
-    ["LC_ALL=", "LC_TIME=", "LANG="].into_iter()
-        .find_map(|prefix| values.iter().find_map(|value| value.strip_prefix(prefix).filter(|value| !value.is_empty()).map(str::to_owned)))
+    ["LC_ALL=", "LC_TIME=", "LANG="]
+        .into_iter()
+        .find_map(|prefix| {
+            values.iter().find_map(|value| {
+                value
+                    .strip_prefix(prefix)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            })
+        })
 }
 fn locale_update(values: &[String], locale: &str) -> Vec<String> {
-    let mut result: Vec<_> = values.iter().filter(|value| !value.starts_with("LC_TIME=")).cloned().collect();
+    let mut result: Vec<_> = values
+        .iter()
+        .filter(|value| !value.starts_with("LC_TIME="))
+        .cloned()
+        .collect();
     result.push(format!("LC_TIME={locale}"));
     result
 }
 async fn installed_locales() -> Result<Vec<String>> {
-    let output = tokio::process::Command::new("locale").arg("-a").output().await.context("Reading installed locale database")?;
-    if !output.status.success() { bail!("locale -a failed: {}", String::from_utf8_lossy(&output.stderr)); }
-    let mut values: Vec<_> = String::from_utf8(output.stdout)?.lines().map(str::to_owned).collect();
-    values.sort(); values.dedup(); Ok(values)
+    let output = tokio::process::Command::new("locale")
+        .arg("-a")
+        .output()
+        .await
+        .context("Reading installed locale database")?;
+    if !output.status.success() {
+        bail!(
+            "locale -a failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let mut values: Vec<_> = String::from_utf8(output.stdout)?
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    values.sort();
+    values.dedup();
+    Ok(values)
 }
 impl DateTimeController {
     pub async fn run(&mut self, command: DateTimeCommand) -> DateTimeState {
-        if self.connection.is_none() { match zbus::Connection::system().await {
-            Ok(connection) => self.connection = Some(connection),
-            Err(error) => return DateTimeState { errors: vec![format!("System bus unavailable: {error}")], ..Default::default() },
-        } }
+        if self.connection.is_none() {
+            match zbus::Connection::system().await {
+                Ok(connection) => self.connection = Some(connection),
+                Err(error) => {
+                    return DateTimeState {
+                        errors: vec![format!("System bus unavailable: {error}")],
+                        ..Default::default()
+                    };
+                }
+            }
+        }
         let connection = self.connection.as_ref().expect("connected above");
         let operation: Result<()> = async {
             match command {
@@ -105,7 +201,9 @@ impl DateTimeController {
         }.await;
         // Always show owner readback, including after authorization denial or a partial failure.
         let mut state = self.read(connection).await;
-        state.message = operation.err().map(|error| format!("Not applied: {error:#}"));
+        state.message = operation
+            .err()
+            .map(|error| format!("Not applied: {error:#}"));
         state
     }
     async fn read(&self, connection: &zbus::Connection) -> DateTimeState {
@@ -115,54 +213,146 @@ impl DateTimeController {
             let timezone: String = proxy.get_property("Timezone").await?;
             let micros: u64 = proxy.get_property("TimeUSec").await?;
             let database = TimeZoneDatabase::from_dir("/usr/share/zoneinfo")?;
-            let local = Timestamp::from_microsecond(i64::try_from(micros)?)?.to_zoned(database.get(&timezone)?).strftime("%Y-%m-%d %H:%M:%S").to_string();
-            Ok(Clock { timezone, local, ntp: proxy.get_property("NTP").await?, can_ntp: proxy.get_property("CanNTP").await?, synchronized: proxy.get_property("NTPSynchronized").await?,
+            let local = Timestamp::from_microsecond(i64::try_from(micros)?)?
+                .to_zoned(database.get(&timezone)?)
+                .strftime("%Y-%m-%d %H:%M:%S")
+                .to_string();
+            Ok(Clock {
+                timezone,
+                local,
+                ntp: proxy.get_property("NTP").await?,
+                can_ntp: proxy.get_property("CanNTP").await?,
+                synchronized: proxy.get_property("NTPSynchronized").await?,
                 time_permission: permission(connection, "org.freedesktop.timedate1.set-time").await,
-                zone_permission: permission(connection, "org.freedesktop.timedate1.set-timezone").await,
-                ntp_permission: permission(connection, "org.freedesktop.timedate1.set-ntp").await })
-        }.await;
-        match clock { Ok(clock) => state.clock = Some(clock), Err(error) => state.errors.push(format!("Date/time unavailable: {error:#}")) }
-        let zones: Result<Vec<String>> = async { Ok(timedate(connection).await?.call("ListTimezones", &()).await?) }.await;
-        match zones { Ok(mut zones) => { zones.sort(); zones.dedup(); state.zones = zones; }, Err(error) => state.errors.push(format!("Timezone database unavailable: {error:#}")) }
-        let locale: Result<Vec<String>> = async { Ok(localed(connection).await?.get_property("Locale").await?) }.await;
-        match locale { Ok(values) => {
-            state.locale = Some(time_locale(&values).unwrap_or_else(|| "C".to_owned()));
-            state.locale_permission = Some(if values.iter().any(|value| value.starts_with("LC_ALL=") && value != "LC_ALL=") { Permission::Unavailable("LC_ALL overrides date formatting; change global locale policy first".into()) } else { permission(connection, "org.freedesktop.locale1.set-locale").await });
-        }, Err(error) => state.errors.push(format!("Global date locale unavailable: {error:#}")) }
-        match installed_locales().await { Ok(locales) => state.locales = locales, Err(error) => state.errors.push(format!("Installed locales unavailable: {error:#}")) }
+                zone_permission: permission(connection, "org.freedesktop.timedate1.set-timezone")
+                    .await,
+                ntp_permission: permission(connection, "org.freedesktop.timedate1.set-ntp").await,
+            })
+        }
+        .await;
+        match clock {
+            Ok(clock) => state.clock = Some(clock),
+            Err(error) => state
+                .errors
+                .push(format!("Date/time unavailable: {error:#}")),
+        }
+        let zones: Result<Vec<String>> = async {
+            Ok(timedate(connection)
+                .await?
+                .call("ListTimezones", &())
+                .await?)
+        }
+        .await;
+        match zones {
+            Ok(mut zones) => {
+                zones.sort();
+                zones.dedup();
+                state.zones = zones;
+            }
+            Err(error) => state
+                .errors
+                .push(format!("Timezone database unavailable: {error:#}")),
+        }
+        let locale: Result<Vec<String>> =
+            async { Ok(localed(connection).await?.get_property("Locale").await?) }.await;
+        match locale {
+            Ok(values) => {
+                state.locale = Some(time_locale(&values).unwrap_or_else(|| "C".to_owned()));
+                state.locale_permission = Some(
+                    if values
+                        .iter()
+                        .any(|value| value.starts_with("LC_ALL=") && value != "LC_ALL=")
+                    {
+                        Permission::Unavailable(
+                            "LC_ALL overrides date formatting; change global locale policy first"
+                                .into(),
+                        )
+                    } else {
+                        permission(connection, "org.freedesktop.locale1.set-locale").await
+                    },
+                );
+            }
+            Err(error) => state
+                .errors
+                .push(format!("Global date locale unavailable: {error:#}")),
+        }
+        match installed_locales().await {
+            Ok(locales) => state.locales = locales,
+            Err(error) => state
+                .errors
+                .push(format!("Installed locales unavailable: {error:#}")),
+        }
         state
     }
 }
 #[derive(Default)]
 pub struct DateTimeView {
-    pub state: DateTimeState, time: TextFieldState, search: TextFieldState,
-    selected_zone: Option<String>, selected_locale: Option<String>, initialized: bool,
-    scroll: ScrollState, zones_scroll: ScrollState, locales_scroll: ScrollState,
-    time_drawn: bool, search_drawn: bool,
-    summary: String, locale_label: String, zone_apply_label: String, locale_apply_label: String,
-    filter: Option<String>, filtered_zones: Vec<usize>, zone_heights: Vec<i32>, locale_heights: Vec<i32>,
+    pub state: DateTimeState,
+    time: TextFieldState,
+    search: TextFieldState,
+    selected_zone: Option<String>,
+    selected_locale: Option<String>,
+    initialized: bool,
+    scroll: ScrollState,
+    zones_scroll: ScrollState,
+    locales_scroll: ScrollState,
+    time_drawn: bool,
+    search_drawn: bool,
+    summary: String,
+    locale_label: String,
+    zone_apply_label: String,
+    locale_apply_label: String,
+    filter: Option<String>,
+    filtered_zones: Vec<usize>,
+    zone_heights: Vec<i32>,
+    locale_heights: Vec<i32>,
 }
 impl DateTimeView {
     pub fn replace(&mut self, state: DateTimeState) {
         if let Some(clock) = &state.clock {
             self.time.set_text(clock.local.clone());
             self.selected_zone = Some(clock.timezone.clone());
-            self.summary = format!("{} · {} · Automatic: {} · Synchronized: {}", clock.local, clock.timezone, clock.ntp, clock.synchronized);
+            self.summary = format!(
+                "{} · {} · Automatic: {} · Synchronized: {}",
+                clock.local, clock.timezone, clock.ntp, clock.synchronized
+            );
             self.zone_apply_label = format!("Apply timezone: {}", clock.timezone);
         }
-        self.selected_locale = state.locale.as_ref().filter(|locale| state.locales.contains(locale)).cloned();
-        self.locale_label = format!("Current date locale: {}", state.locale.as_deref().unwrap_or("unavailable"));
-        self.locale_apply_label = format!("Apply date locale: {}", state.locale.as_deref().unwrap_or("unavailable"));
+        self.selected_locale = state
+            .locale
+            .as_ref()
+            .filter(|locale| state.locales.contains(locale))
+            .cloned();
+        self.locale_label = format!(
+            "Current date locale: {}",
+            state.locale.as_deref().unwrap_or("unavailable")
+        );
+        self.locale_apply_label = format!(
+            "Apply date locale: {}",
+            state.locale.as_deref().unwrap_or("unavailable")
+        );
         self.locale_heights.resize(state.locales.len(), 0);
         self.filter = None;
-        self.state = state; self.initialized = true;
+        self.state = state;
+        self.initialized = true;
     }
     pub fn caret_area(&self) -> Option<Rect> {
-        if self.time_drawn { self.time.caret_area() } else { None }
-            .or_else(|| if self.search_drawn { self.search.caret_area() } else { None })
+        if self.time_drawn {
+            self.time.caret_area()
+        } else {
+            None
+        }
+        .or_else(|| {
+            if self.search_drawn {
+                self.search.caret_area()
+            } else {
+                None
+            }
+        })
     }
     pub fn draw(&mut self, ui: &mut Ui<'_>, area: Rect) -> Option<DateTimeCommand> {
-        self.time_drawn = false; self.search_drawn = false;
+        self.time_drawn = false;
+        self.search_drawn = false;
         let mut command = None;
         let errors = self.state.errors.len() + usize::from(self.state.message.is_some());
         let heights = [ui.px(1100 + i32::try_from(errors).unwrap_or(0) * 66)];
@@ -241,10 +431,21 @@ impl DateTimeView {
     }
 }
 pub async fn print() -> String {
-    let state = DateTimeController::default().run(DateTimeCommand::Refresh).await;
+    let state = DateTimeController::default()
+        .run(DateTimeCommand::Refresh)
+        .await;
     let mut lines = state.errors;
-    if let Some(clock) = state.clock { lines.push(format!("{} · {} · automatic={} · synchronized={}", clock.local, clock.timezone, clock.ntp, clock.synchronized)); }
-    lines.push(format!("Date locale: {} · {} system timezones", state.locale.as_deref().unwrap_or("unavailable"), state.zones.len()));
+    if let Some(clock) = state.clock {
+        lines.push(format!(
+            "{} · {} · automatic={} · synchronized={}",
+            clock.local, clock.timezone, clock.ntp, clock.synchronized
+        ));
+    }
+    lines.push(format!(
+        "Date locale: {} · {} system timezones",
+        state.locale.as_deref().unwrap_or("unavailable"),
+        state.zones.len()
+    ));
     lines.join("\n")
 }
 #[cfg(test)]
@@ -261,14 +462,28 @@ mod tests {
     }
     #[test]
     fn locale_date_change_preserves_unrelated_categories() {
-        let original = vec!["LANG=en_US.UTF-8".into(), "LC_TIME=de_DE.UTF-8".into(), "LC_NUMERIC=C".into()];
-        assert_eq!(locale_update(&original, "fr_FR.UTF-8"), vec!["LANG=en_US.UTF-8", "LC_NUMERIC=C", "LC_TIME=fr_FR.UTF-8"]);
+        let original = vec![
+            "LANG=en_US.UTF-8".into(),
+            "LC_TIME=de_DE.UTF-8".into(),
+            "LC_NUMERIC=C".into(),
+        ];
+        assert_eq!(
+            locale_update(&original, "fr_FR.UTF-8"),
+            vec!["LANG=en_US.UTF-8", "LC_NUMERIC=C", "LC_TIME=fr_FR.UTF-8"]
+        );
         assert_eq!(time_locale(&original).as_deref(), Some("de_DE.UTF-8"));
-        assert_eq!(time_locale(&["LANG=en_US.UTF-8".into()]).as_deref(), Some("en_US.UTF-8"));
+        assert_eq!(
+            time_locale(&["LANG=en_US.UTF-8".into()]).as_deref(),
+            Some("en_US.UTF-8")
+        );
     }
     #[test]
     fn global_override_has_precedence_over_date_category() {
-        let values = vec!["LANG=en_US.UTF-8".into(), "LC_TIME=de_DE.UTF-8".into(), "LC_ALL=C".into()];
+        let values = vec![
+            "LANG=en_US.UTF-8".into(),
+            "LC_TIME=de_DE.UTF-8".into(),
+            "LC_ALL=C".into(),
+        ];
         assert_eq!(time_locale(&values).as_deref(), Some("C"));
     }
 }

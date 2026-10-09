@@ -18,8 +18,9 @@ pub fn aggregate_sizes(tree: &mut FileTree) {
         }
 
         // Sum up all direct children
-        let mut total: u64 = 0;
+        let mut total = tree.directory_bytes[i];
         let mut weights = [0_u64; CATEGORY_COUNT];
+        weights[super::extensions::category_index(super::extensions::FileCategory::Misc)] = total;
         let mut child = node.first_child;
         while let Some(child_id) = child {
             total += tree.nodes[child_id.index()].size;

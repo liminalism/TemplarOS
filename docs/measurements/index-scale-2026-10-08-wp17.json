@@ -1,0 +1,423 @@
+{
+  "inputs": {
+    "marker": "idxscale3833105b1d",
+    "head": "12295f351ab14e649f900573190060cd88a7251e",
+    "build_id": "0.1.0~dev1791495062+g12295f3.dirty",
+    "guest_ram_mib": 4096,
+    "guest_vcpus": 2,
+    "acceleration": "kvm",
+    "harness_python_stdlib": "guest-only /run/owned-python tmpfs copy",
+    "xtask_sha256": "b514f93be878487fff82b662b0a6d10501e811f2d0b61650d63164cccb218d3a",
+    "source_files": {
+      "crates/templar-file-index/src/aggregate.rs": "e39052e0a298222b491b852440a79e5e578cc86751d1bd949ac15dfea781e897",
+      "crates/templar-file-index/src/arrays.rs": "c5d2d3a4926215bc849e85c4218a8ad2cdc7ad7b7dc84f6fa8e1f66929ff4283",
+      "crates/templar-file-index/src/btrfs_delta.rs": "17abe7e1eb811f61aa79cb20f2f409cadc38ecb37cb2101583b2676908db54f5",
+      "crates/templar-file-index/src/coalesce.rs": "013ddb2946ffcdf034821894df7efcc205b0e4a448257eeb4581d46bd04f1241",
+      "crates/templar-file-index/src/context.rs": "9421c66e7d6742ee70c479b7b82d108823b7263fa015a6297e6bf90cfd64d088",
+      "crates/templar-file-index/src/diagnostics.rs": "da9b431a881d763e84bbbc086a35c50d179e351902355f64ecaa98c29b35e18d",
+      "crates/templar-file-index/src/error.rs": "325c56108b659030be48b1f249531fbd975b5d52415bd59544fd883ad713a0eb",
+      "crates/templar-file-index/src/generation.rs": "3a10051888e18a7877b3389af532d839211a77bd30add6e8b2870ac481a9848e",
+      "crates/templar-file-index/src/lib.rs": "4e339f1e1b81799865596f9148bbac0c0836fa2ddcc6ae8f429e9de8c9147081",
+      "crates/templar-file-index/src/model.rs": "a95b2f0c12b3291ea06993b0649267601666c8692ff8b44f00d328f8bde25ff3",
+      "crates/templar-file-index/src/mutation.rs": "2a1b82c08bced3efe7c45c6d9352595e8f83b2dd1af243c2fa73676d193a1574",
+      "crates/templar-file-index/src/overlay.rs": "c5a5e5f2dc562dbe949ee5e0c9b1a52a2f18484478ab47d675be2e467645b443",
+      "crates/templar-file-index/src/query.rs": "e030a3e3f78d03d4e4c14ed7f60d66b471005e82db4c453a178552971e5b78be",
+      "crates/templar-file-index/src/reconcile.rs": "c46b4e8b5f3ab6485c3d9796888a74d8ecb5b78cefaea47bcd1e2b8f97291d49",
+      "crates/templar-file-index/src/scan.rs": "9e2fa19d62d7e03522f13c2ac73a48e6aaf1da0dc46ec5fc88e428cba33c8c3e",
+      "crates/templar-file-index/src/schema.rs": "55bf87754d90bfc6bc71b277ea1c1ca9dfaac6d8bf86bd2de74d80ed7a52112e",
+      "crates/templar-file-index/src/snapshot.rs": "8df4ce4ec5fc33dca6c289c7b5171c5697510ccb04be147a5bec853d548bccfc",
+      "crates/templar-file-index/src/volume.rs": "9cbcc617b744f44833a7d89e63a44dea7e4da21408740c0ef0703ee983fbcb62",
+      "crates/templar-file-index/src/watch.rs": "e388acb08bbb097fd64831d06072ebc61450e484a508c8c656ad071223ed0f9f",
+      "tools/xtask/src/index_bench.rs": "7792a3880870440aa93b7a47e99d47d25e0701b57177016b4439b3828a5d6ee4",
+      "Cargo.lock": "eedd7d871ed021d3d3678fff162b569103a959da250e26e2be64dfdee78b3cef"
+    },
+    "disk_bytes": 8589934592
+  },
+  "scale-environment": {
+    "inputs": {
+      "marker": "idxscale3833105b1d",
+      "head": "12295f351ab14e649f900573190060cd88a7251e",
+      "build_id": "0.1.0~dev1791495062+g12295f3.dirty",
+      "guest_ram_mib": 4096,
+      "guest_vcpus": 2,
+      "acceleration": "kvm",
+      "harness_python_stdlib": "guest-only /run/owned-python tmpfs copy",
+      "xtask_sha256": "b514f93be878487fff82b662b0a6d10501e811f2d0b61650d63164cccb218d3a",
+      "source_files": {
+        "crates/templar-file-index/src/aggregate.rs": "e39052e0a298222b491b852440a79e5e578cc86751d1bd949ac15dfea781e897",
+        "crates/templar-file-index/src/arrays.rs": "c5d2d3a4926215bc849e85c4218a8ad2cdc7ad7b7dc84f6fa8e1f66929ff4283",
+        "crates/templar-file-index/src/btrfs_delta.rs": "17abe7e1eb811f61aa79cb20f2f409cadc38ecb37cb2101583b2676908db54f5",
+        "crates/templar-file-index/src/coalesce.rs": "013ddb2946ffcdf034821894df7efcc205b0e4a448257eeb4581d46bd04f1241",
+        "crates/templar-file-index/src/context.rs": "9421c66e7d6742ee70c479b7b82d108823b7263fa015a6297e6bf90cfd64d088",
+        "crates/templar-file-index/src/diagnostics.rs": "da9b431a881d763e84bbbc086a35c50d179e351902355f64ecaa98c29b35e18d",
+        "crates/templar-file-index/src/error.rs": "325c56108b659030be48b1f249531fbd975b5d52415bd59544fd883ad713a0eb",
+        "crates/templar-file-index/src/generation.rs": "3a10051888e18a7877b3389af532d839211a77bd30add6e8b2870ac481a9848e",
+        "crates/templar-file-index/src/lib.rs": "4e339f1e1b81799865596f9148bbac0c0836fa2ddcc6ae8f429e9de8c9147081",
+        "crates/templar-file-index/src/model.rs": "a95b2f0c12b3291ea06993b0649267601666c8692ff8b44f00d328f8bde25ff3",
+        "crates/templar-file-index/src/mutation.rs": "2a1b82c08bced3efe7c45c6d9352595e8f83b2dd1af243c2fa73676d193a1574",
+        "crates/templar-file-index/src/overlay.rs": "c5a5e5f2dc562dbe949ee5e0c9b1a52a2f18484478ab47d675be2e467645b443",
+        "crates/templar-file-index/src/query.rs": "e030a3e3f78d03d4e4c14ed7f60d66b471005e82db4c453a178552971e5b78be",
+        "crates/templar-file-index/src/reconcile.rs": "c46b4e8b5f3ab6485c3d9796888a74d8ecb5b78cefaea47bcd1e2b8f97291d49",
+        "crates/templar-file-index/src/scan.rs": "9e2fa19d62d7e03522f13c2ac73a48e6aaf1da0dc46ec5fc88e428cba33c8c3e",
+        "crates/templar-file-index/src/schema.rs": "55bf87754d90bfc6bc71b277ea1c1ca9dfaac6d8bf86bd2de74d80ed7a52112e",
+        "crates/templar-file-index/src/snapshot.rs": "8df4ce4ec5fc33dca6c289c7b5171c5697510ccb04be147a5bec853d548bccfc",
+        "crates/templar-file-index/src/volume.rs": "9cbcc617b744f44833a7d89e63a44dea7e4da21408740c0ef0703ee983fbcb62",
+        "crates/templar-file-index/src/watch.rs": "e388acb08bbb097fd64831d06072ebc61450e484a508c8c656ad071223ed0f9f",
+        "tools/xtask/src/index_bench.rs": "7792a3880870440aa93b7a47e99d47d25e0701b57177016b4439b3828a5d6ee4",
+        "Cargo.lock": "eedd7d871ed021d3d3678fff162b569103a959da250e26e2be64dfdee78b3cef"
+      },
+      "disk_bytes": 8589934592
+    },
+    "kernel": "Linux owned-ui-guest 7.0.0-31-generic #31-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 04:26:38 UTC 2026 x86_64 GNU/Linux",
+    "filesystem": "Filesystem volume name:   index-scale\nLast mounted on:          <not available>\nFilesystem UUID:          8dcce54a-a262-4bda-9350-957d99747248\nFilesystem magic number:  0xEF53\nFilesystem revision #:    1 (dynamic)\nFilesystem features:      has_journal ext_attr resize_inode dir_index orphan_file filetype needs_recovery extent 64bit flex_bg metadata_csum_seed inline_data sparse_super large_file huge_file dir_nlink extra_isize metadata_csum orphan_present\nFilesystem flags:         signed_directory_hash \nDefault mount options:    user_xattr acl\nFilesystem state:         clean\nErrors behavior:          Continue\nFilesystem OS type:       Linux\nInode count:              2401152\nBlock count:              2097152\nReserved block count:     0\nOverhead clusters:        175847\nFree blocks:              1920788\nFree inodes:              2401140\nFirst block:              0\nBlock size:               4096\nFragment size:            4096\nGroup descriptor size:    64\nReserved GDT blocks:      1024\nBlocks per group:         28696\nFragments per group:      28696\nInodes per group:         32448\nInode blocks per group:   2028\nFlex block group size:    16\nFilesystem created:       Thu Oct  8 22:36:32 2026\nLast mount time:          Thu Oct  8 22:36:33 2026\nLast write time:          Thu Oct  8 22:36:33 2026\nMount count:              1\nMaximum mount count:      -1\nLast checked:             Thu Oct  8 22:36:32 2026\nCheck interval:           0 (<none>)\nLifetime writes:          6221 kB\nReserved blocks uid:      0 (user root)\nReserved blocks gid:      0 (group root)\nFirst inode:              11\nInode size:               256\nRequired extra isize:     32\nDesired extra isize:      32\nJournal inode:            8\nDefault directory hash:   half_md4\nDirectory Hash Seed:      5e959f7e-1f6f-4f73-90b7-20bb06501253\nJournal backup:           inode blocks\nChecksum type:            crc32c\nChecksum:                 0xaa09c922\nChecksum seed:            0x8eefe8f6\nOrphan file inode:        12\nJournal features:         journal_64bit journal_checksum_v3\nTotal journal size:       64M\nTotal journal blocks:     16384\nMax transaction length:   16384\nFast commit length:       0\nJournal sequence:         0x00000001\nJournal start:            0\nJournal checksum type:    crc32c\nJournal checksum:         0x0260818f\n\n",
+    "mountinfo": [
+      "42 31 253:0 / /scale rw,noatime shared:15 - ext4 /dev/vda rw"
+    ],
+    "start_available_bytes": 7850770432,
+    "start_free_inodes": 2401138,
+    "boundary": "Actual native release xtask filesystem workloads in a 2-vCPU headless guest; acceleration disclosed in inputs, ext4 inline-data, no installed/reference-day latency claim.",
+    "inotify_max_user_watches_before": 31257,
+    "inotify_max_user_watches_after": 65536,
+    "inotify_max_queued_events": 16384
+  },
+  "scale-result": {
+    "status": 0,
+    "elapsed_seconds": 414.964302371,
+    "end_available_bytes": 7850770432,
+    "end_free_inodes": 2401138,
+    "report_exists": true
+  },
+  "scale-workloads": {
+    "fixture_entries": 100000,
+    "initial_index": {
+      "entries": 100001,
+      "elapsed_ms": 1660.608965,
+      "entries_per_sec": 60219.47496832886,
+      "detail": "complete=true"
+    },
+    "initial_index_2m": {
+      "entries": 2000001,
+      "elapsed_ms": 37073.614196,
+      "entries_per_sec": 53946.750090952475,
+      "detail": "complete=true"
+    },
+    "downtime_reconcile": {
+      "entries": 4000,
+      "elapsed_ms": 1769.920256,
+      "entries_per_sec": 2259.9888251688553,
+      "detail": "walked 100001 entries, complete=true"
+    },
+    "watch_arm": {
+      "entries": 20001,
+      "elapsed_ms": 344.69836,
+      "entries_per_sec": 58024.64508389306
+    },
+    "watch_arm_refused": 0,
+    "touch": {
+      "entries": 10000,
+      "elapsed_ms": 2632.186768,
+      "entries_per_sec": 3799.122509683553,
+      "detail": "4097 mutations applied"
+    },
+    "rename": {
+      "entries": 10000,
+      "elapsed_ms": 2753.73333,
+      "entries_per_sec": 3631.4336944165902,
+      "detail": "2057 mutations applied"
+    },
+    "delete": {
+      "entries": 10000,
+      "elapsed_ms": 2615.8167839999996,
+      "entries_per_sec": 3822.8977125486635,
+      "detail": "4167 mutations applied"
+    },
+    "build_burst": {
+      "entries": 10000,
+      "elapsed_ms": 3101.9814760000004,
+      "entries_per_sec": 3223.745879003437,
+      "detail": "4103 mutations applied"
+    },
+    "clean_burst": {
+      "entries": 10000,
+      "elapsed_ms": 2598.1616050000002,
+      "entries_per_sec": 3848.8752896492747,
+      "detail": "4099 mutations applied"
+    },
+    "search": {
+      "samples": 200,
+      "p50_ms": 0.34158700000000003,
+      "p95_ms": 0.381319,
+      "max_ms": 2.724621
+    },
+    "broad_search": {
+      "sql": [
+        {
+          "needle": "d",
+          "strategy": "like-scan",
+          "total": 90150,
+          "samples": 20,
+          "p50_ms": 441.475337,
+          "p95_ms": 453.27469199999996,
+          "max_ms": 453.550727
+        },
+        {
+          "needle": "f1",
+          "strategy": "like-scan",
+          "total": 24061,
+          "samples": 20,
+          "p50_ms": 44.12253,
+          "p95_ms": 45.203945000000004,
+          "max_ms": 48.067585
+        },
+        {
+          "needle": "txt",
+          "strategy": "fts5-trigram",
+          "total": 70150,
+          "samples": 20,
+          "p50_ms": 84.728362,
+          "p95_ms": 87.601559,
+          "max_ms": 88.992983
+        },
+        {
+          "needle": "f12.txt",
+          "strategy": "fts5-trigram",
+          "total": 2187,
+          "samples": 20,
+          "p50_ms": 9.036914999999999,
+          "p95_ms": 9.546529999999999,
+          "max_ms": 9.584051
+        },
+        {
+          "needle": "d3/d4",
+          "strategy": "path-scan",
+          "total": 5851,
+          "samples": 20,
+          "p50_ms": 16.580834999999997,
+          "p95_ms": 16.786285000000003,
+          "max_ms": 16.807275999999998
+        }
+      ],
+      "arrays": [
+        {
+          "needle": "d",
+          "strategy": "arrays",
+          "total": 90150,
+          "samples": 20,
+          "p50_ms": 1.319813,
+          "p95_ms": 1.365311,
+          "max_ms": 1.589126
+        },
+        {
+          "needle": "f1",
+          "strategy": "arrays",
+          "total": 24061,
+          "samples": 20,
+          "p50_ms": 0.971754,
+          "p95_ms": 0.979675,
+          "max_ms": 1.003611
+        },
+        {
+          "needle": "txt",
+          "strategy": "arrays",
+          "total": 70150,
+          "samples": 20,
+          "p50_ms": 1.081272,
+          "p95_ms": 1.100608,
+          "max_ms": 1.108344
+        },
+        {
+          "needle": "f12.txt",
+          "strategy": "arrays",
+          "total": 2187,
+          "samples": 20,
+          "p50_ms": 0.686202,
+          "p95_ms": 0.707518,
+          "max_ms": 0.748954
+        },
+        {
+          "needle": "d3/d4",
+          "strategy": "path-scan",
+          "total": 5851,
+          "samples": 20,
+          "p50_ms": 17.126391,
+          "p95_ms": 17.431093,
+          "max_ms": 17.843713
+        }
+      ],
+      "arrays_rows": 90152,
+      "arrays_build_ms": 68.905417
+    },
+    "broad_search_2m": {
+      "sql": [
+        {
+          "needle": "d",
+          "strategy": "like-scan",
+          "total": 1999968,
+          "samples": 10,
+          "p50_ms": 17244.604714,
+          "p95_ms": 17299.954625000002,
+          "max_ms": 17299.954625000002
+        },
+        {
+          "needle": "f1",
+          "strategy": "like-scan",
+          "total": 550000,
+          "samples": 10,
+          "p50_ms": 1087.328205,
+          "p95_ms": 1093.5287629999998,
+          "max_ms": 1093.5287629999998
+        },
+        {
+          "needle": "txt",
+          "strategy": "fts5-trigram",
+          "total": 1600000,
+          "samples": 10,
+          "p50_ms": 1588.135452,
+          "p95_ms": 1605.3949599999999,
+          "max_ms": 1605.3949599999999
+        },
+        {
+          "needle": "f12.txt",
+          "strategy": "fts5-trigram",
+          "total": 50000,
+          "samples": 10,
+          "p50_ms": 238.75811099999999,
+          "p95_ms": 248.03502999999998,
+          "max_ms": 248.03502999999998
+        },
+        {
+          "needle": "d3/d4",
+          "strategy": "path-scan",
+          "total": 118673,
+          "samples": 10,
+          "p50_ms": 676.0854840000001,
+          "p95_ms": 686.656781,
+          "max_ms": 686.656781
+        }
+      ],
+      "arrays": [
+        {
+          "needle": "d",
+          "strategy": "arrays",
+          "total": 1999968,
+          "samples": 10,
+          "p50_ms": 24.663845,
+          "p95_ms": 25.20938,
+          "max_ms": 25.20938
+        },
+        {
+          "needle": "f1",
+          "strategy": "arrays",
+          "total": 550000,
+          "samples": 10,
+          "p50_ms": 18.700876,
+          "p95_ms": 18.982473,
+          "max_ms": 18.982473
+        },
+        {
+          "needle": "txt",
+          "strategy": "arrays",
+          "total": 1600000,
+          "samples": 10,
+          "p50_ms": 19.578598999999997,
+          "p95_ms": 20.457546999999998,
+          "max_ms": 20.457546999999998
+        },
+        {
+          "needle": "f12.txt",
+          "strategy": "arrays",
+          "total": 50000,
+          "samples": 10,
+          "p50_ms": 12.987879000000001,
+          "p95_ms": 13.1236,
+          "max_ms": 13.1236
+        },
+        {
+          "needle": "d3/d4",
+          "strategy": "path-scan",
+          "total": 118673,
+          "samples": 10,
+          "p50_ms": 677.824564,
+          "p95_ms": 686.786539,
+          "max_ms": 686.786539
+        }
+      ],
+      "arrays_rows": 2000001,
+      "arrays_build_ms": 1579.70199
+    },
+    "db_bytes_2m": 1508302848,
+    "snapshot": {
+      "payload_bytes": 12768907,
+      "entry_count": 90152,
+      "elapsed_ms": 138.908783
+    },
+    "db_bytes": 78471168
+  },
+  "qualification": {
+    "result": "pass",
+    "runtime": {
+      "pid": 916327,
+      "rpcport": 57973,
+      "payload": "/home/dk/rust-projects/LegeOS/.agent/scratch/index-wp17/scale-22aknmd2/payload",
+      "disk": "/home/dk/rust-projects/LegeOS/.agent/scratch/index-wp17/scale-22aknmd2/owned-scale.raw",
+      "qmp": "/tmp/idxq-9vz1ro8h/qmp.sock",
+      "run": "/home/dk/rust-projects/LegeOS/.agent/scratch/index-wp17/scale-22aknmd2",
+      "starttime": "7413002"
+    },
+    "elapsed_seconds": 414.964302371,
+    "boundary": {
+      "marker": "idxscale3833105b1d",
+      "head": "12295f351ab14e649f900573190060cd88a7251e",
+      "build_id": "0.1.0~dev1791495062+g12295f3.dirty",
+      "guest_ram_mib": 4096,
+      "guest_vcpus": 2,
+      "acceleration": "kvm",
+      "harness_python_stdlib": "guest-only /run/owned-python tmpfs copy",
+      "xtask_sha256": "b514f93be878487fff82b662b0a6d10501e811f2d0b61650d63164cccb218d3a",
+      "source_files": {
+        "crates/templar-file-index/src/aggregate.rs": "e39052e0a298222b491b852440a79e5e578cc86751d1bd949ac15dfea781e897",
+        "crates/templar-file-index/src/arrays.rs": "c5d2d3a4926215bc849e85c4218a8ad2cdc7ad7b7dc84f6fa8e1f66929ff4283",
+        "crates/templar-file-index/src/btrfs_delta.rs": "17abe7e1eb811f61aa79cb20f2f409cadc38ecb37cb2101583b2676908db54f5",
+        "crates/templar-file-index/src/coalesce.rs": "013ddb2946ffcdf034821894df7efcc205b0e4a448257eeb4581d46bd04f1241",
+        "crates/templar-file-index/src/context.rs": "9421c66e7d6742ee70c479b7b82d108823b7263fa015a6297e6bf90cfd64d088",
+        "crates/templar-file-index/src/diagnostics.rs": "da9b431a881d763e84bbbc086a35c50d179e351902355f64ecaa98c29b35e18d",
+        "crates/templar-file-index/src/error.rs": "325c56108b659030be48b1f249531fbd975b5d52415bd59544fd883ad713a0eb",
+        "crates/templar-file-index/src/generation.rs": "3a10051888e18a7877b3389af532d839211a77bd30add6e8b2870ac481a9848e",
+        "crates/templar-file-index/src/lib.rs": "4e339f1e1b81799865596f9148bbac0c0836fa2ddcc6ae8f429e9de8c9147081",
+        "crates/templar-file-index/src/model.rs": "a95b2f0c12b3291ea06993b0649267601666c8692ff8b44f00d328f8bde25ff3",
+        "crates/templar-file-index/src/mutation.rs": "2a1b82c08bced3efe7c45c6d9352595e8f83b2dd1af243c2fa73676d193a1574",
+        "crates/templar-file-index/src/overlay.rs": "c5a5e5f2dc562dbe949ee5e0c9b1a52a2f18484478ab47d675be2e467645b443",
+        "crates/templar-file-index/src/query.rs": "e030a3e3f78d03d4e4c14ed7f60d66b471005e82db4c453a178552971e5b78be",
+        "crates/templar-file-index/src/reconcile.rs": "c46b4e8b5f3ab6485c3d9796888a74d8ecb5b78cefaea47bcd1e2b8f97291d49",
+        "crates/templar-file-index/src/scan.rs": "9e2fa19d62d7e03522f13c2ac73a48e6aaf1da0dc46ec5fc88e428cba33c8c3e",
+        "crates/templar-file-index/src/schema.rs": "55bf87754d90bfc6bc71b277ea1c1ca9dfaac6d8bf86bd2de74d80ed7a52112e",
+        "crates/templar-file-index/src/snapshot.rs": "8df4ce4ec5fc33dca6c289c7b5171c5697510ccb04be147a5bec853d548bccfc",
+        "crates/templar-file-index/src/volume.rs": "9cbcc617b744f44833a7d89e63a44dea7e4da21408740c0ef0703ee983fbcb62",
+        "crates/templar-file-index/src/watch.rs": "e388acb08bbb097fd64831d06072ebc61450e484a508c8c656ad071223ed0f9f",
+        "tools/xtask/src/index_bench.rs": "7792a3880870440aa93b7a47e99d47d25e0701b57177016b4439b3828a5d6ee4",
+        "Cargo.lock": "eedd7d871ed021d3d3678fff162b569103a959da250e26e2be64dfdee78b3cef"
+      },
+      "disk_bytes": 8589934592
+    }
+  },
+  "stop": {
+    "pid": 916327,
+    "exit_code": 0,
+    "proc_absent": true,
+    "owned_disk_removed": "/home/dk/rust-projects/LegeOS/.agent/scratch/index-wp17/scale-22aknmd2/owned-scale.raw"
+  },
+  "artifacts": {
+    ".agent/scratch/index-wp17/scale-22aknmd2/scale-workloads.log": "8002fe363a27b53d310deb774f6fb8a3786bbcd383f46a1886ce9b7f2e1e88a5",
+    ".agent/scratch/index-wp17/scale-22aknmd2/scale-environment.json": "e856852314032b73c7fcf7a272cfb6016ffff55d12f8f9d7cae69bdb6594aee3",
+    ".agent/scratch/index-wp17/scale-22aknmd2/qualification.json": "f8101846be7476538072d4bedebe15cc2d605bbe7f69fae16c56b3d880863826",
+    ".agent/scratch/index-wp17/scale-22aknmd2/stop.json": "b8e9a7b5b6aa8ebd5ea2fe9ff93353d4a0d2a9351d39c9839ce5195d94ea4261",
+    ".agent/scratch/index-wp17/scale-22aknmd2/kernel-log.txt": "436ebd0fcf790295e62d61a941c1a4a15f667a91bc6ed371c3ad40b6e395869e"
+  },
+  "limits": [
+    "Owned KVM guest:2vCPU,4GiB RAM,8GiB ext4 inline_data private disk, guest-only max_user_watches65536; private Python monitor library cached in guest tmpfs.",
+    "Unmodified current native release xtask workload, actual2M filesystem entries, no GPU/live bus/installed session/home scan.",
+    "db_bytes values sum main/WAL/SHM; separate final component sizes were not captured by this workload.",
+    "Snapshot numbers cover the100k prelude; this is not a2M snapshot memory measurement.",
+    "SQL fallback/path scans and hardware/reference-day latency are not claimed fast."
+  ]
+}

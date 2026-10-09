@@ -10,6 +10,21 @@ build.
 This plan replaces the detailed Phases B–F of `docs/planning/integrated-indexing.md` §2 where
 they overlap. Phase D (FSearch) and Phase E (Silvaview) are refined here as WP14 and WP15.
 
+## Owner amendment — 2026-10-08
+
+The owner deferred WP14's same-query generation comparison with the shell's
+former native Files search notice. That ordinary route has been retired. The
+selected future direction is an integrated Index1 search GUI with a large
+FSearch-style window. This amendment records the direction; it does not claim
+that the GUI has been implemented or accepted.
+
+The working FSearch Index1 fork, native package and private GTK evidence remain
+qualified prototype results. WP14's comparison stays explicitly deferred, and
+WP16's fork shipping/default adoption is deferred pending the integrated consumer
+work. PCManFM Find remains separate. Continue the independent index, Silvaview,
+crash and closure work; installed consumer qualification must name the actual
+consumer available at that time.
+
 ---
 
 ## 0. How to use this plan
@@ -37,10 +52,13 @@ they overlap. Phase D (FSearch) and Phase E (Silvaview) are refined here as WP14
 
 ---
 
-## 1. Verified baseline (current tree, not the Oct 7 pack)
+## 1. Verified baseline (WP0 starting tree, not the Oct 7 pack)
 
 Two read-only scouts re-checked every audit finding against the current tree on 2026-10-08.
-All of them still hold. Line numbers below are current.
+The table records the starting tree before the fixes; its line numbers and
+"present" labels are historical. Current qualification is recorded in the
+[continuation](continuation-2026-10-08.md) and
+[acceptance audit](../measurements/index-qualification-audit-2026-10-08.md).
 
 | ID | Finding | Current location | Status |
 |---|---|---|---|
@@ -299,6 +317,15 @@ plausible consumer-visible bug.
 
 **Accept:** baseline report exists; the three reproductions fail for the stated reason;
 interface gates pass; `akr check` passes.
+
+**Audit observation:** the retained before-fix log proves the generation and
+nested-scope failures and unsafe second cache ownership. It does not show the
+specified before-fix `chmod 000` failure. An ordinary-user native observation of
+the old recovery filesystem operations returned `EACCES` for rename and all
+three unlinks, preserving every byte: this permission mode itself blocks the
+alleged deletion. That observation is not an old `Index::open` execution.
+The exact current permission regression is added, and the original historical
+acceptance discrepancy stays visible in WP0's ledger entry.
 
 ---
 
@@ -1358,7 +1385,8 @@ and a new `src/source/` module.
    - unplug and replug the second NTFS volume (`/run/media/dk/Second`, `fuseblk`: measure
      its monitoring support, do not assume it);
    - filed restart through a logout and login, run by the owner;
-   - FSearch and Silvaview warm launches.
+   - Silvaview warm launch. The former FSearch comparison/warm-launch check is
+     owner-deferred until the own integrated Index1 GUI is available.
 
    Record WP6 `churn` numbers on the real home, doctor output and failures.
 2. Failure journeys: kill filed during a scan commit, a snapshot write and a Btrfs delta
@@ -1377,6 +1405,10 @@ and a new `src/source/` module.
    - Update `docs/architecture/files.md` (freshness, volumes, lanes) and the CHANGELOG.
    - Delete the WP8 oracle writer copy.
    - `akr check` must pass.
+
+The October 9 [native package cohort](../measurements/index-packages-2026-10-08-wp17.md)
+prepares one coherent set for this owner-run journey. It does not close installed
+acceptance. The WP8 oracle remains until that closure.
 
 ---
 

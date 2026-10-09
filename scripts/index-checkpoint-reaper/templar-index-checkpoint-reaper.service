@@ -1,0 +1,18 @@
+[Unit]
+Description=Reap orphaned file-index checkpoints (temporary disk-fill mitigation)
+Documentation=file://%h/rust-projects/LegeOS/scripts/index-checkpoint-reaper/README.md
+# TEMPORARY mitigation, not a shipped service: see Documentation. It calls the
+# existing org.templaros.Host.IndexCheckpoint1 API (List, then Discard for
+# checkpoints that are old and referenced by no filed baseline) and changes
+# nothing else. Remove this unit when the permanent fix lands.
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/templar-reap-index-checkpoints --apply --min-age-min 60 --max-discards 16
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+LockPersonality=true
+RestrictSUIDSGID=true

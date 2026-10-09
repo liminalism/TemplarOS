@@ -23,7 +23,13 @@ set -uo pipefail
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 root=$(CDPATH= cd -- "$here/.." && pwd -P)
-run="$root/.agent/scratch/nested-session"
+run=${TEMPLAROS_NESTED_RUN_DIR:-"$root/.agent/scratch/nested-session"}
+# Automated lanes can use a private directory and marker so cleanup affects only their run.
+marker_prefix=${TEMPLAROS_NESTED_MARKER_PREFIX:-templar-nested}
+if [[ ! $marker_prefix =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    echo "TEMPLAROS_NESTED_MARKER_PREFIX must contain only letters, digits, underscores and hyphens" >&2
+    exit 1
+fi
 socket=templaros-nested
 # The trusted-shell socket is named the way the compositor names it: a prefix, never a suffix.
 # A `wayland-0-shell` would fall inside snapd's `wayland-[0-9]*` permission, and that socket is
@@ -52,9 +58,9 @@ stop_one() {
     pid=$(cat "$(pidfile "$name")" 2>/dev/null) || return 0
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
         # A stale pidfile after PID reuse must fail closed, not kill a stranger: every daemon
-        # this script starts carries `templar-nested:$name` as its argv[0] (see below).
+        # this script starts carries `$marker_prefix:$name` as its argv[0] (see below).
         cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || cmdline=""
-        if [[ $cmdline != "templar-nested:$name"* ]]; then
+        if [[ $cmdline != "$marker_prefix:$name "* ]]; then
             echo "  $name pidfile points at pid $pid (${cmdline%% *}) — not this run's $name; leaving it alone" >&2
         else
             kill "$pid" 2>/dev/null
@@ -73,9 +79,9 @@ stop_one() {
 # only this script sets makes them findable without endangering anything else.
 sweep_nested_leftovers() {
     local pid cmdline name
-    for pid in $(pgrep -f '^templar-nested:' 2>/dev/null); do
+    for pid in $(pgrep -f "^$marker_prefix:" 2>/dev/null); do
         cmdline=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || continue
-        name=${cmdline#templar-nested:}
+        name=${cmdline#"$marker_prefix:"}
         name=${name%% *}
         echo "  sweep: $name (pid $pid) survived its pidfile — stopping it" >&2
         kill "$pid" 2>/dev/null
@@ -105,7 +111,7 @@ spawn_nested() {
         return 1
     fi
     unset DISPLAY
-    WAYLAND_DISPLAY="$wayland" RUST_LOG="${RUST_LOG:-info}" exec -a "templar-nested:$name" "$@"
+    WAYLAND_DISPLAY="$wayland" RUST_LOG="${RUST_LOG:-info}" exec -a "$marker_prefix:$name" "$@"
 }
 
 # Wait for the compositor to *say* a socket is ready, not for the socket file to exist. A killed
@@ -155,7 +161,7 @@ start_comp() {
     # Same argv[0] marker `spawn_nested` sets (the compositor keeps the host display, so it
     # cannot use that helper, but `stop` must still find it by the same marker).
     "${host_env[@]}" RUST_LOG="${RUST_LOG:-info}" \
-        bash -c 'exec -a "templar-nested:comp" "$@"' _ \
+        bash -c 'marker=$1; shift; exec -a "$marker:comp" "$@"' _ "$marker_prefix" \
         "$bin/templar-comp" --backend winit --socket-name "$socket" \
         --test-input-socket "$input_socket" \
         >"$(logfile comp)" 2>&1 &

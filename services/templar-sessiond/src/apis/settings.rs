@@ -91,61 +91,63 @@ impl SettingsApi {
             .map_err(|error| fdo::Error::InvalidArgs(format!("invalid value JSON: {error}")))?;
         let guard = self.appearance.lock().await;
         (|| -> anyhow::Result<()> {
-                // Store -> schema -> values is also Inspect's lock order. Keep publication
-                // excluded until the entire audit/history transaction has committed.
-                let mut connection = self.store.lock();
-                let schema = self.schema.read();
-                let mut values = self.values.write();
-                let transaction = connection.transaction()?;
-                let tx = &transaction;
-                let (old_json, new_json, _audit_id) = templar_session_core::settings::apply_within(
-                    tx,
-                    &schema,
-                    &values,
-                    key,
-                    &value,
-                    origin,
-                )?;
+            // Store -> schema -> values is also Inspect's lock order. Keep publication
+            // excluded until the entire audit/history transaction has committed.
+            let mut connection = self.store.lock();
+            let schema = self.schema.read();
+            let mut values = self.values.write();
+            let transaction = connection.transaction()?;
+            let tx = &transaction;
+            let (old_json, new_json, _audit_id) = templar_session_core::settings::apply_within(
+                tx, &schema, &values, key, &value, origin,
+            )?;
 
-                let event_id = EventId::new();
-                let change_id = change_log::record_within(
-                    tx,
-                    "settings",
-                    key,
-                    old_json.as_deref(),
-                    Some(&new_json),
-                    event_id,
-                )?;
-                append_within(
-                    tx,
-                    &Event {
-                        id: event_id,
-                        at_ms: templar_state::now_ms(),
-                        kind: EventKind::SettingChange,
-                        app_id: None,
-                        instance_id: None,
-                        message: format!("The setting {key} was changed."),
-                        cause: Some(origin.to_owned()),
-                        actions: vec![EventAction {
-                            label: "Undo".into(),
-                            command: change_log::undo_command(change_id),
-                        }],
-                        reversible: true,
-                    },
-                )?;
-                transaction.commit()?;
-                values.set(key, value);
-                Ok(())
-            })().map_err(failed)?;
+            let event_id = EventId::new();
+            let change_id = change_log::record_within(
+                tx,
+                "settings",
+                key,
+                old_json.as_deref(),
+                Some(&new_json),
+                event_id,
+            )?;
+            append_within(
+                tx,
+                &Event {
+                    id: event_id,
+                    at_ms: templar_state::now_ms(),
+                    kind: EventKind::SettingChange,
+                    app_id: None,
+                    instance_id: None,
+                    message: format!("The setting {key} was changed."),
+                    cause: Some(origin.to_owned()),
+                    actions: vec![EventAction {
+                        label: "Undo".into(),
+                        command: change_log::undo_command(change_id),
+                    }],
+                    reversible: true,
+                },
+            )?;
+            transaction.commit()?;
+            values.set(key, value);
+            Ok(())
+        })()
+        .map_err(failed)?;
         let effects = if super::appearance::AppearanceEffects::affects(key) {
             self.appearance.reconcile(guard).await
         } else {
             drop(guard);
             Ok(())
         };
-        if super::wallpaper::WallpaperHost::affects(key) { self.wallpaper.reconcile().await.map_err(failed)?; }
+        if super::wallpaper::WallpaperHost::affects(key) {
+            self.wallpaper.reconcile().await.map_err(failed)?;
+        }
         let _ = emitter.changed(key.to_owned()).await;
-        effects.map_err(|error| failed(format!("Setting committed; supported toolkit configuration incomplete: {error:#}")))
+        effects.map_err(|error| {
+            failed(format!(
+                "Setting committed; supported toolkit configuration incomplete: {error:#}"
+            ))
+        })
     }
 
     /// Every known key at its effective value, as `(key, value_json)` pairs.
@@ -162,22 +164,33 @@ impl SettingsApi {
     /// Audit revision, capability and stored effective values under one write exclusion.
     async fn inspect(&self) -> fdo::Result<String> {
         let connection = self.store.lock();
-        let revision: i64 = connection.query_row(
-            "SELECT COALESCE(MAX(id), 0) FROM settings_changes", [], |row| row.get(0)
-        ).map_err(failed)?;
+        let revision: i64 = connection
+            .query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM settings_changes",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(failed)?;
         let revision = u64::try_from(revision).map_err(failed)?;
         let schema = self.schema.read();
         let values = self.values.read();
         let snapshot = templar_types::settings::Observation {
             revision: self.revision_owner.at_generation(revision),
-            value: values.list(&schema).into_iter().map(|(key, value)| {
-                let requires_restart = schema.specs.get(&key).is_some_and(|spec| spec.privileged);
-                templar_types::settings::SettingObservation {
-                    key,
-                    value,
-                    capability: templar_types::settings::Capability::Available { requires_restart },
-                }
-            }).collect::<Vec<_>>(),
+            value: values
+                .list(&schema)
+                .into_iter()
+                .map(|(key, value)| {
+                    let requires_restart =
+                        schema.specs.get(&key).is_some_and(|spec| spec.privileged);
+                    templar_types::settings::SettingObservation {
+                        key,
+                        value,
+                        capability: templar_types::settings::Capability::Available {
+                            requires_restart,
+                        },
+                    }
+                })
+                .collect::<Vec<_>>(),
         };
         serde_json::to_string(&snapshot).map_err(failed)
     }
@@ -212,27 +225,35 @@ impl SettingsApi {
     ) -> fdo::Result<()> {
         let guard = self.appearance.lock().await;
         let changed = (|| -> anyhow::Result<Option<String>> {
-                let mut connection = self.store.lock();
-                let mut values = self.values.write();
-                let transaction = connection.transaction()?;
-                let changed = templar_session_core::settings::reset_within(
-                    &transaction, &values, key, origin,
-                )?;
-                transaction.commit()?;
-                if changed.is_some() { values.reset(key); }
-                Ok(changed)
-            })().map_err(failed)?;
+            let mut connection = self.store.lock();
+            let mut values = self.values.write();
+            let transaction = connection.transaction()?;
+            let changed =
+                templar_session_core::settings::reset_within(&transaction, &values, key, origin)?;
+            transaction.commit()?;
+            if changed.is_some() {
+                values.reset(key);
+            }
+            Ok(changed)
+        })()
+        .map_err(failed)?;
         let effects = if changed.is_some() && super::appearance::AppearanceEffects::affects(key) {
             self.appearance.reconcile(guard).await
         } else {
             drop(guard);
             Ok(())
         };
-        if changed.is_some() && super::wallpaper::WallpaperHost::affects(key) { self.wallpaper.reconcile().await.map_err(failed)?; }
+        if changed.is_some() && super::wallpaper::WallpaperHost::affects(key) {
+            self.wallpaper.reconcile().await.map_err(failed)?;
+        }
         if changed.is_some() {
             let _ = emitter.changed(key.to_owned()).await;
         }
-        effects.map_err(|error| failed(format!("Reset committed; supported toolkit configuration incomplete: {error:#}")))
+        effects.map_err(|error| {
+            failed(format!(
+                "Reset committed; supported toolkit configuration incomplete: {error:#}"
+            ))
+        })
     }
 
     #[zbus(signal)]

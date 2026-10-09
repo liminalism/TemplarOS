@@ -20,9 +20,7 @@
 use std::sync::Arc;
 
 use pixelkit_raster::WindowBuffer;
-use pixelkit_shell::{
-    Input, KeyInput, Modifiers, MouseButton, Presenter, Scale,
-};
+use pixelkit_shell::{Input, KeyInput, Modifiers, MouseButton, Presenter, Scale};
 use pixelkit_windowing::SoftbufferPresenter;
 use winit::event::{ElementState, MouseButton as WinitButton, MouseScrollDelta};
 use winit::keyboard::{Key, NamedKey};

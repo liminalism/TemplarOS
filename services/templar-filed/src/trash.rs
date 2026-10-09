@@ -11,9 +11,9 @@
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
+    ffi::{OsStr, OsString},
     fmt::Write as _,
     fs,
-    ffi::{OsStr, OsString},
     io::Write as _,
     os::unix::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
@@ -117,7 +117,10 @@ pub fn all_trash_dirs(data_home: &Path, mount_points: &[PathBuf]) -> Vec<TrashDi
 pub fn trash_dir_for(path: &Path, data_home: &Path) -> Result<TrashDir> {
     use std::os::unix::fs::MetadataExt;
     let home_trash = home_trash(data_home);
-    let (Some(path_device), Some(home_device)) = (path.symlink_metadata().ok().map(|m| m.dev()), device_of(data_home)) else {
+    let (Some(path_device), Some(home_device)) = (
+        path.symlink_metadata().ok().map(|m| m.dev()),
+        device_of(data_home),
+    ) else {
         return Ok(home_trash);
     };
     if path_device == home_device {
@@ -145,10 +148,16 @@ pub fn trash(path: &Path, trash: &TrashDir, now: &str) -> Result<TrashedItem> {
 
     // Trash storage names are not file identity. Invalid-UTF-8 and long original names use
     // an opaque bounded key; the lossless original name is retained in the .trashinfo Path.
-    let original_name = absolute.file_name().unwrap_or_else(|| OsStr::new("unnamed"));
-    let storage_name = original_name.to_str().filter(|name| name.len() <= 220)
-        .map(std::borrow::Cow::Borrowed)
-        .unwrap_or_else(|| std::borrow::Cow::Owned(format!("native-{}", uuid::Uuid::new_v4())));
+    let original_name = absolute
+        .file_name()
+        .unwrap_or_else(|| OsStr::new("unnamed"));
+    let storage_name = original_name
+        .to_str()
+        .filter(|name| name.len() <= 220)
+        .map_or_else(
+            || std::borrow::Cow::Owned(format!("native-{}", uuid::Uuid::new_v4())),
+            std::borrow::Cow::Borrowed,
+        );
     let name = free_name(&trash.files(), &trash.info(), &storage_name);
     let trashed_path = trash.files().join(&name);
     let info_path = trash.info().join(format!("{name}.trashinfo"));
@@ -164,10 +173,17 @@ pub fn trash(path: &Path, trash: &TrashDir, now: &str) -> Result<TrashedItem> {
         "[Trash Info]\nPath={}\nDeletionDate={now}\n",
         percent_encode(recorded.as_os_str())
     );
-    let mut record = fs::OpenOptions::new().write(true).create_new(true).open(&info_path)
+    let mut record = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&info_path)
         .with_context(|| format!("creating {}", info_path.display()))?;
-    record.write_all(info.as_bytes()).with_context(|| format!("writing {}", info_path.display()))?;
-    record.sync_all().with_context(|| format!("flushing {}", info_path.display()))?;
+    record
+        .write_all(info.as_bytes())
+        .with_context(|| format!("writing {}", info_path.display()))?;
+    record
+        .sync_all()
+        .with_context(|| format!("flushing {}", info_path.display()))?;
 
     if let Err(error) = crate::native_fs::rename_no_replace(&absolute, &trashed_path) {
         let _ = fs::remove_file(&info_path);
@@ -229,13 +245,15 @@ pub fn restore(trashed_path: &Path, trash: &TrashDir) -> Result<PathBuf> {
     if let Some(parent) = item.original_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("recreating {}", parent.display()))?;
     }
-    crate::native_fs::rename_no_replace(&item.trashed_path, &item.original_path).with_context(|| {
-        format!(
-            "restoring {} to {}",
-            item.trashed_path.display(),
-            item.original_path.display()
-        )
-    })?;
+    crate::native_fs::rename_no_replace(&item.trashed_path, &item.original_path).with_context(
+        || {
+            format!(
+                "restoring {} to {}",
+                item.trashed_path.display(),
+                item.original_path.display()
+            )
+        },
+    )?;
     let _ = fs::remove_file(&item.info_path);
     Ok(item.original_path)
 }
@@ -495,9 +513,13 @@ fn percent_decode(value: &str) -> Result<OsString> {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' {
-            if index + 2 >= bytes.len() { bail!("incomplete percent escape in trash Path"); }
-            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).context("invalid percent escape in trash Path")?;
-            let byte = u8::from_str_radix(hex, 16).context("invalid percent escape in trash Path")?;
+            if index + 2 >= bytes.len() {
+                bail!("incomplete percent escape in trash Path");
+            }
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
+                .context("invalid percent escape in trash Path")?;
+            let byte =
+                u8::from_str_radix(hex, 16).context("invalid percent escape in trash Path")?;
             out.push(byte);
             index += 3;
             continue;
@@ -505,7 +527,9 @@ fn percent_decode(value: &str) -> Result<OsString> {
         out.push(bytes[index]);
         index += 1;
     }
-    if out.contains(&0) { bail!("trash Path contains NUL"); }
+    if out.contains(&0) {
+        bail!("trash Path contains NUL");
+    }
     Ok(OsString::from_vec(out))
 }
 
@@ -603,7 +627,10 @@ mod tests {
     #[test]
     fn percent_coding_round_trips() {
         for value in ["/a/b c", "/a/#anchor", "/a/100%", "/plain/path", "/ü/né"] {
-            assert_eq!(percent_decode(&percent_encode(OsStr::new(value))).unwrap(), OsStr::new(value));
+            assert_eq!(
+                percent_decode(&percent_encode(OsStr::new(value))).unwrap(),
+                OsStr::new(value)
+            );
         }
         assert_eq!(percent_encode(OsStr::new("/a b")), "/a%20b");
     }

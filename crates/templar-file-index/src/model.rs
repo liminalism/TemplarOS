@@ -368,6 +368,8 @@ pub enum StaleReason {
     /// A rename could not be paired with its partner.
     RenameAmbiguous,
     MountDisappeared,
+    VolumeReturned,
+    VolumeReturnedUnverified,
     PolicyChanged,
     BudgetExhausted {
         budget: BudgetKind,
@@ -405,6 +407,8 @@ impl StaleReason {
             Self::WatcherFailed { detail } => format!("watcher-failed:{detail}"),
             Self::RenameAmbiguous => "rename-ambiguous".to_owned(),
             Self::MountDisappeared => "mount-disappeared".to_owned(),
+            Self::VolumeReturned => "volume-returned".to_owned(),
+            Self::VolumeReturnedUnverified => "volume-returned-unverified".to_owned(),
             Self::PolicyChanged => "policy-changed".to_owned(),
             Self::BudgetExhausted { budget } => format!("budget:{}", budget.as_str()),
             Self::PermissionDenied => "permission-denied".to_owned(),
@@ -441,11 +445,96 @@ impl BudgetKind {
 
 /// Enough identity to notice that a removable root went away and came back as the same volume.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct VolumeIdentity {
     pub dev_id: Option<u64>,
     pub uuid: Option<String>,
     pub mount_point: Option<NativePath>,
     pub label: Option<String>,
+    pub fs_type: Option<String>,
+    pub fs_uuid: Option<String>,
+    /// Opaque statfs fsid, a weak hint rather than persistent identity.
+    pub fsid: Option<String>,
+    pub mount_root: Option<NativePath>,
+    pub mount_id: Option<u64>,
+    pub confidence: VolumeConfidence,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VolumeConfidence {
+    Strong,
+    Weak,
+    #[default]
+    None,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum OfflineReason {
+    VolumeAbsent,
+    DifferentVolume { observed: VolumeIdentity },
+    Unmounted,
+    PresenceUnknown { detail: String },
+}
+
+/// Whether the index cache is open. An unavailable cache was left untouched; the reason says why
+/// (`error::OpenFailure`), and every other file-service interface keeps serving meanwhile.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Availability {
+    /// `"available"` or `"unavailable"`.
+    pub state: String,
+    pub reason: Option<String>,
+    /// When the current state began, in Unix milliseconds; `None` for a cache open since start.
+    pub since_ms: Option<i64>,
+}
+
+impl Default for Availability {
+    fn default() -> Self {
+        Self {
+            state: "available".to_owned(),
+            reason: None,
+            since_ms: None,
+        }
+    }
+}
+
+impl Availability {
+    #[must_use]
+    pub fn is_available(&self) -> bool {
+        self.state == "available"
+    }
+}
+
+/// What the cache occupies on disk. `db_bytes` alone is the main file, which omits a write-ahead
+/// log that can be most of the space during a long scan.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct StorageBytes {
+    pub main_bytes: u64,
+    pub wal_bytes: u64,
+    pub shm_bytes: u64,
+}
+
+impl StorageBytes {
+    /// The three files' current sizes; an absent file counts as zero.
+    #[must_use]
+    pub fn of(path: &std::path::Path) -> Self {
+        let size = |suffix: &str| {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(suffix);
+            std::fs::metadata(std::path::PathBuf::from(name)).map_or(0, |meta| meta.len())
+        };
+        Self {
+            main_bytes: size(""),
+            wal_bytes: size("-wal"),
+            shm_bytes: size("-shm"),
+        }
+    }
+
+    #[must_use]
+    pub fn total(self) -> u64 {
+        self.main_bytes + self.wal_bytes + self.shm_bytes
+    }
 }
 
 /// The watcher's honest self-report, owned here so `templar files index status`, `Index1.Roots` and
@@ -453,6 +542,9 @@ pub struct VolumeIdentity {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WatchStatus {
     pub backend: String,
+    /// Known required directories, or None when refusal tracking overflowed/old payload.
+    #[serde(default)]
+    pub watches_required: Option<u64>,
     pub watches_armed: u64,
     pub watches_refused: u64,
     pub watch_limit: Option<u64>,
@@ -464,6 +556,22 @@ pub struct WatchStatus {
     pub last_error: Option<String>,
 }
 
+impl WatchStatus {
+    pub fn required_display(&self) -> String {
+        self.watches_required
+            .map_or_else(|| "unknown".into(), |count| count.to_string())
+    }
+
+    /// Unknown required coverage also means refused is only a known lower bound.
+    pub fn refused_display(&self) -> String {
+        if self.watches_required.is_none() {
+            format!(">={}", self.watches_refused)
+        } else {
+            self.watches_refused.to_string()
+        }
+    }
+}
+
 /// Everything a consumer needs to decide whether to trust a root's rows.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RootStatus {
@@ -473,6 +581,13 @@ pub struct RootStatus {
     pub volume: VolumeIdentity,
     pub state: RootState,
     pub reason: Option<String>,
+    #[serde(default)]
+    pub offline_reason: Option<OfflineReason>,
+    #[serde(default)]
+    pub offline_since_ms: Option<i64>,
+    /// Event-observed hint for explicit re-registration. Never an automatic root path rewrite.
+    #[serde(default)]
+    pub mounted_elsewhere: Option<NativePath>,
     /// The metadata axis, orthogonal to `state`. `state = current, metadata = unverified` is a
     /// representable and reachable combination, and it is the honest description of what a
     /// policy-change reconcile leaves behind.
@@ -488,6 +603,14 @@ pub struct RootStatus {
     pub last_reconcile_finished_ms: Option<i64>,
     pub last_error: Option<String>,
     pub watch: Option<WatchStatus>,
+    /// The registered root whose path most closely contains this one. That container treats this
+    /// root's path as a boundary: every path at or under it is owned here, so the two never hold
+    /// the same path.
+    #[serde(default)]
+    pub nested_in: Option<RootId>,
+    /// Registered roots strictly inside this one, each a boundary this root does not acquire.
+    #[serde(default)]
+    pub contains: Vec<RootId>,
 }
 
 /// How much of a subtree the index holds, and how much of it search is allowed to see.
@@ -650,7 +773,9 @@ pub struct RootPolicy {
     pub default_coverage: Coverage,
 }
 
-const fn default_monitoring() -> bool { true }
+const fn default_monitoring() -> bool {
+    true
+}
 
 impl Default for RootPolicy {
     fn default() -> Self {
@@ -1089,14 +1214,22 @@ mod tests {
     fn native_rule_bytes_and_matcher_kinds_are_part_of_policy_identity() {
         let mut first = RootPolicy::legacy_home();
         first.coverage_rules = vec![CoverageRule {
-            matcher: CoverageMatch::Subtree { path: NativePath::from_bytes(b"/tmp/\xff".to_vec()) },
+            matcher: CoverageMatch::Subtree {
+                path: NativePath::from_bytes(b"/tmp/\xff".to_vec()),
+            },
             coverage: Coverage::Ignored,
         }];
         let mut second = first.clone();
-        second.coverage_rules[0].matcher = CoverageMatch::Subtree { path: NativePath::from_bytes(b"/tmp/\xfe".to_vec()) };
+        second.coverage_rules[0].matcher = CoverageMatch::Subtree {
+            path: NativePath::from_bytes(b"/tmp/\xfe".to_vec()),
+        };
         assert_ne!(first.hash(), second.hash());
-        first.coverage_rules[0].matcher = CoverageMatch::Subtree { path: NativePath::from_bytes(b"/tmp/name".to_vec()) };
-        second.coverage_rules[0].matcher = CoverageMatch::Name { name: "/tmp/name".to_owned() };
+        first.coverage_rules[0].matcher = CoverageMatch::Subtree {
+            path: NativePath::from_bytes(b"/tmp/name".to_vec()),
+        };
+        second.coverage_rules[0].matcher = CoverageMatch::Name {
+            name: "/tmp/name".to_owned(),
+        };
         assert_ne!(first.hash(), second.hash());
         first.coverage_rules.clear();
         second.coverage_rules.clear();

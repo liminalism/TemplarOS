@@ -25,7 +25,7 @@ use smithay::{
             protocol::{wl_output, wl_seat, wl_surface::WlSurface},
         },
     },
-    utils::{Serial, SERIAL_COUNTER},
+    utils::{SERIAL_COUNTER, Serial},
     wayland::{
         compositor::{
             CompositorClientState, CompositorHandler, CompositorState, get_parent,
@@ -57,7 +57,9 @@ pub(crate) struct PendingActivations<S = ObjectId> {
 
 impl<S> Default for PendingActivations<S> {
     fn default() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 }
 
@@ -72,21 +74,37 @@ impl<S: PartialEq> PendingActivations<S> {
         self.entries.retain(|(candidate, _)| candidate != surface);
     }
 
-    fn insert(&mut self, surface: S, grant: templar_window::ActivationGrant, now_monotonic_ns: u64) {
+    fn insert(
+        &mut self,
+        surface: S,
+        grant: templar_window::ActivationGrant,
+        now_monotonic_ns: u64,
+    ) {
         self.prune(now_monotonic_ns);
         if !grant.had_recent_input_evidence || now_monotonic_ns >= grant.expires_at_monotonic_ns {
             return;
         }
-        if let Some((_, pending)) = self.entries.iter_mut().find(|(candidate, _)| candidate == &surface) {
+        if let Some((_, pending)) = self
+            .entries
+            .iter_mut()
+            .find(|(candidate, _)| candidate == &surface)
+        {
             *pending = grant;
         } else if self.entries.len() < MAX_PENDING_ACTIVATIONS {
             self.entries.push((surface, grant));
         }
     }
 
-    fn take(&mut self, surface: &S, now_monotonic_ns: u64) -> Option<templar_window::ActivationGrant> {
+    fn take(
+        &mut self,
+        surface: &S,
+        now_monotonic_ns: u64,
+    ) -> Option<templar_window::ActivationGrant> {
         self.prune(now_monotonic_ns);
-        let index = self.entries.iter().position(|(candidate, _)| candidate == surface)?;
+        let index = self
+            .entries
+            .iter()
+            .position(|(candidate, _)| candidate == surface)?;
         Some(self.entries.swap_remove(index).1)
     }
 }
@@ -143,8 +161,11 @@ impl<B: Backend + 'static> CompositorHandler for TemplarCompState<B> {
             }
             if let Some(window) = window_for_surface(self, &root) {
                 window.on_commit();
-                if self.screencopy.pending.iter().any(|(id, _)|
-                    self.windows.surface_for(*id) == Some(&root))
+                if self
+                    .screencopy
+                    .pending
+                    .iter()
+                    .any(|(id, _)| self.windows.surface_for(*id) == Some(&root))
                 {
                     B::request_redraw(self);
                 }
@@ -387,7 +408,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             trusted_shell: true,
             now_monotonic_ns: now_monotonic_ns(&self.clock),
         };
-        if self.window_service.handle_command(WindowCommand::Activate { window_id, grant }, ctx).is_err() {
+        if self
+            .window_service
+            .handle_command(WindowCommand::Activate { window_id, grant }, ctx)
+            .is_err()
+        {
             return false;
         }
         crate::input::activate_window(self, window_id);
@@ -446,7 +471,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// only fires post-map, so the just-mapped title is read here directly from
     /// [`XdgToplevelSurfaceData`] instead of waiting for a redundant first change notification).
     fn handle_toplevel_commit(&mut self, surface: &WlSurface) {
-        self.pending_activations.prune(now_monotonic_ns(&self.clock));
+        self.pending_activations
+            .prune(now_monotonic_ns(&self.clock));
         let Some(window) = window_for_surface(self, surface) else {
             return;
         };
@@ -662,8 +688,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
         // Adopt the committed size as the client rectangle itself: no frame is added,
         // so an oversized commit re-places the same pixels the client drew.
-        let geometry =
-            templar_window::Rect::new(client.x, client.y, committed.w, committed.h);
+        let geometry = templar_window::Rect::new(client.x, client.y, committed.w, committed.h);
         self.window_service.set_geometry(window_id, geometry);
         crate::space_sync::sync_after_change(self);
     }
@@ -925,7 +950,10 @@ impl<B: Backend + 'static> XdgActivationHandler for TemplarCompState<B> {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
         };
-        let Some(focused_client) = keyboard.current_focus().and_then(|surface| surface.client()) else {
+        let Some(focused_client) = keyboard
+            .current_focus()
+            .and_then(|surface| surface.client())
+        else {
             return false;
         };
         if data.client_id.as_ref() != Some(&focused_client.id()) {
@@ -955,11 +983,15 @@ impl<B: Backend + 'static> XdgActivationHandler for TemplarCompState<B> {
         }
         let now = now_monotonic_ns(&self.clock);
         self.pending_activations.prune(now);
-        let Some(grant) = activation_grant(token.into(), token_data.timestamp.elapsed(), now) else {
+        let Some(grant) = activation_grant(token.into(), token_data.timestamp.elapsed(), now)
+        else {
             return;
         };
         if !surface.is_alive()
-            || !self.windows.element_for(&surface.id()).is_some_and(|window| window.toplevel().is_some())
+            || !self
+                .windows
+                .element_for(&surface.id())
+                .is_some_and(|window| window.toplevel().is_some())
         {
             return;
         }
@@ -1028,10 +1060,18 @@ mod tests {
         assert!(!service.should_activate_on_map(chooser));
         assert!(service.window(browser).unwrap().activated);
         let grant = pending.take(&7, 1).unwrap();
-        service.handle_command(
-            WindowCommand::Activate { window_id: chooser, grant: grant.clone() },
-            CommandContext { trusted_shell: true, now_monotonic_ns: 1 },
-        ).unwrap();
+        service
+            .handle_command(
+                WindowCommand::Activate {
+                    window_id: chooser,
+                    grant: grant.clone(),
+                },
+                CommandContext {
+                    trusted_shell: true,
+                    now_monotonic_ns: 1,
+                },
+            )
+            .unwrap();
         assert!(service.window(chooser).unwrap().activated);
         assert!(!service.window(browser).unwrap().activated);
         assert!(pending.take(&7, 1).is_none());
@@ -1039,8 +1079,14 @@ mod tests {
         // Neither a second map nor a replay of the retained token may take focus again.
         service.activate(browser);
         let replay = service.handle_command(
-            WindowCommand::Activate { window_id: chooser, grant },
-            CommandContext { trusted_shell: true, now_monotonic_ns: 2 },
+            WindowCommand::Activate {
+                window_id: chooser,
+                grant,
+            },
+            CommandContext {
+                trusted_shell: true,
+                now_monotonic_ns: 2,
+            },
         );
         assert_eq!(replay, Err(templar_window::CommandError::GrantAlreadyUsed));
         assert!(service.window(browser).unwrap().activated);
@@ -1095,9 +1141,17 @@ mod tests {
         pending.insert(MAX_PENDING_ACTIVATIONS, grant("replacement", 1), 1);
         assert!(pending.take(&MAX_PENDING_ACTIVATIONS, 2).is_some());
         let expiry = ACTIVATION_LIFETIME.as_nanos() as u64;
-        pending.insert(MAX_PENDING_ACTIVATIONS + 1, grant("after-expiry", expiry), expiry);
+        pending.insert(
+            MAX_PENDING_ACTIVATIONS + 1,
+            grant("after-expiry", expiry),
+            expiry,
+        );
         assert_eq!(pending.entries.len(), 1);
-        assert!(pending.take(&(MAX_PENDING_ACTIVATIONS + 1), expiry).is_some());
+        assert!(
+            pending
+                .take(&(MAX_PENDING_ACTIVATIONS + 1), expiry)
+                .is_some()
+        );
     }
 
     #[test]

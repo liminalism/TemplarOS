@@ -37,8 +37,19 @@ impl Snapshotter for BtrfsSnapshotter {
         if source.join(crate::layout::INSTALLED_LAYOUT).exists() {
             let layout = crate::layout::DeploymentLayout::read(source)?;
             let fsroot = |path: &Path| -> Result<String> {
-                let output = self.commands.run("findmnt", &["--noheadings", "--target", &path.to_string_lossy(), "--output", "FSROOT"])?;
-                if !output.status.success() { anyhow::bail!("cannot inspect native root mount identity"); }
+                let output = self.commands.run(
+                    "findmnt",
+                    &[
+                        "--noheadings",
+                        "--target",
+                        &path.to_string_lossy(),
+                        "--output",
+                        "FSROOT",
+                    ],
+                )?;
+                if !output.status.success() {
+                    anyhow::bail!("cannot inspect native root mount identity");
+                }
                 Ok(String::from_utf8(output.stdout)?.trim().to_owned())
             };
             let source_identity = fsroot(source)?;
@@ -47,13 +58,22 @@ impl Snapshotter for BtrfsSnapshotter {
             }
             for path in ["var/lib/dpkg", "var/lib/apt", "var/cache/apt"] {
                 if fsroot(&source.join(path))? != source_identity {
-                    anyhow::bail!("package metadata/cache is outside its paired root; legacy blanket /var requires reviewed offline migration");
+                    anyhow::bail!(
+                        "package metadata/cache is outside its paired root; legacy blanket /var requires reviewed offline migration"
+                    );
                 }
             }
-            let expected = layout.subvolume_template.split_once("{id}").context("missing deployment identity")?.0.trim_end_matches('/');
+            let expected = layout
+                .subvolume_template
+                .split_once("{id}")
+                .context("missing deployment identity")?
+                .0
+                .trim_end_matches('/');
             let parent = dest.parent().context("missing candidate parent")?;
             if fsroot(parent)?.trim_start_matches('/') != expected {
-                anyhow::bail!("mounted deployment directory does not match the boot subvolume template");
+                anyhow::bail!(
+                    "mounted deployment directory does not match the boot subvolume template"
+                );
             }
         }
         if let Some(parent) = dest.parent() {

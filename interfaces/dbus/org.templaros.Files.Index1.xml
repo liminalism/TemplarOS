@@ -41,6 +41,10 @@
       <arg name="expected_hash" type="s" direction="in"/>
       <arg name="root_id" type="x" direction="out"/>
     </method>
+    <method name="AcceptVolume">
+      <arg name="root_id" type="x" direction="in"/>
+      <arg name="observed_fingerprint" type="s" direction="in"/>
+    </method>
     <method name="RemoveRoot">
       <arg name="path_b64" type="s" direction="in"/>
       <arg name="expected_hash" type="s" direction="in"/>

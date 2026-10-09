@@ -21,7 +21,6 @@
 use smithay::reexports::calloop::{RegistrationToken, timer::Timer};
 use std::time::{Duration, Instant};
 
-
 /// How long to wait before blanking, given the configured timeout and what is going on.
 ///
 /// `None` means "arm no timer at all": either idle blanking is off, or something has said the
@@ -52,18 +51,34 @@ pub struct IdleState {
     activity_serial: u64,
 }
 impl Default for IdleState {
-    fn default() -> Self { Self { timeout: None, timer: None, blanked: false, inhibitors: 0, last_activity: Instant::now(), activity_serial: 0 } }
+    fn default() -> Self {
+        Self {
+            timeout: None,
+            timer: None,
+            blanked: false,
+            inhibitors: 0,
+            last_activity: Instant::now(),
+            activity_serial: 0,
+        }
+    }
 }
 
 impl IdleState {
     /// Advances for actual seat events, including input while already unblanked.
     pub fn note_activity(&mut self) {
-        self.activity_serial = self.activity_serial.checked_add(1).expect("seat activity serial exhausted");
+        self.activity_serial = self
+            .activity_serial
+            .checked_add(1)
+            .expect("seat activity serial exhausted");
         self.last_activity = Instant::now();
     }
-    pub fn activity_serial(&self) -> u64 { self.activity_serial }
+    pub fn activity_serial(&self) -> u64 {
+        self.activity_serial
+    }
     pub fn idle_elapsed_ms(&self, now: Instant) -> u64 {
-        now.saturating_duration_since(self.last_activity).as_millis().min(u128::from(u64::MAX)) as u64
+        now.saturating_duration_since(self.last_activity)
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64
     }
     /// Whether the outputs are currently off.
     pub fn blanked(&self) -> bool {
@@ -122,7 +137,9 @@ impl IdleState {
         self.next_delay_at(Instant::now())
     }
     fn next_delay_at(&self, now: Instant) -> Option<Duration> {
-        delay_before_blanking(self.timeout, self.inhibited(), self.blanked).map(|timeout| timeout.saturating_sub(now.saturating_duration_since(self.last_activity)))
+        delay_before_blanking(self.timeout, self.inhibited(), self.blanked).map(|timeout| {
+            timeout.saturating_sub(now.saturating_duration_since(self.last_activity))
+        })
     }
 
     /// Take the armed timer's registration token, if there is one, so the caller can remove it.
@@ -161,7 +178,6 @@ mod tests {
         assert_eq!(idle.next_delay_at(idle.last_activity), timeout);
     }
 
-
     #[test]
     fn an_inhibitor_arms_no_timer_at_all() {
         let timeout = Some(Duration::from_secs(300));
@@ -190,10 +206,16 @@ mod tests {
         idle.remove_inhibitor();
         assert_eq!(idle.next_delay(), None);
         idle.remove_inhibitor();
-        assert_eq!(idle.next_delay_at(idle.last_activity), Some(Duration::from_secs(300)));
+        assert_eq!(
+            idle.next_delay_at(idle.last_activity),
+            Some(Duration::from_secs(300))
+        );
         // An unbalanced destroy must not underflow into "inhibited forever".
         idle.remove_inhibitor();
-        assert_eq!(idle.next_delay_at(idle.last_activity), Some(Duration::from_secs(300)));
+        assert_eq!(
+            idle.next_delay_at(idle.last_activity),
+            Some(Duration::from_secs(300))
+        );
     }
 
     /// Blanking and waking each report whether they changed anything, so the backend's DPMS call
@@ -226,8 +248,14 @@ mod tests {
         let mut idle = IdleState::default();
         let _ = idle.set_timeout(Some(Duration::from_secs(300)));
         let baseline = idle.last_activity;
-        assert_eq!(idle.idle_elapsed_ms(baseline + Duration::from_secs(20)), 20_000);
-        assert_eq!(idle.next_delay_at(baseline + Duration::from_secs(20)), Some(Duration::from_secs(280)));
+        assert_eq!(
+            idle.idle_elapsed_ms(baseline + Duration::from_secs(20)),
+            20_000
+        );
+        assert_eq!(
+            idle.next_delay_at(baseline + Duration::from_secs(20)),
+            Some(Duration::from_secs(280))
+        );
         idle.note_activity();
         assert_eq!(idle.activity_serial(), 1);
         assert!(!idle.wake());
@@ -235,8 +263,15 @@ mod tests {
         assert_eq!(idle.activity_serial(), 2);
         idle.add_inhibitor();
         idle.remove_inhibitor();
-        assert_eq!(idle.activity_serial(), 2, "inhibitor lifecycle is not invented seat input");
+        assert_eq!(
+            idle.activity_serial(),
+            2,
+            "inhibitor lifecycle is not invented seat input"
+        );
         assert_eq!(idle.idle_elapsed_ms(idle.last_activity), 0);
-        assert_eq!(idle.next_delay_at(idle.last_activity), Some(Duration::from_secs(300)));
+        assert_eq!(
+            idle.next_delay_at(idle.last_activity),
+            Some(Duration::from_secs(300))
+        );
     }
 }

@@ -21,13 +21,17 @@ impl Journal {
     }
 
     fn path_for(&self, id: &str) -> Result<PathBuf> {
-        if !crate::boot_entries::is_valid_deployment_id(id) { anyhow::bail!("unsafe transaction id"); }
+        if !crate::boot_entries::is_valid_deployment_id(id) {
+            anyhow::bail!("unsafe transaction id");
+        }
         Ok(self.dir.join(format!("{id}.json")))
     }
     /// Durably persist `txn`. Called after every [`Transaction::advance`] before the caller acts
     /// on the new phase, so a crash can never leave the journal behind reality.
     pub fn save(&self, txn: &Transaction) -> Result<()> {
-        if txn.schema != crate::persistence::SCHEMA { anyhow::bail!("unsupported transaction schema"); }
+        if txn.schema != crate::persistence::SCHEMA {
+            anyhow::bail!("unsupported transaction schema");
+        }
         self.load(&txn.id)?;
         let path = self.path_for(&txn.id)?;
         crate::persistence::backup_before_write(&path)?;
@@ -152,25 +156,43 @@ mod tests {
     fn future_schema_and_unsafe_ids_never_overwrite_persisted_state() {
         let directory = tempfile::tempdir().unwrap();
         let journal = Journal::new(directory.path()).unwrap();
-        let mut value = serde_json::to_value(Transaction::new("future", ChangeSet::default())).unwrap();
+        let mut value =
+            serde_json::to_value(Transaction::new("future", ChangeSet::default())).unwrap();
         value["schema"] = serde_json::json!(2);
         let bytes = serde_json::to_vec(&value).unwrap();
         fs::write(directory.path().join("future.json"), &bytes).unwrap();
         assert!(journal.load("future").is_err());
-        assert!(journal.save(&Transaction::new("future", ChangeSet::default())).is_err());
-        assert_eq!(fs::read(directory.path().join("future.json")).unwrap(), bytes);
-        assert!(journal.save(&Transaction::new("../escape", ChangeSet::default())).is_err());
+        assert!(
+            journal
+                .save(&Transaction::new("future", ChangeSet::default()))
+                .is_err()
+        );
+        assert_eq!(
+            fs::read(directory.path().join("future.json")).unwrap(),
+            bytes
+        );
+        assert!(
+            journal
+                .save(&Transaction::new("../escape", ChangeSet::default()))
+                .is_err()
+        );
     }
 
     #[test]
     fn legacy_transaction_upgrade_retains_original_bytes() {
         let directory = tempfile::tempdir().unwrap();
         let journal = Journal::new(directory.path()).unwrap();
-        let mut value = serde_json::to_value(Transaction::new("legacy", ChangeSet::default())).unwrap();
+        let mut value =
+            serde_json::to_value(Transaction::new("legacy", ChangeSet::default())).unwrap();
         value.as_object_mut().unwrap().remove("schema");
         let bytes = serde_json::to_vec(&value).unwrap();
         fs::write(directory.path().join("legacy.json"), &bytes).unwrap();
-        journal.save(&journal.load("legacy").unwrap().unwrap()).unwrap();
-        assert_eq!(fs::read(directory.path().join("legacy.pre-schema-1")).unwrap(), bytes);
+        journal
+            .save(&journal.load("legacy").unwrap().unwrap())
+            .unwrap();
+        assert_eq!(
+            fs::read(directory.path().join("legacy.pre-schema-1")).unwrap(),
+            bytes
+        );
     }
 }

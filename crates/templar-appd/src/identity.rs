@@ -30,7 +30,9 @@ impl InstanceRecord {
     /// A cgroup's self-describing name alone is never evidence that a launch was registered.
     pub fn has_managed_identity(&self) -> bool {
         managed_cgroup(&self.control_group).is_some_and(|(app, id, group)| {
-            app == self.app_id && id == self.id && group == self.control_group
+            app == self.app_id
+                && id == self.id
+                && group == self.control_group
                 && self.systemd_unit == unit::unit_name(&app, id)
         })
     }
@@ -76,10 +78,13 @@ pub struct Registry {
 impl Registry {
     /// Insert a native manifest, discarding any desktop launch syntax it replaces.
     pub fn insert_manifest(&self, manifest: AppManifest) {
-        self.manifests.write().insert(manifest.id.clone(), InstalledManifest {
-            manifest: Arc::new(manifest),
-            launch_template: None,
-        });
+        self.manifests.write().insert(
+            manifest.id.clone(),
+            InstalledManifest {
+                manifest: Arc::new(manifest),
+                launch_template: None,
+            },
+        );
     }
 
     pub fn insert_desktop_manifest(
@@ -93,7 +98,10 @@ impl Registry {
 
     /// The original desktop launch template for the installed copy, if it was imported.
     pub fn launch_template(&self, app: &AppId) -> Option<Arc<LaunchTemplate>> {
-        self.manifests.read().get(app).and_then(|installed| installed.launch_template.clone())
+        self.manifests
+            .read()
+            .get(app)
+            .and_then(|installed| installed.launch_template.clone())
     }
 
     /// Publish one committed installed-copy batch without changing running process identities.
@@ -104,12 +112,20 @@ impl Registry {
         removed: impl IntoIterator<Item = &'a AppId>,
     ) {
         let mut manifests = self.manifests.write();
-        for id in removed { manifests.remove(id); }
+        for id in removed {
+            manifests.remove(id);
+        }
         for (manifest, exec, desktop_file_path) in imported {
-            manifests.insert(manifest.id.clone(), InstalledManifest {
-                manifest: Arc::new(manifest),
-                launch_template: Some(Arc::new(LaunchTemplate { exec, desktop_file_path })),
-            });
+            manifests.insert(
+                manifest.id.clone(),
+                InstalledManifest {
+                    manifest: Arc::new(manifest),
+                    launch_template: Some(Arc::new(LaunchTemplate {
+                        exec,
+                        desktop_file_path,
+                    })),
+                },
+            );
         }
     }
 
@@ -122,9 +138,12 @@ impl Registry {
     }
 
     pub fn resolve_workload(&self, group: &Path) -> Option<templar_types::WorkloadRecord> {
-        self.workloads.read().values()
+        self.workloads
+            .read()
+            .values()
             .filter(|record| group.starts_with(&record.control_group))
-            .max_by_key(|record| component_count(&record.control_group)).cloned()
+            .max_by_key(|record| component_count(&record.control_group))
+            .cloned()
     }
 
     pub fn list_workloads(&self) -> Vec<templar_types::WorkloadRecord> {
@@ -132,16 +151,22 @@ impl Registry {
     }
 
     pub(crate) fn dead_workloads(&self) -> Result<Vec<templar_types::WorkloadId>> {
-        self.workloads.read().values().filter_map(|record| match crate::workload::is_live(record) {
-            Ok(true) => None,
-            Ok(false) => Some(Ok(record.id)),
-            Err(error) => Some(Err(error)),
-        }).collect()
+        self.workloads
+            .read()
+            .values()
+            .filter_map(|record| match crate::workload::is_live(record) {
+                Ok(true) => None,
+                Ok(false) => Some(Ok(record.id)),
+                Err(error) => Some(Err(error)),
+            })
+            .collect()
     }
 
     pub(crate) fn remove_workloads(&self, ids: &[templar_types::WorkloadId]) {
         let mut workloads = self.workloads.write();
-        for id in ids { workloads.remove(id); }
+        for id in ids {
+            workloads.remove(id);
+        }
     }
 
     pub fn remove_instance(&self, instance: InstanceId) {
@@ -220,7 +245,10 @@ impl Registry {
         let before = process_start_time(pid)?;
         let process_control_group = unified_cgroup_of(pid)?;
         let identity = self.resolve_cgroup(process_control_group, claims);
-        anyhow::ensure!(process_start_time(pid)? == before, "PID changed during identity resolution");
+        anyhow::ensure!(
+            process_start_time(pid)? == before,
+            "PID changed during identity resolution"
+        );
         Ok(identity)
     }
 
@@ -237,13 +265,16 @@ impl Registry {
             let instances = self.instances.read();
             instances
                 .values()
-                .filter(|instance| instance.has_managed_identity()
-                    && !process_control_group.components().any(|part| matches!(part, std::path::Component::ParentDir))
-                    && process_control_group.starts_with(&instance.control_group))
+                .filter(|instance| {
+                    instance.has_managed_identity()
+                        && !process_control_group
+                            .components()
+                            .any(|part| matches!(part, std::path::Component::ParentDir))
+                        && process_control_group.starts_with(&instance.control_group)
+                })
                 .max_by_key(|instance| component_count(&instance.control_group))
                 .cloned()
         };
-
 
         if let Some(instance) = registered {
             let claim_matches = self
@@ -302,11 +333,18 @@ impl Registry {
 
 impl AppCatalog for Registry {
     fn manifest(&self, id: &AppId) -> Option<Arc<AppManifest>> {
-        self.manifests.read().get(id).map(|installed| Arc::clone(&installed.manifest))
+        self.manifests
+            .read()
+            .get(id)
+            .map(|installed| Arc::clone(&installed.manifest))
     }
 
     fn manifests(&self) -> Vec<Arc<AppManifest>> {
-        self.manifests.read().values().map(|installed| Arc::clone(&installed.manifest)).collect()
+        self.manifests
+            .read()
+            .values()
+            .map(|installed| Arc::clone(&installed.manifest))
+            .collect()
     }
 
     fn resolve_alias(&self, stored: &AppId) -> AppId {
@@ -349,31 +387,47 @@ pub(crate) fn parse_proc_cgroup(text: &str) -> Option<PathBuf> {
         return None;
     }
     let path = PathBuf::from(path);
-    (path.is_absolute() && !path.components().any(|part| matches!(part, std::path::Component::ParentDir)))
-        .then_some(path)
+    (path.is_absolute()
+        && !path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir)))
+    .then_some(path)
 }
 
 fn managed_cgroup(path: &Path) -> Option<(AppId, InstanceId, PathBuf)> {
     let mut parts = path.components();
-    if parts.next()? != std::path::Component::RootDir
-        || parts.next()?.as_os_str() != "user.slice"
-    { return None; }
-    let user_slice = parts.next()?.as_os_str().to_str()?.strip_prefix("user-")?.strip_suffix(".slice")?;
+    if parts.next()? != std::path::Component::RootDir || parts.next()?.as_os_str() != "user.slice" {
+        return None;
+    }
+    let user_slice = parts
+        .next()?
+        .as_os_str()
+        .to_str()?
+        .strip_prefix("user-")?
+        .strip_suffix(".slice")?;
     let uid: u32 = user_slice.parse().ok()?;
     if parts.next()?.as_os_str() != format!("user@{uid}.service").as_str()
         || parts.next()?.as_os_str() != "app.slice"
-    { return None; }
+    {
+        return None;
+    }
     let unit_name = parts.next()?.as_os_str().to_str()?;
     let (app, instance) = unit::parse_unit_name(unit_name)?;
-    let group = PathBuf::from(format!("/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/{unit_name}"));
+    let group = PathBuf::from(format!(
+        "/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/{unit_name}"
+    ));
     Some((app, instance, group))
 }
 
 fn process_start_time(pid: u32) -> Result<u64> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
     let (_, fields) = stat.rsplit_once(')').context("malformed process stat")?;
-    fields.split_whitespace().nth(19).context("missing process start time")?
-        .parse().context("invalid process start time")
+    fields
+        .split_whitespace()
+        .nth(19)
+        .context("missing process start time")?
+        .parse()
+        .context("invalid process start time")
 }
 
 #[cfg(test)]
@@ -412,30 +466,38 @@ mod tests {
         let first = ExecTemplate::parse("viewer --profile \"Work profile\" %F %k");
         let first_path = PathBuf::from("/usr/share/applications/viewer.desktop");
         registry.insert_desktop_manifest(
-            manifest(app.as_str(), app.as_str()), first.clone(), first_path.clone(),
+            manifest(app.as_str(), app.as_str()),
+            first.clone(),
+            first_path.clone(),
         );
         let retained = registry.launch_template(&app).unwrap();
         assert_eq!(retained.exec, first);
         assert_eq!(retained.desktop_file_path, first_path);
 
         let replacement = ExecTemplate::parse("viewer --private %u");
-        let replacement_path = PathBuf::from("/home/person/.local/share/applications/viewer.desktop");
+        let replacement_path =
+            PathBuf::from("/home/person/.local/share/applications/viewer.desktop");
         registry.update_manifests(
-            [(manifest(app.as_str(), app.as_str()), replacement.clone(), replacement_path.clone())],
+            [(
+                manifest(app.as_str(), app.as_str()),
+                replacement.clone(),
+                replacement_path.clone(),
+            )],
             [&app],
         );
         let current = registry.launch_template(&app).unwrap();
         assert_eq!(current.exec, replacement);
         assert_eq!(current.desktop_file_path, replacement_path);
-        assert_eq!(retained.exec, first, "an outstanding snapshot is not mutated");
+        assert_eq!(
+            retained.exec, first,
+            "an outstanding snapshot is not mutated"
+        );
 
         registry.update_manifests(std::iter::empty(), [&app]);
         assert!(registry.manifest(&app).is_none());
         assert!(registry.launch_template(&app).is_none());
 
-        registry.insert_desktop_manifest(
-            manifest(app.as_str(), app.as_str()), first, first_path,
-        );
+        registry.insert_desktop_manifest(manifest(app.as_str(), app.as_str()), first, first_path);
         registry.insert_manifest(manifest(app.as_str(), app.as_str()));
         assert!(registry.manifest(&app).is_some());
         assert!(registry.launch_template(&app).is_none());
@@ -499,7 +561,10 @@ mod tests {
         assert!(!registry.contains_instance(id));
 
         registry.register_instance(InstanceRecord {
-            id, app_id: app.clone(), systemd_unit: unit::unit_name(&app, id), control_group: cg.clone(),
+            id,
+            app_id: app.clone(),
+            systemd_unit: unit::unit_name(&app, id),
+            control_group: cg.clone(),
         });
         let restored = registry.resolve_cgroup(cg, &WindowClaims::default());
         assert_eq!(restored.instance_id, Some(id));
@@ -541,7 +606,10 @@ mod tests {
         );
         assert_eq!(parse_proc_cgroup("1:name=systemd:/\n"), None);
         assert_eq!(parse_proc_cgroup("0::app.slice/forged.service\n"), None);
-        assert_eq!(parse_proc_cgroup("0::/user.slice/../forged.service\n"), None);
+        assert_eq!(
+            parse_proc_cgroup("0::/user.slice/../forged.service\n"),
+            None
+        );
     }
 
     #[test]
@@ -552,7 +620,9 @@ mod tests {
         let unit = unit::unit_name(&app, InstanceId::new());
         for path in [
             format!("/untrusted/app.slice/{unit}"),
-            format!("/user.slice/user-1000.slice/user@1000.service/app.slice/arbitrary.service/app.slice/{unit}"),
+            format!(
+                "/user.slice/user-1000.slice/user@1000.service/app.slice/arbitrary.service/app.slice/{unit}"
+            ),
             format!("/user.slice/user-1001.slice/user@1000.service/app.slice/{unit}"),
         ] {
             let resolution = registry.resolve_cgroup(PathBuf::from(path), &WindowClaims::default());
@@ -568,16 +638,48 @@ mod tests {
         let app: AppId = "org.templaros.Files".parse().unwrap();
         let id = InstanceId::new();
         let unit_name = unit::unit_name(&app, id);
-        let cg = PathBuf::from(format!("/user.slice/user-1000.slice/user@1000.service/app.slice/{unit_name}"));
+        let cg = PathBuf::from(format!(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/{unit_name}"
+        ));
         for record in [
-            InstanceRecord { id, app_id: app.clone(), systemd_unit: unit_name.clone(), control_group: PathBuf::from("/") },
-            InstanceRecord { id, app_id: app.clone(), systemd_unit: "arbitrary.service".into(), control_group: cg.clone() },
-            InstanceRecord { id, app_id: "org.example.Impostor".parse().unwrap(), systemd_unit: unit_name.clone(), control_group: cg.clone() },
+            InstanceRecord {
+                id,
+                app_id: app.clone(),
+                systemd_unit: unit_name.clone(),
+                control_group: PathBuf::from("/"),
+            },
+            InstanceRecord {
+                id,
+                app_id: app.clone(),
+                systemd_unit: "arbitrary.service".into(),
+                control_group: cg.clone(),
+            },
+            InstanceRecord {
+                id,
+                app_id: "org.example.Impostor".parse().unwrap(),
+                systemd_unit: unit_name.clone(),
+                control_group: cg.clone(),
+            },
         ] {
             registry.register_instance(record);
-            assert!(!registry.resolve_cgroup(cg.clone(), &WindowClaims::default()).confidence.is_verified());
+            assert!(
+                !registry
+                    .resolve_cgroup(cg.clone(), &WindowClaims::default())
+                    .confidence
+                    .is_verified()
+            );
         }
-        registry.register_instance(InstanceRecord { id, app_id: app, systemd_unit: unit_name, control_group: cg.clone() });
-        assert!(!registry.resolve_cgroup(cg.join("../forged"), &WindowClaims::default()).confidence.is_verified());
+        registry.register_instance(InstanceRecord {
+            id,
+            app_id: app,
+            systemd_unit: unit_name,
+            control_group: cg.clone(),
+        });
+        assert!(
+            !registry
+                .resolve_cgroup(cg.join("../forged"), &WindowClaims::default())
+                .confidence
+                .is_verified()
+        );
     }
 }

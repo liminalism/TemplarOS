@@ -67,7 +67,9 @@ pub trait BootManager: Send + Sync + std::fmt::Debug {
 /// Copy a candidate deployment's kernel image and initramfs from its snapshot into the
 /// hostd-owned ESP directory. Ubuntu-signed kernels only (Type #1 entries, no self-built UKI).
 pub fn place_boot_files(candidate_root: &Path, esp_root: &Path, id: &str) -> Result<PathBuf> {
-    if !crate::boot_entries::is_valid_deployment_id(id) { bail!("unsafe deployment id"); }
+    if !crate::boot_entries::is_valid_deployment_id(id) {
+        bail!("unsafe deployment id");
+    }
     let dest = esp_root.join("EFI/templaros").join(id);
     fs::create_dir_all(&dest).with_context(|| format!("creating {}", dest.display()))?;
     let boot = candidate_root.join("boot");
@@ -89,14 +91,21 @@ pub fn has_bootable_files(dir: &Path) -> bool {
 }
 
 pub(crate) fn matching_kernel_pair(dir: &Path) -> Option<(PathBuf, PathBuf)> {
-    fs::read_dir(dir).ok()?.filter_map(Result::ok).filter_map(|entry| {
-        let path = entry.path();
-        let version = path.file_name()?.to_str()?.strip_prefix("vmlinuz-")?;
-        let initrd = dir.join(format!("initrd.img-{version}"));
-        initrd.is_file().then_some((path, initrd))
-    }).max_by(|(left, _), (right, _)| {
-        kernel_version_cmp(left.file_name().unwrap().to_str().unwrap(), right.file_name().unwrap().to_str().unwrap())
-    })
+    fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let version = path.file_name()?.to_str()?.strip_prefix("vmlinuz-")?;
+            let initrd = dir.join(format!("initrd.img-{version}"));
+            initrd.is_file().then_some((path, initrd))
+        })
+        .max_by(|(left, _), (right, _)| {
+            kernel_version_cmp(
+                left.file_name().unwrap().to_str().unwrap(),
+                right.file_name().unwrap().to_str().unwrap(),
+            )
+        })
 }
 
 fn kernel_version_cmp(mut left: &str, mut right: &str) -> std::cmp::Ordering {
@@ -109,15 +118,22 @@ fn kernel_version_cmp(mut left: &str, mut right: &str) -> std::cmp::Ordering {
             let b_end = right.bytes().take_while(u8::is_ascii_digit).count();
             let a_number = left[..a_end].trim_start_matches('0');
             let b_number = right[..b_end].trim_start_matches('0');
-            let order = a_number.len().cmp(&b_number.len()).then_with(|| a_number.cmp(b_number));
-            if order != Ordering::Equal { return order; }
+            let order = a_number
+                .len()
+                .cmp(&b_number.len())
+                .then_with(|| a_number.cmp(b_number));
+            if order != Ordering::Equal {
+                return order;
+            }
             left = &left[a_end..];
             right = &right[b_end..];
         } else {
             let a = left.chars().next().unwrap();
             let b = right.chars().next().unwrap();
             let order = a.cmp(&b);
-            if order != Ordering::Equal { return order; }
+            if order != Ordering::Equal {
+                return order;
+            }
             left = &left[a.len_utf8()..];
             right = &right[b.len_utf8()..];
         }
@@ -148,7 +164,10 @@ impl SystemdBoot {
 impl BootManager for SystemdBoot {
     fn stage_candidate(&self, candidate: &Deployment, tries: u8) -> Result<()> {
         if !crate::boot_entries::is_valid_deployment_id(&candidate.id)
-            || !crate::layout::safe_subvolume(&candidate.subvolume) { bail!("unsafe boot identity"); }
+            || !crate::layout::safe_subvolume(&candidate.subvolume)
+        {
+            bail!("unsafe boot identity");
+        }
         let entry = self.entry_path(&candidate.id, Some(tries));
         if let Some(parent) = entry.parent() {
             fs::create_dir_all(parent)?;
@@ -164,30 +183,37 @@ impl BootManager for SystemdBoot {
             use std::fmt::Write as _;
             let _ = writeln!(body, "# nvidia-modules {modules}");
         }
-        write_atomically(&entry, body.as_bytes()).with_context(|| format!("writing {}", entry.display()))?;
+        write_atomically(&entry, body.as_bytes())
+            .with_context(|| format!("writing {}", entry.display()))?;
         // systemd-boot normalizes boot counters out of the selectable entry ID.
         // Keep +tries in the file name, but select the stable ID the loader advertises.
         let stable_id = format!("templaros-{}.conf", candidate.id);
         let esp = format!("--esp-path={}", self.esp_root.display());
-        self.commands.run("bootctl", &[&esp, "set-default", &stable_id])?;
+        self.commands
+            .run("bootctl", &[&esp, "set-default", &stable_id])?;
         Ok(())
     }
 
     fn mark_good(&self) -> Result<()> {
-        self.commands.run("/usr/lib/systemd/systemd-bless-boot", &["good"])?;
+        self.commands
+            .run("/usr/lib/systemd/systemd-bless-boot", &["good"])?;
         Ok(())
     }
 
     fn rollback(&self, previous: &Deployment) -> Result<()> {
         if !crate::boot_entries::is_valid_deployment_id(&previous.id)
-            || !crate::layout::safe_subvolume(&previous.subvolume) { bail!("unsafe rollback boot identity"); }
+            || !crate::layout::safe_subvolume(&previous.subvolume)
+        {
+            bail!("unsafe rollback boot identity");
+        }
         let entry = self.entry_path(&previous.id, None);
         let file_name = entry
             .file_name()
             .and_then(|n| n.to_str())
             .context("entry path has no file name")?;
         let esp = format!("--esp-path={}", self.esp_root.display());
-        self.commands.run("bootctl", &[&esp, "set-default", file_name])?;
+        self.commands
+            .run("bootctl", &[&esp, "set-default", file_name])?;
         Ok(())
     }
 
@@ -251,7 +277,10 @@ impl Grub {
         let remaining = tries.saturating_sub(1);
         let text = fs::read_to_string(self.counter_path())?;
         let identity = text.lines().skip(2).collect::<Vec<_>>().join("\n");
-        write_atomically(&self.counter_path(), format!("{id}\n{remaining}\n{identity}\n").as_bytes())?;
+        write_atomically(
+            &self.counter_path(),
+            format!("{id}\n{remaining}\n{identity}\n").as_bytes(),
+        )?;
         if remaining > 0 {
             self.select_entry("grub-reboot", &id)?;
         }
@@ -262,8 +291,14 @@ impl Grub {
 impl BootManager for Grub {
     fn stage_candidate(&self, candidate: &Deployment, tries: u8) -> Result<()> {
         fs::create_dir_all(&self.state_dir)?;
-        write_atomically(&self.counter_path(),
-            format!("{}\n{}\n{}\n{}\n", candidate.id, tries, candidate.subvolume, candidate.read_only).as_bytes())?;
+        write_atomically(
+            &self.counter_path(),
+            format!(
+                "{}\n{}\n{}\n{}\n",
+                candidate.id, tries, candidate.subvolume, candidate.read_only
+            )
+            .as_bytes(),
+        )?;
         // The entries have to exist before `grub-reboot` names one of them: `GRUB_DEFAULT=saved`
         // selects a menu entry by id, and an id GRUB cannot find is a boot into whatever the
         // firmware picks instead. Written whole, so the known-good entry (which
@@ -277,8 +312,12 @@ impl BootManager for Grub {
         let Some((id, _)) = self.staged()? else {
             let booted = fs::read_to_string(self.sysroot.join("proc/cmdline"))?;
             if self.known_good_entry()?.is_some_and(|entry| {
-                booted.split_whitespace().any(|word| word.strip_prefix("templaros.deployment=") == Some(entry.id.as_str()))
-            }) { return Ok(()); }
+                booted.split_whitespace().any(|word| {
+                    word.strip_prefix("templaros.deployment=") == Some(entry.id.as_str())
+                })
+            }) {
+                return Ok(());
+            }
             bail!("no candidate is staged to promote");
         };
         let subvolume = fs::read_to_string(self.counter_path())?
@@ -342,7 +381,10 @@ impl BootManager for Grub {
 /// entry ages out. `/proc/cmdline` says what booted, never what the alternative was.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeploymentRegistry {
-    #[serde(default = "crate::persistence::schema", deserialize_with = "crate::persistence::supported_schema")]
+    #[serde(
+        default = "crate::persistence::schema",
+        deserialize_with = "crate::persistence::supported_schema"
+    )]
     pub schema: u32,
     #[serde(default)]
     pub deployments: Vec<Deployment>,
@@ -359,8 +401,13 @@ pub struct DeploymentRegistry {
 
 impl Default for DeploymentRegistry {
     fn default() -> Self {
-        Self { schema: crate::persistence::SCHEMA, deployments: Vec::new(),
-            current: None, previous: None, known_good: None }
+        Self {
+            schema: crate::persistence::SCHEMA,
+            deployments: Vec::new(),
+            current: None,
+            previous: None,
+            known_good: None,
+        }
     }
 }
 
@@ -480,7 +527,9 @@ pub fn load_registry(path: &Path) -> Result<DeploymentRegistry> {
 
 /// Persist the registry atomically (write-temp-then-rename, matching the transaction journal).
 pub fn save_registry(path: &Path, registry: &DeploymentRegistry) -> Result<()> {
-    if registry.schema != crate::persistence::SCHEMA { bail!("refusing unsupported registry schema"); }
+    if registry.schema != crate::persistence::SCHEMA {
+        bail!("refusing unsupported registry schema");
+    }
     // Reading first rejects a newer file even if a caller supplies an older in-memory value.
     load_registry(path)?;
     crate::persistence::backup_before_write(path)?;
@@ -501,11 +550,13 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("json.tmp");
     {
         use std::io::Write;
-        let mut file = fs::File::create(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
+        let mut file =
+            fs::File::create(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
         file.write_all(bytes)?;
         file.sync_all()?;
     }
-    fs::rename(&tmp, path).with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
     crate::persistence::sync_parent(path)
 }
 
@@ -528,7 +579,11 @@ pub fn detect_backend(
         Box::new(Grub {
             commands,
             state_dir,
-            boot_root: if read_only { esp.join("EFI/templaros") } else { root.join("boot") },
+            boot_root: if read_only {
+                esp.join("EFI/templaros")
+            } else {
+                root.join("boot")
+            },
             sysroot: root.to_path_buf(),
         })
     }
@@ -558,7 +613,13 @@ mod tests {
         fs::write(dir.path().join("boot/efi/loader/loader.conf"), "").unwrap();
         let commands = Arc::new(FakeCommandRunner::default());
         let layout = crate::layout::DeploymentLayout::read(dir.path()).unwrap();
-        let backend = detect_backend(dir.path(), commands, dir.path().join("state"), layout.read_only, layout.mounted_esp);
+        let backend = detect_backend(
+            dir.path(),
+            commands,
+            dir.path().join("state"),
+            layout.read_only,
+            layout.mounted_esp,
+        );
         assert_eq!(backend.name(), "systemd-boot");
     }
 
@@ -567,10 +628,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let commands = Arc::new(FakeCommandRunner::default());
         let layout = crate::layout::DeploymentLayout::read(dir.path()).unwrap();
-        let backend = detect_backend(dir.path(), commands, dir.path().join("state"), layout.read_only, layout.mounted_esp);
+        let backend = detect_backend(
+            dir.path(),
+            commands,
+            dir.path().join("state"),
+            layout.read_only,
+            layout.mounted_esp,
+        );
         assert_eq!(backend.name(), "grub");
     }
-
 
     #[test]
     fn grub_owns_its_own_tries_counter() {
@@ -584,7 +650,13 @@ mod tests {
         };
         backend.stage_candidate(&deployment("cand1"), 3).unwrap();
         assert_eq!(backend.staged().unwrap(), Some(("cand1".to_owned(), 3)));
-        assert_eq!(commands.calls()[0].args, [format!("--boot-directory={}", dir.path().join("boot").display()), "cand1".into()]);
+        assert_eq!(
+            commands.calls()[0].args,
+            [
+                format!("--boot-directory={}", dir.path().join("boot").display()),
+                "cand1".into()
+            ]
+        );
 
         assert_eq!(backend.decrement().unwrap(), 2);
         assert_eq!(backend.staged().unwrap(), Some(("cand1".to_owned(), 2)));
@@ -609,7 +681,10 @@ mod tests {
         assert!(backend.staged().unwrap().is_none());
         assert_eq!(
             commands.calls().last().unwrap().args,
-            vec![format!("--boot-directory={}", dir.path().join("boot").display()), "prev1".to_owned()]
+            vec![
+                format!("--boot-directory={}", dir.path().join("boot").display()),
+                "prev1".to_owned()
+            ]
         );
     }
 
@@ -700,7 +775,10 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), future);
         fs::write(&path, b"[]").unwrap();
         save_registry(&path, &load_registry(&path).unwrap()).unwrap();
-        assert_eq!(fs::read(path.with_extension("pre-schema-1")).unwrap(), b"[]");
+        assert_eq!(
+            fs::read(path.with_extension("pre-schema-1")).unwrap(),
+            b"[]"
+        );
     }
 
     #[test]
@@ -711,6 +789,13 @@ mod tests {
             fs::write(dir.path().join(format!("initrd.img-{version}")), b"initrd").unwrap();
         }
         fs::write(dir.path().join("vmlinuz-99.0"), b"unpaired").unwrap();
-        assert_eq!(matching_kernel_pair(dir.path()).unwrap().0.file_name().unwrap(), "vmlinuz-7.2.0-10");
+        assert_eq!(
+            matching_kernel_pair(dir.path())
+                .unwrap()
+                .0
+                .file_name()
+                .unwrap(),
+            "vmlinuz-7.2.0-10"
+        );
     }
 }

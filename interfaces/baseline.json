@@ -150,6 +150,7 @@
       "methods": {
         "ChangesSince": "(tu)->(s)",
         "CloseCursor": "(s)->()",
+        "AcceptVolume": "(xs)->()",
         "ConfigureRoot": "(sss)->(x)",
         "FetchPage": "(suu)->(s)",
         "Observe": "(bt)->()",
@@ -304,6 +305,18 @@
         "MarkGood": "()->()",
         "Rollback": "(s)->()",
         "Stage": "(sy)->()"
+      },
+      "signals": {},
+      "properties": {}
+    },
+    "org.templaros.Host.DisplayRecovery1": {
+      "methods": {
+        "AcquireSecondary": "(sss)->(h)",
+        "BeginSecondary": "(sss)->()",
+        "CloseSecondary": "(sss)->()",
+        "FirstPresented": "(sss)->()",
+        "ResumeSecondary": "(sss)->()",
+        "Start": "(s)->(ss)"
       },
       "signals": {},
       "properties": {}

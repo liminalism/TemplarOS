@@ -3,7 +3,11 @@
 //! preserves unmanaged bytes, backs up the previous file, and detects intervening edits.
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, io::Write as _, path::{Path, PathBuf}};
+use std::{
+    collections::HashSet,
+    io::Write as _,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Debug)]
 pub struct Bookmarks(pub templar_state::Store);
@@ -30,17 +34,27 @@ static EXPORT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 impl Bookmarks {
     pub fn set(&self, path: &Path, bookmarked: bool) -> Result<()> {
-        ensure!(path.is_absolute(), "A bookmark needs an absolute folder path");
-        let text = path.to_str().context("Path cannot be represented on this interface")?;
+        ensure!(
+            path.is_absolute(),
+            "A bookmark needs an absolute folder path"
+        );
+        let text = path
+            .to_str()
+            .context("Path cannot be represented on this interface")?;
         if bookmarked {
             ensure!(path.is_dir(), "Only folders can be bookmarked");
-            let label = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
+            let label = path
+                .file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy();
             self.0.lock().execute(
                 "INSERT INTO folder_bookmarks(path,label,at_ms) VALUES (?1,?2,?3) ON CONFLICT(path) DO NOTHING",
                 rusqlite::params![text, label, templar_state::now_ms()],
             )?;
         } else {
-            self.0.lock().execute("DELETE FROM folder_bookmarks WHERE path=?1", [text])?;
+            self.0
+                .lock()
+                .execute("DELETE FROM folder_bookmarks WHERE path=?1", [text])?;
         }
         // Changing Home places never writes another application's bookmarks implicitly.
         Ok(())
@@ -69,9 +83,13 @@ impl Bookmarks {
                 .context("Invalid bookmark ownership sidecar; refusing to replace it")?,
             None => OwnedEntries::default(),
         };
-        let mut bytes = original.as_ref().map_or_else(Vec::new, |version| version.bytes.clone());
-        let mut uris: HashSet<Vec<u8>> = bytes.split(|byte| *byte == b'\n')
-            .filter_map(bookmark_uri).collect();
+        let mut bytes = original
+            .as_ref()
+            .map_or_else(Vec::new, |version| version.bytes.clone());
+        let mut uris: HashSet<Vec<u8>> = bytes
+            .split(|byte| *byte == b'\n')
+            .filter_map(bookmark_uri)
+            .collect();
         // Retain evidence only for owned lines still present verbatim. Changed/removed native
         // entries are not reclaimed, and a matching pre-existing URI is never made ours.
         let lines: HashSet<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
@@ -88,29 +106,38 @@ impl Bookmarks {
                 continue;
             }
             let mut line = uri;
-            if root.path.file_name().is_some_and(|name| name != root.label.as_str()) {
+            if root
+                .path
+                .file_name()
+                .is_some_and(|name| name != root.label.as_str())
+            {
                 line.push(' ');
                 line.push_str(&root.label.replace(['\r', '\n'], " "));
             }
-            if !bytes.is_empty() && !bytes.ends_with(b"\n") { bytes.push(b'\n'); }
+            if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+                bytes.push(b'\n');
+            }
             bytes.extend_from_slice(line.as_bytes());
             bytes.push(b'\n');
             owned.lines.push(line);
             added += 1;
         }
         let mut result = ExportResult {
-            path: file.to_path_buf(), added, already_present, backup: None, ownership,
+            path: file.to_path_buf(),
+            added,
+            already_present,
+            backup: None,
+            ownership,
         };
         if added == 0 {
             if owned.lines.len() != previous_owned {
                 let tracking = prepared(parent, &serde_json::to_vec(&owned)?)?;
                 before_publish();
-                ensure!(FileVersion::read(file)? == original, "Bookmark export conflict: native bookmarks changed");
-                if let Some(expected) = &owned_version {
-                    publish_checked(tracking, &result.ownership, expected, || {})?;
-                } else {
-                    tracking.persist_noclobber(&result.ownership).map_err(|error| error.error)?;
-                }
+                ensure!(
+                    FileVersion::read(file)? == original,
+                    "Bookmark export conflict: native bookmarks changed"
+                );
+                publish_version(tracking, &result.ownership, owned_version.as_ref())?;
                 std::fs::File::open(parent)?.sync_all()?;
             }
             return Ok(result);
@@ -121,40 +148,45 @@ impl Bookmarks {
         if let Some(version) = &original {
             let backup = prepared(parent, &version.bytes)?;
             let name = parent.join(format!("bookmarks.backup-{}", uuid::Uuid::new_v4()));
-            backup.persist_noclobber(&name).map_err(|error| error.error)?;
+            backup
+                .persist_noclobber(&name)
+                .map_err(|error| error.error)?;
             result.backup = Some(name);
             std::fs::File::open(parent)?.sync_all()?;
         }
         before_publish();
-        ensure!(FileVersion::read(file)? == original && FileVersion::read(&result.ownership)? == owned_version,
-            "Bookmark export conflict: the bookmarks or ownership file changed; retry from a fresh read");
-        if let Some(expected) = &original {
-            publish_checked(replacement, file, expected, || {})?;
-        } else {
-            replacement.persist_noclobber(file).map_err(|error| error.error)?;
-        }
+        ensure!(
+            FileVersion::read(file)? == original
+                && FileVersion::read(&result.ownership)? == owned_version,
+            "Bookmark export conflict: the bookmarks or ownership file changed; retry from a fresh read"
+        );
+        publish_version(replacement, file, original.as_ref())?;
         // Record only a confirmed publication. A crash can lose our ownership evidence but
         // cannot falsely adopt a line another application added after an aborted export.
-        if let Some(expected) = &owned_version {
-            publish_checked(tracking, &result.ownership, expected, || {})?;
-        } else {
-            tracking.persist_noclobber(&result.ownership).map_err(|error| error.error)?;
-        }
+        publish_version(tracking, &result.ownership, owned_version.as_ref())?;
         std::fs::File::open(parent)?.sync_all()?;
         Ok(result)
     }
 
     pub fn roots(&self) -> Result<Vec<crate::browse::BrowserRoot>> {
         let db = self.0.lock();
-        let mut query = db.prepare("SELECT path,label FROM folder_bookmarks ORDER BY at_ms,path")?;
-        let rows = query.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        let mut query =
+            db.prepare("SELECT path,label FROM folder_bookmarks ORDER BY at_ms,path")?;
+        let rows = query.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
         rows.map(|row| {
             let (path, label) = row?;
             Ok(crate::browse::BrowserRoot {
-                key: format!("bookmark:{path}"), label, available: Path::new(&path).is_dir(),
-                path: path.into(), kind: crate::browse::RootKind::Place, volume: None,
+                key: format!("bookmark:{path}"),
+                label,
+                available: Path::new(&path).is_dir(),
+                path: path.into(),
+                kind: crate::browse::RootKind::Place,
+                volume: None,
             })
-        }).collect()
+        })
+        .collect()
     }
 }
 
@@ -169,28 +201,43 @@ struct FileVersion {
 
 impl FileVersion {
     fn read(path: &Path) -> Result<Option<Self>> {
-        use std::os::unix::fs::MetadataExt as _;
+        use std::{
+            io::Read as _,
+            os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
+        };
         let metadata = match std::fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        ensure!(metadata.is_file() && !metadata.file_type().is_symlink(),
-            "Refusing to replace a non-regular bookmark file: {}", path.display());
-        use std::os::unix::fs::OpenOptionsExt as _;
-        use std::io::Read as _;
-        let mut file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)?;
+        ensure!(
+            metadata.is_file() && !metadata.file_type().is_symlink(),
+            "Refusing to replace a non-regular bookmark file: {}",
+            path.display()
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
         let opened = file.metadata()?;
-        ensure!(opened.dev() == metadata.dev() && opened.ino() == metadata.ino(),
-            "Bookmark export conflict: the file identity changed while opening");
+        ensure!(
+            opened.dev() == metadata.dev() && opened.ino() == metadata.ino(),
+            "Bookmark export conflict: the file identity changed while opening"
+        );
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         let after = file.metadata()?;
-        ensure!(opened.mtime() == after.mtime() && opened.mtime_nsec() == after.mtime_nsec()
-            && opened.ctime() == after.ctime() && opened.ctime_nsec() == after.ctime_nsec(),
-            "Bookmark export conflict: the file changed while reading");
+        ensure!(
+            opened.mtime() == after.mtime()
+                && opened.mtime_nsec() == after.mtime_nsec()
+                && opened.ctime() == after.ctime()
+                && opened.ctime_nsec() == after.ctime_nsec(),
+            "Bookmark export conflict: the file changed while reading"
+        );
         Ok(Some(Self {
-            bytes, dev: opened.dev(), inode: opened.ino(),
+            bytes,
+            dev: opened.dev(),
+            inode: opened.ino(),
             modified_ns: (opened.mtime(), opened.mtime_nsec()),
             changed_ns: (opened.ctime(), opened.ctime_nsec()),
         }))
@@ -198,8 +245,10 @@ impl FileVersion {
 
     // Moving the inode can change ctime; its identity, data and mtime must still match.
     fn same_after_move(&self, other: &Self) -> bool {
-        self.dev == other.dev && self.inode == other.inode
-            && self.modified_ns == other.modified_ns && self.bytes == other.bytes
+        self.dev == other.dev
+            && self.inode == other.inode
+            && self.modified_ns == other.modified_ns
+            && self.bytes == other.bytes
     }
 }
 
@@ -210,45 +259,90 @@ fn prepared(parent: &Path, bytes: &[u8]) -> Result<tempfile::NamedTempFile> {
     Ok(file)
 }
 
+fn publish_version(
+    replacement: tempfile::NamedTempFile,
+    destination: &Path,
+    expected: Option<&FileVersion>,
+) -> Result<()> {
+    if let Some(expected) = expected {
+        publish_checked(replacement, destination, expected, || {})
+    } else {
+        replacement
+            .persist_noclobber(destination)
+            .map_err(|error| error.error)?;
+        Ok(())
+    }
+}
+
 /// Linux exchange lets us inspect the displaced inode instead of blindly replacing a pathname
 /// after an optimistic check. A conflicting write is restored when possible and always retained
 /// in a recovery file, including a second writer racing the rollback.
 fn publish_checked(
-    replacement: tempfile::NamedTempFile, destination: &Path, expected: &FileVersion,
+    replacement: tempfile::NamedTempFile,
+    destination: &Path,
+    expected: &FileVersion,
     before_exchange: impl FnOnce(),
 ) -> Result<()> {
-    let published = FileVersion::read(replacement.path())?.context("Prepared bookmark export disappeared")?;
-    ensure!(FileVersion::read(destination)?.as_ref() == Some(expected), "Bookmark export conflict: native bookmarks changed");
+    let published =
+        FileVersion::read(replacement.path())?.context("Prepared bookmark export disappeared")?;
+    ensure!(
+        FileVersion::read(destination)?.as_ref() == Some(expected),
+        "Bookmark export conflict: native bookmarks changed"
+    );
     before_exchange();
     exchange(replacement.path(), destination)?;
-    if FileVersion::read(replacement.path()).ok().flatten().is_some_and(|displaced| displaced.same_after_move(expected)) {
+    if FileVersion::read(replacement.path())
+        .ok()
+        .flatten()
+        .is_some_and(|displaced| displaced.same_after_move(expected))
+    {
         return Ok(());
     }
     // Never knowingly roll back over an independently replaced destination. If a writer races
     // this check, exchange retains that writer's file at the recovery path rather than deleting it.
-    let rollback = if FileVersion::read(destination).ok().flatten().is_some_and(|current| current.same_after_move(&published)) {
+    let rollback = if FileVersion::read(destination)
+        .ok()
+        .flatten()
+        .is_some_and(|current| current.same_after_move(&published))
+    {
         exchange(replacement.path(), destination).err()
-    } else { None };
+    } else {
+        None
+    };
     let (_file, recovery) = replacement.keep().map_err(|error| error.error)?;
-    if let Some(parent) = destination.parent() { std::fs::File::open(parent)?.sync_all()?; }
-    anyhow::bail!("Bookmark export conflict: intervening changes preserved; recovery file: {}{}",
-        recovery.display(), rollback.map_or_else(String::new, |error| format!("; rollback failed: {error}")))
+    if let Some(parent) = destination.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    anyhow::bail!(
+        "Bookmark export conflict: intervening changes preserved; recovery file: {}{}",
+        recovery.display(),
+        rollback.map_or_else(String::new, |error| format!("; rollback failed: {error}"))
+    )
 }
 
 fn exchange(left: &Path, right: &Path) -> std::io::Result<()> {
-    rustix::fs::renameat_with(rustix::fs::CWD, left, rustix::fs::CWD, right, rustix::fs::RenameFlags::EXCHANGE)
-        .map_err(std::io::Error::from)
+    rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        left,
+        rustix::fs::CWD,
+        right,
+        rustix::fs::RenameFlags::EXCHANGE,
+    )
+    .map_err(std::io::Error::from)
 }
 
 fn gtk_bookmarks_path() -> Option<PathBuf> {
-    let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
     Some(config.join("gtk-3.0/bookmarks"))
 }
 
 fn bookmark_uri(line: &[u8]) -> Option<Vec<u8>> {
-    let uri = line.split(|byte| byte.is_ascii_whitespace()).next()?;
-    if uri.is_empty() { return None; }
+    let uri = line.split(u8::is_ascii_whitespace).next()?;
+    if uri.is_empty() {
+        return None;
+    }
     let mut decoded = Vec::with_capacity(uri.len());
     let mut offset = 0;
     while offset < uri.len() {
@@ -274,8 +368,12 @@ fn uri_encode(path: &str) -> String {
     let mut encoded = String::with_capacity(path.len());
     for byte in path.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => encoded.push(byte as char),
-            _ => { let _ = write!(encoded, "%{byte:02X}"); }
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char);
+            }
+            _ => {
+                let _ = write!(encoded, "%{byte:02X}");
+            }
         }
     }
     encoded
@@ -306,8 +404,12 @@ mod tests {
         assert_eq!(std::fs::read(result.backup.unwrap()).unwrap(), native);
         let bytes = std::fs::read(&file).unwrap();
         assert!(bytes.starts_with(native));
-        assert!(String::from_utf8_lossy(&bytes).contains("My%20Notes%20%C3%A9%20%3B%20%24%28not-a-command%29"));
-        let tracking: OwnedEntries = serde_json::from_slice(&std::fs::read(&result.ownership).unwrap()).unwrap();
+        assert!(
+            String::from_utf8_lossy(&bytes)
+                .contains("My%20Notes%20%C3%A9%20%3B%20%24%28not-a-command%29")
+        );
+        let tracking: OwnedEntries =
+            serde_json::from_slice(&std::fs::read(&result.ownership).unwrap()).unwrap();
         assert_eq!(tracking.lines.len(), 1);
         assert!(!tracking.lines[0].contains("old-place"));
         // A new service handle does not rewrite native edits, and unbookmarking is not deletion.
@@ -323,7 +425,10 @@ mod tests {
     fn bookmark_export_deduplicates_native_uri_without_claiming_ownership() {
         let (_home, bookmarks, folder, file) = fixture();
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        let native = format!("file://localhost{} Native label\n", uri_encode(folder.to_str().unwrap()).replace("%3B", "%3b"));
+        let native = format!(
+            "file://localhost{} Native label\n",
+            uri_encode(folder.to_str().unwrap()).replace("%3B", "%3b")
+        );
         std::fs::write(&file, &native).unwrap();
         let result = bookmarks.export_gtk_bookmarks(&file).unwrap();
         assert_eq!(result.added, 0);
@@ -336,13 +441,20 @@ mod tests {
     fn bookmark_export_drops_ownership_of_edited_native_labels_without_rewriting_gtk() {
         let (_home, bookmarks, folder, file) = fixture();
         let exported = bookmarks.export_gtk_bookmarks(&file).unwrap();
-        let native = format!("file://{} Edited native label\n", uri_encode(folder.to_str().unwrap()));
+        let native = format!(
+            "file://{} Edited native label\n",
+            uri_encode(folder.to_str().unwrap())
+        );
         std::fs::write(&file, &native).unwrap();
         let result = bookmarks.export_gtk_bookmarks(&file).unwrap();
         assert_eq!((result.added, result.already_present), (0, 1));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), native);
-        let tracking: OwnedEntries = serde_json::from_slice(&std::fs::read(exported.ownership).unwrap()).unwrap();
-        assert!(tracking.lines.is_empty(), "edited native entry was falsely adopted");
+        let tracking: OwnedEntries =
+            serde_json::from_slice(&std::fs::read(exported.ownership).unwrap()).unwrap();
+        assert!(
+            tracking.lines.is_empty(),
+            "edited native entry was falsely adopted"
+        );
     }
 
     #[test]
@@ -350,10 +462,18 @@ mod tests {
         let (_home, bookmarks, _folder, file) = fixture();
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, b"file:///before\n").unwrap();
-        let error = bookmarks.export_with(&file, || std::fs::write(&file, b"file:///intervening\n").unwrap()).unwrap_err();
+        let error = bookmarks
+            .export_with(&file, || {
+                std::fs::write(&file, b"file:///intervening\n").unwrap();
+            })
+            .unwrap_err();
         assert!(error.to_string().contains("conflict"));
         assert_eq!(std::fs::read(&file).unwrap(), b"file:///intervening\n");
-        assert!(!file.with_file_name("bookmarks.templaros-owned.json").exists());
+        assert!(
+            !file
+                .with_file_name("bookmarks.templaros-owned.json")
+                .exists()
+        );
     }
 
     #[test]
@@ -366,10 +486,17 @@ mod tests {
         let recovery = replacement.path().to_path_buf();
         let error = publish_checked(replacement, &destination, &expected, || {
             std::fs::write(&destination, b"file:///native-intervening\n").unwrap();
-        }).unwrap_err();
+        })
+        .unwrap_err();
         assert!(error.to_string().contains("conflict"));
-        assert_eq!(std::fs::read(&destination).unwrap(), b"file:///native-intervening\n");
-        assert_eq!(std::fs::read(&recovery).unwrap(), b"file:///original\nfile:///templar\n");
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"file:///native-intervening\n"
+        );
+        assert_eq!(
+            std::fs::read(&recovery).unwrap(),
+            b"file:///original\nfile:///templar\n"
+        );
     }
 
     #[test]
@@ -383,7 +510,11 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"keep");
         std::fs::remove_file(&file).unwrap();
         std::fs::write(&file, b"file:///native\n").unwrap();
-        std::fs::write(file.with_file_name("bookmarks.templaros-owned.json"), b"not json").unwrap();
+        std::fs::write(
+            file.with_file_name("bookmarks.templaros-owned.json"),
+            b"not json",
+        )
+        .unwrap();
         assert!(bookmarks.export_gtk_bookmarks(&file).is_err());
         assert_eq!(std::fs::read(&file).unwrap(), b"file:///native\n");
     }

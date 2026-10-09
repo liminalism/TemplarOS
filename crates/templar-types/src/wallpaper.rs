@@ -5,15 +5,37 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SizingMode { #[default] Fill, Fit, Stretch, Center, Actual, Tile }
+pub enum SizingMode {
+    #[default]
+    Fill,
+    Fit,
+    Stretch,
+    Center,
+    Actual,
+    Tile,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SourceOrder { #[default] Random, Sequential, Shuffle }
+pub enum SourceOrder {
+    #[default]
+    Random,
+    Sequential,
+    Shuffle,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum TextureLimit { #[default] Native, MaxEdge { pixels: u32 }, MaxPixels { pixels: u64 } }
+pub enum TextureLimit {
+    #[default]
+    Native,
+    MaxEdge {
+        pixels: u32,
+    },
+    MaxPixels {
+        pixels: u64,
+    },
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -47,10 +69,16 @@ pub struct WallpaperConfig {
 impl Default for WallpaperConfig {
     fn default() -> Self {
         Self {
-            sources: Vec::new(), recursive: false, order: SourceOrder::Random,
-            interval_seconds: None, sizing: SizingMode::Fill, ground: [24, 26, 30, 255],
-            texture: TextureLimit::Native, worker_budget_bytes: 192 * 1024 * 1024,
-            transition_budget_bytes: 256 * 1024 * 1024, quantize_colors: Some(256),
+            sources: Vec::new(),
+            recursive: false,
+            order: SourceOrder::Random,
+            interval_seconds: None,
+            sizing: SizingMode::Fill,
+            ground: [24, 26, 30, 255],
+            texture: TextureLimit::Native,
+            worker_budget_bytes: 192 * 1024 * 1024,
+            transition_budget_bytes: 256 * 1024 * 1024,
+            quantize_colors: Some(256),
             outputs: BTreeMap::new(),
         }
     }
@@ -58,7 +86,10 @@ impl Default for WallpaperConfig {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PixelFormat { Rgba8, Indexed8 }
+pub enum PixelFormat {
+    Rgba8,
+    Indexed8,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RasterDescriptor {

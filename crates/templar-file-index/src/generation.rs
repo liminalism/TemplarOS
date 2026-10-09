@@ -19,7 +19,6 @@ use crate::{
         RootId, RootPolicy, RootState, RootStatus, ScanScope, StaleReason, now_ms,
     },
     mutation::{Change, ChangeOp},
-    schema,
 };
 use rusqlite::{Connection, Transaction};
 use std::{
@@ -148,6 +147,10 @@ pub struct ScannedEntry {
     pub meta: EntryMeta,
 }
 
+/// Staging flushes between WAL checkpoint requests: at the default 4096 rows per flush this is
+/// one request per ~65k staged rows, cheap because requests coalesce while one is queued.
+const CHECKPOINT_EVERY_FLUSHES: u64 = 16;
+
 /// An open generation. Feed it entries, then commit or abort.
 #[derive(Debug)]
 pub struct ScanSession {
@@ -158,6 +161,7 @@ pub struct ScanSession {
     claim: Option<crate::ScanClaim>,
     buffered: Vec<(ScannedEntry, Coverage)>,
     staged: u64,
+    flushes: u64,
     limited: Option<BudgetKind>,
     stopped: bool,
     permission_denied: u64,
@@ -171,11 +175,24 @@ pub struct ScanSession {
     /// What the root said about itself before this pass marked it `building`. A subtree pass may
     /// only make that answer worse, so it has to carry the answer it started from.
     prior: RootStatus,
+    /// Registered roots strictly inside this one. Each owns its own path and everything under
+    /// it, so this pass records nothing there and never descends into it.
+    boundaries: Vec<NativePath>,
     started: Instant,
     finished: bool,
 }
 
 impl ScanSession {
+    pub(crate) fn mount_boundary(&self, path: &NativePath) -> Result<bool> {
+        if self.options.policy.cross_mount {
+            return Ok(false);
+        }
+        let Some(root_mount) = self.prior.volume.mount_id else {
+            return Ok(false);
+        };
+        let observed = self.index.config().volume_provider.mount_id(path)?;
+        Ok(observed.is_none_or(|mount| mount != root_mount))
+    }
     #[must_use]
     pub fn generation(&self) -> Generation {
         self.generation
@@ -254,9 +271,17 @@ impl ScanSession {
 
     /// The tier a path is stored at under this pass's policy, or `None` when no row is written
     /// for it. The one answer the walker asks before descending and `observe` stamps on the row,
-    /// so the two cannot drift.
+    /// so the two cannot drift. A path at or under a nested registered root is `None`: that root
+    /// owns it.
     #[must_use]
     pub fn coverage_for(&self, path: &NativePath, kind: EntryKind) -> Option<Coverage> {
+        if self
+            .boundaries
+            .iter()
+            .any(|boundary| path.starts_with(boundary))
+        {
+            return None;
+        }
         match &self.options.base {
             Some(base) => self.options.policy.stored_coverage_within(base, path, kind),
             None => self.options.policy.stored_coverage(path, kind),
@@ -300,6 +325,13 @@ impl ScanSession {
     fn flush(&mut self) -> Result<()> {
         if self.buffered.is_empty() {
             return Ok(());
+        }
+        self.flushes += 1;
+        // Staging transactions never counted toward the commit cadence, so a long scan grew the
+        // WAL until commit and then paid it all back in one checkpoint cliff. Ask every few
+        // flushes instead; requests coalesce while one is queued, so this costs nothing extra.
+        if self.flushes.is_multiple_of(CHECKPOINT_EVERY_FLUSHES) {
+            self.index.request_wal_checkpoint();
         }
         let rows = std::mem::take(&mut self.buffered);
         let generation = self.generation.0 as i64;
@@ -366,6 +398,7 @@ impl ScanSession {
     /// Publishes the generation. One transaction: merge, collect (only if complete, only in
     /// scope), refresh the accelerator, log the change, move the root forward.
     pub fn commit(mut self) -> Result<ScanOutcome> {
+        crate::volume::ensure_present(&self.index, self.root)?;
         self.flush()?;
 
         // A cancellation is a duration budget by another name; recording it as one keeps the
@@ -389,16 +422,21 @@ impl ScanSession {
         } else {
             MetadataFreshness::Unverified
         };
-        let generation = self.generation;
         let root = self.root;
         let retention = self.index.config().tombstone_retention_generations;
         let max_changes = self.index.config().max_changes;
-        let oldest_cursor = self.index.cursors().lock().oldest_generation();
+        // Expired cursors are dropped before they are asked about, so one nobody has touched
+        // since its TTL does not keep tombstones alive.
+        let oldest_cursor = self
+            .index
+            .cursors()
+            .lock()
+            .oldest_generation(self.index.config().cursor_ttl);
         let permission_denied = self.permission_denied;
         let limited = self.limited;
         let reason = self.options.reason.clone();
 
-        let (entries, state) = self.index.with_write(|connection| {
+        let (entries, state, generation) = self.index.with_write(|connection| {
             self.commit_transaction(
                 connection,
                 Committing {
@@ -411,6 +449,7 @@ impl ScanSession {
             )
         })?;
         self.finished = true;
+        self.index.request_wal_checkpoint();
 
         let _ = reason;
         let outcome = ScanOutcome {
@@ -476,18 +515,33 @@ impl ScanSession {
         if matches!(self.options.scope, ScanScope::Root) || worsens(self.prior.state, state) {
             (state, reason, complete)
         } else {
-            (self.prior.state, self.prior.reason.clone(), self.prior.complete)
+            (
+                self.prior.state,
+                self.prior.reason.clone(),
+                self.prior.complete,
+            )
         }
     }
 
     /// The body of [`Self::commit`]'s one transaction, pulled out only so the method above stays
     /// short: merge staging into `entries`, collect (only if `complete`, only in this session's
     /// scope), refresh the accelerator, log the rescan marker, and move the root forward.
+    ///
+    /// The staged rows are keyed by the generation the scan *started* at, but they are published
+    /// under a generation allocated here, inside the commit's own write transaction. A mutation
+    /// that committed while the scan ran has already published past the start generation; reusing
+    /// it would make the published head go backwards (or stand still) while visible rows changed,
+    /// so arrays built in between would still claim to be current and a cursor fence comparing
+    /// `written_generation` would never see the change. Returns the published generation.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Staging merge, generation publication, change-log and root state are one atomic transaction."
+    )]
     fn commit_transaction(
         &self,
         connection: &mut Connection,
         committing: Committing,
-    ) -> Result<(u64, RootState)> {
+    ) -> Result<(u64, RootState, Generation)> {
         let Committing {
             complete,
             metadata,
@@ -496,23 +550,38 @@ impl ScanSession {
             oldest_cursor,
         } = committing;
         let root = self.root;
-        let generation = self.generation;
+        let staged = self.generation;
         let scope = &self.options.scope;
 
         let transaction = connection.transaction()?;
-        let generation_id = generation.0 as i64;
+        let staged_id = staged.0 as i64;
+        let observed = self
+            .index
+            .config()
+            .volume_provider
+            .identify(&self.prior.path)?;
+        if !matches!(
+            crate::volume::compare(&self.prior.volume, observed.clone()),
+            crate::volume::Presence::Present { .. }
+        ) {
+            return Err(IndexError::SnapshotRequired {
+                reason: "the volume changed while the scan was running",
+            });
+        }
         if crate::read_root(&transaction, root)?.policy_hash != self.prior.policy_hash {
             return Err(IndexError::SnapshotRequired {
                 reason: "the root policy changed while this acquisition was running",
             });
         }
+        let generation = crate::publish_generation(&transaction)?;
+        let generation_id = generation.0 as i64;
 
-        merge_staging_into_entries(&transaction, root, generation_id)?;
+        merge_staging_into_entries(&transaction, root, staged_id, generation_id)?;
         crate::aggregate::write_pending(&transaction, root, generation, &self.pending_aggregates)?;
 
         // Collection: only for a complete pass, only inside the scope it covered.
         let collected = if complete {
-            collect_tombstones(&transaction, root, generation_id, scope)?
+            collect_tombstones(&transaction, root, staged_id, generation_id, scope)?
         } else {
             0
         };
@@ -570,22 +639,17 @@ impl ScanSession {
                 rusqlite::params![root.0, metadata.as_str()],
             )?;
         }
-        crate::set_state(&transaction, root, state, state_reason.as_deref())?;
-
-        let head: u64 = schema::read_meta(&transaction, "committed_generation")?
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0);
-        if generation.0 > head {
-            schema::write_meta(
-                &transaction,
-                "committed_generation",
-                &generation.0.to_string(),
-            )?;
+        if complete
+            && matches!(scope, ScanScope::Root)
+            && let Some(observed) = observed
+        {
+            crate::volume::store_identity(&transaction, root, &observed)?;
         }
+        crate::set_state(&transaction, root, state, state_reason.as_deref())?;
 
         transaction.execute(
             "DELETE FROM entries_staging WHERE generation = ?1 AND root_id = ?2",
-            rusqlite::params![generation_id, root.0],
+            rusqlite::params![staged_id, root.0],
         )?;
         transaction.commit()?;
 
@@ -597,7 +661,7 @@ impl ScanSession {
             complete,
             "committed an index generation"
         );
-        Ok((entries as u64, state))
+        Ok((entries as u64, state, generation))
     }
 
     /// Throws the generation away. The previous one stays visible; that is the whole point.
@@ -629,16 +693,18 @@ impl ScanSession {
                 "UPDATE roots SET building_generation = NULL WHERE root_id = ?1",
                 [root],
             )?;
-            crate::set_state(
-                &transaction,
-                RootId(root),
-                state,
-                if previous == 0 {
-                    None
-                } else {
-                    Some("aborted-scan")
-                },
-            )?;
+            if crate::read_root(&transaction, RootId(root))?.state != RootState::Offline {
+                crate::set_state(
+                    &transaction,
+                    RootId(root),
+                    state,
+                    if previous == 0 {
+                        None
+                    } else {
+                        Some("aborted-scan")
+                    },
+                )?;
+            }
             transaction.commit()?;
             Ok(())
         })?;
@@ -661,12 +727,15 @@ impl crate::Index {
     /// Opens a generation over `root`. The root moves to `building`; its committed generation
     /// keeps serving every reader until [`ScanSession::commit`].
     pub fn begin_scan(&self, root: RootId, mut options: ScanOptions) -> Result<ScanSession> {
+        let identity = crate::volume::ensure_present(self, root)?;
         let claim = self.claim_scan(root)?;
         if options.base.is_none() {
             options.base = Some(self.root_status(root)?.path);
         }
+        let boundaries = self.nested_root_paths(root)?;
         let (generation, prior) = self.with_write(|connection| {
             let transaction = connection.transaction()?;
+            crate::volume::store_identity(&transaction, root, &identity)?;
             let prior = crate::read_root(&transaction, root)?;
             let generation = crate::next_generation(&transaction)?;
             crate::set_state(
@@ -697,6 +766,7 @@ impl crate::Index {
             claim: Some(claim),
             buffered: Vec::new(),
             staged: 0,
+            flushes: 0,
             limited: None,
             stopped: false,
             permission_denied: 0,
@@ -706,6 +776,7 @@ impl crate::Index {
             unverified_children: 0,
             pending_aggregates: Vec::new(),
             prior,
+            boundaries,
             started: Instant::now(),
             finished: false,
         })
@@ -857,10 +928,17 @@ pub(crate) fn fts_present(connection: &rusqlite::Connection) -> bool {
 /// The body of [`ScanSession::commit_transaction`]'s merge step, pulled out only so that function
 /// stays short: staged rows for this generation are upserted into `entries`, then parent links
 /// are resolved now that the rows they point at exist.
+///
+/// Rows carry the generation the commit publishes in `written_generation`, and the generation the
+/// pass started at in `last_seen_generation`. The second only orders scan passes against each
+/// other — collection tombstones what a pass did not see, `last_seen < start` — so it keeps the
+/// start: a mutation that published while this pass ran stamped its own rows later than that and
+/// is never collected as unseen.
 fn merge_staging_into_entries(
     transaction: &Transaction<'_>,
     root: RootId,
-    generation_id: i64,
+    staged_id: i64,
+    published_id: i64,
 ) -> Result<()> {
     transaction.execute(
         "INSERT INTO entries
@@ -870,7 +948,7 @@ fn merge_staging_into_entries(
             deleted_generation)
          SELECT root_id, NULL, name_bytes, name_display, name_fold, path_bytes,
                 path_display, kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode,
-                hidden, dev, inode, nlink, mime, coverage, ?1, ?1, NULL
+                hidden, dev, inode, nlink, mime, coverage, ?3, ?1, NULL
            FROM entries_staging WHERE generation = ?1 AND root_id = ?2
          ON CONFLICT (root_id, path_bytes) DO UPDATE SET
             name_bytes = excluded.name_bytes,
@@ -888,10 +966,10 @@ fn merge_staging_into_entries(
             nlink = excluded.nlink,
             mime = excluded.mime,
             coverage = excluded.coverage,
-            written_generation = ?1,
+            written_generation = ?3,
             last_seen_generation = ?1,
             deleted_generation = NULL",
-        rusqlite::params![generation_id, root.0],
+        rusqlite::params![staged_id, root.0, published_id],
     )?;
 
     // Parent links, resolved once the rows they point at exist.
@@ -904,36 +982,38 @@ fn merge_staging_into_entries(
                                                      WHERE s.generation = ?1
                                                        AND s.root_id = e.root_id
                                                        AND s.path_bytes = e.path_bytes))
-          WHERE e.root_id = ?2 AND e.written_generation = ?1",
-        rusqlite::params![generation_id, root.0],
+          WHERE e.root_id = ?2 AND e.written_generation = ?3",
+        rusqlite::params![staged_id, root.0, published_id],
     )?;
     Ok(())
 }
 
 /// The body of [`ScanSession::commit_transaction`]'s collection step: tombstones every row **not**
-/// seen this generation, scoped to whatever the session actually covered — a subtree repair must
-/// never garbage-collect the rest of the root.
+/// seen by this pass (`last_seen_generation` below the pass's start), scoped to whatever the
+/// session actually covered — a subtree repair must never garbage-collect the rest of the root.
+/// The tombstones carry the published generation, like every other row the commit changes.
 fn collect_tombstones(
     transaction: &Transaction<'_>,
     root: RootId,
-    generation_id: i64,
+    staged_id: i64,
+    published_id: i64,
     scope: &ScanScope,
 ) -> Result<usize> {
     Ok(match scope {
         ScanScope::Root => transaction.execute(
-            "UPDATE entries SET deleted_generation = ?1
+            "UPDATE entries SET deleted_generation = ?3
               WHERE root_id = ?2 AND deleted_generation IS NULL
                 AND last_seen_generation < ?1",
-            rusqlite::params![generation_id, root.0],
+            rusqlite::params![staged_id, root.0, published_id],
         )?,
         ScanScope::Subtree(prefix) => {
             let (low, high) = prefix.subtree_bounds();
             transaction.execute(
-                "UPDATE entries SET deleted_generation = ?1
+                "UPDATE entries SET deleted_generation = ?5
                   WHERE root_id = ?2 AND deleted_generation IS NULL
                     AND last_seen_generation < ?1
                     AND path_bytes >= ?3 AND path_bytes < ?4",
-                rusqlite::params![generation_id, root.0, low, high],
+                rusqlite::params![staged_id, root.0, low, high, published_id],
             )?
         }
     })

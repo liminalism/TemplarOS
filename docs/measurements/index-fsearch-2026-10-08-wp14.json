@@ -1,0 +1,320 @@
+{
+  "date": "2026-10-08",
+  "platform": "native Ubuntu 26.04 / Lubuntu",
+  "legeos_head": "12295f351ab14e649f900573190060cd88a7251e",
+  "continuation_tree_dirty": true,
+  "upstream_pin": "05ed650ab101ee3d61795fa5eeeb5c32e1e366c3",
+  "build": "scripts/build-fork-deb.sh fsearch --source .agent/scratch/index-wp14/source-clean",
+  "build_environment": "Owned native Ubuntu development packages in PRoot 5.5; no host installs",
+  "query_test_cases": 6,
+  "package": "target/debian/templaros-fsearch_0.3+templaros1-1~g05ed650_amd64.deb",
+  "audit": {
+    "sources": [
+      "fsearch.c",
+      "fsearch_array.c",
+      "fsearch_clipboard.c",
+      "fsearch_config.c",
+      "fsearch_database_entry.c",
+      "fsearch_database_entry_info.c",
+      "fsearch_database_exclude.c",
+      "fsearch_database_exclude_manager.c",
+      "fsearch_database_include.c",
+      "fsearch_database_include_manager.c",
+      "fsearch_database_info.c",
+      "fsearch_database_preferences_remote.c",
+      "fsearch_database_remote.c",
+      "fsearch_database_search_info.c",
+      "fsearch_database_work.c",
+      "fsearch_enums.c",
+      "fsearch_file_utils.c",
+      "fsearch_filter.c",
+      "fsearch_filter_editor.c",
+      "fsearch_filter_manager.c",
+      "fsearch_filter_preferences_widget.c",
+      "fsearch_list_view.c",
+      "fsearch_listview_popup.c",
+      "fsearch_main_context_utils.c",
+      "fsearch_preferences_dialog.c",
+      "fsearch_preview.c",
+      "fsearch_query.c",
+      "fsearch_query_lexer.c",
+      "fsearch_query_match_data.c",
+      "fsearch_query_matchers.c",
+      "fsearch_query_node.c",
+      "fsearch_query_parser.c",
+      "fsearch_query_tree.c",
+      "fsearch_remote_query.c",
+      "fsearch_result_view.c",
+      "fsearch_selection.c",
+      "fsearch_size_utils.c",
+      "fsearch_statusbar.c",
+      "fsearch_string_utils.c",
+      "fsearch_time_utils.c",
+      "fsearch_ui_utils.c",
+      "fsearch_utf.c",
+      "fsearch_window.c",
+      "fsearch_window_actions.c",
+      "icon_resources.c",
+      "main.c",
+      "remote_index_probe.c",
+      "test_remote_query_translation.c",
+      "ui_resources.c"
+    ],
+    "forbidden_sources_present": [],
+    "forbidden_imports_present": [],
+    "package_sha256": "825c1eb947e699c13265ff50d85f947ca70926a066ba0605639116cb4234c0c2",
+    "patch_sha256": "a0828ecb20fd19a05324f04aef5a4d2e848cff1277b9c53d15755c38c9a8a42d",
+    "binary_sha256": "32f3f84b476cdcf8f869dedfac5f465777b3745e0f0a7e0b9edaf784316f210a"
+  },
+  "private_gtk": {
+    "probe_returncode": 0,
+    "generation": 5,
+    "query_total": 101,
+    "indexed_entries": 5003,
+    "inotify_fanotify_fd_count": 0,
+    "db_files": [],
+    "directory_reads": [
+      "/",
+      "/etc/fonts/conf.d",
+      "/proc/808264/fd",
+      "/proc/808265/fd",
+      "/proc/808268/fd",
+      "/proc/808269/fd",
+      "/proc/809367/fd",
+      "/proc/809368/fd",
+      "/run/systemd/userdb",
+      "/usr/lib/x86_64-linux-gnu/gio/modules",
+      "/usr/share/drirc.d",
+      "/usr/share/fontconfig/conf.avail",
+      "/usr/share/glycin-loaders/2+/conf.d",
+      "/usr/share/icons",
+      "/usr/share/pixmaps",
+      "/var/lib/flatpak/exports/share/icons",
+      "/var/lib/snapd/desktop/icons"
+    ],
+    "allowlist": [
+      "/etc/fonts/",
+      "/usr/share/fontconfig/",
+      "/usr/share/drirc.d",
+      "/usr/lib/x86_64-linux-gnu/gio/modules",
+      "/var/lib/flatpak/exports/share/icons",
+      "/usr/share/icons",
+      "/var/lib/snapd/desktop/icons",
+      "/usr/share/pixmaps",
+      "/usr/share/glycin-loaders/",
+      "/usr/share/themes",
+      "/run/systemd/userdb",
+      "/ (one level, image-loader sandbox)",
+      "/proc/<owned-loader-pid>/fd"
+    ],
+    "gtk_input_method": "gtk-im-context-simple (no private IBus daemon)",
+    "single_instance_search_calls": [
+      {
+        "sender": ":1.4",
+        "query": "f12"
+      },
+      {
+        "sender": ":1.4",
+        "query": "f12"
+      },
+      {
+        "sender": ":1.4",
+        "query": "f12"
+      },
+      {
+        "sender": ":1.4",
+        "query": "f13"
+      },
+      {
+        "sender": ":1.4",
+        "query": "f12"
+      }
+    ],
+    "binaries": {
+      "filed": {
+        "path": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/debug/templar-filed",
+        "sha256": "0199ec875a2e63ec767a707f1e68bd754e7c24e7105289e33a600830ce6e4535"
+      },
+      "fsearch": {
+        "path": "/home/dk/rust-projects/LegeOS/.agent/scratch/index-wp14/package-extracted/usr/bin/fsearch",
+        "sha256": "32f3f84b476cdcf8f869dedfac5f465777b3745e0f0a7e0b9edaf784316f210a"
+      },
+      "probe": {
+        "path": "/home/dk/rust-projects/LegeOS/forks/fsearch/build-remote/src/tests/remote_index_probe",
+        "sha256": "9979a0c874a69dca131a8681ef9da559b628bdcb073310242ab0c18e85cf26b8"
+      }
+    }
+  },
+  "faults": {
+    "returncode": 0,
+    "counts": {
+      "Observe": 2,
+      "fault_busy": 2,
+      "fault_busy_exhaust": 2,
+      "CloseCursor": 8,
+      "fault_snapshot_search": 2,
+      "fault_page": 2,
+      "fault_page:page": 2,
+      "Roots": 2,
+      "fault_selection": 2,
+      "fault_selection:page": 1,
+      "fault_unavailable": 1,
+      "fault_normal": 2,
+      "fault_cancelled": 1
+    },
+    "calls": [
+      {
+        "method": "Observe",
+        "key": "Observe",
+        "time": 62399.048815621
+      },
+      {
+        "method": "Search",
+        "key": "fault_busy",
+        "time": 62399.04929631
+      },
+      {
+        "method": "Search",
+        "key": "fault_busy",
+        "time": 62399.099921246
+      },
+      {
+        "method": "Search",
+        "key": "fault_busy_exhaust",
+        "time": 62399.11306885
+      },
+      {
+        "method": "Search",
+        "key": "fault_busy_exhaust",
+        "time": 62399.164031043
+      },
+      {
+        "method": "CloseCursor",
+        "key": "CloseCursor",
+        "time": 62399.164580563
+      },
+      {
+        "method": "Search",
+        "key": "fault_snapshot_search",
+        "time": 62399.183753638
+      },
+      {
+        "method": "Search",
+        "key": "fault_snapshot_search",
+        "time": 62399.184276519
+      },
+      {
+        "method": "Search",
+        "key": "fault_page",
+        "time": 62399.203905644
+      },
+      {
+        "method": "CloseCursor",
+        "key": "CloseCursor",
+        "time": 62399.20486316
+      },
+      {
+        "method": "FetchPage",
+        "key": "fault_page:page",
+        "time": 62399.224073416
+      },
+      {
+        "method": "Roots",
+        "key": "Roots",
+        "time": 62399.47501502
+      },
+      {
+        "method": "Search",
+        "key": "fault_page",
+        "time": 62399.47585479
+      },
+      {
+        "method": "CloseCursor",
+        "key": "CloseCursor",
+        "time": 62399.477077475
+      },
+      {
+        "method": "FetchPage",
+        "key": "fault_page:page",
+        "time": 62399.496489214
+      },
+      {
+        "method": "Search",
+        "key": "fault_selection",
+        "time": 62399.516766468
+      },
+      {
+        "method": "CloseCursor",
+        "key": "CloseCursor",
+        "time": 62399.517893345
+      },
+      {
+        "method": "FetchPage",
+        "key": "fault_selection:page",
+        "time": 62399.537010851
+      },
+      {
+        "method": "Roots",
+        "key": "Roots",
+        "time": 62399.787854555
+      },
+      {
+        "method": "Search",
+        "key": "fault_selection",
+        "time": 62399.788461383
+      },
+      {
+        "method": "CloseCursor",
+        "key": "CloseCursor",
+        "time": 62399.789625669
+      },
+      {
+        "method": "Search",
+        "key": "fault_unavailable",
+        "time": 62399.957908404
+      },
+      {
+        "method": "CloseCursor",
+        "key": "CloseCursor",
+        "time": 62399.95836026
+      },
+      {
+        "method": "Search",
+        "key": "fault_normal",
+        "time": 62399.977809383
+      },
+      {
+        "method": "Search",
+        "key": "fault_cancelled",
+        "time": 62399.998064612
+      },
+      {
+        "method": "Search",
+        "key": "fault_normal",
+        "time": 62400.199227632
+      },
+      {
+        "method": "CloseCursor",
+        "key": "CloseCursor",
+        "time": 62400.200382957
+      },
+      {
+        "method": "CloseCursor",
+        "key": "CloseCursor",
+        "time": 62400.219446112
+      },
+      {
+        "method": "Observe",
+        "key": "Observe",
+        "time": 62400.219811289
+      }
+    ]
+  },
+  "visible_rows_screenshot": ".agent/scratch/index-wp14/package-integration/fsearch-private.png",
+  "open_checks": [
+    "Actual owned nested shell/FSearch same-query generation equality",
+    "WP16 provider default and routes",
+    "WP17 installed laptop qualification / physical HDMI"
+  ],
+  "scratch_artifacts_kept": true
+}

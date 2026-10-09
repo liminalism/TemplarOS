@@ -32,11 +32,15 @@ pub enum Trigger {
     Overflow,
     /// The watch budget or the kernel's per-user limit ran out, so part of the tree was never
     /// watched at all.
-    Exhausted { armed: u64, refused: u64 },
+    Exhausted {
+        armed: u64,
+        refused: u64,
+    },
     /// A rename arrived without its other half, or a directory appeared whole.
     RenameAmbiguous,
     /// A removable volume came back.
     MountReturned,
+    MountReturnedUnverified,
     /// The include/exclude policy changed, so the *index* is wrong even though the tree is not.
     PolicyChanged,
     /// Ordinary low-priority upkeep.
@@ -68,7 +72,8 @@ impl Trigger {
                 refused: *refused,
             },
             Self::RenameAmbiguous => StaleReason::RenameAmbiguous,
-            Self::MountReturned => StaleReason::MountDisappeared,
+            Self::MountReturned => StaleReason::VolumeReturned,
+            Self::MountReturnedUnverified => StaleReason::VolumeReturnedUnverified,
             Self::PolicyChanged => StaleReason::PolicyChanged,
         }
     }
@@ -112,10 +117,24 @@ pub fn reconcile<S: EventSource>(
     index: &Index,
     owner: &mut WatchOwner<S>,
     root: RootId,
-    scope: ScanScope,
+    mut scope: ScanScope,
     trigger: &Trigger,
     mut options: ScanOptions,
 ) -> Result<(ScanOutcome, ReconcileReport), IndexError> {
+    crate::volume::ensure_present(index, root)?;
+    let returned;
+    let trigger = if index.root_status(root)?.state == RootState::Offline {
+        let status = index.mark_online(root)?;
+        scope = ScanScope::Root;
+        returned = if status.volume.confidence == crate::VolumeConfidence::Strong {
+            Trigger::MountReturned
+        } else {
+            Trigger::MountReturnedUnverified
+        };
+        &returned
+    } else {
+        trigger
+    };
     // The walk's scope is the commit's scope, by construction: a caller that set only the
     // argument used to walk a subtree and commit with `Root`, and a "complete" pass then collected
     // tombstones across everything it had not walked.
@@ -155,7 +174,11 @@ pub fn reconcile<S: EventSource>(
             index,
             root,
             root_path: &status.path,
-            root_device: status.path.as_path().symlink_metadata().ok()
+            root_device: status
+                .path
+                .as_path()
+                .symlink_metadata()
+                .ok()
                 .map(|metadata| std::os::unix::fs::MetadataExt::dev(&metadata)),
             // A watcher Touch can record a directory's newest timestamps even though dropped
             // events left its children incomplete. Timestamp equality proves membership only
@@ -163,8 +186,15 @@ pub fn reconcile<S: EventSource>(
             trust_membership: status.complete
                 && (status.state == RootState::Current
                     || status.reason.as_deref() == Some("policy-changed"))
-                && !matches!(trigger, Trigger::Downtime | Trigger::Overflow
-                    | Trigger::Exhausted { .. } | Trigger::RenameAmbiguous | Trigger::MountReturned),
+                && !matches!(
+                    trigger,
+                    Trigger::Downtime
+                        | Trigger::Overflow
+                        | Trigger::Exhausted { .. }
+                        | Trigger::RenameAmbiguous
+                        | Trigger::MountReturned
+                        | Trigger::MountReturnedUnverified
+                ),
             trigger,
             report: &mut report,
         };
@@ -228,11 +258,17 @@ impl Walk<'_> {
     ) -> Result<(), IndexError> {
         let mut queue = vec![(start.to_path_buf(), 0u32)];
         while let Some((dir, depth)) = queue.pop() {
-            if session.stopped() { self.report.complete = false; break; }
+            if session.stopped() {
+                self.report.complete = false;
+                break;
+            }
             let children = self.visit_directory(owner, session, &dir, depth)?;
-            if session.options().budget.max_entries.is_some_and(|max|
-                self.report.entries_observed.saturating_add((queue.len() + children.len()) as u64) > max)
-            {
+            if session.options().budget.max_entries.is_some_and(|max| {
+                self.report
+                    .entries_observed
+                    .saturating_add((queue.len() + children.len()) as u64)
+                    > max
+            }) {
                 session.set_limited(crate::BudgetKind::Entries);
                 self.report.complete = false;
                 break;
@@ -251,6 +287,10 @@ impl Walk<'_> {
     }
 
     /// Watch, then read, then observe — and return the subdirectories to descend into.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Watch-before-enumerate ordering and coverage decisions share this directory visit."
+    )]
     fn visit_directory<S: EventSource>(
         &mut self,
         owner: &mut WatchOwner<S>,
@@ -263,13 +303,18 @@ impl Walk<'_> {
 
         match owner.arm_directory(self.root, dir) {
             crate::watch::ArmResult::Gone if &native == self.root_path => {
-                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "indexed root disappeared").into());
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "indexed root disappeared",
+                )
+                .into());
             }
             crate::watch::ArmResult::Gone => return Ok(Vec::new()),
             crate::watch::ArmResult::Boundary => {
                 if let Ok(metadata) = dir.symlink_metadata() {
                     session.observe(ScannedEntry {
-                        path: native, parent: dir.parent().map(NativePath::from_path),
+                        path: native,
+                        parent: dir.parent().map(NativePath::from_path),
                         meta: EntryMeta::from_symlink_metadata(dir, &metadata),
                     })?;
                     self.report.entries_observed += 1;
@@ -285,17 +330,28 @@ impl Walk<'_> {
 
         let on_disk = match dir.symlink_metadata() {
             Ok(metadata) => EntryMeta::from_symlink_metadata(dir, &metadata),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && &native != self.root_path => return Ok(Vec::new()),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && &native != self.root_path =>
+            {
+                return Ok(Vec::new());
+            }
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
                 self.note_unreadable(session, true);
                 return Ok(Vec::new());
             }
             Err(error) => return Err(IndexError::Io(error)),
         };
-        if !session.options().policy.cross_mount && &native != self.root_path
-            && self.root_device.is_some_and(|root_device| on_disk.object_key.is_some_and(|key| key.dev != root_device))
+        if !session.options().policy.cross_mount
+            && &native != self.root_path
+            && (self.root_device.is_some_and(|root_device| {
+                on_disk.object_key.is_some_and(|key| key.dev != root_device)
+            }) || session.mount_boundary(&native)?)
         {
-            session.observe(ScannedEntry { path: native, parent: dir.parent().map(NativePath::from_path), meta: on_disk })?;
+            session.observe(ScannedEntry {
+                path: native,
+                parent: dir.parent().map(NativePath::from_path),
+                meta: on_disk,
+            })?;
             self.report.entries_observed += 1;
             return Ok(Vec::new());
         }
@@ -303,7 +359,9 @@ impl Walk<'_> {
         if !Self::descends_into(session, &native) {
             let coverage = session.coverage_for(&native, EntryKind::Directory);
             session.observe(ScannedEntry {
-                path: native.clone(), parent: dir.parent().map(NativePath::from_path), meta: on_disk,
+                path: native.clone(),
+                parent: dir.parent().map(NativePath::from_path),
+                meta: on_disk,
             })?;
             self.report.entries_observed += 1;
             if coverage == Some(Coverage::Opaque) && !session.stopped() {
@@ -317,8 +375,17 @@ impl Walk<'_> {
             }
             return Ok(Vec::new());
         }
-        if session.options().budget.max_depth.is_some_and(|max| depth >= max) {
-            session.observe(ScannedEntry { path: native, parent: dir.parent().map(NativePath::from_path), meta: on_disk })?;
+        if session
+            .options()
+            .budget
+            .max_depth
+            .is_some_and(|max| depth >= max)
+        {
+            session.observe(ScannedEntry {
+                path: native,
+                parent: dir.parent().map(NativePath::from_path),
+                meta: on_disk,
+            })?;
             self.report.entries_observed += 1;
             match std::fs::read_dir(dir) {
                 Ok(mut reader) => {
@@ -327,7 +394,10 @@ impl Walk<'_> {
                         self.report.complete = false;
                     }
                 }
-                Err(error) => self.note_unreadable(session, error.kind() == std::io::ErrorKind::PermissionDenied),
+                Err(error) => self.note_unreadable(
+                    session,
+                    error.kind() == std::io::ErrorKind::PermissionDenied,
+                ),
             }
             return Ok(Vec::new());
         }
@@ -353,7 +423,11 @@ impl Walk<'_> {
                 self.note_unreadable(session, true);
                 return Ok(Vec::new());
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && native != self.root_path => return Ok(Vec::new()),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && native != self.root_path =>
+            {
+                return Ok(Vec::new());
+            }
             Err(error) => return Err(IndexError::Io(error)),
         };
 
@@ -366,7 +440,10 @@ impl Walk<'_> {
 
         let mut subdirectories = Vec::new();
         for entry in reader {
-            if session.stopped() { self.report.complete = false; break; }
+            if session.stopped() {
+                self.report.complete = false;
+                break;
+            }
             let Ok(entry) = entry else {
                 self.note_unreadable(session, false);
                 continue;
@@ -382,9 +459,12 @@ impl Walk<'_> {
             }
             if meta.kind == EntryKind::Directory {
                 subdirectories.push(path);
-                if session.options().budget.max_entries.is_some_and(|max|
-                    self.report.entries_observed.saturating_add(subdirectories.len() as u64) > max)
-                {
+                if session.options().budget.max_entries.is_some_and(|max| {
+                    self.report
+                        .entries_observed
+                        .saturating_add(subdirectories.len() as u64)
+                        > max
+                }) {
                     session.set_limited(crate::BudgetKind::Entries);
                     self.report.complete = false;
                     break;
@@ -438,12 +518,26 @@ impl Walk<'_> {
         let mut trustworthy = true;
         let report = &mut *self.report;
         self.index.visit_children(self.root, dir, |child| {
-            if session.stopped() { report.complete = false; return Ok(false); }
+            if session.stopped() {
+                report.complete = false;
+                return Ok(false);
+            }
             if child.meta.kind == EntryKind::Directory {
-                subdirectories.push(child.path.into_path());
-                if session.options().budget.max_entries.is_some_and(|max|
-                    report.entries_observed.saturating_add(subdirectories.len() as u64) > max)
+                // A nested root's directory (or a row the policy no longer stores) is not this
+                // pass's to arm or descend into; leaving it unobserved lets collection drop it.
+                if session
+                    .coverage_for(&child.path, EntryKind::Directory)
+                    .is_none()
                 {
+                    return Ok(true);
+                }
+                subdirectories.push(child.path.into_path());
+                if session.options().budget.max_entries.is_some_and(|max| {
+                    report
+                        .entries_observed
+                        .saturating_add(subdirectories.len() as u64)
+                        > max
+                }) {
                     session.set_limited(crate::BudgetKind::Entries);
                     report.complete = false;
                     return Ok(false);
@@ -461,7 +555,11 @@ impl Walk<'_> {
                 session.note_unverified_metadata();
                 child.meta
             };
-            session.observe(ScannedEntry { path: child.path, parent: Some(dir.clone()), meta })?;
+            session.observe(ScannedEntry {
+                path: child.path,
+                parent: Some(dir.clone()),
+                meta,
+            })?;
             report.entries_observed += 1;
             Ok(true)
         })?;
@@ -473,27 +571,9 @@ impl Walk<'_> {
 ///
 /// A volume that returns is not automatically the volume that left: a different disk can appear at
 /// the same mount point. When the identity differs, everything the index remembers about that path
-/// belongs to another disk and the root is rebuilt from nothing rather than merged.
+/// belongs to another disk. Keep it offline until an explicit fenced AcceptVolume forgets it.
 pub fn root_returned(index: &Index, root: RootId) -> Result<RootState, IndexError> {
-    let status = index.root_status(root)?;
-    let path = status.path.to_path();
-    if !path.exists() {
-        return Ok(status.state);
-    }
-    let now = volume_identity(&path);
-    let same = match (status.volume.dev_id, now) {
-        (Some(before), Some(after)) => before == after,
-        // Nothing to compare with: treat it as the same volume and let the repair pass decide.
-        _ => true,
-    };
+    crate::volume::ensure_present(index, root)?;
     let status = index.mark_online(root)?;
-    if !same {
-        index.mark_stale(root, &StaleReason::MountDisappeared)?;
-    }
     Ok(status.state)
-}
-
-fn volume_identity(path: &Path) -> Option<u64> {
-    use std::os::unix::fs::MetadataExt;
-    path.metadata().ok().map(|metadata| metadata.dev())
 }

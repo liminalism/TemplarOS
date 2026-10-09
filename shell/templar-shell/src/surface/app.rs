@@ -177,7 +177,16 @@ enum DataUpdate {
         scope: Scope,
         query: String,
         request_generation: u64,
-        result: Result<IndexedSearchResults, String>,
+        result: Result<IndexedSearchResults, templar_client::file_index::IndexCallError>,
+    },
+    SearchPage {
+        request_generation: u64,
+        cursor: String,
+        page: u32,
+        result: Result<
+            templar_client::file_index::IndexPage,
+            templar_client::file_index::IndexCallError,
+        >,
     },
     /// The copies of one logical application, resolved off the event loop.
     AppVariants(String, Vec<(String, String, String)>),
@@ -196,8 +205,9 @@ enum DataUpdate {
 }
 
 struct IndexedSearchResults {
-    session: templar_client::file_index::SearchSession,
+    session: std::sync::Arc<templar_client::file_index::SearchSession>,
     entries: Vec<BrowseEntry>,
+    pages: crate::surface::search_pages::SearchPages,
     notice: String,
 }
 
@@ -684,6 +694,9 @@ struct ShellApp {
     drawer_feeds: HashMap<Drawer, crate::drawers::DrawerFeed>,
     search_results: Option<(Scope, String, Result<IndexedSearchResults, String>)>,
     search_generation: u64,
+    search_tag: String,
+    search_request: Option<tokio::task::AbortHandle>,
+    search_refresh: Option<crate::surface::search_pages::SearchPages>,
     /// The question typed but not yet asked. A keystroke is not a search: the shell waits for
     /// the typing to stop before spending a round trip, and 180ms is about the gap between two
     /// keystrokes of ordinary typing.
@@ -871,6 +884,12 @@ impl ShellApp {
             drawer_feeds: HashMap::new(),
             search_results: None,
             search_generation: 0,
+            search_tag: format!(
+                "shell-files-{}",
+                templar_client::file_index::observation_token()
+            ),
+            search_request: None,
+            search_refresh: None,
             search_pending: None,
             browser_sources: BrowserSources::default(),
             browser_listing: None,
@@ -1290,7 +1309,7 @@ impl ShellApp {
     }
 
     fn discard_search(&mut self) {
-        if let Some((_, _, Ok(mut batch))) = self.search_results.take() {
+        if let Some((_, _, Ok(batch))) = self.search_results.take() {
             self.runtime.spawn(async move {
                 if let Err(error) = batch.session.close().await {
                     tracing::debug!(%error, "closing replaced file search cursor");
@@ -1301,6 +1320,10 @@ impl ShellApp {
 
     /// Note a question. It is asked once the typing has stopped, in [`Self::flush_search`].
     fn note_search(&mut self, scope: Scope, query: String) {
+        if let Some(request) = self.search_request.take() {
+            request.abort();
+        }
+        self.search_refresh = None;
         self.search_generation = self
             .search_generation
             .checked_add(1)
@@ -1343,8 +1366,9 @@ impl ShellApp {
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
         let request_generation = self.search_generation;
-        self.runtime.spawn(async move {
-            let result = run_search(roots, &query).await;
+        let tag = self.search_tag.clone();
+        let request = self.runtime.spawn(async move {
+            let result = run_search(roots, &query, &tag).await;
             let _ = tx.send(DataUpdate::SearchResults {
                 scope,
                 query,
@@ -1353,6 +1377,38 @@ impl ShellApp {
             });
             let _ = proxy.send_event(Wake::Data);
         });
+        self.search_request = Some(request.abort_handle());
+    }
+
+    fn fetch_search_pages(&mut self) {
+        let Some((_, _, Ok(batch))) = self.search_results.as_mut() else {
+            return;
+        };
+        let visible = self.field_screen.files_view.search_visible;
+        batch
+            .pages
+            .scrolled(self.field_screen.files.entry_scroll.offset());
+        for page in batch.pages.request(visible) {
+            let session = batch.session.clone();
+            let tx = self.data_tx.clone();
+            let wake = self.wake_proxy.clone();
+            let request_generation = self.search_generation;
+            self.runtime.spawn(async move {
+                let result = session
+                    .fetch_page(
+                        page * crate::surface::search_pages::PAGE_SIZE,
+                        crate::surface::search_pages::PAGE_SIZE,
+                    )
+                    .await;
+                let _ = tx.send(DataUpdate::SearchPage {
+                    request_generation,
+                    cursor: session.result().cursor.clone(),
+                    page,
+                    result,
+                });
+                let _ = wake.send_event(Wake::Data);
+            });
+        }
     }
 
     /// Hand the browse grid's bounded thumbnail wants to the preview service. Requests carry
@@ -1884,21 +1940,87 @@ impl ShellApp {
                     scope,
                     query,
                     request_generation,
-                    result,
+                    mut result,
                 } => {
                     if request_generation != self.search_generation
                         || !self.field_screen.files_expanded
                         || scope != Scope::Location(self.field_screen.files.location().clone())
                     {
-                        if let Ok(mut batch) = result {
+                        if let Ok(batch) = result {
                             self.runtime.spawn(async move {
                                 let _ = batch.session.close().await;
                             });
                         }
                         continue;
                     }
+                    if matches!(
+                        result,
+                        Err(templar_client::file_index::IndexCallError::Cancelled)
+                    ) {
+                        continue;
+                    }
+                    if let (Ok(batch), Some(old)) = (&mut result, self.search_refresh.take()) {
+                        batch.pages.preserve_refresh(&old);
+                    }
                     self.discard_search();
-                    self.search_results = Some((scope, query, result));
+                    self.search_results =
+                        Some((scope, query, result.map_err(|error| error.to_string())));
+                }
+                DataUpdate::SearchPage {
+                    request_generation,
+                    cursor,
+                    page,
+                    result,
+                } => {
+                    if request_generation != self.search_generation {
+                        continue;
+                    }
+                    let Some((scope, query, Ok(batch))) = self.search_results.as_mut() else {
+                        continue;
+                    };
+                    if batch.session.result().cursor != cursor {
+                        continue;
+                    }
+                    use templar_client::file_index::IndexCallError;
+                    let result = match result {
+                        Ok(result) if result.dropped != 0 => Err(IndexCallError::SnapshotRequired(
+                            "matching rows changed".into(),
+                        )),
+                        result => result,
+                    };
+                    match result {
+                        Ok(result) => match search_entries(&result.hits) {
+                            Ok(entries) => {
+                                batch.pages.accept(result.generation, page, entries);
+                            }
+                            Err(error) => {
+                                batch.pages.pending.remove(&page);
+                                batch.pages.notice = Some(error.to_string());
+                            }
+                        },
+                        Err(IndexCallError::SnapshotRequired(_)) => {
+                            let selected =
+                                self.field_screen.files.selected_paths().into_iter().next();
+                            if batch.pages.snapshot_required(Instant::now(), selected) {
+                                self.search_refresh = Some(batch.pages.clone());
+                                batch.pages.paused = true;
+                                self.search_generation += 1;
+                                self.search_pending = Some((
+                                    scope.clone(),
+                                    query.clone(),
+                                    Instant::now() - Self::SEARCH_DEBOUNCE,
+                                ));
+                            }
+                        }
+                        Err(IndexCallError::Cancelled) => {
+                            batch.pages.pending.remove(&page);
+                        }
+                        Err(error) => {
+                            batch.pages.pending.remove(&page);
+                            batch.pages.notice = Some(error.to_string());
+                            batch.pages.paused = true;
+                        }
+                    }
                 }
                 DataUpdate::BrowserSources(sources) => self.browser_sources = sources,
                 DataUpdate::BrowserListing {
@@ -2328,6 +2450,7 @@ impl ShellApp {
             &toplevels,
         );
         self.flush_search();
+        self.fetch_search_pages();
 
         // A search result is shown only while it still answers the question on screen: the same
         // scope and the same query. The staleness guard is the one it always was, keyed on the
@@ -2355,6 +2478,17 @@ impl ShellApp {
             home.buffer.width as i32,
             home.buffer.height as i32 - scale.px(bar_inset),
         );
+        if let Some((_, _, Ok(batch))) = self.search_results.as_mut() {
+            let height = scale.px(crate::surface::file_browser::ENTRY_HEIGHT);
+            if batch
+                .pages
+                .heights
+                .first()
+                .is_some_and(|old| *old != height)
+            {
+                batch.pages.heights.fill(height);
+            }
+        }
         let active_search = self
             .search_results
             .as_ref()
@@ -2395,10 +2529,13 @@ impl ShellApp {
                 .map(|(location, error)| (location, error.as_str())),
             status: active_search
                 .and_then(|(_, _, result)| result.as_ref().ok())
-                .map(|batch| batch.notice.as_str())
+                .map(|batch| batch.pages.notice.as_deref().unwrap_or(&batch.notice))
                 .or(self.browser_status.as_deref()),
             search_query,
             search_entries,
+            search_pages: active_search
+                .and_then(|(_, _, result)| result.as_ref().ok())
+                .map(|batch| &batch.pages),
             search_error,
             feeds: &self.drawer_feeds,
             thumbnails: &self.file_thumbnails,
@@ -3184,12 +3321,21 @@ impl ShellApp {
             }
             return;
         }
+        let detail = if self
+            .treemap
+            .as_ref()
+            .is_some_and(|previous| path != previous.path && path.starts_with(&previous.path))
+        {
+            templar_file_index::snapshot::SnapshotDetail::Materialized
+        } else {
+            templar_file_index::snapshot::SnapshotDetail::Summary
+        };
         let epoch = self.treemap_epoch;
         self.treemap_pending = Some((path.clone(), width, height, epoch));
         let tx = self.data_tx.clone();
         let proxy = self.wake_proxy.clone();
         self.runtime.spawn(async move {
-            let preview = load_treemap_preview(path, width, height).await;
+            let preview = load_treemap_preview_view(path, width, height, detail).await;
             let _ = tx.send(DataUpdate::Treemap { epoch, preview });
             let _ = proxy.send_event(Wake::Data);
         });
@@ -6658,7 +6804,22 @@ fn format_clock_fields(weekday: i32, day: i32, month: i32, hour: i32, minute: i3
 
 /// Live and service-backed offscreen Home share the typed size source and off-thread raster.
 pub(super) async fn load_treemap_preview(path: PathBuf, width: u32, height: u32) -> TreemapPreview {
-    let result = load_treemap_entries(&path).await;
+    load_treemap_preview_view(
+        path,
+        width,
+        height,
+        templar_file_index::snapshot::SnapshotDetail::Summary,
+    )
+    .await
+}
+
+async fn load_treemap_preview_view(
+    path: PathBuf,
+    width: u32,
+    height: u32,
+    detail: templar_file_index::snapshot::SnapshotDetail,
+) -> TreemapPreview {
+    let result = load_treemap_entries(&path, detail).await;
     let mut preview = TreemapPreview {
         caption: format!("Disk use · {}", path.display()),
         path,
@@ -6708,12 +6869,15 @@ pub(super) async fn load_treemap_preview(path: PathBuf, width: u32, height: u32)
 /// A stale, partial or unreadable live index is never replaced by an event-loop disk walk.
 async fn load_treemap_entries(
     path: &std::path::Path,
+    detail: templar_file_index::snapshot::SnapshotDetail,
 ) -> Result<templar_client::tree_source::TreeLoad, templar_client::tree_source::TreeSourceError> {
     use templar_client::tree_source::{DirectScanSource, TreeSource, TreeSourceError};
     let connection = crate::data::session()
         .await
         .map_err(|error| TreeSourceError::Call(format!("session bus unavailable: {error}")))?;
-    match templar_client::tree_source::load_snapshot_tree(&connection, path).await {
+    match templar_client::tree_source::load_snapshot_tree_view(&connection, path, detail, Some(3))
+        .await
+    {
         Ok(load) => Ok(load),
         Err(error) if error.allows_fallback() => {
             let path = path.to_path_buf();
@@ -6857,40 +7021,21 @@ async fn copy_text_to_clipboard(text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_search(roots: Vec<PathBuf>, text: &str) -> Result<IndexedSearchResults, String> {
-    use templar_file_index::{NativePath, Query};
-    let connection = crate::data::session()
-        .await
-        .map_err(|error| format!("Search — {error}"))?;
-    let query = Query {
-        text: text.to_owned(),
-        within: roots
-            .iter()
-            .map(|path| NativePath::from_path(path))
-            .collect(),
-        page_size: 50,
-        require_metadata: true,
-        ..Query::default()
-    };
-    let session = templar_client::file_index::SearchSession::search(&connection, &query)
-        .await
-        .map_err(|error| format!("Search — {error:#}"))?;
-    let result = session.result();
-    let entries = result
-        .hits
-        .iter()
-        .filter(|hit| hit.present)
+fn search_entries(
+    hits: &[templar_client::file_index::IndexHit],
+) -> Result<Vec<Option<BrowseEntry>>, templar_client::file_index::IndexCallError> {
+    hits.iter()
         .map(|hit| {
+            if !hit.present {
+                return Ok(None);
+            }
             let row = &hit.row;
-            let path = row
-                .path
-                .native_path()
-                .map_err(|error| format!("Search — invalid native path: {error}"))?;
+            let path = row.path.native_path()?;
             let name = path.file_name().map_or_else(
                 || path.display().to_string(),
                 |name| name.to_string_lossy().into_owned(),
             );
-            Ok(BrowseEntry {
+            Ok(Some(BrowseEntry {
                 path,
                 name,
                 kind: if row.kind == 1 {
@@ -6902,15 +7047,46 @@ async fn run_search(roots: Vec<PathBuf>, text: &str) -> Result<IndexedSearchResu
                 is_symlink: row.kind == 2,
                 size_bytes: row.size_bytes,
                 mtime_ms: row.mtime_ns / 1_000_000,
-            })
+            }))
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect()
+}
+
+async fn run_search(
+    roots: Vec<PathBuf>,
+    text: &str,
+    tag: &str,
+) -> Result<IndexedSearchResults, templar_client::file_index::IndexCallError> {
+    use templar_file_index::{NativePath, Query};
+    let connection = crate::data::session().await.map_err(|error| {
+        templar_client::file_index::IndexCallError::Other(anyhow::anyhow!(error))
+    })?;
+    let query = Query {
+        text: text.to_owned(),
+        within: roots
+            .iter()
+            .map(|path| NativePath::from_path(path))
+            .collect(),
+        page_size: crate::surface::search_pages::PAGE_SIZE,
+        client_tag: Some(tag.to_owned()),
+        require_metadata: true,
+        ..Query::default()
+    };
+    let session = templar_client::file_index::SearchSession::search(&connection, &query).await?;
+    let result = session.result();
+    let first = search_entries(&result.hits)?;
+    let entries = first.iter().flatten().cloned().collect::<Vec<_>>();
+    let pages = crate::surface::search_pages::SearchPages::new(
+        result.generation,
+        session.retained(),
+        first,
+    );
     let total = result
         .total
         .map_or_else(|| "unknown".to_owned(), |total| total.to_string());
     let notice = format!(
-        "{} of {total} matches · generation {}{}{}",
-        entries.len(),
+        "{} retained of {total} matches · generation {}{}{}",
+        session.retained(),
         result.generation,
         if result.current() {
             ""
@@ -6923,9 +7099,30 @@ async fn run_search(roots: Vec<PathBuf>, text: &str) -> Result<IndexedSearchResu
             ""
         }
     );
+    let truth = result
+        .roots
+        .iter()
+        .filter(|root| !root.current() || root.metadata != "verified")
+        .map(|root| {
+            format!(
+                "{}: {} {} · metadata {}",
+                root.display,
+                root.state,
+                root.reason.as_deref().unwrap_or(""),
+                root.metadata
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let notice = if truth.is_empty() {
+        notice
+    } else {
+        format!("{notice} · {truth}")
+    };
     Ok(IndexedSearchResults {
-        session,
+        session: std::sync::Arc::new(session),
         entries,
+        pages,
         notice,
     })
 }

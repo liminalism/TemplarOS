@@ -86,35 +86,73 @@ pub trait Backend: Sized {
     fn absolute_input_transform(&self, output: &Output) -> Transform {
         output.current_transform()
     }
-    fn session_active(&self) -> bool { true }
+    fn session_active(&self) -> bool {
+        true
+    }
     /// Authoritative primary output; Home never chooses whichever output lit first.
-    fn primary_output_name(&self) -> Option<String> { None }
-    fn display_inventory(&self) -> Vec<templar_types::display::Display> { Vec::new() }
-    fn display_failures(&self) -> Vec<templar_types::display::DisplayFailure> { Vec::new() }
+    fn primary_output_name(&self) -> Option<String> {
+        None
+    }
+    fn display_inventory(&self) -> Vec<templar_types::display::Display> {
+        Vec::new()
+    }
+    fn display_failures(&self) -> Vec<templar_types::display::DisplayFailure> {
+        Vec::new()
+    }
     /// A real active/unknown physical image without a drawable managed output cannot be attested.
-    fn unknown_physical_outputs(&self) -> bool { false }
+    fn unknown_physical_outputs(&self) -> bool {
+        false
+    }
     /// Actual physical readback, not the desired idle flag.
-    fn outputs_blanked(&self) -> bool { false }
+    fn outputs_blanked(&self) -> bool {
+        false
+    }
     /// Admit asynchronous native preparations without blocking protocol/input dispatch.
     fn defer_control(
         _state: &mut TemplarCompState<Self>,
         _request: &templar_types::compositor_control::ControlRequest,
-        _reply: &mut Option<tokio::sync::oneshot::Sender<templar_types::compositor_control::ControlReply>>,
-    ) -> Result<bool, templar_types::compositor_control::ControlError> { Ok(false) }
+        _reply: &mut Option<
+            tokio::sync::oneshot::Sender<templar_types::compositor_control::ControlReply>,
+        >,
+    ) -> Result<bool, templar_types::compositor_control::ControlError> {
+        Ok(false)
+    }
     fn defer_restore(
         _state: &mut TemplarCompState<Self>,
         _profile: &templar_types::display::DisplayProfile,
         _token: Option<uuid::Uuid>,
-    ) -> Result<bool, templar_types::display::DisplayError> { Ok(false) }
-    fn display_restore_pending(&self) -> bool { false }
-    fn validate_displays(_state: &mut TemplarCompState<Self>, _profile: &templar_types::display::DisplayProfile) -> Result<(), templar_types::display::DisplayError> {
-        Err(templar_types::display::DisplayError::new("unsupported_backend", "Physical output configuration requires native DRM/KMS"))
+    ) -> Result<bool, templar_types::display::DisplayError> {
+        Ok(false)
     }
-    fn apply_displays(_state: &mut TemplarCompState<Self>, _profile: &templar_types::display::DisplayProfile) -> Result<(), templar_types::display::DisplayError> {
-        Err(templar_types::display::DisplayError::new("unsupported_backend", "Physical output configuration requires native DRM/KMS"))
+    fn display_restore_pending(&self) -> bool {
+        false
     }
-    fn verify_displays(_state: &TemplarCompState<Self>, _profile: &templar_types::display::DisplayProfile) -> Result<(), templar_types::display::DisplayError> {
-        Err(templar_types::display::DisplayError::new("unsupported_backend", "Physical output configuration requires native DRM/KMS"))
+    fn validate_displays(
+        _state: &mut TemplarCompState<Self>,
+        _profile: &templar_types::display::DisplayProfile,
+    ) -> Result<(), templar_types::display::DisplayError> {
+        Err(templar_types::display::DisplayError::new(
+            "unsupported_backend",
+            "Physical output configuration requires native DRM/KMS",
+        ))
+    }
+    fn apply_displays(
+        _state: &mut TemplarCompState<Self>,
+        _profile: &templar_types::display::DisplayProfile,
+    ) -> Result<(), templar_types::display::DisplayError> {
+        Err(templar_types::display::DisplayError::new(
+            "unsupported_backend",
+            "Physical output configuration requires native DRM/KMS",
+        ))
+    }
+    fn verify_displays(
+        _state: &TemplarCompState<Self>,
+        _profile: &templar_types::display::DisplayProfile,
+    ) -> Result<(), templar_types::display::DisplayError> {
+        Err(templar_types::display::DisplayError::new(
+            "unsupported_backend",
+            "Physical output configuration requires native DRM/KMS",
+        ))
     }
 
     /// Give the backend a chance to import a client buffer early (DMA-BUF direct scanout paths);
@@ -409,9 +447,9 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         // the private trusted-shell-only session lock manager.
         let data_control_state =
             DataControlState::new::<Self, _>(dh, Some(&primary_selection_state), |_| true);
-        let (appearance_wake, appearance_source) =
-            smithay::reexports::calloop::ping::make_ping()?;
-        let appearance = templar_client::appearance::AppearanceObserver::new(move || appearance_wake.ping());
+        let (appearance_wake, appearance_source) = smithay::reexports::calloop::ping::make_ping()?;
+        let appearance =
+            templar_client::appearance::AppearanceObserver::new(move || appearance_wake.ping());
         loop_handle.insert_source(appearance_source, |(), (), state: &mut Self| {
             match state.appearance.take_update() {
                 Some(Ok(value)) => {
@@ -421,7 +459,6 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 None => {}
             }
         }).map_err(|error| anyhow::anyhow!("registering owned appearance wake: {error}"))?;
-
 
         crate::xdg_foreign::create_globals::<B>(dh);
         Ok(Self {
@@ -448,7 +485,10 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             xdg_activation_state: XdgActivationState::new::<Self>(dh),
             pending_activations: Default::default(),
             foreign_parent: Default::default(),
-            session_lock_manager_state: SessionLockManagerState::new::<Self, _>(dh, client_is_trusted_shell),
+            session_lock_manager_state: SessionLockManagerState::new::<Self, _>(
+                dh,
+                client_is_trusted_shell,
+            ),
             idle_inhibit_manager_state:
                 smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Self>(dh),
             foreign_toplevel_list_state:
@@ -541,7 +581,9 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         if let Some(token) = self.idle.take_timer() {
             self.loop_handle.remove(token);
         }
-        if self.session_lock.locked && !self.session_lock.protected_covered() { return; }
+        if self.session_lock.locked && !self.session_lock.protected_covered() {
+            return;
+        }
         let Some(timer) = self.idle.timer_source() else {
             return;
         };
@@ -559,7 +601,9 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// The idle timer fired: turn the outputs off.
     fn blank_now(&mut self) {
         let _ = self.idle.take_timer();
-        if self.session_lock.locked && !self.session_lock.protected_covered() { return; }
+        if self.session_lock.locked && !self.session_lock.protected_covered() {
+            return;
+        }
         if self.idle.expire() {
             tracing::info!(
                 timeout_s = self.idle.timeout().map_or(0, |d| d.as_secs()),
@@ -569,7 +613,6 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             self.idle_notifier.set_idle(true);
         }
     }
-
 
     /// Track a newly seen libinput device. Native defaults remain unchanged until Input1 applies
     /// a stable per-device preference; the winit backend has no libinput devices.
@@ -588,10 +631,12 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     /// Forget a removed libinput device, by kernel name.
     pub fn untrack_input_device(&mut self, sysname: &str) {
         let before = self.input_devices.len();
-        self.input_devices.retain(|known| known.sysname() != sysname);
-        if self.input_devices.len() != before { self.input_control.removed(sysname); }
+        self.input_devices
+            .retain(|known| known.sysname() != sysname);
+        if self.input_devices.len() != before {
+            self.input_control.removed(sysname);
+        }
     }
-
 
     /// Create the two private protocol globals (`templar_shell_v2`, `templar_recovery_v1`).
     ///

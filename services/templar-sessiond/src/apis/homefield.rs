@@ -64,8 +64,13 @@ fn to_json(doc: &templar_field::FieldDocument) -> fdo::Result<String> {
 
 #[zbus::interface(name = "org.templaros.HomeField1")]
 impl HomeFieldApi {
-    async fn get(&self, output: &str, cols: u16, rows: u16,
-        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> fdo::Result<String> {
+    async fn get(
+        &self,
+        output: &str,
+        cols: u16,
+        rows: u16,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<String> {
         if output.is_empty() {
             return Err(fdo::Error::InvalidArgs("output must not be empty".into()));
         }
@@ -112,7 +117,8 @@ impl HomeFieldApi {
         match homefield::undo(&self.store, output).map_err(failed)? {
             Some(mut doc) => {
                 if let Some(desktop) = self.garden.desktop_root() {
-                    homefield::migrate_desktop_dock(&self.store, &mut doc, &desktop).map_err(failed)?;
+                    homefield::migrate_desktop_dock(&self.store, &mut doc, &desktop)
+                        .map_err(failed)?;
                 }
                 self.garden.record_manual_resize_undo(&doc);
                 self.record(format!(

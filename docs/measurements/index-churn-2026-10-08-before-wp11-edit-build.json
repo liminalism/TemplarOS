@@ -1,0 +1,344 @@
+{
+  "label": "before-wp11-edit-build",
+  "seconds": 120,
+  "quiet_entries": 100000,
+  "build_entries": 20000,
+  "shape": "synthetic",
+  "build_bursts": 62,
+  "build_files_created": 310000,
+  "download_appends": 1228,
+  "edits": 1230,
+  "edit_scope": "build",
+  "scopes": [
+    {
+      "scope": "quiet",
+      "search": {
+        "samples": 449,
+        "p50_ms": 2.448882,
+        "p95_ms": 115.286352,
+        "p99_ms": 1601.326926,
+        "max_ms": 1852.159128
+      },
+      "first_fetch": {
+        "samples": 449,
+        "p50_ms": 1.3218679999999998,
+        "p95_ms": 1.913079,
+        "p99_ms": 2.084482,
+        "max_ms": 2.395692
+      },
+      "strategies": {
+        "arrays": 367,
+        "fts5-trigram": 39,
+        "like-scan": 43
+      },
+      "arrays_hit_rate": 0.8173719376391982,
+      "queue_ms": {
+        "samples": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0
+      },
+      "errors": {}
+    },
+    {
+      "scope": "build",
+      "search": {
+        "samples": 449,
+        "p50_ms": 2.172262,
+        "p95_ms": 67.07112599999999,
+        "p99_ms": 1634.207923,
+        "max_ms": 2219.194073
+      },
+      "first_fetch": {
+        "samples": 449,
+        "p50_ms": 1.323105,
+        "p95_ms": 2.0509220000000004,
+        "p99_ms": 2.2031590000000003,
+        "max_ms": 2.288845
+      },
+      "strategies": {
+        "arrays": 365,
+        "fts5-trigram": 40,
+        "like-scan": 44
+      },
+      "arrays_hit_rate": 0.8129175946547884,
+      "queue_ms": {
+        "samples": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0
+      },
+      "errors": {}
+    },
+    {
+      "scope": "all",
+      "search": {
+        "samples": 449,
+        "p50_ms": 2.507555,
+        "p95_ms": 1302.224724,
+        "p99_ms": 3433.1518619999997,
+        "max_ms": 4191.918352
+      },
+      "first_fetch": {
+        "samples": 449,
+        "p50_ms": 1.295139,
+        "p95_ms": 1.983374,
+        "p99_ms": 2.246343,
+        "max_ms": 3.9103640000000004
+      },
+      "strategies": {
+        "arrays": 366,
+        "fts5-trigram": 40,
+        "like-scan": 43
+      },
+      "arrays_hit_rate": 0.8151447661469933,
+      "queue_ms": {
+        "samples": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0
+      },
+      "errors": {}
+    }
+  ],
+  "daemon_threads_max": 29,
+  "browse": {
+    "samples": 1210,
+    "p50_ms": 0.5122030000000001,
+    "p95_ms": 0.7000249999999999,
+    "p99_ms": 0.8474119999999999,
+    "max_ms": 1.665155
+  },
+  "browse_errors": 0,
+  "final_roots": {
+    "roots": [
+      {
+        "root": 1,
+        "path_b64": "L3RtcC8udG1wbE9JYlJuL2hvbWU=",
+        "display": "/tmp/.tmplOIbRn/home",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 2,
+        "complete": true,
+        "entry_count": 1,
+        "policy_hash": "6ffb614dd1581176",
+        "last_scan_ms": 1791473312111,
+        "last_reconcile_started_ms": 1791473312110,
+        "last_reconcile_finished_ms": 1791473312111,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 24005,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": 124202,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        },
+        "volume": {
+          "dev_id": 38,
+          "uuid": null,
+          "label": null,
+          "fs_type": "tmpfs",
+          "fs_uuid": null,
+          "fsid": "Fsid { val: [-421138577, -631586012] }",
+          "mount_point": {
+            "bytes_b64": "L3RtcA==",
+            "display": "/tmp"
+          },
+          "mount_root": {
+            "bytes_b64": "Lw==",
+            "display": "/"
+          },
+          "mount_id": 32,
+          "confidence": "weak"
+        },
+        "offline_reason": null,
+        "offline_since_ms": null,
+        "observed_fingerprint": null,
+        "nested_in": null,
+        "contains": []
+      },
+      {
+        "root": 2,
+        "path_b64": "L3RtcC8udG1wbE9JYlJuL3F1aWV0",
+        "display": "/tmp/.tmplOIbRn/quiet",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 4,
+        "complete": true,
+        "entry_count": 100001,
+        "policy_hash": "28ed3df1b7e41719",
+        "last_scan_ms": 1791473313046,
+        "last_reconcile_started_ms": 1791473312112,
+        "last_reconcile_finished_ms": 1791473313046,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 24005,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": 124202,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        },
+        "volume": {
+          "dev_id": 38,
+          "uuid": null,
+          "label": null,
+          "fs_type": "tmpfs",
+          "fs_uuid": null,
+          "fsid": "Fsid { val: [-421138577, -631586012] }",
+          "mount_point": {
+            "bytes_b64": "L3RtcA==",
+            "display": "/tmp"
+          },
+          "mount_root": {
+            "bytes_b64": "Lw==",
+            "display": "/"
+          },
+          "mount_id": 32,
+          "confidence": "weak"
+        },
+        "offline_reason": null,
+        "offline_since_ms": null,
+        "observed_fingerprint": null,
+        "nested_in": null,
+        "contains": []
+      },
+      {
+        "root": 3,
+        "path_b64": "L3RtcC8udG1wbE9JYlJuL2J1aWxk",
+        "display": "/tmp/.tmplOIbRn/build",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 108,
+        "complete": true,
+        "entry_count": 25052,
+        "policy_hash": "28ed3df1b7e41719",
+        "last_scan_ms": 1791473313302,
+        "last_reconcile_started_ms": 1791473313124,
+        "last_reconcile_finished_ms": 1791473313302,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 24005,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": 124202,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        },
+        "volume": {
+          "dev_id": 38,
+          "uuid": null,
+          "label": null,
+          "fs_type": "tmpfs",
+          "fs_uuid": null,
+          "fsid": "Fsid { val: [-421138577, -631586012] }",
+          "mount_point": {
+            "bytes_b64": "L3RtcA==",
+            "display": "/tmp"
+          },
+          "mount_root": {
+            "bytes_b64": "Lw==",
+            "display": "/"
+          },
+          "mount_id": 32,
+          "confidence": "weak"
+        },
+        "offline_reason": null,
+        "offline_since_ms": null,
+        "observed_fingerprint": null,
+        "nested_in": null,
+        "contains": []
+      },
+      {
+        "root": 4,
+        "path_b64": "L3RtcC8udG1wbE9JYlJuL2Rvd25sb2Fk",
+        "display": "/tmp/.tmplOIbRn/download",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 108,
+        "complete": true,
+        "entry_count": 6,
+        "policy_hash": "28ed3df1b7e41719",
+        "last_scan_ms": 1791473313319,
+        "last_reconcile_started_ms": 1791473313318,
+        "last_reconcile_finished_ms": 1791473313319,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 24005,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": 124202,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        },
+        "volume": {
+          "dev_id": 38,
+          "uuid": null,
+          "label": null,
+          "fs_type": "tmpfs",
+          "fs_uuid": null,
+          "fsid": "Fsid { val: [-421138577, -631586012] }",
+          "mount_point": {
+            "bytes_b64": "L3RtcA==",
+            "display": "/tmp"
+          },
+          "mount_root": {
+            "bytes_b64": "Lw==",
+            "display": "/"
+          },
+          "mount_id": 32,
+          "confidence": "weak"
+        },
+        "offline_reason": null,
+        "offline_since_ms": null,
+        "observed_fingerprint": null,
+        "nested_in": null,
+        "contains": []
+      }
+    ],
+    "diagnostics": {
+      "schema_version": 8,
+      "generation": 108,
+      "planner": "fts5-trigram",
+      "fts_available": true,
+      "change_seq_floor": 215824,
+      "change_seq_head": 315824,
+      "cursor_count": 0,
+      "availability": {
+        "state": "available",
+        "reason": null,
+        "since_ms": null
+      },
+      "storage": {
+        "main_bytes": 186265600,
+        "wal_bytes": 72821032,
+        "shm_bytes": 163840
+      }
+    },
+    "cache_identity": "c06416b26abacf349eadd8e7d37a6071"
+  }
+}

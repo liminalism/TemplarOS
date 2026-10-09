@@ -135,7 +135,9 @@ pub fn tick(ctx: &mut TickContext, shared: &SharedState, now: Instant) -> TickOu
 
     // Observe-only establishes no new kernel controls. Later stages protect session units,
     // including ones that appeared after the previous tick.
-    if stage != Stage::ObserveOnly { protect::apply(&ctx.paths.session_slice); }
+    if stage != Stage::ObserveOnly {
+        protect::apply(&ctx.paths.session_slice);
+    }
 
     apply_pending_forgets(ctx, shared);
     let discovered = register_and_reap(ctx, shared, now, stage);
@@ -181,9 +183,13 @@ pub fn tick(ctx: &mut TickContext, shared: &SharedState, now: Instant) -> TickOu
     };
     let targets_changed = !ctx.has_published_targets
         || ctx.published_targets.len() != report.instances.len()
-        || report.instances.iter().any(|target| !ctx.published_targets.contains(&target.instance_id));
+        || report
+            .instances
+            .iter()
+            .any(|target| !ctx.published_targets.contains(&target.instance_id));
     ctx.published_targets.clear();
-    ctx.published_targets.extend(report.instances.iter().map(|target| target.instance_id));
+    ctx.published_targets
+        .extend(report.instances.iter().map(|target| target.instance_id));
     ctx.has_published_targets = true;
     *shared.report.write() = Some(report.clone());
 
@@ -223,16 +229,17 @@ fn register_and_reap(
     now: Instant,
     stage: Stage,
 ) -> Vec<scan::DiscoveredInstance> {
-    let (discovered, scan_ok) = match scan::discover(&ctx.paths.app_slice).and_then(|mut applications| {
-        applications.extend(scan::discover(&ctx.paths.background_slice)?);
-        Ok(applications)
-    }) {
-        Ok(list) => (list, true),
-        Err(error) => {
-            tracing::warn!(%error, "app.slice scan failed; keeping the previous managed set");
-            (Vec::new(), false)
-        }
-    };
+    let (discovered, scan_ok) =
+        match scan::discover(&ctx.paths.app_slice).and_then(|mut applications| {
+            applications.extend(scan::discover(&ctx.paths.background_slice)?);
+            Ok(applications)
+        }) {
+            Ok(list) => (list, true),
+            Err(error) => {
+                tracing::warn!(%error, "app.slice scan failed; keeping the previous managed set");
+                (Vec::new(), false)
+            }
+        };
 
     for instance in &discovered {
         let managed = ctx.managed.entry(instance.instance_id).or_insert_with(|| {
@@ -309,11 +316,21 @@ fn build_samples(
             .and_then(|text| psi::parse_psi(&text).ok())
             .map_or(0.0, |psi| psi.full.avg10);
         let enrichment = shared.enrichment_for(instance.instance_id);
-        let enrichment = if matches!(instance.identity,
-            templar_types::ResourceIdentity::Workload { class: templar_types::WorkloadClass::BackgroundCompute, .. })
-            && !enrichment.window_state_observed {
-                crate::state::Enrichment { visible: false, ..enrichment }
-            } else { enrichment };
+        let enrichment = if matches!(
+            instance.identity,
+            templar_types::ResourceIdentity::Workload {
+                class: templar_types::WorkloadClass::BackgroundCompute,
+                ..
+            }
+        ) && !enrichment.window_state_observed
+        {
+            crate::state::Enrichment {
+                visible: false,
+                ..enrichment
+            }
+        } else {
+            enrichment
+        };
 
         // The claim expires. Until something reports the transition back to saved, an
         // unbounded claim would excuse an application from containment for the rest of the
@@ -400,7 +417,12 @@ fn apply_decided_actions(
             kind: action.kind(),
             instance_id: action.instance_id(),
             applied,
-            reason: action_reason(action, applied, stage, app_id.as_ref().map(|metadata| &metadata.identity)),
+            reason: action_reason(
+                action,
+                applied,
+                stage,
+                app_id.as_ref().map(|metadata| &metadata.identity),
+            ),
         });
     }
     actions
@@ -444,7 +466,12 @@ fn record_trace(
             .iter()
             .map(|instance| InstanceTrace {
                 instance_id: instance.instance_id,
-                app_id: instance.metadata.identity.application().map(ToString::to_string).unwrap_or_default(),
+                app_id: instance
+                    .metadata
+                    .identity
+                    .application()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
                 metadata: Some(instance.metadata.clone()),
                 memory_current_bytes: instance.memory_current_bytes,
                 memory_growth_bytes_per_second: instance.memory_growth_bytes_per_second,
@@ -808,7 +835,8 @@ impl SignalOutbox {
                 .retain(|queued| !matches!(queued, SignalEvent::PressureChanged { .. }));
         }
         if matches!(event, SignalEvent::TargetsChanged) {
-            self.pending.retain(|queued| !matches!(queued, SignalEvent::TargetsChanged));
+            self.pending
+                .retain(|queued| !matches!(queued, SignalEvent::TargetsChanged));
         }
         self.pending.push_back(event);
 
@@ -1133,7 +1161,10 @@ mod tests {
         }
 
         fn add_app_instance(&self, app: &AppId, id: ResourceId, memory_bytes: u64) {
-            let unit_dir = self.dir.join("app.slice").join(unit::unit_name(app, templar_types::InstanceId::from_uuid(id.uuid())));
+            let unit_dir = self.dir.join("app.slice").join(unit::unit_name(
+                app,
+                templar_types::InstanceId::from_uuid(id.uuid()),
+            ));
             fs::create_dir_all(&unit_dir).unwrap();
             fs::write(unit_dir.join("memory.current"), memory_bytes.to_string()).unwrap();
             fs::write(
@@ -1195,12 +1226,10 @@ mod tests {
         assert_eq!(ctx.managed_count(), 1);
 
         // The instance's cgroup disappears (unit exited) — the next tick must reap it.
-        fs::remove_dir_all(
-            fixture
-                .dir
-                .join("app.slice")
-                .join(unit::unit_name(&app, templar_types::InstanceId::from_uuid(id.uuid()))),
-        )
+        fs::remove_dir_all(fixture.dir.join("app.slice").join(unit::unit_name(
+            &app,
+            templar_types::InstanceId::from_uuid(id.uuid()),
+        )))
         .unwrap();
         let outcome = tick(&mut ctx, &shared, Instant::now());
         assert!(outcome.report.instances.is_empty());
@@ -1254,7 +1283,10 @@ mod tests {
             fixture
                 .dir
                 .join("app.slice")
-                .join(unit::unit_name(&app, templar_types::InstanceId::from_uuid(id.uuid())))
+                .join(unit::unit_name(
+                    &app,
+                    templar_types::InstanceId::from_uuid(id.uuid()),
+                ))
                 .join("memory.high"),
         )
         .unwrap();
@@ -1324,7 +1356,10 @@ mod tests {
         let high_path = fixture
             .dir
             .join("app.slice")
-            .join(unit::unit_name(&app, templar_types::InstanceId::from_uuid(id.uuid())))
+            .join(unit::unit_name(
+                &app,
+                templar_types::InstanceId::from_uuid(id.uuid()),
+            ))
             .join("memory.high");
         let before = fs::read_to_string(&high_path).unwrap();
 
@@ -1387,7 +1422,10 @@ mod tests {
         let high_path = fixture
             .dir
             .join("app.slice")
-            .join(unit::unit_name(&app, templar_types::InstanceId::from_uuid(id.uuid())))
+            .join(unit::unit_name(
+                &app,
+                templar_types::InstanceId::from_uuid(id.uuid()),
+            ))
             .join("memory.high");
         assert_ne!(fs::read_to_string(&high_path).unwrap().trim(), "0");
 

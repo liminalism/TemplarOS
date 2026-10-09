@@ -1214,6 +1214,7 @@ fn scan_connectors(state: &mut State, node: DrmNode) {
         }
     }
     crate::backend::recompute_outputs(state);
+    crate::compositor_control::maybe_emergency_fallback(state);
 }
 
 // See `add_device`'s identical `#[allow]`: one connector's worth of "compute its mode, register
@@ -1527,6 +1528,7 @@ fn remove_device(state: &mut State, node: DrmNode) {
         select_healthy_render_gpu(&mut state.backend_data);
     }
     crate::backend::recompute_outputs(state);
+    crate::compositor_control::maybe_emergency_fallback(state);
 }
 
 /// Marks the just-completed frame submitted (releasing its buffer back to the swapchain) and

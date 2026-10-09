@@ -12,7 +12,12 @@
 use crate::identity::{InstanceRecord, Registry};
 use crate::systemd1;
 use anyhow::{Context, Result, bail};
-use std::{ffi::OsString, path::{Path, PathBuf}, sync::Arc, time::Duration};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use templar_client::proxies::ResourcesProxy;
 use templar_types::{AppManifest, InstanceId, ResourceClass, dbus::env, unit};
 use tokio::{process::Command, time::sleep};
@@ -48,7 +53,16 @@ pub async fn launch(
     backend: LaunchBackend,
     connection: Option<&zbus::Connection>,
 ) -> Result<InstanceRecord> {
-    launch_in_directory(registry, manifest, arguments, activation_token, backend, connection, None).await
+    launch_in_directory(
+        registry,
+        manifest,
+        arguments,
+        activation_token,
+        backend,
+        connection,
+        None,
+    )
+    .await
 }
 
 /// Same brokered launch with a real service cwd, independent of any application's CLI spelling.
@@ -62,7 +76,16 @@ pub async fn launch_in_directory(
     directory: Option<&std::path::Path>,
 ) -> Result<InstanceRecord> {
     let arguments = explicit_arguments(&registry, &manifest, arguments);
-    launch_native(registry, manifest, arguments, activation_token, backend, connection, directory).await
+    launch_native(
+        registry,
+        manifest,
+        arguments,
+        activation_token,
+        backend,
+        connection,
+        directory,
+    )
+    .await
 }
 
 /// Desktop file targets are not arbitrary application switches. Field codes decide whether
@@ -76,31 +99,84 @@ pub async fn launch_files(
     connection: Option<&zbus::Connection>,
 ) -> Result<InstanceRecord> {
     let arguments = file_arguments(&registry, &manifest, file_uris)?;
-    launch_native(registry, manifest, arguments, activation_token, backend, connection, None).await
+    launch_native(
+        registry,
+        manifest,
+        arguments,
+        activation_token,
+        backend,
+        connection,
+        None,
+    )
+    .await
 }
 
-fn file_arguments(registry: &Registry, manifest: &AppManifest, file_uris: &[String]) -> Result<Vec<OsString>> {
-    anyhow::ensure!(!file_uris.is_empty(), "file launch requires at least one local target");
-    let targets: Vec<_> = file_uris.iter().map(|uri| {
-        let path = templar_types::uri_list::decode_uri(uri).context("file launch requires a local file URI")?;
-        anyhow::ensure!(path.is_absolute() && path.exists(), "file launch target must exist");
-        Ok(crate::desktop_entry::FileTarget { path, uri: uri.clone() })
-    }).collect::<Result<_>>()?;
-    Ok(if let Some(template) = registry.launch_template(&manifest.id) {
-        anyhow::ensure!(template.exec.accepts_files(), "desktop entry has no file/URI field code");
-        template.exec.expand_arguments(&targets, manifest.icon.as_deref().unwrap_or(""),
-            &manifest.display_name, &template.desktop_file_path)
-    } else {
-        // Native manifests declare a resolved executable rather than a desktop Exec line.
-        targets.into_iter().map(|target| target.path.into_os_string()).collect()
-    })
+fn file_arguments(
+    registry: &Registry,
+    manifest: &AppManifest,
+    file_uris: &[String],
+) -> Result<Vec<OsString>> {
+    anyhow::ensure!(
+        !file_uris.is_empty(),
+        "file launch requires at least one local target"
+    );
+    let targets: Vec<_> = file_uris
+        .iter()
+        .map(|uri| {
+            let path = templar_types::uri_list::decode_uri(uri)
+                .context("file launch requires a local file URI")?;
+            anyhow::ensure!(
+                path.is_absolute() && path.exists(),
+                "file launch target must exist"
+            );
+            Ok(crate::desktop_entry::FileTarget {
+                path,
+                uri: uri.clone(),
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok(
+        if let Some(template) = registry.launch_template(&manifest.id) {
+            anyhow::ensure!(
+                template.exec.accepts_files(),
+                "desktop entry has no file/URI field code"
+            );
+            template.exec.expand_arguments(
+                &targets,
+                manifest.icon.as_deref().unwrap_or(""),
+                &manifest.display_name,
+                &template.desktop_file_path,
+            )
+        } else {
+            // Native manifests declare a resolved executable rather than a desktop Exec line.
+            targets
+                .into_iter()
+                .map(|target| target.path.into_os_string())
+                .collect()
+        },
+    )
 }
 
-fn explicit_arguments(registry: &Registry, manifest: &AppManifest, arguments: &[String]) -> Vec<OsString> {
-    let mut expanded = registry.launch_template(&manifest.id).map_or_else(Vec::new, |template|
-        template.exec.expand_arguments(&[], manifest.icon.as_deref().unwrap_or(""),
-            &manifest.display_name, &template.desktop_file_path));
-    expanded.extend(arguments.iter().map(|argument| OsString::from(argument.as_str())));
+fn explicit_arguments(
+    registry: &Registry,
+    manifest: &AppManifest,
+    arguments: &[String],
+) -> Vec<OsString> {
+    let mut expanded = registry
+        .launch_template(&manifest.id)
+        .map_or_else(Vec::new, |template| {
+            template.exec.expand_arguments(
+                &[],
+                manifest.icon.as_deref().unwrap_or(""),
+                &manifest.display_name,
+                &template.desktop_file_path,
+            )
+        });
+    expanded.extend(
+        arguments
+            .iter()
+            .map(|argument| OsString::from(argument.as_str())),
+    );
     expanded
 }
 
@@ -116,11 +192,24 @@ fn wire_command<'a>(
         && arguments.iter().all(|argument| argument.to_str().is_some())
         && native_directory.is_none()
     {
-        return Ok((executable, arguments.into_iter().map(|argument| argument.into_string().expect("validated UTF-8")).collect(), directory));
+        return Ok((
+            executable,
+            arguments
+                .into_iter()
+                .map(|argument| argument.into_string().expect("validated UTF-8"))
+                .collect(),
+            directory,
+        ));
     }
-    Ok((crate::native_exec::ADAPTER_PATH,
-        vec![crate::native_exec::encode(executable, &arguments, native_directory)?],
-        directory.filter(|directory| directory.to_str().is_some())))
+    Ok((
+        crate::native_exec::ADAPTER_PATH,
+        vec![crate::native_exec::encode(
+            executable,
+            &arguments,
+            native_directory,
+        )?],
+        directory.filter(|directory| directory.to_str().is_some()),
+    ))
 }
 
 async fn launch_native(
@@ -133,11 +222,18 @@ async fn launch_native(
     directory: Option<&Path>,
 ) -> Result<InstanceRecord> {
     if let Some(directory) = directory {
-        anyhow::ensure!(directory.is_absolute() && directory.is_dir(), "launch directory must be an existing absolute directory");
+        anyhow::ensure!(
+            directory.is_absolute() && directory.is_dir(),
+            "launch directory must be an existing absolute directory"
+        );
     }
-    let (executable, arguments, service_directory) = wire_command(&manifest.executable, arguments, directory)?;
+    let (executable, arguments, service_directory) =
+        wire_command(&manifest.executable, arguments, directory)?;
     if executable == crate::native_exec::ADAPTER_PATH {
-        anyhow::ensure!(Path::new(executable).is_file(), "native exec adapter is not installed at {executable}");
+        anyhow::ensure!(
+            Path::new(executable).is_file(),
+            "native exec adapter is not installed at {executable}"
+        );
     }
     let instance_id = InstanceId::new();
     let record = match (backend, connection) {
@@ -152,9 +248,22 @@ async fn launch_native(
         )
         .await
         .context("launching via StartTransientUnit")?,
-        _ => launch_via_systemd_run(&manifest, instance_id, executable, &arguments, activation_token, service_directory).await?,
+        _ => {
+            launch_via_systemd_run(
+                &manifest,
+                instance_id,
+                executable,
+                &arguments,
+                activation_token,
+                service_directory,
+            )
+            .await?
+        }
     };
-    anyhow::ensure!(record.has_managed_identity(), "systemd returned an inconsistent managed launch identity");
+    anyhow::ensure!(
+        record.has_managed_identity(),
+        "systemd returned an inconsistent managed launch identity"
+    );
     registry.register_instance(record.clone());
     if let Some(connection) = connection {
         push_resource_hints(connection, instance_id, &manifest).await;
@@ -221,7 +330,12 @@ async fn launch_via_systemd_run(
         .arg(format!("--setenv={}={}", env::APP_ID, manifest.id));
 
     if let Some(directory) = directory {
-        command.arg(format!("--working-directory={}", directory.to_str().context("launch directory must be UTF-8")?));
+        command.arg(format!(
+            "--working-directory={}",
+            directory
+                .to_str()
+                .context("launch directory must be UTF-8")?
+        ));
     }
     // Which desktop this application joins is stated here, not left to the systemd user manager's
     // global environment — `systemd1::SESSION_ENVIRONMENT` has the full reasoning.
@@ -286,12 +400,20 @@ mod tests {
 
     fn manifest() -> AppManifest {
         AppManifest {
-            id: "org.example.Reader".parse().unwrap(), display_name: "Reader".into(),
-            primary_desktop_file_id: "reader.desktop".into(), executable: "/usr/bin/reader".into(),
-            aliases: AppAliases::default(), mime_types: Default::default(),
-            resource_class: ResourceClass::Normal, supports_checkpoint: false, icon: None,
-            categories: Default::default(), keywords: Default::default(), no_display: false,
-            provenance: None, provides: Vec::new(),
+            id: "org.example.Reader".parse().unwrap(),
+            display_name: "Reader".into(),
+            primary_desktop_file_id: "reader.desktop".into(),
+            executable: "/usr/bin/reader".into(),
+            aliases: AppAliases::default(),
+            mime_types: Default::default(),
+            resource_class: ResourceClass::Normal,
+            supports_checkpoint: false,
+            icon: None,
+            categories: Default::default(),
+            keywords: Default::default(),
+            no_display: false,
+            provenance: None,
+            provides: Vec::new(),
         }
     }
 
@@ -299,11 +421,19 @@ mod tests {
     fn explicit_launch_keeps_desktop_fixed_arguments_once_without_guessing_file_targets() {
         let registry = Registry::default();
         let manifest = manifest();
-        registry.insert_desktop_manifest(manifest.clone(), ExecTemplate::parse("reader --reader %F"),
-            "/usr/share/applications/reader.desktop".into());
-        let arguments = explicit_arguments(&registry, &manifest, &["--directory".into(), "/tmp/project".into()]);
+        registry.insert_desktop_manifest(
+            manifest.clone(),
+            ExecTemplate::parse("reader --reader %F"),
+            "/usr/share/applications/reader.desktop".into(),
+        );
+        let arguments = explicit_arguments(
+            &registry,
+            &manifest,
+            &["--directory".into(), "/tmp/project".into()],
+        );
         assert_eq!(arguments, ["--reader", "--directory", "/tmp/project"]);
-        let (executable, wire, directory) = wire_command(&manifest.executable, arguments, None).unwrap();
+        let (executable, wire, directory) =
+            wire_command(&manifest.executable, arguments, None).unwrap();
         assert!(directory.is_none());
         assert_eq!(executable, "/usr/bin/reader");
         assert_eq!(wire, ["--reader", "--directory", "/tmp/project"]);
@@ -315,18 +445,50 @@ mod tests {
         let mut manifest = manifest();
         manifest.id = "flatpak.org.example.Reader".parse().unwrap();
         manifest.executable = "/usr/bin/flatpak".into();
-        registry.insert_desktop_manifest(manifest.clone(),
-            ExecTemplate::parse("flatpak run --branch=stable org.example.Reader --fixed=${HOME}:$VAR:$$ %F"),
-            "/var/lib/flatpak/exports/share/applications/org.example.Reader.desktop".into());
+        registry.insert_desktop_manifest(
+            manifest.clone(),
+            ExecTemplate::parse(
+                "flatpak run --branch=stable org.example.Reader --fixed=${HOME}:$VAR:$$ %F",
+            ),
+            "/var/lib/flatpak/exports/share/applications/org.example.Reader.desktop".into(),
+        );
         let arguments = explicit_arguments(&registry, &manifest, &["two words".into()]);
-        assert_eq!(arguments, ["run", "--branch=stable", "org.example.Reader", "--fixed=${HOME}:$VAR:$$", "two words"]);
+        assert_eq!(
+            arguments,
+            [
+                "run",
+                "--branch=stable",
+                "org.example.Reader",
+                "--fixed=${HOME}:$VAR:$$",
+                "two words"
+            ]
+        );
         let utf8_directory = Path::new("/tmp/project-${HOME}-$VAR-$$");
-        let (executable, wire, directory) = wire_command(&manifest.executable, arguments.clone(), Some(utf8_directory)).unwrap();
+        let (executable, wire, directory) = wire_command(
+            &manifest.executable,
+            arguments.clone(),
+            Some(utf8_directory),
+        )
+        .unwrap();
         assert_eq!(executable, "/usr/bin/flatpak");
-        assert_eq!(wire, ["run", "--branch=stable", "org.example.Reader", "--fixed=${HOME}:$VAR:$$", "two words"]);
+        assert_eq!(
+            wire,
+            [
+                "run",
+                "--branch=stable",
+                "org.example.Reader",
+                "--fixed=${HOME}:$VAR:$$",
+                "two words"
+            ]
+        );
         assert_eq!(directory, Some(utf8_directory));
         let native_directory = PathBuf::from(OsString::from_vec(b"/tmp/project-\xff".to_vec()));
-        let (executable, wire, directory) = wire_command(&manifest.executable, arguments.clone(), Some(&native_directory)).unwrap();
+        let (executable, wire, directory) = wire_command(
+            &manifest.executable,
+            arguments.clone(),
+            Some(&native_directory),
+        )
+        .unwrap();
         assert_eq!(executable, crate::native_exec::ADAPTER_PATH);
         assert!(directory.is_none());
         let decoded = crate::native_exec::decode(&wire[0]).unwrap();
@@ -340,7 +502,8 @@ mod tests {
         let manifest = manifest();
         let directory = Path::new("/tmp/project");
         let arguments = vec![OsString::from_vec(b"/tmp/file-\xff".to_vec())];
-        let (_, wire, service_directory) = wire_command(&manifest.executable, arguments.clone(), Some(directory)).unwrap();
+        let (_, wire, service_directory) =
+            wire_command(&manifest.executable, arguments.clone(), Some(directory)).unwrap();
         assert_eq!(service_directory, Some(directory));
         let decoded = crate::native_exec::decode(&wire[0]).unwrap();
         assert_eq!(decoded.arguments, arguments);
@@ -351,18 +514,36 @@ mod tests {
     fn native_files_use_registered_field_codes_and_lossless_adapter_payload() {
         let temp = tempfile::tempdir().unwrap();
         let files = [
-            temp.path().join(OsString::from_vec(b"name-\xff.pdf".to_vec())),
-            temp.path().join(OsString::from_vec(b"name-\xfe.pdf".to_vec())),
+            temp.path()
+                .join(OsString::from_vec(b"name-\xff.pdf".to_vec())),
+            temp.path()
+                .join(OsString::from_vec(b"name-\xfe.pdf".to_vec())),
         ];
-        for file in &files { std::fs::write(file, "fixture").unwrap(); }
-        let uris: Vec<_> = files.iter().map(|file| templar_types::uri_list::encode_path(file)).collect();
+        for file in &files {
+            std::fs::write(file, "fixture").unwrap();
+        }
+        let uris: Vec<_> = files
+            .iter()
+            .map(|file| templar_types::uri_list::encode_path(file))
+            .collect();
         let registry = Registry::default();
         let manifest = manifest();
-        registry.insert_desktop_manifest(manifest.clone(), ExecTemplate::parse("reader --reader %F"),
-            "/usr/share/applications/reader.desktop".into());
+        registry.insert_desktop_manifest(
+            manifest.clone(),
+            ExecTemplate::parse("reader --reader %F"),
+            "/usr/share/applications/reader.desktop".into(),
+        );
         let arguments = file_arguments(&registry, &manifest, &uris).unwrap();
-        assert_eq!(arguments, [OsString::from("--reader"), files[0].as_os_str().to_owned(), files[1].as_os_str().to_owned()]);
-        let (executable, wire, directory) = wire_command(&manifest.executable, arguments.clone(), None).unwrap();
+        assert_eq!(
+            arguments,
+            [
+                OsString::from("--reader"),
+                files[0].as_os_str().to_owned(),
+                files[1].as_os_str().to_owned()
+            ]
+        );
+        let (executable, wire, directory) =
+            wire_command(&manifest.executable, arguments.clone(), None).unwrap();
         assert!(directory.is_none());
         assert_eq!(executable, crate::native_exec::ADAPTER_PATH);
         assert_eq!(wire.len(), 1);
@@ -371,15 +552,21 @@ mod tests {
         assert_eq!(decoded.arguments, arguments);
         assert!(decoded.directory.is_none());
 
-        registry.insert_desktop_manifest(manifest.clone(), ExecTemplate::parse("reader --uri %U"),
-            "/usr/share/applications/reader.desktop".into());
+        registry.insert_desktop_manifest(
+            manifest.clone(),
+            ExecTemplate::parse("reader --uri %U"),
+            "/usr/share/applications/reader.desktop".into(),
+        );
         let arguments = file_arguments(&registry, &manifest, &uris).unwrap();
         let (executable, wire, _) = wire_command(&manifest.executable, arguments, None).unwrap();
         assert_eq!(executable, "/usr/bin/reader");
         assert_eq!(wire, ["--uri".to_owned(), uris[0].clone(), uris[1].clone()]);
         assert!(file_arguments(&registry, &manifest, &["file://remote/tmp/a.pdf".into()]).is_err());
-        registry.insert_desktop_manifest(manifest.clone(), ExecTemplate::parse("reader --reader"),
-            "/usr/share/applications/reader.desktop".into());
+        registry.insert_desktop_manifest(
+            manifest.clone(),
+            ExecTemplate::parse("reader --reader"),
+            "/usr/share/applications/reader.desktop".into(),
+        );
         assert!(file_arguments(&registry, &manifest, &uris).is_err());
     }
 }

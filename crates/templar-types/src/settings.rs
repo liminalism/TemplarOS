@@ -135,7 +135,14 @@ impl SettingsPage {
             Self::History => &["events", "undo"],
             Self::Hardware => &["drivers", "devices"],
             Self::Windows => &["title tabs", "window corners", "hover controls"],
-            Self::DateTime => &["clock", "timezone", "date", "time", "locale", "automatic time"],
+            Self::DateTime => &[
+                "clock",
+                "timezone",
+                "date",
+                "time",
+                "locale",
+                "automatic time",
+            ],
         }
     }
 }

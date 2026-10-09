@@ -10,9 +10,9 @@ use crate::{
     policy::{Action, Stage},
 };
 use anyhow::{Context, Result};
+use std::sync::Arc;
 use std::{collections::HashMap, time::Instant};
 use templar_types::{ResourceId, ResourceIdentity, ResourceMetadata};
-use std::sync::Arc;
 
 /// A tracked application instance, private to the sampling loop.
 #[derive(Clone, Debug)]
@@ -42,7 +42,10 @@ pub struct ManagedInstance {
 
 impl ManagedInstance {
     pub fn new(identity: ResourceIdentity, cgroup: Cgroup, now: Instant) -> Self {
-        let metadata = Arc::new(ResourceMetadata { identity, control_group: cgroup.control_group_path() });
+        let metadata = Arc::new(ResourceMetadata {
+            identity,
+            control_group: cgroup.control_group_path(),
+        });
         Self {
             metadata,
             cgroup,
@@ -177,7 +180,9 @@ mod tests {
     }
 
     fn app_id() -> ResourceIdentity {
-        ResourceIdentity::Application { app_id: "org.templaros.Test".parse().unwrap() }
+        ResourceIdentity::Application {
+            app_id: "org.templaros.Test".parse().unwrap(),
+        }
     }
 
     #[test]

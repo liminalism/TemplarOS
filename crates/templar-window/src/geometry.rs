@@ -453,9 +453,8 @@ pub fn is_recoverable(window: Rect, outputs: &[Output]) -> bool {
     let required_width = window.width.clamp(1, MIN_RECOVERY_WIDTH);
 
     outputs.iter().any(|output| {
-        band.intersection(output.usable()).is_some_and(|visible| {
-            visible.width >= required_width && visible.height >= band.height
-        })
+        band.intersection(output.usable())
+            .is_some_and(|visible| visible.width >= required_width && visible.height >= band.height)
     })
 }
 
@@ -1297,8 +1296,7 @@ impl TabPolicy {
                 .as_deref()
                 .and_then(Corner::from_name)
                 .unwrap_or(Corner::TopRight),
-            controls_always: choice("windows.tabs.controls")
-                .is_some_and(|value| value == "always"),
+            controls_always: choice("windows.tabs.controls").is_some_and(|value| value == "always"),
             title_always: choice("windows.tabs.title").is_none_or(|value| value != "hover"),
             default_corner: choice("windows.tabs.default-corner")
                 .as_deref()
@@ -1363,14 +1361,21 @@ impl WindowLayout {
     /// The client rectangle passes through untouched: deriving a layout never resizes anything,
     /// which is what lets pure tab relocation send no client configure at all.
     pub fn new(client: Rect, corner: Corner, placement: TabPlacement, output: Rect) -> Self {
-        let client = Rect::new(client.x, client.y, client.width.max(1), client.height.max(1));
+        let client = Rect::new(
+            client.x,
+            client.y,
+            client.width.max(1),
+            client.height.max(1),
+        );
         // Leave the output's Home corner and bottom peek/gesture corridor unobstructed.
         // This bounds decoration only: the client still occupies its original geometry.
         let inset_x = RESIZE_SQUARE.min((output.width - MIN_WINDOW_WIDTH).max(0) / 2);
         let inset_y = RESIZE_SQUARE.min((output.height - MIN_WINDOW_HEIGHT).max(0) / 2);
         let output = Rect::new(
-            output.x + inset_x, output.y + inset_y,
-            output.width - 2 * inset_x, output.height - 2 * inset_y,
+            output.x + inset_x,
+            output.y + inset_y,
+            output.width - 2 * inset_x,
+            output.height - 2 * inset_y,
         );
 
         // Room for chrome between the two reserved corner squares on one edge.
@@ -1403,15 +1408,20 @@ impl WindowLayout {
         };
         let controls_fit = match placement {
             TabPlacement::SameCorner => room_between_squares(client.height) >= Self::stack_span(),
-            TabPlacement::OppositeCorners => room_between_squares(client.width)
-                >= title_exterior_width + TAB_CONTROL_GAP + Self::stack_span(),
+            TabPlacement::OppositeCorners => {
+                room_between_squares(client.width)
+                    >= title_exterior_width + TAB_CONTROL_GAP + Self::stack_span()
+            }
         } && exterior_controls.iter().all(|rect| {
-            output.intersection(*rect) == Some(*rect)
-                && rect.intersection(title_exterior).is_none()
+            output.intersection(*rect) == Some(*rect) && rect.intersection(title_exterior).is_none()
         });
         let overlay = !title_fits_exterior || !controls_fit;
         let (title, controls) = if overlay {
-            Self::overlay_tabs(Self::overlay_area(client, output, corner), corner, placement)
+            Self::overlay_tabs(
+                Self::overlay_area(client, output, corner),
+                corner,
+                placement,
+            )
         } else {
             (title_exterior, exterior_controls)
         };
@@ -1452,22 +1462,37 @@ impl WindowLayout {
         }
         let width = MIN_WINDOW_WIDTH.min(output.width).max(1);
         let height = MIN_WINDOW_HEIGHT.min(output.height).max(1);
-        let anchored = |anchor: Rect, corner: Corner| Rect::new(
-            (if corner.is_left() { anchor.x } else { anchor.right() - width })
+        let anchored = |anchor: Rect, corner: Corner| {
+            Rect::new(
+                (if corner.is_left() {
+                    anchor.x
+                } else {
+                    anchor.right() - width
+                })
                 .clamp(output.x, (output.right() - width).max(output.x)),
-            (if corner.is_top() { anchor.y } else { anchor.bottom() - height })
+                (if corner.is_top() {
+                    anchor.y
+                } else {
+                    anchor.bottom() - height
+                })
                 .clamp(output.y, (output.bottom() - height).max(output.y)),
-            width, height,
-        );
-        let fits = |area: Rect| Self::resize_squares(client)
-            .into_iter().all(|square| square.intersection(area).is_none());
+                width,
+                height,
+            )
+        };
+        let fits = |area: Rect| {
+            Self::resize_squares(client)
+                .into_iter()
+                .all(|square| square.intersection(area).is_none())
+        };
         let preferred = anchored(visible, corner);
         if fits(preferred) {
             return preferred;
         }
         // Keep the requested corner if possible; output-corner recovery is only for
         // a client too small to hold the minimum overflow without crossing a resize square.
-        std::iter::once(corner).chain(Corner::ALL)
+        std::iter::once(corner)
+            .chain(Corner::ALL)
             .map(|corner| anchored(output, corner))
             .find(|area| fits(*area))
             .unwrap_or(preferred)
@@ -1486,22 +1511,40 @@ impl WindowLayout {
                     area.right() - reserved - title.width
                 };
                 title.height = title.height.min(title.width);
-                title.y = if corner.is_top() { area.y } else { area.bottom() - title.height };
+                title.y = if corner.is_top() {
+                    area.y
+                } else {
+                    area.bottom() - title.height
+                };
                 controls
             }
             TabPlacement::OppositeCorners => {
                 if area.width >= TAB_TITLE_MIN_WIDTH + TAB_CONTROL_GAP + Self::stack_span() {
-                    title.width = title.width.min(area.width - Self::stack_span() - TAB_CONTROL_GAP);
-                    title.x = if corner.is_left() { area.x } else { area.right() - title.width };
+                    title.width = title
+                        .width
+                        .min(area.width - Self::stack_span() - TAB_CONTROL_GAP);
+                    title.x = if corner.is_left() {
+                        area.x
+                    } else {
+                        area.right() - title.width
+                    };
                     Self::overlay_row(area, corner)
                 } else {
                     // A narrow window uses a second horizontal row rather than putting
                     // controls over the entire drag target.
                     title.height = title.height.min((area.height - TAB_CONTROL_GAP) / 2).max(1);
-                    title.y = if corner.is_top() { area.y } else { area.bottom() - title.height };
+                    title.y = if corner.is_top() {
+                        area.y
+                    } else {
+                        area.bottom() - title.height
+                    };
                     let remaining = Rect::new(
                         area.x,
-                        if corner.is_top() { title.bottom() + TAB_CONTROL_GAP } else { area.y },
+                        if corner.is_top() {
+                            title.bottom() + TAB_CONTROL_GAP
+                        } else {
+                            area.y
+                        },
                         area.width,
                         (area.height - title.height - TAB_CONTROL_GAP).max(1),
                     );
@@ -1621,12 +1664,7 @@ impl WindowLayout {
             } else {
                 client.x + step
             };
-            Rect::new(
-                x.clamp(client.x, client.right() - size),
-                y,
-                size,
-                size,
-            )
+            Rect::new(x.clamp(client.x, client.right() - size), y, size, size)
         })
     }
 
@@ -2923,7 +2961,10 @@ mod tests {
             .with_work_area(Rect::new(0, 40, 1920, 1040));
         let placed =
             shell_surface_placement(Layer::Notification, None, &output, Rect::new(0, 0, 360, 88));
-        assert_eq!(placed, Rect::new(1920 - 360 - 12, 1080 - 88 - SHELL_BAR_HEIGHT - 12, 360, 88));
+        assert_eq!(
+            placed,
+            Rect::new(1920 - 360 - 12, 1080 - 88 - SHELL_BAR_HEIGHT - 12, 360, 88)
+        );
         // A toast wider than the output is clamped rather than walked off-screen.
         let huge = shell_surface_placement(
             Layer::Notification,
@@ -2945,11 +2986,16 @@ mod tests {
         ] {
             for height in [80, 200, 320, 80] {
                 placed = shell_surface_placement(
-                    Layer::Notification, None, &output,
+                    Layer::Notification,
+                    None,
+                    &output,
                     Rect::new(placed.x, placed.y, placed.width, height),
                 );
                 assert_eq!(placed.height, height);
-                assert_eq!(placed.bottom(), output.usable().bottom() - SHELL_BAR_HEIGHT - 12);
+                assert_eq!(
+                    placed.bottom(),
+                    output.usable().bottom() - SHELL_BAR_HEIGHT - 12
+                );
                 assert_eq!(placed.right(), output.usable().right() - 12);
                 assert!(placed.y >= output.usable().y);
             }
@@ -3037,7 +3083,10 @@ mod tab_layout_tests {
         for client in clients {
             let squares = WindowLayout::resize_squares(client);
             for (index, square) in squares.iter().enumerate() {
-                assert_eq!((square.width, square.height), (RESIZE_SQUARE, RESIZE_SQUARE));
+                assert_eq!(
+                    (square.width, square.height),
+                    (RESIZE_SQUARE, RESIZE_SQUARE)
+                );
                 assert!(
                     !overlaps(*square, client),
                     "resize square {index} of {client:?} eats client pixels"
@@ -3103,7 +3152,10 @@ mod tab_layout_tests {
         for corner in Corner::ALL {
             for placement in [TabPlacement::SameCorner, TabPlacement::OppositeCorners] {
                 let layout = WindowLayout::new(client, corner, placement, output());
-                assert!(!layout.overlay, "{corner:?}/{placement:?} should fit outside");
+                assert!(
+                    !layout.overlay,
+                    "{corner:?}/{placement:?} should fit outside"
+                );
                 assert_eq!(layout.client, client, "layout must not resize the client");
                 // Horizontal title on the adjacent edge, never rotated.
                 assert_eq!(layout.title.height, TAG_HEIGHT);
@@ -3118,9 +3170,15 @@ mod tab_layout_tests {
                 assert_eq!(layout.controls.len(), 3);
                 for (index, (control, rect)) in layout.controls.iter().enumerate() {
                     assert_eq!(*control, TabControl::corner_outward()[index]);
-                    assert_eq!((rect.width, rect.height), (TAB_CONTROL_SIZE, TAB_CONTROL_SIZE));
+                    assert_eq!(
+                        (rect.width, rect.height),
+                        (TAB_CONTROL_SIZE, TAB_CONTROL_SIZE)
+                    );
                     assert!(!overlaps(*rect, client), "{control:?} overlaps the client");
-                    assert!(!overlaps(*rect, layout.title), "{control:?} overlaps the title");
+                    assert!(
+                        !overlaps(*rect, layout.title),
+                        "{control:?} overlaps the title"
+                    );
                     for (_, other) in &layout.controls[index + 1..] {
                         assert!(!overlaps(*rect, *other), "controls overlap each other");
                     }
@@ -3182,9 +3240,15 @@ mod tab_layout_tests {
                 "opposite controls are not on the title's edge"
             );
             if corner.is_left() {
-                assert!(first.x > opposite.title.right(), "row is not at the far end");
+                assert!(
+                    first.x > opposite.title.right(),
+                    "row is not at the far end"
+                );
             } else {
-                assert!(first.right() < opposite.title.x, "row is not at the far end");
+                assert!(
+                    first.right() < opposite.title.x,
+                    "row is not at the far end"
+                );
             }
         }
     }
@@ -3225,7 +3289,12 @@ mod tab_layout_tests {
         // Top edge: the title overlays while the side keeps its exterior stack — same
         // corner throughout, nothing offscreen.
         let top_edge = Rect::new(400, 0, 640, 480);
-        let layout = WindowLayout::new(top_edge, Corner::TopRight, TabPlacement::SameCorner, output());
+        let layout = WindowLayout::new(
+            top_edge,
+            Corner::TopRight,
+            TabPlacement::SameCorner,
+            output(),
+        );
         assert!(layout.overlay);
         assert_eq!(output().intersection(layout.title), Some(layout.title));
     }
@@ -3271,7 +3340,10 @@ mod tab_layout_tests {
         assert_eq!(
             WindowLayout::nearest_corner(
                 client,
-                Point { x: 300 + TAB_HYSTERESIS / 2 - 1, y: 100 },
+                Point {
+                    x: 300 + TAB_HYSTERESIS / 2 - 1,
+                    y: 100
+                },
                 Some(Corner::TopLeft)
             ),
             Corner::TopLeft
@@ -3279,7 +3351,10 @@ mod tab_layout_tests {
         assert_eq!(
             WindowLayout::nearest_corner(
                 client,
-                Point { x: 300 + TAB_HYSTERESIS, y: 100 },
+                Point {
+                    x: 300 + TAB_HYSTERESIS,
+                    y: 100
+                },
                 Some(Corner::TopLeft)
             ),
             Corner::TopRight
@@ -3399,8 +3474,10 @@ mod tab_layout_tests {
                     let layout = WindowLayout::new(client, corner, placement, output);
                     assert_eq!(layout.client, client);
                     let targets = [
-                        layout.title, layout.controls[0].1,
-                        layout.controls[1].1, layout.controls[2].1,
+                        layout.title,
+                        layout.controls[0].1,
+                        layout.controls[1].1,
+                        layout.controls[2].1,
                     ];
                     for (index, target) in targets.into_iter().enumerate() {
                         assert!(target.width > 0 && target.height > 0);

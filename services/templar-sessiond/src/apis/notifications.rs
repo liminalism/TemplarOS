@@ -187,9 +187,14 @@ impl NotificationJournal {
         state.sequence += 1;
         let sequence = state.sequence;
         if matches!(kind, TransitionKind::Created | TransitionKind::Replaced) {
-            state.last_change.insert(id, (event_id.to_owned(), sequence));
+            state
+                .last_change
+                .insert(id, (event_id.to_owned(), sequence));
         } else if kind != TransitionKind::Action
-            && state.last_change.get(&id).is_some_and(|(event, _)| event == event_id)
+            && state
+                .last_change
+                .get(&id)
+                .is_some_and(|(event, _)| event == event_id)
         {
             state.last_change.remove(&id);
         }
@@ -423,7 +428,13 @@ impl NotificationsApi {
     /// let the outgoing notification's timer remove the one that took its place — and the guard
     /// gates publication too: a stale timer publishes nothing.
     fn spawn_expiry(&self, id: u32, event_id: String, expires_ms: i64) {
-        spawn_expiry(self.store.clone(), self.journal.clone(), id, event_id, expires_ms);
+        spawn_expiry(
+            self.store.clone(),
+            self.journal.clone(),
+            id,
+            event_id,
+            expires_ms,
+        );
     }
 }
 
@@ -544,7 +555,11 @@ impl NotificationsControlApi {
                     })?;
                 } else {
                     spawn_expiry(
-                        self.store.clone(), self.journal.clone(), row.id, row.event_id, expires,
+                        self.store.clone(),
+                        self.journal.clone(),
+                        row.id,
+                        row.event_id,
+                        expires,
                     );
                 }
             }
@@ -721,11 +736,13 @@ impl NotificationsControlApi {
             .store
             .transaction(|tx| {
                 use rusqlite::OptionalExtension as _;
-                let found: Option<(String, String)> = tx.query_row(
-                    "SELECT event_id, actions_json FROM notifications_active WHERE id = ?1",
-                    [id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                ).optional()?;
+                let found: Option<(String, String)> = tx
+                    .query_row(
+                        "SELECT event_id, actions_json FROM notifications_active WHERE id = ?1",
+                        [id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
                 let Some((event_id, actions_json)) = found else {
                     return Ok(None);
                 };

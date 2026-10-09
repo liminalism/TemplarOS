@@ -246,7 +246,10 @@ impl OperationRequest {
                 sources,
                 destination_dir,
             } => format!("Move {} to {}", names(sources), destination_dir.display()),
-            Self::RestoreMoveV1 { entries } => format!("Restore {} moved items to their original locations", entries.len()),
+            Self::RestoreMoveV1 { entries } => format!(
+                "Restore {} moved items to their original locations",
+                entries.len()
+            ),
             Self::UndoCopyV1 { .. } => "Undo copy (move created files to Trash)".to_owned(),
             Self::Rename { path, new_name } => {
                 format!("Rename {} to {new_name}", names(std::slice::from_ref(path)))
@@ -417,12 +420,25 @@ mod tests {
         let source = PathBuf::from(OsString::from_vec(b"/from/name-\xff.pdf".to_vec()));
         let destination = PathBuf::from(OsString::from_vec(b"/Desktop/name-\xff (2).pdf".to_vec()));
         for request in [
-            OperationRequest::Copy { sources: vec![source.clone()], destination_dir: "/Desktop".into() },
-            OperationRequest::RestoreMoveV1 { entries: vec![TransferMapping { source: destination, destination: source }] },
-            OperationRequest::UndoCopyV1 { original_operation: "11111111-1111-4111-8111-111111111111".into() },
+            OperationRequest::Copy {
+                sources: vec![source.clone()],
+                destination_dir: "/Desktop".into(),
+            },
+            OperationRequest::RestoreMoveV1 {
+                entries: vec![TransferMapping {
+                    source: destination,
+                    destination: source,
+                }],
+            },
+            OperationRequest::UndoCopyV1 {
+                original_operation: "11111111-1111-4111-8111-111111111111".into(),
+            },
         ] {
             let json = serde_json::to_string(&request).unwrap();
-            assert_eq!(serde_json::from_str::<OperationRequest>(&json).unwrap(), request);
+            assert_eq!(
+                serde_json::from_str::<OperationRequest>(&json).unwrap(),
+                request
+            );
         }
     }
 }

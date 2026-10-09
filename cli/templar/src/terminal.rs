@@ -39,7 +39,12 @@ pub struct Request {
 impl Request {
     /// `directory` is resolved against `cwd` (libfm-qt starts the terminal command *in* the
     /// folder, so no flag at all means "here") and must be an existing directory.
-    pub fn new(directory: Option<&Path>, cwd: &Path, hold: bool, command: Vec<String>) -> Result<Self> {
+    pub fn new(
+        directory: Option<&Path>,
+        cwd: &Path,
+        hold: bool,
+        command: Vec<String>,
+    ) -> Result<Self> {
         let directory = match directory {
             Some(directory) if directory.is_absolute() => directory.to_owned(),
             Some(directory) => cwd.join(directory),
@@ -50,7 +55,11 @@ impl Request {
             "{} is not a directory",
             directory.display()
         );
-        Ok(Self { directory, hold, command })
+        Ok(Self {
+            directory,
+            hold,
+            command,
+        })
     }
 
     fn directory_str(&self) -> Result<&str> {
@@ -134,7 +143,13 @@ mod tests {
 
     fn request(hold: bool, command: &[&str]) -> Request {
         let dir = std::env::temp_dir();
-        Request::new(None, &dir, hold, command.iter().map(|s| (*s).to_owned()).collect()).unwrap()
+        Request::new(
+            None,
+            &dir,
+            hold,
+            command.iter().map(|s| (*s).to_owned()).collect(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -142,7 +157,10 @@ mod tests {
         let request = request(false, &[]);
         assert_eq!(
             request.provider_arguments().unwrap(),
-            vec!["--directory".to_owned(), std::env::temp_dir().to_str().unwrap().to_owned()]
+            vec![
+                "--directory".to_owned(),
+                std::env::temp_dir().to_str().unwrap().to_owned()
+            ]
         );
         assert!(request.fallback_arguments().is_empty());
     }
@@ -151,8 +169,14 @@ mod tests {
     fn a_command_follows_dash_e_verbatim_and_hold_precedes_it() {
         let request = request(true, &["sh", "-c", "echo $HOME; ls -l"]);
         let arguments = request.provider_arguments().unwrap();
-        assert_eq!(&arguments[2..], ["--hold", "-e", "sh", "-c", "echo $HOME; ls -l"]);
-        assert_eq!(request.fallback_arguments(), ["-e", "sh", "-c", "echo $HOME; ls -l"]);
+        assert_eq!(
+            &arguments[2..],
+            ["--hold", "-e", "sh", "-c", "echo $HOME; ls -l"]
+        );
+        assert_eq!(
+            request.fallback_arguments(),
+            ["-e", "sh", "-c", "echo $HOME; ls -l"]
+        );
     }
 
     #[test]
@@ -168,11 +192,17 @@ mod tests {
     fn the_role_resolves_to_its_selected_or_defaulted_provider_only() {
         let report = |json: &str| vec![("terminal".to_owned(), json.to_owned())];
         assert_eq!(
-            terminal_provider(&report(r#"{"kind":"selected","app_id":"desktop-import.kitty.desktop"}"#)).unwrap(),
+            terminal_provider(&report(
+                r#"{"kind":"selected","app_id":"desktop-import.kitty.desktop"}"#
+            ))
+            .unwrap(),
             "desktop-import.kitty.desktop"
         );
         assert_eq!(
-            terminal_provider(&report(r#"{"kind":"defaulted-by-priority","app_id":"org.example.Term"}"#)).unwrap(),
+            terminal_provider(&report(
+                r#"{"kind":"defaulted-by-priority","app_id":"org.example.Term"}"#
+            ))
+            .unwrap(),
             "org.example.Term"
         );
         let stale = terminal_provider(&report(r#"{"kind":"selection-stale","app_id":"gone"}"#));

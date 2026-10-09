@@ -15,8 +15,8 @@
 use crate::{
     browser::{FileFilter, FilterPattern},
     clients::RecentsClient,
-    request::{owned_value, response, with_request},
     host::{UiError, UiResult},
+    request::{owned_value, response, with_request},
 };
 use async_trait::async_trait;
 use std::{
@@ -88,10 +88,16 @@ impl FileChooserUi for NativeUi {
     async fn choose(&self, request: ChooserRequest) -> UiResult<ChosenFiles> {
         match self.0.request(crate::dialog::Spec::Files(request)).await? {
             Some(crate::dialog::Answer::Files(selection)) => Ok(Some(ChosenFiles {
-                uris: selection.paths.into_iter()
-                    .map(|path| url::Url::from_file_path(path)
-                        .map(String::from)
-                        .map_err(|()| UiError("chosen path is not an absolute file path".into())))
+                uris: selection
+                    .paths
+                    .into_iter()
+                    .map(|path| {
+                        url::Url::from_file_path(path)
+                            .map(String::from)
+                            .map_err(|()| {
+                                UiError("chosen path is not an absolute file path".into())
+                            })
+                    })
                     .collect::<Result<_, _>>()?,
                 writable: true,
                 current_filter: selection.current_filter,
@@ -189,10 +195,17 @@ fn filter_from_wire((name, patterns): WireFilter) -> FileFilter {
 }
 
 fn filter_to_wire(filter: &FileFilter) -> WireFilter {
-    (filter.name.clone(), filter.patterns.iter().map(|pattern| match pattern {
-        FilterPattern::Glob(pattern) => (0, pattern.clone()),
-        FilterPattern::Mime(pattern) => (1, pattern.clone()),
-    }).collect())
+    (
+        filter.name.clone(),
+        filter
+            .patterns
+            .iter()
+            .map(|pattern| match pattern {
+                FilterPattern::Glob(pattern) => (0, pattern.clone()),
+                FilterPattern::Mime(pattern) => (1, pattern.clone()),
+            })
+            .collect(),
+    )
 }
 
 /// The caller's `filters`, and which one starts selected.
@@ -218,9 +231,7 @@ fn filters_from_options(options: &HashMap<String, OwnedValue>) -> (Vec<FileFilte
     let Some(current) = current else {
         return (filters, None);
     };
-    let at = filters
-        .iter()
-        .position(|filter| filter == &current);
+    let at = filters.iter().position(|filter| filter == &current);
     let index = at.unwrap_or_else(|| {
         filters.push(current);
         filters.len() - 1
@@ -250,7 +261,10 @@ fn reply(response_code: u32, chosen: Option<&ChosenFiles>) -> (u32, HashMap<Stri
         results.insert("uris".to_owned(), owned_value(chosen.uris.clone()));
         results.insert("writable".to_owned(), owned_value(chosen.writable));
         if let Some(filter) = &chosen.current_filter {
-            results.insert("current_filter".to_owned(), owned_value(filter_to_wire(filter)));
+            results.insert(
+                "current_filter".to_owned(),
+                owned_value(filter_to_wire(filter)),
+            );
         }
     }
     (response_code, results)
@@ -290,9 +304,12 @@ impl FileChooserApi {
                     .and_then(|file| file.parent().map(Path::to_path_buf))
             });
         let home = std::env::var("HOME").map_or_else(|_| PathBuf::from("/"), PathBuf::from);
-        let starting_directory = normalize_folder_hint(
-            resolve_starting_directory(caller_folder.as_deref(), &suggestion_json, &home),
-        ).await;
+        let starting_directory = normalize_folder_hint(resolve_starting_directory(
+            caller_folder.as_deref(),
+            &suggestion_json,
+            &home,
+        ))
+        .await;
         let (filters, current_filter) = filters_from_options(options);
 
         let request = ChooserRequest {
@@ -345,7 +362,13 @@ impl FileChooserApi {
             directory: get_bool(&options, "directory"),
         };
         with_request(connection, &handle, header.sender(), || {
-            self.run(kind, app_id, title, &options, crate::parent::Parent::parse(parent_window))
+            self.run(
+                kind,
+                app_id,
+                title,
+                &options,
+                crate::parent::Parent::parse(parent_window),
+            )
         })
         .await
     }
@@ -373,7 +396,13 @@ impl FileChooserApi {
             }),
         };
         with_request(connection, &handle, header.sender(), || {
-            self.run(kind, app_id, title, &options, crate::parent::Parent::parse(parent_window))
+            self.run(
+                kind,
+                app_id,
+                title,
+                &options,
+                crate::parent::Parent::parse(parent_window),
+            )
         })
         .await
     }
@@ -394,7 +423,13 @@ impl FileChooserApi {
             file_names: file_names_from_options(&options),
         };
         with_request(connection, &handle, header.sender(), || {
-            self.run(kind, app_id, title, &options, crate::parent::Parent::parse(parent_window))
+            self.run(
+                kind,
+                app_id,
+                title,
+                &options,
+                crate::parent::Parent::parse(parent_window),
+            )
         })
         .await
     }
@@ -410,11 +445,13 @@ mod tests {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let directory = loop {
             let path = std::env::temp_dir().join(format!(
-                "templar-folder-hint-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+                "templar-folder-hint-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
             ));
             match std::fs::create_dir(&path) {
                 Ok(()) => break path,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => panic!("temporary folder: {error}"),
             }
         };
@@ -511,10 +548,17 @@ mod tests {
             recents: Arc::new(FakeRecents::default()),
             ui: Arc::new(NoUiAvailable),
         };
-        let (code, results) = api.run(ChooserKind::Open {
-            multiple: false,
-            directory: false,
-        }, "org.templaros.Test", "Open", &HashMap::new(), crate::parent::Parent::None)
+        let (code, results) = api
+            .run(
+                ChooserKind::Open {
+                    multiple: false,
+                    directory: false,
+                },
+                "org.templaros.Test",
+                "Open",
+                &HashMap::new(),
+                crate::parent::Parent::None,
+            )
             .await;
         assert_eq!(code, response::OTHER);
         assert!(results.contains_key("error"));
@@ -629,10 +673,18 @@ mod tests {
         let (code, results) = reply(response::SUCCESS, Some(&chosen));
         assert_eq!(code, response::SUCCESS);
         let wire = WireFilter::try_from(results["current_filter"].clone()).unwrap();
-        assert_eq!(wire, ("Complete page".into(),
-            vec![(0, "*.html".into()), (1, "text/html".into())]));
+        assert_eq!(
+            wire,
+            (
+                "Complete page".into(),
+                vec![(0, "*.html".into()), (1, "text/html".into())]
+            )
+        );
         assert_eq!(filter_from_wire(wire), selected);
-        assert_eq!(reply(response::CANCELLED, None), (response::CANCELLED, HashMap::new()));
+        assert_eq!(
+            reply(response::CANCELLED, None),
+            (response::CANCELLED, HashMap::new())
+        );
     }
 
     #[test]

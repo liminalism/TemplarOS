@@ -222,7 +222,11 @@ pub fn on_window_destroyed<B: Backend + 'static>(
 ) {
     let record = state.window_service.window(window_id).cloned();
     state.window_service.on_toplevel_destroyed(window_id);
-    if state.name_tab_menu.open.is_some_and(|menu| menu.window_id == window_id) {
+    if state
+        .name_tab_menu
+        .open
+        .is_some_and(|menu| menu.window_id == window_id)
+    {
         state.name_tab_menu.dismiss();
     }
     state.motion.forget_window(window_id);
@@ -247,7 +251,9 @@ pub fn on_window_destroyed<B: Backend + 'static>(
                 state.governor.forget_process(record.peer_pid);
             }
         }
-        if record.peer_pid == 0 && let Some(instance_id) = record.identity.instance_id {
+        if record.peer_pid == 0
+            && let Some(instance_id) = record.identity.instance_id
+        {
             let instance_still_live = state
                 .window_service
                 .windows()
@@ -302,8 +308,14 @@ fn log_home_visibility<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
 pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
     if state.name_tab_menu.open.is_some_and(|menu| {
         !state.window_service.is_visible(menu.window_id)
-            || !matches!(state.window_service.presentation(), templar_window::Presentation::Normal)
-            || !state.window_service.outputs().iter()
+            || !matches!(
+                state.window_service.presentation(),
+                templar_window::Presentation::Normal
+            )
+            || !state
+                .window_service
+                .outputs()
+                .iter()
                 .any(|output| output.logical.intersection_area(menu.panel) > 0)
     }) {
         state.name_tab_menu.dismiss();
@@ -383,7 +395,8 @@ pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) 
     // (`src/shell_sink.rs`'s module doc explains why encoding can't happen on the background
     // task itself). This is what COMPOSITOR.md means by "never encode/send `templar_shell_v2`
     // events synchronously from the same call site that touched `WindowService`".
-    let snapshot = templar_comp_integration::snapshot(&state.window_service, &state.tab_metadata.counts);
+    let snapshot =
+        templar_comp_integration::snapshot(&state.window_service, &state.tab_metadata.counts);
     state.shell_broadcaster.publish(snapshot);
 
     // Last, and only if something under the pointer actually moved: the pointer's own view of the
@@ -515,9 +528,17 @@ fn start_shelf_motions<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
 fn aggregated_process_states<B: Backend + 'static>(
     state: &TemplarCompState<B>,
 ) -> std::collections::HashMap<u32, (bool, bool)> {
-    aggregate_process_states(state.window_service.windows().map(|record| (record.peer_pid, record.activated, record.mapped && !record.shelved)))
+    aggregate_process_states(state.window_service.windows().map(|record| {
+        (
+            record.peer_pid,
+            record.activated,
+            record.mapped && !record.shelved,
+        )
+    }))
 }
-fn aggregate_process_states(windows: impl Iterator<Item = (u32, bool, bool)>) -> std::collections::HashMap<u32, (bool, bool)> {
+fn aggregate_process_states(
+    windows: impl Iterator<Item = (u32, bool, bool)>,
+) -> std::collections::HashMap<u32, (bool, bool)> {
     let mut by_pid = std::collections::HashMap::new();
     for (pid, foreground, visible) in windows.filter(|(pid, _, _)| *pid != 0) {
         let entry = by_pid.entry(pid).or_insert((false, false));
@@ -527,22 +548,27 @@ fn aggregate_process_states(windows: impl Iterator<Item = (u32, bool, bool)>) ->
     by_pid
 }
 
-
 /// One governor record per instance: OR of `activated` and of `mapped && !shelved` across every
 /// sibling window. Publishing per `WindowRecord` let HashMap iteration pick a shelved sibling
 /// to overwrite the active one.
 fn aggregated_instance_states<B: Backend + 'static>(
     state: &TemplarCompState<B>,
 ) -> std::collections::HashMap<templar_types::InstanceId, (bool, bool)> {
-    aggregate_instance_states(state.window_service.windows().filter(|record| record.peer_pid == 0).filter_map(|record| {
-        record.identity.instance_id.map(|instance_id| {
-            (
-                instance_id,
-                record.activated,
-                record.mapped && !record.shelved,
-            )
-        })
-    }))
+    aggregate_instance_states(
+        state
+            .window_service
+            .windows()
+            .filter(|record| record.peer_pid == 0)
+            .filter_map(|record| {
+                record.identity.instance_id.map(|instance_id| {
+                    (
+                        instance_id,
+                        record.activated,
+                        record.mapped && !record.shelved,
+                    )
+                })
+            }),
+    )
 }
 
 fn aggregate_instance_states(
@@ -662,8 +688,18 @@ mod tests {
     #[test]
     fn workload_peer_pid_state_ors_all_windows_and_excludes_anonymous_fallback() {
         for rows in [
-            [(234, true, false), (234, false, true), (567, false, false), (0, true, true)],
-            [(0, true, true), (567, false, false), (234, false, true), (234, true, false)],
+            [
+                (234, true, false),
+                (234, false, true),
+                (567, false, false),
+                (0, true, true),
+            ],
+            [
+                (0, true, true),
+                (567, false, false),
+                (234, false, true),
+                (234, true, false),
+            ],
         ] {
             let states = aggregate_process_states(rows.into_iter());
             assert_eq!(states.len(), 2);

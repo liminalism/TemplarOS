@@ -1,0 +1,106 @@
+{
+  "label": "after-wp7-wp8",
+  "daemon_entries": 100000,
+  "phases": [
+    {
+      "name": "a: cold index",
+      "before": {
+        "vm_hwm_kib": 0,
+        "vm_rss_kib": 0,
+        "pss_kib": 0,
+        "private_kib": 0,
+        "threads": 0
+      },
+      "peak": {
+        "vm_hwm_kib": 23792,
+        "vm_rss_kib": 23792,
+        "pss_kib": 21151,
+        "private_kib": 21112,
+        "threads": 28
+      },
+      "after": {
+        "vm_hwm_kib": 23792,
+        "vm_rss_kib": 23792,
+        "pss_kib": 21151,
+        "private_kib": 21112,
+        "threads": 28
+      },
+      "elapsed_ms": 1227.7004650000001,
+      "detail": "100002 entries indexed"
+    },
+    {
+      "name": "b: arrays build",
+      "before": {
+        "vm_hwm_kib": 23792,
+        "vm_rss_kib": 23792,
+        "pss_kib": 21151,
+        "private_kib": 21112,
+        "threads": 28
+      },
+      "peak": {
+        "vm_hwm_kib": 45288,
+        "vm_rss_kib": 45156,
+        "pss_kib": 42389,
+        "private_kib": 42348,
+        "threads": 28
+      },
+      "after": {
+        "vm_hwm_kib": 45288,
+        "vm_rss_kib": 45156,
+        "pss_kib": 42389,
+        "private_kib": 42348,
+        "threads": 28
+      },
+      "elapsed_ms": 206.49858099999997,
+      "detail": "answered by arrays"
+    },
+    {
+      "name": "c: 2 clients + snapshot + rebuild",
+      "before": {
+        "vm_hwm_kib": 45288,
+        "vm_rss_kib": 45156,
+        "pss_kib": 42389,
+        "private_kib": 42348,
+        "threads": 28
+      },
+      "peak": {
+        "vm_hwm_kib": 61308,
+        "vm_rss_kib": 61308,
+        "pss_kib": 58541,
+        "private_kib": 58500,
+        "threads": 28
+      },
+      "after": {
+        "vm_hwm_kib": 61308,
+        "vm_rss_kib": 61308,
+        "pss_kib": 58541,
+        "private_kib": 58500,
+        "threads": 28
+      },
+      "elapsed_ms": 157.364617,
+      "detail": "snapshot 100002 entries, memfd 13670231 bytes"
+    }
+  ],
+  "snapshot_scales": [
+    {
+      "entries": 100001,
+      "payload_bytes": 18968014,
+      "writer_peak_delta_kib": 856,
+      "reader_peak_delta_kib": 18524,
+      "client_peak_delta_kib": 20808,
+      "decoded_rows": 100001,
+      "decoded_storage_bytes": 9178967,
+      "elapsed_ms": 156.157769
+    },
+    {
+      "entries": 1000001,
+      "payload_bytes": 193668016,
+      "writer_peak_delta_kib": 0,
+      "reader_peak_delta_kib": 189132,
+      "client_peak_delta_kib": 280576,
+      "decoded_rows": 1000001,
+      "decoded_storage_bytes": 94778968,
+      "elapsed_ms": 1726.743309
+    }
+  ]
+}

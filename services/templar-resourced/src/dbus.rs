@@ -39,7 +39,9 @@ impl ResourcesApi {
     /// Full status as JSON (empty object before the first tick has run).
     async fn report(&self) -> String {
         match self.shared.report.read().as_ref() {
-            Some(report) => report.applications_json().unwrap_or_else(|_| "{}".to_owned()),
+            Some(report) => report
+                .applications_json()
+                .unwrap_or_else(|_| "{}".to_owned()),
             None => "{}".to_owned(),
         }
     }
@@ -47,7 +49,9 @@ impl ResourcesApi {
     /// Full governor target set, including explicit work and observed Flatpak scopes.
     async fn targets(&self) -> fdo::Result<String> {
         match self.shared.report.read().as_ref() {
-            Some(report) => serde_json::to_string(report).map_err(|error| fdo::Error::Failed(error.to_string())),
+            Some(report) => {
+                serde_json::to_string(report).map_err(|error| fdo::Error::Failed(error.to_string()))
+            }
             None => Ok("{}".to_owned()),
         }
     }
@@ -56,22 +60,33 @@ impl ResourcesApi {
     async fn resolve_pid(&self, pid: u32) -> fdo::Result<String> {
         let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
             .map_err(|error| fdo::Error::Failed(error.to_string()))?;
-        let group = text.lines().find_map(|line| line.strip_prefix("0::"))
+        let group = text
+            .lines()
+            .find_map(|line| line.strip_prefix("0::"))
             .ok_or_else(|| fdo::Error::Failed("PID has no unified cgroup".into()))?;
         let group = std::path::Path::new(group);
         let report = self.shared.report.read();
-        Ok(report.as_ref().and_then(|report| report.instances.iter()
-            .filter(|target| group.starts_with(&target.metadata.control_group))
-            .max_by_key(|target| target.metadata.control_group.components().count()))
-            .map(|target| target.instance_id.to_string()).unwrap_or_default())
+        Ok(report
+            .as_ref()
+            .and_then(|report| {
+                report
+                    .instances
+                    .iter()
+                    .filter(|target| group.starts_with(&target.metadata.control_group))
+                    .max_by_key(|target| target.metadata.control_group.components().count())
+            })
+            .map(|target| target.instance_id.to_string())
+            .unwrap_or_default())
     }
 
     async fn explain_target(&self, resource_id: &str) -> fdo::Result<String> {
         let id = ResourceId::parse(resource_id)
             .ok_or_else(|| fdo::Error::InvalidArgs("invalid resource UUID".into()))?;
         match self.shared.report.read().as_ref() {
-            Some(report) => serde_json::to_string(&report.explain(id)).map_err(|error| fdo::Error::Failed(error.to_string())),
-            None => serde_json::to_string(&NoReportYet::new(id, self.shared.stage())).map_err(|error| fdo::Error::Failed(error.to_string())),
+            Some(report) => serde_json::to_string(&report.explain(id))
+                .map_err(|error| fdo::Error::Failed(error.to_string())),
+            None => serde_json::to_string(&NoReportYet::new(id, self.shared.stage()))
+                .map_err(|error| fdo::Error::Failed(error.to_string())),
         }
     }
 
@@ -220,7 +235,9 @@ impl ResourcesApi {
 
     /// The sampled target set changed; subscribe before reading Targets or resolving PIDs.
     #[zbus(signal)]
-    pub async fn targets_changed(emitter: &zbus::object_server::SignalEmitter<'_>) -> zbus::Result<()>;
+    pub async fn targets_changed(
+        emitter: &zbus::object_server::SignalEmitter<'_>,
+    ) -> zbus::Result<()>;
 
     /// Pressure level changed.
     #[zbus(signal)]
@@ -268,7 +285,14 @@ struct NoReportYet {
 
 impl NoReportYet {
     fn new(instance_id: ResourceId, stage: Stage) -> Self {
-        Self { instance_id, known: false, level: "unknown", stage, candidate_count: 0,
-            would_be_selected: false, summary: "The governor has not completed a sampling tick yet." }
+        Self {
+            instance_id,
+            known: false,
+            level: "unknown",
+            stage,
+            candidate_count: 0,
+            would_be_selected: false,
+            summary: "The governor has not completed a sampling tick yet.",
+        }
     }
 }

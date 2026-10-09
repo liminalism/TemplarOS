@@ -8,17 +8,38 @@ use templar_wallpaper::compat::{self, Request};
 use templar_wallpaper::selection::Direction;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum Backend { X11, LayerShell, Portal }
+enum Backend {
+    X11,
+    LayerShell,
+    Portal,
+}
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum Sizing { Fill, Fit, Stretch, Center, Actual, Tile }
+enum Sizing {
+    Fill,
+    Fit,
+    Stretch,
+    Center,
+    Actual,
+    Tile,
+}
 impl From<Sizing> for SizingMode {
-    fn from(value: Sizing) -> Self { match value {
-        Sizing::Fill => Self::Fill, Sizing::Fit => Self::Fit, Sizing::Stretch => Self::Stretch,
-        Sizing::Center => Self::Center, Sizing::Actual => Self::Actual, Sizing::Tile => Self::Tile,
-    } }
+    fn from(value: Sizing) -> Self {
+        match value {
+            Sizing::Fill => Self::Fill,
+            Sizing::Fit => Self::Fit,
+            Sizing::Stretch => Self::Stretch,
+            Sizing::Center => Self::Center,
+            Sizing::Actual => Self::Actual,
+            Sizing::Tile => Self::Tile,
+        }
+    }
 }
 #[derive(Debug, Parser)]
-#[command(name = "templar-wallpaper", about = "Pure Rust compatibility wallpaper adapters", long_about = "Pure Rust X11, layer-shell and wallpaper-portal adapters. Native TemplarOS uses its existing session/compositor wallpaper owner instead.\n\nX11 and portal commands exit after one change; schedule them ONLY from a session-scoped external owner (for example, a user unit with PartOf=graphical-session.target, never an independent persistent user timer). XWayland root publication is rejected. Layer-shell must stay resident; its optional rotation deadline dies with the compositor connection. Layer-shell stdin accepts next, previous, pause, resume, refresh, inspect and stop (one line each).\n\nJSON configuration is the canonical templar_types::wallpaper::WallpaperConfig, including lossless Unix source filename byte arrays. Every result is JSON. Portal success is owner acceptance, not verified presentation; exact sizing and residency controls cannot be delegated.")]
+#[command(
+    name = "templar-wallpaper",
+    about = "Pure Rust compatibility wallpaper adapters",
+    long_about = "Pure Rust X11, layer-shell and wallpaper-portal adapters. Native TemplarOS uses its existing session/compositor wallpaper owner instead.\n\nX11 and portal commands exit after one change; schedule them ONLY from a session-scoped external owner (for example, a user unit with PartOf=graphical-session.target, never an independent persistent user timer). XWayland root publication is rejected. Layer-shell must stay resident; its optional rotation deadline dies with the compositor connection. Layer-shell stdin accepts next, previous, pause, resume, refresh, inspect and stop (one line each).\n\nJSON configuration is the canonical templar_types::wallpaper::WallpaperConfig, including lossless Unix source filename byte arrays. Every result is JSON. Portal success is owner acceptance, not verified presentation; exact sizing and residency controls cannot be delegated."
+)]
 struct Cli {
     #[arg(long, value_enum)]
     backend: Backend,
@@ -65,29 +86,60 @@ struct Apply {
 fn request(args: Apply, direction: Direction, backend: Backend) -> Result<Request> {
     let mut config = if let Some(path) = args.config {
         let mut bytes = Vec::new();
-        std::fs::File::open(&path).with_context(|| format!("opening {}", path.display()))?
-            .take(131073).read_to_end(&mut bytes)?;
-        if bytes.len() > 131072 { bail!("configuration exceeds 128 KiB"); }
-        serde_json::from_slice::<WallpaperConfig>(&bytes).context("invalid canonical WallpaperConfig JSON")?
-    } else { WallpaperConfig::default() };
-    if let Some(sizing) = args.sizing { config.sizing = sizing.into(); }
-    if let Some(pixels) = args.texture_max_edge { config.texture = TextureLimit::MaxEdge { pixels }; }
-    if let Some(seconds) = args.interval_seconds { config.interval_seconds = Some(seconds); }
+        std::fs::File::open(&path)
+            .with_context(|| format!("opening {}", path.display()))?
+            .take(131073)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 131072 {
+            bail!("configuration exceeds 128 KiB");
+        }
+        serde_json::from_slice::<WallpaperConfig>(&bytes)
+            .context("invalid canonical WallpaperConfig JSON")?
+    } else {
+        WallpaperConfig::default()
+    };
+    if let Some(sizing) = args.sizing {
+        config.sizing = sizing.into();
+    }
+    if let Some(pixels) = args.texture_max_edge {
+        config.texture = TextureLimit::MaxEdge { pixels };
+    }
+    if let Some(seconds) = args.interval_seconds {
+        config.interval_seconds = Some(seconds);
+    }
     if let Some(source) = &args.input {
-        if config.sources.is_empty() { config.sources.push(compat::path_bytes(source)); }
+        if config.sources.is_empty() {
+            config.sources.push(compat::path_bytes(source));
+        }
     }
     if !matches!(backend, Backend::LayerShell) && config.interval_seconds.is_some() {
-        bail!("one-shot X11/portal does not own rotation; disable interval_seconds and schedule externally within the graphical session");
+        bail!(
+            "one-shot X11/portal does not own rotation; disable interval_seconds and schedule externally within the graphical session"
+        );
     }
-    if matches!(backend, Backend::Portal) && (args.sizing.is_some() || args.texture_max_edge.is_some()) {
-        bail!("portal exposes no exact sizing or texture/residency ceiling; use the desktop owner's settings");
+    if matches!(backend, Backend::Portal)
+        && (args.sizing.is_some() || args.texture_max_edge.is_some())
+    {
+        bail!(
+            "portal exposes no exact sizing or texture/residency ceiling; use the desktop owner's settings"
+        );
     }
     templar_wallpaper::config::validate(&config)?;
     let decoder = args.decoder.unwrap_or_else(|| {
-        std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("templar-wallpaper-decode")))
-            .filter(|path| path.is_file()).unwrap_or_else(|| PathBuf::from("templar-wallpaper-decode"))
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("templar-wallpaper-decode")))
+            .filter(|path| path.is_file())
+            .unwrap_or_else(|| PathBuf::from("templar-wallpaper-decode"))
     });
-    Ok(Request { config, input: args.input, previous: args.previous_source, direction, decoder, output: args.output })
+    Ok(Request {
+        config,
+        input: args.input,
+        previous: args.previous_source,
+        direction,
+        decoder,
+        output: args.output,
+    })
 }
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {

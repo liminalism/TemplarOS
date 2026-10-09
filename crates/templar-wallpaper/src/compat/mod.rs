@@ -2,10 +2,10 @@
 //! X11 and portal are one-shot: schedule them from a session-scoped external owner.
 //! Only layer-shell owns a rotation deadline, because its Wayland connection must live.
 pub mod layer_shell;
-pub mod portal;
-pub mod x11;
 mod pixels;
+pub mod portal;
 mod worker;
+pub mod x11;
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,11 @@ use templar_types::wallpaper::WallpaperConfig;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Backend { X11, LayerShell, Portal }
+pub enum Backend {
+    X11,
+    LayerShell,
+    Portal,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Capabilities {
@@ -50,8 +54,13 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn select(&self, selector: &mut crate::selection::SourceSelector) -> anyhow::Result<PathBuf> {
-        if let Some(input) = &self.input { return Ok(input.clone()); }
+    pub fn select(
+        &self,
+        selector: &mut crate::selection::SourceSelector,
+    ) -> anyhow::Result<PathBuf> {
+        if let Some(input) = &self.input {
+            return Ok(input.clone());
+        }
         selector.select(&self.config, self.previous.as_deref(), self.direction)
     }
 }

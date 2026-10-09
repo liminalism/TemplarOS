@@ -1,0 +1,188 @@
+{
+  "observed_at_utc": "2026-10-08T21:56:49.249381+00:00",
+  "sibling_commit": "dbdeb29599e6026ae421c7ea6db29265eb50733c",
+  "primary_commit": "12295f351ab14e649f900573190060cd88a7251e",
+  "scope": "WP17 consumer action continuation after the historical WP15 nested cohort",
+  "source_sha256": {
+    "src/app.rs": "24aa083e5566f49a1cef41568781aa2de3c82fd0439eba0285e9c2f6fe96d35e",
+    "src/source/mod.rs": "c2b6f47d915ad9e3db95e611ca97ac7d3948e18c5a00b18f7755475b3cc97a8c",
+    "src/source/service.rs": "e94c7e5814cabd0d570ee81f0ae94013a2ab3635dba86876a04d14681d836843",
+    "src/ui/tooltip.rs": "74f0a1871a6bc167105f1e979ffbfd88ede794b0493205770be64e54ad2273c3",
+    "Cargo.toml": "83cb7075466fefcae33ebb80edd9db0e22b6232b3610092e51d1d387e5a9a434",
+    "Cargo.lock": "d8dc53a4b61c1cb89ca72f4ba49aab9657c2cc35d0304e01fdd8e8226eb7a5ac",
+    "scripts/test-templaros-index.sh": "7640dc542b59e21eecec800928b15f357792e881c62290a5b0f9c829f6cbb4a7",
+    "scripts/test-templaros-index.py": "2be44c113ac239865e3d978a647f06a9a5a664c7be69368e44fefc3c1dc1320f"
+  },
+  "tests": {
+    "feature_on": {
+      "command": "cargo test --manifest-path ../Silvaview-rs/Cargo.toml --features templaros --all-targets",
+      "exit_code": 0,
+      "summaries": [
+        [
+          22,
+          0,
+          0
+        ],
+        [
+          26,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ],
+      "passed": 48,
+      "failed": 0,
+      "ignored": 0,
+      "log": ".agent/scratch/index-wp17/silvaview-offline-feature.log"
+    },
+    "feature_off": {
+      "command": "cargo test --manifest-path ../Silvaview-rs/Cargo.toml --no-default-features --all-targets",
+      "exit_code": 0,
+      "summaries": [
+        [
+          14,
+          0,
+          0
+        ],
+        [
+          18,
+          0,
+          0
+        ]
+      ],
+      "passed": 32,
+      "failed": 0,
+      "ignored": 0,
+      "log": ".agent/scratch/index-wp17/silvaview-offline-default.log"
+    }
+  },
+  "private_index": {
+    "direct": {
+      "add_folder": null,
+      "complete": true,
+      "generation": null,
+      "nodes": 5107,
+      "non_utf8_paths_b64": [
+        "L3RtcC90ZW1wbGFyLXdwMTUteTYzYWV6Z3kvdHJlZS9zdWIvbmF0aXZlLf8udHh0"
+      ],
+      "source": "scan",
+      "status": "Direct scan \u00b7 logical size (st_size) \u00b7 direct filesystem traversal",
+      "total_bytes": 41251
+    },
+    "summary": {
+      "add_folder": null,
+      "complete": false,
+      "generation": 4,
+      "nodes": 3,
+      "non_utf8_paths_b64": [],
+      "source": "service",
+      "status": "TemplarOS index \u00b7 generation 4 \u00b7 indexed logical size (st_size) \u00b7 /tmp/templar-wp15-y63aezgy/tree: current / metadata verified \u00b7 partial: cached sizes missing, stale or unreadable; expand for materialized rows \u00b7 directory summary, depth \u2264 4",
+      "total_bytes": 1200
+    },
+    "service": {
+      "add_folder": null,
+      "complete": true,
+      "generation": 4,
+      "nodes": 5007,
+      "non_utf8_paths_b64": [
+        "L3RtcC90ZW1wbGFyLXdwMTUteTYzYWV6Z3kvdHJlZS9zdWIvbmF0aXZlLf8udHh0"
+      ],
+      "source": "service",
+      "status": "TemplarOS index \u00b7 generation 4 \u00b7 indexed logical size (st_size) \u00b7 /tmp/templar-wp15-y63aezgy/tree: current / metadata verified",
+      "total_bytes": 41251
+    },
+    "refreshed": {
+      "add_folder": null,
+      "complete": true,
+      "generation": 5,
+      "nodes": 5008,
+      "non_utf8_paths_b64": [
+        "L3RtcC90ZW1wbGFyLXdwMTUteTYzYWV6Z3kvdHJlZS9zdWIvbmF0aXZlLf8udHh0"
+      ],
+      "source": "service",
+      "status": "TemplarOS index \u00b7 generation 5 \u00b7 indexed logical size (st_size) \u00b7 /tmp/templar-wp15-y63aezgy/tree: current / metadata verified",
+      "total_bytes": 41288
+    },
+    "policy": {
+      "selected_root": "real directory on one fixture filesystem",
+      "child_symlinks": "not followed; their own st_size counted",
+      "hard_links": "counted per path",
+      "hidden": "included",
+      "mounts": "no nested mounts in fixture",
+      "excludes": "no excluded fixture bytes; target is opaque but its cached recursive logical total is included"
+    },
+    "absent_auto": {
+      "add_folder": null,
+      "complete": true,
+      "generation": null,
+      "nodes": 5107,
+      "non_utf8_paths_b64": [
+        "L3RtcC90ZW1wbGFyLXdwMTUteTYzYWV6Z3kvdHJlZS9zdWIvbmF0aXZlLf8udHh0"
+      ],
+      "source": "scan",
+      "status": "Direct scan \u00b7 logical size (st_size) \u00b7 No TemplarOS index service is running; direct filesystem traversal",
+      "total_bytes": 41251
+    },
+    "absent_service": {
+      "allows_fallback": true,
+      "error": "No TemplarOS index service is running"
+    },
+    "uncovered_auto": {
+      "add_folder": "L3RtcC90ZW1wbGFyLXdwMTUteTYzYWV6Z3kvdW5jb3ZlcmVk",
+      "complete": true,
+      "generation": null,
+      "nodes": 2,
+      "non_utf8_paths_b64": [],
+      "source": "scan",
+      "status": "Direct scan \u00b7 logical size (st_size) \u00b7 This folder is not covered by the TemplarOS index; direct filesystem traversal",
+      "total_bytes": 9
+    },
+    "uncovered_service": {
+      "allows_fallback": true,
+      "error": "This folder is not covered by the TemplarOS index"
+    },
+    "failed_auto": {
+      "allows_fallback": false,
+      "error": "Index unavailable: org.templaros.Files.Index1.Error.Unavailable: fixture service failure"
+    },
+    "watch_fds": {},
+    "getdents_calls": [],
+    "process_exit": 0,
+    "binaries": {
+      "filed": {
+        "path": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/release/templar-filed",
+        "sha256": "9f6323e4118a5f2dc3b328baac108d577a97f60927e3812b26fb0b8b2e5c6cdb"
+      },
+      "probe": {
+        "path": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/debug/silvaview-index-probe",
+        "sha256": "7e4c257158251b90a6f704e1ea8ba2e2a640a23c5d01a13601f4014a56747a49"
+      }
+    }
+  },
+  "clipboard_uri": {
+    "uri": "file:///fixture/native-%FF%20space%25%23",
+    "native_path_hex": "2f666978747572652f6e61746976652dff2073706163652523",
+    "lossless": true,
+    "limits": "Pure GIO file URI conversion; no clipboard, file manager, filesystem or bus action."
+  },
+  "gui_binary": {
+    "path": "target/native/ubuntu-26.04/debug/Silvaview-rs",
+    "sha256": "69c2dba417fa6f90145fb9d7798b1c58f862b8c4a82a2bb912cbef9ae2cb98f0",
+    "build_exit_code": 0
+  },
+  "preserved_user_changes": [
+    "Cargo.toml native/release profile changes remain uncommitted",
+    "Screenshot 2026-08-19 200358.png remains untracked"
+  ],
+  "limits": [
+    "Known offline roots from the accepted snapshot fence file-manager targets; no fresh volume identity query occurs on every action, so a signal/refresh race remains possible.",
+    "Pure action and clipboard helpers are tested; no live file manager or clipboard was exercised.",
+    "The current private worker was rerun; the actual nested GUI evidence belongs to historical commit 413ea0422b37aaf849d501c60ff2d1350d67aab6, not this executable.",
+    "No installation, seed/package adoption, installed NTFS unplug-return or physical HDMI claim.",
+    "The zero-test probe target is listed separately; 48 feature-on results include both library and GUI binary tests."
+  ]
+}

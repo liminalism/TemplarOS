@@ -79,9 +79,18 @@ pub fn transient_unit_properties(
     activation_token: Option<&str>,
     session_environment: &[String],
 ) -> Vec<(String, OwnedValue)> {
-    transient_unit_properties_in_directory(manifest, instance_id,
-        manifest.executable.to_str().expect("native executable requires broker adapter"), arguments,
-        activation_token, session_environment, None)
+    transient_unit_properties_in_directory(
+        manifest,
+        instance_id,
+        manifest
+            .executable
+            .to_str()
+            .expect("native executable requires broker adapter"),
+        arguments,
+        activation_token,
+        session_environment,
+        None,
+    )
 }
 
 /// Pure property builder with the actual broker command (including the native argv adapter) and
@@ -145,9 +154,19 @@ pub async fn start_transient_unit(
     arguments: &[String],
     activation_token: Option<&str>,
 ) -> Result<InstanceRecord> {
-    start_transient_unit_in_directory(connection, manifest, instance_id,
-        manifest.executable.to_str().context("native executable requires broker adapter")?,
-        arguments, activation_token, None).await
+    start_transient_unit_in_directory(
+        connection,
+        manifest,
+        instance_id,
+        manifest
+            .executable
+            .to_str()
+            .context("native executable requires broker adapter")?,
+        arguments,
+        activation_token,
+        None,
+    )
+    .await
 }
 
 pub async fn start_transient_unit_in_directory(
@@ -170,7 +189,9 @@ pub async fn start_transient_unit_in_directory(
         arguments,
         activation_token,
         &session_environment(),
-        directory.map(|directory| directory.to_str().context("launch directory must be UTF-8")).transpose()?,
+        directory
+            .map(|directory| directory.to_str().context("launch directory must be UTF-8"))
+            .transpose()?,
     );
     manager
         .start_transient_unit(unit_name.clone(), "fail".to_owned(), properties, Vec::new())
@@ -457,11 +478,26 @@ mod tests {
     #[test]
     fn project_launch_sets_service_cwd_without_inventing_application_arguments() {
         let properties = transient_unit_properties_in_directory(
-            &manifest(), InstanceId::new(), "/usr/bin/templar-viewer", &[], None, &[], Some("/home/test/video-project"),
+            &manifest(),
+            InstanceId::new(),
+            "/usr/bin/templar-viewer",
+            &[],
+            None,
+            &[],
+            Some("/home/test/video-project"),
         );
-        let directory = properties.iter().find(|(name, _)| name == "WorkingDirectory").unwrap();
-        assert_eq!(String::try_from(directory.1.clone()).unwrap(), "/home/test/video-project");
-        let exec = properties.iter().find(|(name, _)| name == "ExecStartEx").unwrap();
+        let directory = properties
+            .iter()
+            .find(|(name, _)| name == "WorkingDirectory")
+            .unwrap();
+        assert_eq!(
+            String::try_from(directory.1.clone()).unwrap(),
+            "/home/test/video-project"
+        );
+        let exec = properties
+            .iter()
+            .find(|(name, _)| name == "ExecStartEx")
+            .unwrap();
         let exec: Vec<(String, Vec<String>, Vec<String>)> = exec.1.clone().try_into().unwrap();
         assert_eq!(exec[0].1, ["/usr/bin/templar-viewer"]);
         let unit = properties.iter().find(|(name, _)| name == "Slice").unwrap();
@@ -473,14 +509,31 @@ mod tests {
         use std::{ffi::OsString, os::unix::ffi::OsStringExt as _};
         let manifest = manifest();
         let instance = InstanceId::new();
-        let native_arguments = vec![OsString::from("--reader"), OsString::from_vec(b"/tmp/name-\xff.pdf".to_vec())];
-        let payload = crate::native_exec::encode(&manifest.executable, &native_arguments, None).unwrap();
+        let native_arguments = vec![
+            OsString::from("--reader"),
+            OsString::from_vec(b"/tmp/name-\xff.pdf".to_vec()),
+        ];
+        let payload =
+            crate::native_exec::encode(&manifest.executable, &native_arguments, None).unwrap();
         let properties = transient_unit_properties_in_directory(
-            &manifest, instance, crate::native_exec::ADAPTER_PATH, &[payload],
-            None, &[], Some("/home/test/project"),
+            &manifest,
+            instance,
+            crate::native_exec::ADAPTER_PATH,
+            &[payload],
+            None,
+            &[],
+            Some("/home/test/project"),
         );
-        let property = |name: &str| properties.iter().find(|(key, _)| key == name).unwrap().1.clone();
-        let exec: Vec<(String, Vec<String>, Vec<String>)> = property("ExecStartEx").try_into().unwrap();
+        let property = |name: &str| {
+            properties
+                .iter()
+                .find(|(key, _)| key == name)
+                .unwrap()
+                .1
+                .clone()
+        };
+        let exec: Vec<(String, Vec<String>, Vec<String>)> =
+            property("ExecStartEx").try_into().unwrap();
         assert_eq!(exec[0].2, ["no-env-expand"]);
         assert_eq!(exec[0].0, crate::native_exec::ADAPTER_PATH);
         assert_eq!(exec[0].1[0], crate::native_exec::ADAPTER_PATH);
@@ -492,7 +545,10 @@ mod tests {
         let environment: Vec<String> = property("Environment").try_into().unwrap();
         assert!(environment.contains(&format!("{}={}", env::APP_ID, manifest.id)));
         assert!(environment.contains(&format!("{}={instance}", env::INSTANCE_ID)));
-        assert_eq!(String::try_from(property("WorkingDirectory")).unwrap(), "/home/test/project");
+        assert_eq!(
+            String::try_from(property("WorkingDirectory")).unwrap(),
+            "/home/test/project"
+        );
         assert_eq!(String::try_from(property("Slice")).unwrap(), "app.slice");
     }
 
@@ -502,7 +558,10 @@ mod tests {
         let properties = transient_unit_properties(
             &manifest(),
             instance_id,
-            &["/tmp/${HOME}-$VAR-$$.pdf".to_owned(), "--fixed=${HOME}:$VAR:$$".to_owned()],
+            &[
+                "/tmp/${HOME}-$VAR-$$.pdf".to_owned(),
+                "--fixed=${HOME}:$VAR:$$".to_owned(),
+            ],
             Some("activation-token"),
             &["WAYLAND_DISPLAY=wayland-0".to_owned()],
         );

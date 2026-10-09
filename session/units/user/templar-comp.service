@@ -29,7 +29,8 @@ ExecStart=/usr/bin/templar-comp --backend udev --socket-name wayland-0 --session
 # the compositor's own debug lines are event-level (gestures, rails, grouping, capture failures),
 # never per frame or per key. The watchdog (src/watchdog.rs) logs at warn regardless.
 # TEMPLAR_COMP_WATCHDOG_ABORT_AFTER_SECS=<n> in a drop-in turns an event-loop stall of n seconds
-# into an abort, so systemd-coredump records every thread and the greeter comes back.
+# into an abort for thread stacks. At critical memory pressure the watchdog exits without a
+# core instead, because collection can page for minutes and delay display-manager recovery.
 Environment=RUST_BACKTRACE=1 RUST_LIB_BACKTRACE=0 RUST_LOG=info,templar_comp=debug
 Restart=no
 # A compositor that cannot finish DRM/input/event-loop initialization must give control back to

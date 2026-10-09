@@ -213,9 +213,11 @@ impl SpanRange {
             // line — and the Folder rung floors already keep that at Small, where a line is all
             // that is drawn.
             TileKind::Folder { .. } => Self::new(Span::new(2, 1), Span::new(3, 3), Span::new(8, 6)),
-            TileKind::DesktopDock { .. } => {
-                Self::new(Span::new(2, 1), Span::new(6, 2), Span::new(cols.max(6), rows.max(2)))
-            }
+            TileKind::DesktopDock { .. } => Self::new(
+                Span::new(2, 1),
+                Span::new(6, 2),
+                Span::new(cols.max(6), rows.max(2)),
+            ),
             // A widget is an instrument, and some of them (a launcher, a notification list) are
             // only useful large — so the ceiling is well above the preferred size rather than
             // equal to it, which is what used to make widgets the one kind that could shrink but
@@ -448,7 +450,10 @@ mod tests {
             },
             TileKind::Tray { tray_id: TrayId(1) },
             TileKind::Folder { path: "x".into() },
-            TileKind::DesktopDock { path: "x".into(), order: Vec::new() },
+            TileKind::DesktopDock {
+                path: "x".into(),
+                order: Vec::new(),
+            },
             TileKind::Widget {
                 widget: "calendar".into(),
                 scope: None,
@@ -673,13 +678,14 @@ mod tests {
                 16..=35 => Representation::Wide,
                 _ => Representation::Large,
             },
-            TileKind::Tray { .. } | TileKind::Folder { .. } | TileKind::DesktopDock { .. } | TileKind::Widget { .. } => {
-                match cells {
-                    0..=4 => Representation::Small,
-                    5..=8 => Representation::Wide,
-                    _ => Representation::Large,
-                }
-            }
+            TileKind::Tray { .. }
+            | TileKind::Folder { .. }
+            | TileKind::DesktopDock { .. }
+            | TileKind::Widget { .. } => match cells {
+                0..=4 => Representation::Small,
+                5..=8 => Representation::Wide,
+                _ => Representation::Large,
+            },
             TileKind::ParkedSession { .. } => match cells {
                 0..=3 => Representation::Wide,
                 _ => Representation::Large,

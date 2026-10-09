@@ -228,6 +228,18 @@ pub const MIGRATIONS: &[Migration] = &[
               INSERT INTO index_meta (key, value)
               SELECT 'next_root_id', CAST(COALESCE(MAX(root_id),0)+1 AS TEXT) FROM roots;",
     },
+    Migration {
+        name: "0008-volume-identity",
+        sql: "ALTER TABLE roots ADD COLUMN volume_fs_type TEXT;
+              ALTER TABLE roots ADD COLUMN volume_fs_uuid TEXT;
+              ALTER TABLE roots ADD COLUMN volume_fsid TEXT;
+              ALTER TABLE roots ADD COLUMN volume_mount_root BLOB;
+              ALTER TABLE roots ADD COLUMN volume_mount_id INTEGER;
+              ALTER TABLE roots ADD COLUMN volume_confidence TEXT NOT NULL DEFAULT 'none';
+              ALTER TABLE roots ADD COLUMN offline_reason_json TEXT;
+              ALTER TABLE roots ADD COLUMN offline_since_ms INTEGER;
+              UPDATE roots SET volume_fs_uuid=volume_uuid;",
+    },
 ];
 
 /// The FTS5 accelerator, created separately: it is the one part of the schema that can legitimately
@@ -256,13 +268,17 @@ pub fn schema_version() -> u32 {
 
 /// Applies every migration this build has that the database does not, in order.
 ///
-/// Returns `Err(IndexError::Corrupt)` when the file is unreadable or ahead of this build, which
-/// the caller answers by rebuilding rather than by failing.
+/// Returns `Err(IndexError::Incompatible)` when the file is an index of another format or ahead
+/// of this build, which the caller answers by quarantining it rather than by failing.
 pub fn migrate(connection: &Connection) -> Result<()> {
+    // The WAL ceiling matches the maintenance lane's TRUNCATE threshold: SQLite checkpoints
+    // past it on commit, so even a scan that never asked for maintenance cannot grow the WAL
+    // without bound. Re-applied on every open, so the ceiling holds however old the database.
     connection.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
-         PRAGMA foreign_keys = ON;",
+         PRAGMA foreign_keys = ON;
+         PRAGMA journal_size_limit = 67108864;",
     )?;
 
     let bootstrapped: bool = connection
@@ -282,8 +298,9 @@ pub fn migrate(connection: &Connection) -> Result<()> {
             .and_then(|value| value.parse().ok())
             .unwrap_or(0);
         if stored != FORMAT_VERSION {
-            return Err(IndexError::Corrupt {
-                detail: format!("format version {stored}, this build speaks {FORMAT_VERSION}"),
+            return Err(IndexError::Incompatible {
+                found: format!("format {stored}"),
+                supported: format!("format {FORMAT_VERSION}"),
             });
         }
         let applied: u32 =
@@ -291,11 +308,9 @@ pub fn migrate(connection: &Connection) -> Result<()> {
                 row.get(0)
             })?;
         if applied > schema_version() {
-            return Err(IndexError::Corrupt {
-                detail: format!(
-                    "database has {applied} migrations, this build ships {}",
-                    schema_version()
-                ),
+            return Err(IndexError::Incompatible {
+                found: format!("{applied} migrations"),
+                supported: format!("{} migrations", schema_version()),
             });
         }
     }

@@ -15,12 +15,12 @@ use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
+            ImportAll, ImportMem,
             element::{
                 Kind,
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
                 surface::WaylandSurfaceRenderElement,
             },
-            ImportAll, ImportMem,
         },
     },
     input::pointer::{CursorIcon, CursorImageAttributes, CursorImageStatus},
@@ -150,7 +150,10 @@ impl CursorRenderer {
         pointer_location: Point<f64, Logical>,
         output_geometry: Rectangle<i32, Logical>,
         scale: Scale<f64>,
-    ) -> Vec<CursorRenderElement<R>> where R::TextureId: Clone + Send + 'static {
+    ) -> Vec<CursorRenderElement<R>>
+    where
+        R::TextureId: Clone + Send + 'static,
+    {
         if !output_geometry.to_f64().contains(pointer_location) {
             return Vec::new();
         }

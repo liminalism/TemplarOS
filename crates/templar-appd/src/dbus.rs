@@ -308,7 +308,6 @@ impl LauncherApi {
         self.observer = Some(observer);
         self
     }
-
 }
 
 /// Both launch paths end here, so neither can grow a route that is unobserved.
@@ -327,13 +326,22 @@ fn launch_directory(directory: &str) -> fdo::Result<std::path::PathBuf> {
     let directory = if directory.starts_with('/') {
         std::borrow::Cow::Borrowed(std::path::Path::new(directory))
     } else {
-        std::borrow::Cow::Owned(templar_types::uri_list::decode_uri(directory)
-            .ok_or_else(|| fdo::Error::InvalidArgs("launch directory must be an absolute pathname or local file URI".into()))?)
+        std::borrow::Cow::Owned(templar_types::uri_list::decode_uri(directory).ok_or_else(
+            || {
+                fdo::Error::InvalidArgs(
+                    "launch directory must be an absolute pathname or local file URI".into(),
+                )
+            },
+        )?)
     };
     if !directory.is_absolute() || !directory.is_dir() {
-        return Err(fdo::Error::InvalidArgs("launch directory must be an existing absolute directory".into()));
+        return Err(fdo::Error::InvalidArgs(
+            "launch directory must be an existing absolute directory".into(),
+        ));
     }
-    directory.canonicalize().map_err(|error| fdo::Error::InvalidArgs(error.to_string()))
+    directory
+        .canonicalize()
+        .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))
 }
 
 #[zbus::interface(name = "org.templaros.Launcher1")]
@@ -364,7 +372,15 @@ impl LauncherApi {
         .await
         .map_err(|error| fdo::Error::Failed(error.to_string()))?;
 
-        observed(self.observer.as_ref(), LaunchEvent { app_id, arguments, instance: record.id, directory: None });
+        observed(
+            self.observer.as_ref(),
+            LaunchEvent {
+                app_id,
+                arguments,
+                instance: record.id,
+                directory: None,
+            },
+        );
         Ok(record.id.to_string())
     }
 
@@ -376,15 +392,34 @@ impl LauncherApi {
         directory: &str,
         activation_token: &str,
     ) -> fdo::Result<String> {
-        let app_id: AppId = app_id.parse().map_err(|error: templar_types::AppIdError| fdo::Error::InvalidArgs(error.to_string()))?;
+        let app_id: AppId = app_id.parse().map_err(|error: templar_types::AppIdError| {
+            fdo::Error::InvalidArgs(error.to_string())
+        })?;
         let directory = launch_directory(directory)?;
-        let manifest = self.registry.manifest(&app_id)
+        let manifest = self
+            .registry
+            .manifest(&app_id)
             .ok_or_else(|| fdo::Error::FileNotFound(format!("no manifest for {app_id}")))?;
         let record = launcher::launch_in_directory(
-            self.registry.clone(), manifest, &arguments, nonempty(activation_token).as_deref(),
-            self.backend, Some(&self.connection), Some(&directory),
-        ).await.map_err(|error| fdo::Error::Failed(error.to_string()))?;
-        observed(self.observer.as_ref(), LaunchEvent { app_id, arguments, instance: record.id, directory: Some(directory) });
+            self.registry.clone(),
+            manifest,
+            &arguments,
+            nonempty(activation_token).as_deref(),
+            self.backend,
+            Some(&self.connection),
+            Some(&directory),
+        )
+        .await
+        .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        observed(
+            self.observer.as_ref(),
+            LaunchEvent {
+                app_id,
+                arguments,
+                instance: record.id,
+                directory: Some(directory),
+            },
+        );
         Ok(record.id.to_string())
     }
 
@@ -395,14 +430,32 @@ impl LauncherApi {
         file_uris: Vec<String>,
         activation_token: &str,
     ) -> fdo::Result<String> {
-        let app_id: AppId = app_id.parse().map_err(|error: templar_types::AppIdError| fdo::Error::InvalidArgs(error.to_string()))?;
-        let manifest = self.registry.manifest(&app_id)
+        let app_id: AppId = app_id.parse().map_err(|error: templar_types::AppIdError| {
+            fdo::Error::InvalidArgs(error.to_string())
+        })?;
+        let manifest = self
+            .registry
+            .manifest(&app_id)
             .ok_or_else(|| fdo::Error::FileNotFound(format!("no manifest for {app_id}")))?;
         let record = launcher::launch_files(
-            self.registry.clone(), manifest, &file_uris, nonempty(activation_token).as_deref(),
-            self.backend, Some(&self.connection),
-        ).await.map_err(|error| fdo::Error::Failed(error.to_string()))?;
-        observed(self.observer.as_ref(), LaunchEvent { app_id, arguments: file_uris, instance: record.id, directory: None });
+            self.registry.clone(),
+            manifest,
+            &file_uris,
+            nonempty(activation_token).as_deref(),
+            self.backend,
+            Some(&self.connection),
+        )
+        .await
+        .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+        observed(
+            self.observer.as_ref(),
+            LaunchEvent {
+                app_id,
+                arguments: file_uris,
+                instance: record.id,
+                directory: None,
+            },
+        );
         Ok(record.id.to_string())
     }
 
@@ -468,7 +521,15 @@ impl LauncherApi {
         .map_err(|error| fdo::Error::Failed(error.to_string()))?;
         // The resolved variant, not the logical id: what actually started is what an observer
         // has to be told, or it cannot tell two copies of Firefox apart.
-        observed(self.observer.as_ref(), LaunchEvent { app_id: chosen, arguments, instance: record.id, directory: None });
+        observed(
+            self.observer.as_ref(),
+            LaunchEvent {
+                app_id: chosen,
+                arguments,
+                instance: record.id,
+                directory: None,
+            },
+        );
         Ok(record.id.to_string())
     }
 }
@@ -489,27 +550,47 @@ mod tests {
 
     #[test]
     fn launch_directory_accepts_path_and_local_uri_and_preserves_canonical_native_bytes() {
-        use std::{ffi::OsString, os::unix::{ffi::OsStringExt, fs::symlink}};
+        use std::{
+            ffi::OsString,
+            os::unix::{ffi::OsStringExt, fs::symlink},
+        };
         let temp = tempfile::tempdir().unwrap();
-        let native = temp.path().join(OsString::from_vec(b"project-\xff-${HOME}-$VAR-$$".to_vec()));
+        let native = temp
+            .path()
+            .join(OsString::from_vec(b"project-\xff-${HOME}-$VAR-$$".to_vec()));
         std::fs::create_dir(&native).unwrap();
         let alias = temp.path().join("UTF-8 alias");
         symlink(&native, &alias).unwrap();
         let canonical = native.canonicalize().unwrap();
-        assert_eq!(launch_directory(alias.to_str().unwrap()).unwrap(), canonical);
-        assert_eq!(launch_directory(&templar_types::uri_list::encode_path(&alias)).unwrap(), canonical);
+        assert_eq!(
+            launch_directory(alias.to_str().unwrap()).unwrap(),
+            canonical
+        );
+        assert_eq!(
+            launch_directory(&templar_types::uri_list::encode_path(&alias)).unwrap(),
+            canonical
+        );
         let uri = templar_types::uri_list::encode_path(&native);
         assert_eq!(launch_directory(&uri).unwrap(), canonical);
-        assert_eq!(launch_directory(&uri.replacen("file://", "file://localhost", 1)).unwrap(), canonical);
+        assert_eq!(
+            launch_directory(&uri.replacen("file://", "file://localhost", 1)).unwrap(),
+            canonical
+        );
         let file = temp.path().join("not-a-directory");
         std::fs::write(&file, "fixture").unwrap();
         for invalid in [
-            "relative/path".to_owned(), "https://example.com/".to_owned(),
-            "file://remote/tmp".to_owned(), "file:relative".to_owned(),
-            file.to_str().unwrap().to_owned(), templar_types::uri_list::encode_path(&file),
+            "relative/path".to_owned(),
+            "https://example.com/".to_owned(),
+            "file://remote/tmp".to_owned(),
+            "file:relative".to_owned(),
+            file.to_str().unwrap().to_owned(),
+            templar_types::uri_list::encode_path(&file),
             temp.path().join("missing").to_str().unwrap().to_owned(),
         ] {
-            assert!(matches!(launch_directory(&invalid), Err(fdo::Error::InvalidArgs(_))));
+            assert!(matches!(
+                launch_directory(&invalid),
+                Err(fdo::Error::InvalidArgs(_))
+            ));
         }
     }
 

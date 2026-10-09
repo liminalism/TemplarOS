@@ -26,6 +26,7 @@ pub mod omnibox_screen;
 pub mod place_styles;
 pub mod rail;
 pub mod rail_session;
+pub mod search_pages;
 pub mod taskfield_screen;
 pub mod widgets;
 pub mod window;

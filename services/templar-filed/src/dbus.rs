@@ -36,6 +36,8 @@ pub struct FileService {
     pub config: ExecutorConfig,
     pub recents: Recents,
     pub index: Index,
+    /// Where index queries, snapshots and maintenance run (`index_lanes.rs`).
+    pub lanes: Arc<crate::index_lanes::Lanes>,
     pub directories: LastDirectoryStore,
     pub reserve_percent: u64,
     running: Arc<Mutex<HashMap<OperationId, Cancel>>>,
@@ -58,6 +60,7 @@ impl FileService {
         mut config: ExecutorConfig,
         recents: Recents,
         index: Index,
+        lanes: Arc<crate::index_lanes::Lanes>,
         directories: LastDirectoryStore,
         reserve_percent: u64,
     ) -> Self {
@@ -67,6 +70,7 @@ impl FileService {
             config,
             recents,
             index,
+            lanes,
             directories,
             reserve_percent,
             running: Arc::default(),
@@ -87,16 +91,30 @@ impl FileService {
         options: Options,
         app_id: Option<&AppId>,
     ) -> anyhow::Result<OperationId> {
-        if matches!(kind, OperationKind::RestoreMoveV1 { .. } | OperationKind::UndoCopyV1 { .. })
-            && options.conflict != operations::ConflictPolicy::Fail
+        if matches!(
+            kind,
+            OperationKind::RestoreMoveV1 { .. } | OperationKind::UndoCopyV1 { .. }
+        ) && options.conflict != operations::ConflictPolicy::Fail
         {
-            anyhow::bail!("an inverse must refuse conflicts rather than overwrite or rename original locations");
+            anyhow::bail!(
+                "an inverse must refuse conflicts rather than overwrite or rename original locations"
+            );
         }
-        if let OperationKind::UndoCopyV1 { original_operation, roots } = &mut kind {
-            let original = self.journal.get(*original_operation)?
+        if let OperationKind::UndoCopyV1 {
+            original_operation,
+            roots,
+        } = &mut kind
+        {
+            let original = self
+                .journal
+                .get(*original_operation)?
                 .ok_or_else(|| anyhow::anyhow!("original copy journal record is unavailable"))?;
             crate::transfer_undo::validate(&original)?;
-            *roots = original.transfers.into_iter().map(|entry| entry.destination).collect();
+            *roots = original
+                .transfers
+                .into_iter()
+                .map(|entry| entry.destination)
+                .collect();
         }
         operations::validate(&kind)?;
         let id = OperationId::new();
@@ -104,7 +122,10 @@ impl FileService {
             OperationKind::RestoreMoveV1 { entries } => {
                 let mut combined = operations::Survey::default();
                 for entry in entries {
-                    let mut part = operations::survey(std::slice::from_ref(&entry.source), entry.destination.parent());
+                    let mut part = operations::survey(
+                        std::slice::from_ref(&entry.source),
+                        entry.destination.parent(),
+                    );
                     for source in &mut part.sources {
                         source.destination_exists = entry.destination.symlink_metadata().is_ok();
                     }
@@ -239,12 +260,14 @@ fn sources_of(kind: &OperationKind) -> Vec<PathBuf> {
             sources.clone()
         }
         OperationKind::Delete { paths } => paths.clone(),
-        OperationKind::RestoreMoveV1 { entries } => entries.iter().map(|entry| entry.source.clone()).collect(),
-        OperationKind::UndoCopyV1 { .. } => Vec::new(),
+        OperationKind::RestoreMoveV1 { entries } => {
+            entries.iter().map(|entry| entry.source.clone()).collect()
+        }
         // Trashing and restoring never traverse: they are renames, and surveying a large
         // directory before trashing it would make "delete" mysteriously slow.
         OperationKind::Trash { .. }
         | OperationKind::RestoreFromTrash { .. }
+        | OperationKind::UndoCopyV1 { .. }
         | OperationKind::Rename { .. } => Vec::new(),
     }
 }
@@ -359,7 +382,9 @@ impl BrowseApi {
     async fn export_bookmarks(&self) -> fdo::Result<String> {
         let bookmarks = self.bookmarks.clone();
         let result = tokio::task::spawn_blocking(move || bookmarks.export())
-            .await.map_err(failed)?.map_err(failed)?;
+            .await
+            .map_err(failed)?
+            .map_err(failed)?;
         json(&result)
     }
 
@@ -381,20 +406,31 @@ impl BrowseApi {
     /// Native Desktop authority; an XDG Desktop disabled by binding it to HOME is not a dock.
     async fn desktop_directory_v1(&self) -> fdo::Result<String> {
         tokio::task::spawn_blocking(|| -> anyhow::Result<String> {
-            let home = std::env::var_os("HOME").map(PathBuf::from)
+            let home = std::env::var_os("HOME")
+                .map(PathBuf::from)
                 .ok_or_else(|| anyhow::anyhow!("HOME is unavailable"))?;
-            let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".config"));
+            let config = std::env::var_os("XDG_CONFIG_HOME")
+                .map_or_else(|| home.join(".config"), PathBuf::from);
             let text = std::fs::read_to_string(config.join("user-dirs.dirs")).unwrap_or_default();
             let sources = browse::sources_from(Some(&home), Some(&text), Vec::new());
-            Ok(sources.roots.iter().find(|root| root.key == "desktop")
-                .map(|root| templar_client::file_index::encode_path(&root.path)).unwrap_or_default())
-        }).await.map_err(failed)?.map_err(failed)
+            Ok(sources
+                .roots
+                .iter()
+                .find(|root| root.key == "desktop")
+                .map(|root| templar_client::file_index::encode_path(&root.path))
+                .unwrap_or_default())
+        })
+        .await
+        .map_err(failed)?
+        .map_err(failed)
     }
 
     /// Lossless immediate listing; display names do not identify filesystem objects.
     async fn list_directory_native_v1(
-        &self, directory_b64: &str, show_hidden: bool, limit: u32,
+        &self,
+        directory_b64: &str,
+        show_hidden: bool,
+        limit: u32,
     ) -> fdo::Result<String> {
         let directory = native_absolute_path(directory_b64)?;
         tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
@@ -464,10 +500,16 @@ impl PreviewsApi {
         }
     }
 
-    async fn render_native_v1(&self, path_b64: &str, max_edge: u32) -> fdo::Result<(String, Vec<u8>)> {
+    async fn render_native_v1(
+        &self,
+        path_b64: &str,
+        max_edge: u32,
+    ) -> fdo::Result<(String, Vec<u8>)> {
         let path = native_absolute_path(path_b64)?;
         let rendered = tokio::task::spawn_blocking(move || preview::render(&path, max_edge))
-            .await.map_err(failed)?.map_err(failed)?;
+            .await
+            .map_err(failed)?
+            .map_err(failed)?;
         match rendered {
             Some(rendered) => Ok((json(&rendered.metadata)?, rendered.png)),
             None => Ok((String::new(), Vec::new())),
@@ -498,7 +540,10 @@ impl OperationsApi {
         let app_id = (!app_id.is_empty()).then(|| app_id.parse().ok()).flatten();
         let service = self.0.clone();
         tokio::task::spawn_blocking(move || service.start(kind, options, app_id.as_ref()))
-            .await.map_err(failed)?.map(|id| id.to_string()).map_err(failed)
+            .await
+            .map_err(failed)?
+            .map(|id| id.to_string())
+            .map_err(failed)
     }
 
     /// Ask a running operation to stop at its next step boundary. Whatever it has already
@@ -562,12 +607,17 @@ impl OperationsApi {
                     Err(error) => Ok((false, format!("{error:#}"))),
                 }
             }
-            Some(inverse @ OperationKind::RestoreMoveV1 { .. }) => match operations::validate(&inverse) {
-                Ok(()) => Ok((true, String::new())),
-                Err(error) => Ok((false, format!("{error:#}"))),
-            },
+            Some(inverse @ OperationKind::RestoreMoveV1 { .. }) => {
+                match operations::validate(&inverse) {
+                    Ok(()) => Ok((true, String::new())),
+                    Err(error) => Ok((false, format!("{error:#}"))),
+                }
+            }
             Some(_) => Ok((true, String::new())),
-            None => Ok((false, "the journal has no guarded or exact inverse for this operation".to_owned())),
+            None => Ok((
+                false,
+                "the journal has no guarded or exact inverse for this operation".to_owned(),
+            )),
         }
     }
 
@@ -578,10 +628,17 @@ impl OperationsApi {
         if self.0.journal.undo_of(id).map_err(failed)?.is_none() {
             return Err(fdo::Error::Failed(format!("{op_id} cannot be undone")));
         }
-        let operation = self.0.journal.get(id).map_err(failed)?
+        let operation = self
+            .0
+            .journal
+            .get(id)
+            .map_err(failed)?
             .ok_or_else(|| fdo::Error::Failed(format!("no operation {op_id}")))?;
-        let undo = operations::undo_of(&operation)
-            .ok_or_else(|| fdo::Error::Failed("the journal has no guarded or exact inverse for this operation".into()))?;
+        let undo = operations::undo_of(&operation).ok_or_else(|| {
+            fdo::Error::Failed(
+                "the journal has no guarded or exact inverse for this operation".into(),
+            )
+        })?;
         let new_id = self
             .0
             .start(undo, Options::default(), None)
@@ -864,13 +921,24 @@ impl SearchApi {
     /// Register a root and queue the watcher; returns the last committed entry count, not a
     /// synchronous tree walk. Index1.Roots reports the resulting building/stale/current state.
     async fn index_root(&self, root: &str) -> fdo::Result<u32> {
-        let control = crate::observer::control().ok_or_else(|| failed("index watcher is not ready"))?;
+        let control =
+            crate::observer::control().ok_or_else(|| failed("index watcher is not ready"))?;
         let native = templar_file_index::NativePath::from_path(Path::new(root));
         let existing = self.0.index.configured_policy(&native).map_err(failed)?;
-        let expected = existing.as_ref().map_or_else(|| "absent".to_owned(), templar_file_index::RootPolicy::hash);
-        let status = self.0.index.configure_root(&native, existing.unwrap_or_default(), &expected).map_err(failed)?;
-        control.send_required(crate::observer::Command::Reconcile(status.root,
-            templar_file_index::reconcile::Trigger::Requested)).map_err(failed)?;
+        let expected = existing
+            .as_ref()
+            .map_or_else(|| "absent".to_owned(), templar_file_index::RootPolicy::hash);
+        let status = self
+            .0
+            .index
+            .configure_root(&native, existing.unwrap_or_default(), &expected)
+            .map_err(failed)?;
+        control
+            .send_required(crate::observer::Command::Reconcile(
+                status.root,
+                templar_file_index::reconcile::Trigger::Requested,
+            ))
+            .map_err(failed)?;
         u32::try_from(status.entry_count).map_err(failed)
     }
 
@@ -886,24 +954,71 @@ impl SearchApi {
     }
 
     async fn forget_root(&self, root: &str) -> fdo::Result<()> {
-        let control = crate::observer::control().ok_or_else(|| failed("index watcher is not ready"))?;
+        let control =
+            crate::observer::control().ok_or_else(|| failed("index watcher is not ready"))?;
         let native = templar_file_index::NativePath::from_path(Path::new(root));
-        let policy = self.0.index.configured_policy(&native).map_err(failed)?
+        let policy = self
+            .0
+            .index
+            .configured_policy(&native)
+            .map_err(failed)?
             .ok_or_else(|| fdo::Error::InvalidArgs("unknown indexed native root".to_owned()))?;
-        if let Some(root) = self.0.index.forget_root_native(&native, &policy.hash()).map_err(failed)? {
-            control.send_required(crate::observer::Command::ForgetRoot(root)).map_err(failed)?;
+        if let Some(root) = self
+            .0
+            .index
+            .forget_root_native(&native, &policy.hash())
+            .map_err(failed)?
+        {
+            control
+                .send_required(crate::observer::Command::ForgetRoot(root))
+                .map_err(failed)?;
         }
         Ok(())
     }
 
-    /// Hits as JSON, best match first. An empty `roots` searches everything indexed.
-    async fn search(&self, query: &str, roots: Vec<String>, limit: u32) -> fdo::Result<String> {
+    /// Hits as JSON, best match first. An empty `roots` searches everything indexed. Runs on the
+    /// interactive index lane like `Index1.Search`, never on the D-Bus executor.
+    async fn search(
+        &self,
+        query: &str,
+        roots: Vec<String>,
+        limit: u32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> fdo::Result<String> {
+        if query.len() > 64 * 1024
+            || roots.len() > 64
+            || roots.iter().map(String::len).sum::<usize>() > 64 * 1024
+        {
+            return Err(fdo::Error::InvalidArgs(
+                "search request exceeds its limits".to_owned(),
+            ));
+        }
+        let caller = header.sender().map(|name| Arc::<str>::from(name.as_str()));
         let roots: Vec<PathBuf> = roots.into_iter().map(PathBuf::from).collect();
+        let index = self.0.index.clone();
+        let query = query.to_owned();
+        // One in-flight compat search per caller: a newer keystroke supersedes the older one
+        // instead of queueing behind it. Untagged requests never cancel, so the tag exists only
+        // when the caller is known.
+        let tag = caller
+            .as_ref()
+            .map(|_| crate::index_lanes::COMPAT_SEARCH_TAG.to_string());
         let hits = self
             .0
-            .index
-            .search(query, &roots, limit as usize)
-            .map_err(failed)?;
+            .lanes
+            .run(
+                crate::index_lanes::LaneKind::Interactive,
+                caller,
+                tag,
+                move |cx| {
+                    index
+                        .search_in(&query, &roots, limit as usize, cx)
+                        .map_err(crate::index_lanes::index_error)
+                },
+            )
+            .await
+            .map_err(failed)?
+            .value;
         json(
             &hits
                 .into_iter()
@@ -987,6 +1102,7 @@ mod tests {
             },
             Recents::new(store.clone()),
             Index::new(store.clone()),
+            crate::index_lanes::Lanes::start().unwrap(),
             LastDirectoryStore::new(store, dir.to_path_buf()),
             0,
         )
@@ -1280,10 +1396,17 @@ mod tests {
         std::fs::create_dir_all(dir.join("data")).unwrap();
         FileService::new(
             Arc::new(crate::journal::SqliteJournal::new(store.clone())),
-            ExecutorConfig { data_home: dir.join("data"), reserve_percent: 0,
-                progress_interval: Duration::ZERO, ..ExecutorConfig::default() },
-            Recents::new(store.clone()), Index::new(store.clone()),
-            LastDirectoryStore::new(store, dir.to_path_buf()), 0,
+            ExecutorConfig {
+                data_home: dir.join("data"),
+                reserve_percent: 0,
+                progress_interval: Duration::ZERO,
+                ..ExecutorConfig::default()
+            },
+            Recents::new(store.clone()),
+            Index::new(store.clone()),
+            crate::index_lanes::Lanes::start().unwrap(),
+            LastDirectoryStore::new(store, dir.to_path_buf()),
+            0,
         )
     }
 
@@ -1292,13 +1415,24 @@ mod tests {
         std::ffi::OsString::from_vec(bytes.to_vec())
     }
 
-    async fn native_start(api: &OperationsApi, request: templar_client::files::OperationRequest,
-        conflict: templar_client::files::ConflictPolicy) -> OperationId {
+    async fn native_start(
+        api: &OperationsApi,
+        request: templar_client::files::OperationRequest,
+        conflict: templar_client::files::ConflictPolicy,
+    ) -> OperationId {
         let options = templar_client::files::OperationOptions {
-            conflict, verify: templar_client::files::Verification::Checksum, override_reserve: false,
+            conflict,
+            verify: templar_client::files::Verification::Checksum,
+            override_reserve: false,
         };
-        let id = api.start(&serde_json::to_string(&request).unwrap(),
-            &serde_json::to_string(&options).unwrap(), "").await.unwrap();
+        let id = api
+            .start(
+                &serde_json::to_string(&request).unwrap(),
+                &serde_json::to_string(&options).unwrap(),
+                "",
+            )
+            .await
+            .unwrap();
         OperationId::parse(&id).unwrap()
     }
 
@@ -1311,38 +1445,67 @@ mod tests {
         std::fs::create_dir(&from).unwrap();
         std::fs::create_dir(&to).unwrap();
         let paths: Vec<_> = [b"name-\xff.pdf".as_slice(), b"name-\xfe.pdf".as_slice()]
-            .into_iter().enumerate().map(|(index, name)| {
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| {
                 let path = from.join(native_name(name));
                 std::fs::write(&path, [index as u8, 0, 255]).unwrap();
                 path
-            }).collect();
-        assert_eq!(paths[0].file_name().unwrap().to_string_lossy(), paths[1].file_name().unwrap().to_string_lossy());
+            })
+            .collect();
+        assert_eq!(
+            paths[0].file_name().unwrap().to_string_lossy(),
+            paths[1].file_name().unwrap().to_string_lossy()
+        );
         let service = native_service(fixture.path());
         let api = OperationsApi(service.clone());
-        let id = native_start(&api, OperationRequest::Copy {
-            sources: paths.clone(), destination_dir: to.clone(),
-        }, ConflictPolicy::Fail).await;
+        let id = native_start(
+            &api,
+            OperationRequest::Copy {
+                sources: paths.clone(),
+                destination_dir: to.clone(),
+            },
+            ConflictPolicy::Fail,
+        )
+        .await;
         assert_eq!(settle(&service, id).await.state, OperationState::Committed);
-        let wire: OperationRecord = serde_json::from_str(&api.get(&id.to_string()).await.unwrap()).unwrap();
+        let wire: OperationRecord =
+            serde_json::from_str(&api.get(&id.to_string()).await.unwrap()).unwrap();
         assert!(matches!(wire.kind, OperationRequest::Copy { sources, .. } if sources == paths));
         // Open a second service over the same real on-disk journal, not a reconstructed plan.
         let restarted = native_service(fixture.path());
         let api = OperationsApi(restarted.clone());
         assert!(api.can_undo(&id.to_string()).await.unwrap().0);
         let inverse = OperationId::parse(&api.undo(&id.to_string()).await.unwrap()).unwrap();
-        assert_eq!(settle(&restarted, inverse).await.state, OperationState::Committed);
+        assert_eq!(
+            settle(&restarted, inverse).await.state,
+            OperationState::Committed
+        );
         assert!(std::fs::read_dir(&to).unwrap().next().is_none());
-        let trashed = crate::trash::list(&crate::trash::home_trash(&fixture.path().join("data"))).unwrap();
+        let trashed =
+            crate::trash::list(&crate::trash::home_trash(&fixture.path().join("data"))).unwrap();
         assert_eq!(trashed.len(), 2);
         for (index, source) in paths.iter().enumerate() {
             assert_eq!(std::fs::read(source).unwrap(), [index as u8, 0, 255]);
-            let item = trashed.iter().find(|item| item.original_path == to.join(source.file_name().unwrap())).unwrap();
-            assert_eq!(std::fs::read(&item.trashed_path).unwrap(), [index as u8, 0, 255]);
+            let item = trashed
+                .iter()
+                .find(|item| item.original_path == to.join(source.file_name().unwrap()))
+                .unwrap();
+            assert_eq!(
+                std::fs::read(&item.trashed_path).unwrap(),
+                [index as u8, 0, 255]
+            );
         }
         let restore = OperationId::parse(&api.undo(&inverse.to_string()).await.unwrap()).unwrap();
-        assert_eq!(settle(&restarted, restore).await.state, OperationState::Committed);
+        assert_eq!(
+            settle(&restarted, restore).await.state,
+            OperationState::Committed
+        );
         for (index, source) in paths.iter().enumerate() {
-            assert_eq!(std::fs::read(to.join(source.file_name().unwrap())).unwrap(), [index as u8, 0, 255]);
+            assert_eq!(
+                std::fs::read(to.join(source.file_name().unwrap())).unwrap(),
+                [index as u8, 0, 255]
+            );
         }
     }
 
@@ -1355,18 +1518,28 @@ mod tests {
         let name = native_name(b"same-\xff.txt");
         let old = to.join(&name);
         std::fs::write(&old, b"old collision").unwrap();
-        let paths: Vec<_> = ["one", "two"].into_iter().enumerate().map(|(index, parent)| {
-            let parent = fixture.path().join(parent);
-            std::fs::create_dir(&parent).unwrap();
-            let path = parent.join(&name);
-            std::fs::write(&path, [index as u8, 255]).unwrap();
-            path
-        }).collect();
+        let paths: Vec<_> = ["one", "two"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, parent)| {
+                let parent = fixture.path().join(parent);
+                std::fs::create_dir(&parent).unwrap();
+                let path = parent.join(&name);
+                std::fs::write(&path, [index as u8, 255]).unwrap();
+                path
+            })
+            .collect();
         let service = native_service(fixture.path());
         let api = OperationsApi(service.clone());
-        let id = native_start(&api, OperationRequest::Move {
-            sources: paths.clone(), destination_dir: to.clone(),
-        }, ConflictPolicy::KeepBoth).await;
+        let id = native_start(
+            &api,
+            OperationRequest::Move {
+                sources: paths.clone(),
+                destination_dir: to.clone(),
+            },
+            ConflictPolicy::KeepBoth,
+        )
+        .await;
         let moved = settle(&service, id).await;
         assert_eq!(moved.state, OperationState::Committed);
         assert!(paths.iter().all(|path| !path.exists()));
@@ -1374,22 +1547,35 @@ mod tests {
         std::fs::write(&paths[0], b"recreated").unwrap();
         assert!(!api.can_undo(&id.to_string()).await.unwrap().0);
         assert!(api.undo(&id.to_string()).await.is_err());
-        assert!(moved.transfers.iter().all(|entry| entry.destination.exists()));
+        assert!(
+            moved
+                .transfers
+                .iter()
+                .all(|entry| entry.destination.exists())
+        );
         assert_eq!(std::fs::read(&paths[0]).unwrap(), b"recreated");
         std::fs::remove_file(&paths[0]).unwrap();
         let inverse = OperationId::parse(&api.undo(&id.to_string()).await.unwrap()).unwrap();
-        assert_eq!(settle(&service, inverse).await.state, OperationState::Committed);
+        assert_eq!(
+            settle(&service, inverse).await.state,
+            OperationState::Committed
+        );
         for (index, path) in paths.iter().enumerate() {
             assert_eq!(std::fs::read(path).unwrap(), [index as u8, 255]);
         }
         assert_eq!(std::fs::read(&old).unwrap(), b"old collision");
-        assert!(moved.transfers.iter().all(|entry| !entry.destination.exists()));
+        assert!(
+            moved
+                .transfers
+                .iter()
+                .all(|entry| !entry.destination.exists())
+        );
     }
 
     #[tokio::test]
     async fn native_directory_symlink_copy_refuses_collisions_and_changed_destination_undo() {
-        use templar_client::files::{ConflictPolicy, OperationRequest};
         use std::os::unix::fs::symlink;
+        use templar_client::files::{ConflictPolicy, OperationRequest};
         for change in ["file", "child", "symlink", "none"] {
             let fixture = tempfile::tempdir().unwrap();
             let source = fixture.path().join(native_name(b"tree-\xff"));
@@ -1401,28 +1587,61 @@ mod tests {
             symlink(PathBuf::from("nested").join(&child), source.join("link")).unwrap();
             let service = native_service(fixture.path());
             let api = OperationsApi(service.clone());
-            let id = native_start(&api, OperationRequest::Copy {
-                sources: vec![source.clone()], destination_dir: to.clone(),
-            }, ConflictPolicy::Fail).await;
+            let id = native_start(
+                &api,
+                OperationRequest::Copy {
+                    sources: vec![source.clone()],
+                    destination_dir: to.clone(),
+                },
+                ConflictPolicy::Fail,
+            )
+            .await;
             assert_eq!(settle(&service, id).await.state, OperationState::Committed);
             let copied = to.join(source.file_name().unwrap());
-            assert_eq!(std::fs::read_link(copied.join("link")).unwrap(), PathBuf::from("nested").join(&child));
-            let collision = native_start(&api, OperationRequest::Copy {
-                sources: vec![source.clone()], destination_dir: to.clone(),
-            }, ConflictPolicy::Fail).await;
-            assert_eq!(settle(&service, collision).await.state, OperationState::Failed);
+            assert_eq!(
+                std::fs::read_link(copied.join("link")).unwrap(),
+                PathBuf::from("nested").join(&child)
+            );
+            let collision = native_start(
+                &api,
+                OperationRequest::Copy {
+                    sources: vec![source.clone()],
+                    destination_dir: to.clone(),
+                },
+                ConflictPolicy::Fail,
+            )
+            .await;
+            assert_eq!(
+                settle(&service, collision).await.state,
+                OperationState::Failed
+            );
             if change == "none" {
-                let inverse = OperationId::parse(&api.undo(&id.to_string()).await.unwrap()).unwrap();
-                assert_eq!(settle(&service, inverse).await.state, OperationState::Committed);
+                let inverse =
+                    OperationId::parse(&api.undo(&id.to_string()).await.unwrap()).unwrap();
+                assert_eq!(
+                    settle(&service, inverse).await.state,
+                    OperationState::Committed
+                );
                 assert!(!copied.exists());
-                let restore = OperationId::parse(&api.undo(&inverse.to_string()).await.unwrap()).unwrap();
-                assert_eq!(settle(&service, restore).await.state, OperationState::Committed);
-                assert_eq!(std::fs::read(copied.join("nested").join(&child)).unwrap(), b"body");
-                assert_eq!(std::fs::read_link(copied.join("link")).unwrap(), PathBuf::from("nested").join(&child));
+                let restore =
+                    OperationId::parse(&api.undo(&inverse.to_string()).await.unwrap()).unwrap();
+                assert_eq!(
+                    settle(&service, restore).await.state,
+                    OperationState::Committed
+                );
+                assert_eq!(
+                    std::fs::read(copied.join("nested").join(&child)).unwrap(),
+                    b"body"
+                );
+                assert_eq!(
+                    std::fs::read_link(copied.join("link")).unwrap(),
+                    PathBuf::from("nested").join(&child)
+                );
                 continue;
             }
             match change {
-                "file" => std::fs::write(copied.join("nested").join(&child), b"edited after copy").unwrap(),
+                "file" => std::fs::write(copied.join("nested").join(&child), b"edited after copy")
+                    .unwrap(),
                 "child" => std::fs::write(copied.join("new-file"), b"new child").unwrap(),
                 "symlink" => {
                     std::fs::remove_file(copied.join("link")).unwrap();
@@ -1433,15 +1652,22 @@ mod tests {
             assert!(!api.can_undo(&id.to_string()).await.unwrap().0, "{change}");
             assert!(api.undo(&id.to_string()).await.is_err(), "{change}");
             assert!(copied.exists());
-            assert!(crate::trash::list(&crate::trash::home_trash(&fixture.path().join("data"))).unwrap().is_empty());
-            assert_eq!(std::fs::read(source.join("nested").join(&child)).unwrap(), b"body");
+            assert!(
+                crate::trash::list(&crate::trash::home_trash(&fixture.path().join("data")))
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                std::fs::read(source.join("nested").join(&child)).unwrap(),
+                b"body"
+            );
         }
     }
 
     #[tokio::test]
     async fn native_replacement_transfers_have_no_inverse_and_identical_symlink_is_a_collision() {
-        use templar_client::files::{ConflictPolicy, OperationRequest};
         use std::os::unix::fs::symlink;
+        use templar_client::files::{ConflictPolicy, OperationRequest};
         let fixture = tempfile::tempdir().unwrap();
         let from = fixture.path().join("from");
         let to = fixture.path().join("Desktop");
@@ -1453,14 +1679,29 @@ mod tests {
         symlink(native_name(b"target-\xfe"), &destination).unwrap();
         let service = native_service(fixture.path());
         let api = OperationsApi(service.clone());
-        let id = native_start(&api, OperationRequest::Copy {
-            sources: vec![source.clone()], destination_dir: to.clone(),
-        }, ConflictPolicy::Fail).await;
+        let id = native_start(
+            &api,
+            OperationRequest::Copy {
+                sources: vec![source.clone()],
+                destination_dir: to.clone(),
+            },
+            ConflictPolicy::Fail,
+        )
+        .await;
         assert_eq!(settle(&service, id).await.state, OperationState::Failed);
         assert!(source.symlink_metadata().unwrap().file_type().is_symlink());
         for moving in [false, true] {
-            let request = if moving { OperationRequest::Move { sources: vec![source.clone()], destination_dir: to.clone() } }
-                else { OperationRequest::Copy { sources: vec![source.clone()], destination_dir: to.clone() } };
+            let request = if moving {
+                OperationRequest::Move {
+                    sources: vec![source.clone()],
+                    destination_dir: to.clone(),
+                }
+            } else {
+                OperationRequest::Copy {
+                    sources: vec![source.clone()],
+                    destination_dir: to.clone(),
+                }
+            };
             let id = native_start(&api, request, ConflictPolicy::Replace).await;
             assert_eq!(settle(&service, id).await.state, OperationState::Committed);
             assert!(!api.can_undo(&id.to_string()).await.unwrap().0);
@@ -1477,14 +1718,39 @@ mod tests {
         std::os::unix::fs::symlink(&target, &desktop).unwrap();
         let name = native_name(b"image-\xff.png");
         let path = desktop.join(&name);
-        image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255])).save(&path).unwrap();
-        let api = BrowseApi { reserve_percent: 0, bookmarks: crate::bookmarks::Bookmarks(Store::in_memory().unwrap()) };
-        let json: serde_json::Value = serde_json::from_str(&api.list_directory_native_v1(
-            &templar_client::file_index::encode_path(&desktop), false, 500).await.unwrap()).unwrap();
-        assert_eq!(json["directory_b64"], templar_client::file_index::encode_path(&desktop));
-        assert_eq!(json["watch_directory_b64"], templar_client::file_index::encode_path(&target));
-        assert_eq!(json["entries"][0]["path_b64"], templar_client::file_index::encode_path(&path));
-        let (metadata, png) = PreviewsApi.render_native_v1(&templar_client::file_index::encode_path(&path), 64).await.unwrap();
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]))
+            .save(&path)
+            .unwrap();
+        let api = BrowseApi {
+            reserve_percent: 0,
+            bookmarks: crate::bookmarks::Bookmarks(Store::in_memory().unwrap()),
+        };
+        let json: serde_json::Value = serde_json::from_str(
+            &api.list_directory_native_v1(
+                &templar_client::file_index::encode_path(&desktop),
+                false,
+                500,
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            json["directory_b64"],
+            templar_client::file_index::encode_path(&desktop)
+        );
+        assert_eq!(
+            json["watch_directory_b64"],
+            templar_client::file_index::encode_path(&target)
+        );
+        assert_eq!(
+            json["entries"][0]["path_b64"],
+            templar_client::file_index::encode_path(&path)
+        );
+        let (metadata, png) = PreviewsApi
+            .render_native_v1(&templar_client::file_index::encode_path(&path), 64)
+            .await
+            .unwrap();
         assert!(!metadata.is_empty());
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
@@ -1502,9 +1768,15 @@ mod tests {
             let service = native_service(fixture.path());
             let api = OperationsApi(service.clone());
             let request = if moving {
-                OperationRequest::Move { sources: vec![source.clone()], destination_dir: destination.clone() }
+                OperationRequest::Move {
+                    sources: vec![source.clone()],
+                    destination_dir: destination.clone(),
+                }
             } else {
-                OperationRequest::Copy { sources: vec![source.clone()], destination_dir: destination.clone() }
+                OperationRequest::Copy {
+                    sources: vec![source.clone()],
+                    destination_dir: destination.clone(),
+                }
             };
             let id = native_start(&api, request, ConflictPolicy::Fail).await;
             let mut legacy = settle(&service, id).await;
@@ -1514,9 +1786,14 @@ mod tests {
             service.journal.progress(&legacy).unwrap();
             let copied = destination.join("file");
             let old_inverse = if moving {
-                OperationKind::Move { sources: vec![copied.clone()], destination_dir: source.parent().unwrap().to_path_buf() }
+                OperationKind::Move {
+                    sources: vec![copied.clone()],
+                    destination_dir: source.parent().unwrap().to_path_buf(),
+                }
             } else {
-                OperationKind::Delete { paths: vec![copied.clone()] }
+                OperationKind::Delete {
+                    paths: vec![copied.clone()],
+                }
             };
             service.journal.put_undo(id, &old_inverse).unwrap();
             assert!(!api.can_undo(&id.to_string()).await.unwrap().0);

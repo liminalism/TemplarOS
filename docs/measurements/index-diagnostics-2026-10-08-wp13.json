@@ -1,0 +1,118 @@
+{
+  "observed_at": "2026-10-08T17:24:37.952611+00:00",
+  "base_commit": "12295f351ab14e649f900573190060cd88a7251e",
+  "working_tree": true,
+  "platform": "native Ubuntu26.04/Lubuntu",
+  "binaries": {
+    "templar-filed": {
+      "path": "target/native/ubuntu-26.04/debug/templar-filed",
+      "sha256": "0199ec875a2e63ec767a707f1e68bd754e7c24e7105289e33a600830ce6e4535"
+    },
+    "templar": {
+      "path": "target/native/ubuntu-26.04/debug/templar",
+      "sha256": "6ec77dfb6b383c69948e20c26c54c9497f25f31d7e656d2955802cfc2df48832"
+    },
+    "templar-settings": {
+      "path": "target/native/ubuntu-26.04/debug/templar-settings",
+      "sha256": "c20b2cc60a841960b9d81bd3f849ba29d7ad6a043cd0e11fb558c09b1d38982f"
+    }
+  },
+  "tests": {
+    "core_filed_settings": {
+      "passed": 452,
+      "failed": 0,
+      "ignored": 9,
+      "filtered": 0,
+      "log": ".agent/scratch/index-wp13/core-filed-settings-final.log"
+    },
+    "client": {
+      "passed": 32,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0,
+      "log": ".agent/scratch/index-wp13/client-tests.log"
+    },
+    "store_free_core_lib": {
+      "passed": 13,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0,
+      "log": ".agent/scratch/index-wp13/model-only.log"
+    },
+    "cli_excluding_known_journal_failure": {
+      "passed": 228,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 1,
+      "log": ".agent/scratch/index-wp13/cli-qualified.log"
+    },
+    "whole_cli": {
+      "passed": 228,
+      "failed": 1,
+      "ignored": 0,
+      "filtered": 0,
+      "log": ".agent/scratch/index-wp13/cli-final.log"
+    }
+  },
+  "open_regression": "whole CLI: garden_session::tests::bash_journal_preserves_pipeline_status_user_hooks_and_ignorespace_privacy fails with no journal records on native Bash5.3.9; untouched source, carried to closure",
+  "private_proof": {
+    "scope": "owned private daemon and explicit headless volume fixture",
+    "checks": {
+      "snapshot": {
+        "manifest": {
+          "format": 1,
+          "generation": 4,
+          "field_mask": 255,
+          "entry_count": 202,
+          "payload_len": 30768,
+          "payload_crc32c": 1427656034,
+          "roots": [
+            {
+              "root": 1,
+              "path_b64": "L3RtcC90ZW1wbGFyLXdwMTMtd3QyeHNmcHAvaG9tZQ==",
+              "display": "/tmp/templar-wp13-wt2xsfpp/home",
+              "state": "current",
+              "complete": true,
+              "generation": 2,
+              "metadata": "verified",
+              "reason": null
+            },
+            {
+              "root": 2,
+              "path_b64": "L3RtcC90ZW1wbGFyLXdwMTMtd3QyeHNmcHAvdHJlZQ==",
+              "display": "/tmp/templar-wp13-wt2xsfpp/tree",
+              "state": "current",
+              "complete": true,
+              "generation": 4,
+              "metadata": "verified",
+              "reason": null
+            }
+          ],
+          "sealed": true,
+          "snapshot_seq": 2
+        },
+        "server": {
+          "accounting_available": true,
+          "cancelled": 0,
+          "completed": 1,
+          "live_memfd_bytes": 0,
+          "oldest_age_ms": null,
+          "open": 0,
+          "rejected_too_large": 0,
+          "scope": "server-held-descriptors"
+        },
+        "client_fd_still_open_bytes": 30832,
+        "seals": 15
+      },
+      "disk_fallback": {
+        "main_wal_lock_unchanged": true,
+        "shm_coordination_may_change": true,
+        "no_autostart": true
+      },
+      "offline_settings_and_warning_fixture": true,
+      "live_doctor_all_fields": true
+    },
+    "owned_children_reaped": true
+  },
+  "abi": "check-interface-signatures: 305 shipped member(s) across 44 interface(s), all unchanged"
+}

@@ -78,12 +78,22 @@ impl std::fmt::Debug for NativeLaunch {
 ///
 /// The executable and optional cwd must be absolute, every string must be NUL-free,
 /// and the result must fit [`MAX_PAYLOAD_BYTES`] with at most [`MAX_ARGUMENTS`] arguments.
-pub fn encode(executable: &Path, arguments: &[OsString], directory: Option<&Path>) -> Result<String> {
-    ensure!(executable.is_absolute(), "native executable must be absolute");
+pub fn encode(
+    executable: &Path,
+    arguments: &[OsString],
+    directory: Option<&Path>,
+) -> Result<String> {
+    ensure!(
+        executable.is_absolute(),
+        "native executable must be absolute"
+    );
     if let Some(directory) = directory {
         ensure!(directory.is_absolute(), "native directory must be absolute");
     }
-    ensure!(arguments.len() <= MAX_ARGUMENTS, "too many native arguments");
+    ensure!(
+        arguments.len() <= MAX_ARGUMENTS,
+        "too many native arguments"
+    );
 
     // Compute the exact compact JSON size before allocating its output. Serialization
     // borrows native bytes; it does not copy them into an intermediate byte vector.
@@ -100,14 +110,20 @@ pub fn encode(executable: &Path, arguments: &[OsString], directory: Option<&Path
         add_byte_array_size(&mut size, argument.as_os_str().as_bytes())
             .with_context(|| format!("invalid native argument at index {index}"))?;
     }
-    ensure!(size <= MAX_PAYLOAD_BYTES, "native payload exceeds byte limit");
+    ensure!(
+        size <= MAX_PAYLOAD_BYTES,
+        "native payload exceeds byte limit"
+    );
 
     let mut payload = Vec::with_capacity(size);
-    serde_json::to_writer(&mut payload, &EncodedPayload {
-        executable,
-        arguments: NativeArguments(arguments),
-        directory: directory.map(NativePath),
-    })
+    serde_json::to_writer(
+        &mut payload,
+        &EncodedPayload {
+            executable,
+            arguments: NativeArguments(arguments),
+            directory: directory.map(NativePath),
+        },
+    )
     .context("encoding native launch payload")?;
     String::from_utf8(payload).context("encoded native launch payload is not UTF-8")
 }
@@ -115,7 +131,10 @@ pub fn encode(executable: &Path, arguments: &[OsString], directory: Option<&Path
 fn add_byte_array_size(size: &mut usize, bytes: &[u8]) -> Result<()> {
     // Each byte contributes at least one digit. Reject huge inputs before traversing
     // them to compute their decimal representation's exact size.
-    ensure!(bytes.len() <= MAX_PAYLOAD_BYTES, "native payload exceeds byte limit");
+    ensure!(
+        bytes.len() <= MAX_PAYLOAD_BYTES,
+        "native payload exceeds byte limit"
+    );
     *size += 2;
     for (index, byte) in bytes.iter().enumerate() {
         ensure!(*byte != 0, "native strings must not contain NUL");
@@ -127,27 +146,39 @@ fn add_byte_array_size(size: &mut usize, bytes: &[u8]) -> Result<()> {
             } else {
                 1
             };
-        ensure!(*size <= MAX_PAYLOAD_BYTES, "native payload exceeds byte limit");
+        ensure!(
+            *size <= MAX_PAYLOAD_BYTES,
+            "native payload exceeds byte limit"
+        );
     }
     Ok(())
 }
 
 fn add_path_size(size: &mut usize, path: &Path) -> Result<()> {
     let bytes = path.as_os_str().as_bytes();
-    ensure!(bytes.len() <= MAX_PAYLOAD_BYTES, "native payload exceeds byte limit");
+    ensure!(
+        bytes.len() <= MAX_PAYLOAD_BYTES,
+        "native payload exceeds byte limit"
+    );
     ensure!(!bytes.contains(&0), "native paths must not contain NUL");
     // Exact compact-JSON size of the shared native_path codec, without allocating
     // an intermediate JSON string or an additional base64 path.
     *size += if path.to_str().is_some() {
-        2 + bytes.iter().map(|byte| match byte {
-            b'"' | b'\\' | b'\x08' | b'\t' | b'\n' | b'\x0c' | b'\r' => 2,
-            0..=31 => 6,
-            _ => 1,
-        }).sum::<usize>()
+        2 + bytes
+            .iter()
+            .map(|byte| match byte {
+                b'"' | b'\\' | b'\x08' | b'\t' | b'\n' | b'\x0c' | b'\r' => 2,
+                0..=31 => 6,
+                _ => 1,
+            })
+            .sum::<usize>()
     } else {
         r#"{"path_b64":""}"#.len() + bytes.len().div_ceil(3) * 4
     };
-    ensure!(*size <= MAX_PAYLOAD_BYTES, "native payload exceeds byte limit");
+    ensure!(
+        *size <= MAX_PAYLOAD_BYTES,
+        "native payload exceeds byte limit"
+    );
     Ok(())
 }
 
@@ -156,23 +187,50 @@ fn add_path_size(size: &mut usize, path: &Path) -> Result<()> {
 /// This only validates the transport: authorization, directory existence and executable
 /// selection belong to the broker. The adapter preserves its inherited environment.
 pub fn decode(payload: &str) -> Result<NativeLaunch> {
-    ensure!(payload.len() <= MAX_PAYLOAD_BYTES, "native payload exceeds byte limit");
+    ensure!(
+        payload.len() <= MAX_PAYLOAD_BYTES,
+        "native payload exceeds byte limit"
+    );
     let decoded: DecodedPayload = serde_json::from_str(payload).map_err(|error| {
         // serde's messages can quote attacker-controlled field names/string values.
         // Retain a useful location without leaking native argv or payload contents.
-        anyhow!("invalid native launch payload at line {} column {}", error.line(), error.column())
+        anyhow!(
+            "invalid native launch payload at line {} column {}",
+            error.line(),
+            error.column()
+        )
     })?;
-    ensure!(decoded.arguments.len() <= MAX_ARGUMENTS, "too many native arguments");
-    ensure!(!decoded.executable.as_os_str().as_bytes().contains(&0), "native executable contains NUL");
+    ensure!(
+        decoded.arguments.len() <= MAX_ARGUMENTS,
+        "too many native arguments"
+    );
+    ensure!(
+        !decoded.executable.as_os_str().as_bytes().contains(&0),
+        "native executable contains NUL"
+    );
     for (index, argument) in decoded.arguments.iter().enumerate() {
-        ensure!(!argument.contains(&0), "native argument at index {index} contains NUL");
+        ensure!(
+            !argument.contains(&0),
+            "native argument at index {index} contains NUL"
+        );
     }
-    ensure!(decoded.executable.is_absolute(), "native executable must be absolute");
+    ensure!(
+        decoded.executable.is_absolute(),
+        "native executable must be absolute"
+    );
     if let Some(directory) = &decoded.directory {
         ensure!(directory.is_absolute(), "native directory must be absolute");
     }
-    let arguments = decoded.arguments.into_iter().map(OsString::from_vec).collect();
-    Ok(NativeLaunch { executable: decoded.executable, arguments, directory: decoded.directory })
+    let arguments = decoded
+        .arguments
+        .into_iter()
+        .map(OsString::from_vec)
+        .collect();
+    Ok(NativeLaunch {
+        executable: decoded.executable,
+        arguments,
+        directory: decoded.directory,
+    })
 }
 
 #[cfg(test)]
@@ -204,10 +262,17 @@ mod tests {
     #[test]
     fn whitespace_percent_shell_syntax_and_secrets_are_literal() {
         let arguments: Vec<OsString> = [
-            "", "two words", " tab\tand\nnewline ", "%f %U %% %n",
+            "",
+            "two words",
+            " tab\tand\nnewline ",
+            "%f %U %% %n",
             "$HOME ${TOKEN} $$ $(touch /tmp/not-executed) `id` ; & | *",
-            "--secret=literal-token-123", "quotes: '\" \\ end",
-        ].into_iter().map(OsString::from).collect();
+            "--secret=literal-token-123",
+            "quotes: '\" \\ end",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
         let executable = Path::new("/usr/bin/viewer");
         let directory = Path::new("/tmp/é \"quotes\" \\ tab\tnewline\ncontrol\x01");
         let payload = encode(executable, &arguments, Some(directory)).unwrap();
@@ -235,16 +300,25 @@ mod tests {
             assert!(encode(Path::new(executable), &[], None).is_err());
             let payload = serde_json::json!({
                 "executable": executable, "arguments": []
-            }).to_string();
+            })
+            .to_string();
             assert!(decode(&payload).is_err());
         }
-        assert!(encode(Path::new("/usr/bin/viewer"), &[OsString::from("before\0after")], None).is_err());
+        assert!(
+            encode(
+                Path::new("/usr/bin/viewer"),
+                &[OsString::from("before\0after")],
+                None
+            )
+            .is_err()
+        );
         assert!(decode(r#"{"executable":"/x","arguments":[[65,0,66]]}"#).is_err());
         for directory in ["", "relative", "./relative", "/tmp/before\0after"] {
             assert!(encode(Path::new("/x"), &[], Some(Path::new(directory))).is_err());
             let payload = serde_json::json!({
                 "executable": "/x", "arguments": [], "directory": directory
-            }).to_string();
+            })
+            .to_string();
             assert!(decode(&payload).is_err());
         }
     }
@@ -252,7 +326,10 @@ mod tests {
     #[test]
     fn rejects_malformed_payloads_without_echoing_secrets() {
         for payload in [
-            "", "null", "{}", "secret-token-not-json",
+            "",
+            "null",
+            "{}",
+            "secret-token-not-json",
             r#"{"executable":{"path_b64":"secret-token"},"arguments":[]}"#,
             r#"{"executable":[47,256],"arguments":[]}"#,
             r#"{"executable":[47,-1],"arguments":[]}"#,
@@ -274,7 +351,8 @@ mod tests {
         assert!(encode(Path::new("/x"), &arguments, None).is_err());
         let payload = serde_json::json!({
             "executable": "/x", "arguments": vec![Vec::<u8>::new(); MAX_ARGUMENTS + 1]
-        }).to_string();
+        })
+        .to_string();
         assert!(decode(&payload).is_err());
         let payload = encode(Path::new("/x"), &arguments[..MAX_ARGUMENTS], None).unwrap();
         assert_eq!(decode(&payload).unwrap().arguments.len(), MAX_ARGUMENTS);
@@ -284,8 +362,14 @@ mod tests {
     fn encoded_size_boundary_matches_decoder_limit() {
         assert_eq!(MAX_PAYLOAD_BYTES, 131071);
         let native_directory = PathBuf::from(OsString::from_vec(b"/tmp/project-\xff".to_vec()));
-        for directory in [None, Some(Path::new("/tmp/é\n\"quoted\"\x01")), Some(native_directory.as_path())] {
-            let empty_size = encode(Path::new("/x"), &[OsString::new()], directory).unwrap().len();
+        for directory in [
+            None,
+            Some(Path::new("/tmp/é\n\"quoted\"\x01")),
+            Some(native_directory.as_path()),
+        ] {
+            let empty_size = encode(Path::new("/x"), &[OsString::new()], directory)
+                .unwrap()
+                .len();
             // Byte 49 contributes three JSON bytes except for the first comma.
             // Replacing up to two bytes with 100 adds exactly the remaining bytes.
             let count = (MAX_PAYLOAD_BYTES - empty_size + 1) / 3;

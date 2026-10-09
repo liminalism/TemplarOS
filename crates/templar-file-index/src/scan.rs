@@ -13,6 +13,10 @@ use crate::{
 };
 use std::path::Path;
 
+/// Entries collected to sort a directory. Past this the walker visits the sorted prefix and then
+/// streams the rest in readdir order, so a giant directory cannot pin the whole listing in RAM.
+const SORT_CHILDREN_LIMIT: usize = 4096;
+
 /// Walks `root` into an open generation. `root` is where the walk starts, not necessarily the
 /// registered root: a subtree pass starts inside one.
 pub fn walk_into(session: &mut ScanSession, root: &NativePath) -> Result<()> {
@@ -86,14 +90,13 @@ fn walk(
     // A root is not allowed to wander onto another filesystem unless the user said so: the whole
     // machine is not what "index my home directory" means.
     if !session.options().policy.cross_mount
-        && let Some(root_device) = root_device
-        && root_device != device_of(&metadata)
-        && depth > 0
+        && ((depth > 0 && root_device.is_some_and(|device| device != device_of(&metadata)))
+            || session.mount_boundary(&native)?)
     {
         return Ok(());
     }
 
-    let entries = match std::fs::read_dir(path) {
+    let mut entries = match std::fs::read_dir(path) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && depth > 0 => return Ok(()),
         Err(error) => {
@@ -102,14 +105,35 @@ fn walk(
         }
     };
 
+    // Sorted below the cap, streamed past it: collecting a million-entry directory to sort it
+    // would pin ~100MB to order a walk whose result is order-free. The sorted prefix keeps small
+    // directories deterministic; the spilled tail still visits everything, in readdir order.
     let mut children: Vec<std::path::PathBuf> = Vec::new();
-    for entry in entries {
+    let mut spilled = false;
+    for entry in entries.by_ref() {
         match entry {
-            Ok(entry) => children.push(entry.path()),
+            Ok(entry) => {
+                children.push(entry.path());
+                if children.len() > SORT_CHILDREN_LIMIT {
+                    spilled = true;
+                    break;
+                }
+            }
             Err(error) => {
                 session.note_unreadable(is_permission_denied(&error));
             }
         }
+    }
+    if spilled {
+        let tail = children.pop();
+        children.sort();
+        for child in &children {
+            if session.stopped() {
+                break;
+            }
+            walk(session, child, Some(&native), depth + 1, root_device)?;
+        }
+        return walk_spill(session, &native, tail, entries, depth, root_device);
     }
     children.sort();
 
@@ -122,8 +146,38 @@ fn walk(
     Ok(())
 }
 
+/// Walk the spilled tail of an over-cap directory in readdir order: the entry that tripped the
+/// cap first, then the rest of the still-open listing. Every child is visited; only the order
+/// differs from the sorted prefix.
+fn walk_spill(
+    session: &mut ScanSession,
+    dir: &NativePath,
+    tail: Option<std::path::PathBuf>,
+    entries: std::fs::ReadDir,
+    depth: u32,
+    root_device: Option<u64>,
+) -> Result<()> {
+    if let Some(child) = tail
+        && !session.stopped()
+    {
+        walk(session, &child, Some(dir), depth + 1, root_device)?;
+    }
+    for entry in entries {
+        if session.stopped() {
+            break;
+        }
+        match entry {
+            Ok(entry) => {
+                let child = entry.path();
+                walk(session, &child, Some(dir), depth + 1, root_device)?;
+            }
+            Err(error) => session.note_unreadable(is_permission_denied(&error)),
+        }
+    }
+    Ok(())
+}
+
 fn device_of(metadata: &std::fs::Metadata) -> u64 {
     use std::os::unix::fs::MetadataExt;
     metadata.dev()
 }
-

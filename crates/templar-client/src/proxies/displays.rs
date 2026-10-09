@@ -1,6 +1,10 @@
 //! Native display observations and compositor-owned previews. No GUI rollback timer.
 use zbus::proxy;
-#[proxy(interface = "org.templaros.Displays1", default_service = "org.templaros.Session", default_path = "/org/templaros/Session/Displays")]
+#[proxy(
+    interface = "org.templaros.Displays1",
+    default_service = "org.templaros.Session",
+    default_path = "/org/templaros/Session/Displays"
+)]
 pub trait Displays {
     fn observe(&self) -> zbus::Result<String>;
     fn validate(&self, expected: &str, profile: &str) -> zbus::Result<String>;

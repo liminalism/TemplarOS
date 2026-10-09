@@ -54,7 +54,8 @@ impl ProviderRegistry {
     /// Explicit selections remain the durable choice, not a frozen installed-app catalogue.
     pub fn declare_installed(&mut self, catalog: &dyn templar_types::AppCatalog) {
         for manifest in catalog.manifests() {
-            for capability in derived_capabilities(&manifest).into_iter()
+            for capability in derived_capabilities(&manifest)
+                .into_iter()
                 .chain(claimed_capabilities(&manifest))
             {
                 self.declare(manifest.id.clone(), capability);
@@ -919,11 +920,7 @@ mod tests {
         let old_value = serde_json::to_string(tray.as_str()).unwrap();
         store
             .transaction(|tx| {
-                revert_selection_within(
-                    tx,
-                    ProviderRole::NetworkStatusUi,
-                    Some(&old_value),
-                )
+                revert_selection_within(tx, ProviderRole::NetworkStatusUi, Some(&old_value))
             })
             .unwrap();
 
@@ -1068,7 +1065,10 @@ mod tests {
                 )
             })
             .unwrap();
-        registry.select(ProviderRole::NetworkStatusUi, restored.expect("restored explicit selection"));
+        registry.select(
+            ProviderRole::NetworkStatusUi,
+            restored.expect("restored explicit selection"),
+        );
         assert_eq!(
             registry.provider(ProviderRole::NetworkStatusUi),
             Some(applet)
@@ -1076,9 +1076,7 @@ mod tests {
 
         // Undo the first selection too: no selection at all (defaults by priority again).
         store
-            .transaction(|tx| {
-                revert_selection_within(tx, ProviderRole::NetworkStatusUi, None)
-            })
+            .transaction(|tx| revert_selection_within(tx, ProviderRole::NetworkStatusUi, None))
             .unwrap();
         registry.deselect(ProviderRole::NetworkStatusUi);
         assert!(

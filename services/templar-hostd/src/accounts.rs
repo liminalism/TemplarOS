@@ -1,6 +1,12 @@
 //! Unix-FD password transport and hostd-owned, recoverable maintenance.
 use anyhow::{Context, Result, bail};
-use std::{collections::BTreeSet, fs, os::unix::fs::{OpenOptionsExt, PermissionsExt}, path::Path, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    fs,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::Path,
+    sync::Arc,
+};
 use zbus::{message::Header, zvariant::OwnedFd};
 
 #[derive(Debug)]
@@ -14,42 +20,80 @@ impl AccountsApi {
         #[zbus(header)] header: Header<'_>,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> zbus::fdo::Result<()> {
-        let sender = header.sender().ok_or_else(|| zbus::fdo::Error::AccessDenied("missing caller identity".into()))?;
+        let sender = header
+            .sender()
+            .ok_or_else(|| zbus::fdo::Error::AccessDenied("missing caller identity".into()))?;
         let bus = zbus::fdo::DBusProxy::new(connection).await?;
         let uid = bus.get_connection_unix_user(sender.clone().into()).await?;
-        if uid < 1000 { return Err(zbus::fdo::Error::AccessDenied("only a local user's own password may change; do not use sudo".into())); }
+        if uid < 1000 {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "only a local user's own password may change; do not use sudo".into(),
+            ));
+        }
         let action = "org.templaros.host.account";
-        if !self.0.polkit.check_authorization_interactive(sender.as_str(), action).await
-            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))? {
-            return Err(zbus::fdo::Error::AccessDenied("self-password authentication was not granted".into()));
+        if !self
+            .0
+            .polkit
+            .check_authorization_interactive(sender.as_str(), action)
+            .await
+            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?
+        {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "self-password authentication was not granted".into(),
+            ));
         }
         // Re-resolve after authentication: an exited caller is never inherited by another name.
         if bus.get_connection_unix_user(sender.clone().into()).await? != uid {
-            return Err(zbus::fdo::Error::AccessDenied("caller identity changed".into()));
+            return Err(zbus::fdo::Error::AccessDenied(
+                "caller identity changed".into(),
+            ));
         }
         let state = self.0.clone();
         let descriptor: std::os::fd::OwnedFd = secret.into();
-        tokio::task::spawn_blocking(move || change_password(&state, uid, fs::File::from(descriptor)))
-            .await.map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?
-            .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
+        tokio::task::spawn_blocking(move || {
+            change_password(&state, uid, fs::File::from(descriptor))
+        })
+        .await
+        .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?
+        .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))
     }
 }
 
 fn arguments(root: &Path, state: &Path) -> Vec<String> {
-    vec!["--mount".into(), "--propagation".into(), "private".into(),
-        "/usr/bin/python3".into(), "-I".into(), "/usr/libexec/templaros-account-maintenance".into(),
-        "--root".into(), root.display().to_string(), "--state".into(), state.display().to_string()]
+    vec![
+        "--mount".into(),
+        "--propagation".into(),
+        "private".into(),
+        "/usr/bin/python3".into(),
+        "-I".into(),
+        "/usr/libexec/templaros-account-maintenance".into(),
+        "--root".into(),
+        root.display().to_string(),
+        "--state".into(),
+        state.display().to_string(),
+    ]
 }
 
 pub fn recover(state: &crate::state::HostdState) -> Result<()> {
     let directory = state.apt_root.join("var/lib/templaros/hostd/accounts");
     if !directory.join("intent.json").exists()
-        && !state.apt_root.join("var/lib/templaros/account-maintenance/active.json").exists() { return Ok(()); }
+        && !state
+            .apt_root
+            .join("var/lib/templaros/account-maintenance/active.json")
+            .exists()
+    {
+        return Ok(());
+    }
     let mut args = arguments(&state.apt_root, &directory);
     args.push("--recover".into());
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let output = state.commands.run("/usr/bin/unshare", &args)?;
-    if !output.status.success() { bail!("account recovery failed; refusing updates/credential mutation until recovered: {}", String::from_utf8_lossy(&output.stderr).trim()); }
+    if !output.status.success() {
+        bail!(
+            "account recovery failed; refusing updates/credential mutation until recovered: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
     Ok(())
 }
 
@@ -58,7 +102,9 @@ fn change_password(state: &crate::state::HostdState, uid: u32, secret: fs::File)
         recover(state)?;
         let mut roots = BTreeSet::new();
         for deployment in state.deployment_registry().deployments {
-            if !crate::layout::safe_subvolume(&deployment.subvolume) { bail!("unsafe legacy deployment identity; reviewed migration required"); }
+            if !crate::layout::safe_subvolume(&deployment.subvolume) {
+                bail!("unsafe legacy deployment identity; reviewed migration required");
+            }
             roots.insert(deployment.subvolume);
         }
         if let Some(candidate) = state.engine.candidate_deployment() {
@@ -70,27 +116,45 @@ fn change_password(state: &crate::state::HostdState, uid: u32, secret: fs::File)
         let request = directory.join("roots.json");
         {
             use std::io::Write;
-            let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&request)?;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&request)?;
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
-            serde_json::to_writer(&mut file, &serde_json::json!({"schema": crate::persistence::SCHEMA, "subvolumes": roots}))?;
+            serde_json::to_writer(
+                &mut file,
+                &serde_json::json!({"schema": crate::persistence::SCHEMA, "subvolumes": roots}),
+            )?;
             file.flush()?;
             file.sync_all()?;
         }
         crate::persistence::sync_parent(&request)?;
         let mut args = arguments(&state.apt_root, &directory);
-        args.extend(["--uid".into(), uid.to_string(), "--roots".into(), request.display().to_string()]);
+        args.extend([
+            "--uid".into(),
+            uid.to_string(),
+            "--roots".into(),
+            request.display().to_string(),
+        ]);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let output = state.commands.run_with_stdin("/usr/bin/unshare", &args, secret);
+        let output = state
+            .commands
+            .run_with_stdin("/usr/bin/unshare", &args, secret);
         let outcome = match output {
             Ok(output) if output.status.success() => Ok(()),
             Ok(output) => recover(state).and_then(|()| {
-                Err(anyhow::anyhow!("password maintenance refused or recovered: {}", String::from_utf8_lossy(&output.stderr).trim()))
+                Err(anyhow::anyhow!(
+                    "password maintenance refused or recovered: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ))
             }),
-            Err(error) => recover(state).and_then(|()| {
-                Err(error).context("running owned password maintenance")
-            }),
+            Err(error) => recover(state)
+                .and_then(|()| Err(error).context("running owned password maintenance")),
         };
-        let cleanup = fs::remove_file(&request).context("removing credential-free account root request");
+        let cleanup =
+            fs::remove_file(&request).context("removing credential-free account root request");
         outcome?;
         cleanup
     })
@@ -109,7 +173,9 @@ pub fn ensure_compatible(source: &Path, destination: &Path) -> Result<()> {
             }
         };
         if read(source)? != read(destination)? {
-            bail!("root-paired {name} differs; refusing credential/account downgrade or implicit package migration");
+            bail!(
+                "root-paired {name} differs; refusing credential/account downgrade or implicit package migration"
+            );
         }
     }
     Ok(())
@@ -130,9 +196,16 @@ mod tests {
             }
         }
         ensure_compatible(current.path(), fallback.path()).unwrap();
-        fs::write(current.path().join("etc/shadow"), b"changed-encrypted-shadow\n").unwrap();
+        fs::write(
+            current.path().join("etc/shadow"),
+            b"changed-encrypted-shadow\n",
+        )
+        .unwrap();
         assert!(ensure_compatible(current.path(), fallback.path()).is_err());
-        assert_eq!(fs::read(fallback.path().join("etc/shadow")).unwrap(), b"paired-shadow\n");
+        assert_eq!(
+            fs::read(fallback.path().join("etc/shadow")).unwrap(),
+            b"paired-shadow\n"
+        );
     }
 
     #[test]
@@ -141,7 +214,11 @@ mod tests {
         let target = tempfile::tempdir().unwrap();
         let installed = source.path().join(crate::layout::INSTALLED_LAYOUT);
         fs::create_dir_all(installed.parent().unwrap()).unwrap();
-        fs::write(installed, include_str!("../../../distro/deploy/layout.toml")).unwrap();
+        fs::write(
+            installed,
+            include_str!("../../../distro/deploy/layout.toml"),
+        )
+        .unwrap();
         assert!(ensure_compatible(source.path(), target.path()).is_err());
     }
 }

@@ -5,7 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-/// One scanned entry. Directories carry size 0; [`crate::build_tree`] aggregates.
+/// One scanned or indexed entry. Scanned directories carry size 0; an indexed directory may
+/// carry cached bytes that are not represented by its visible children. [`crate::build_tree`]
+/// adds those bytes to the visible children's sizes without inventing file rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawEntry {
     pub path: PathBuf,
@@ -49,7 +51,9 @@ impl ScanOutcome {
         } else {
             self.unreadable_entries += 1;
         }
-        if self.last_error.is_none() { self.last_error = Some(error.to_string()); }
+        if self.last_error.is_none() {
+            self.last_error = Some(error.to_string());
+        }
     }
 }
 
@@ -57,39 +61,62 @@ impl ScanOutcome {
 /// A depth-boundary directory is read only far enough to discover whether it has unvisited rows;
 /// an empty boundary is complete. The queue keeps entry indices, not duplicate owned paths.
 pub fn scan(root: &Path, limits: ScanLimits) -> ScanOutcome {
-    let mut outcome = ScanOutcome { complete: true, ..ScanOutcome::default() };
+    let mut outcome = ScanOutcome {
+        complete: true,
+        ..ScanOutcome::default()
+    };
     match root.symlink_metadata() {
-        Ok(metadata) if metadata.is_dir() => {},
+        Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => {
-            outcome.note_error(&std::io::Error::new(std::io::ErrorKind::NotADirectory,
-                "treemap root is not a directory (symlinks are not followed)"));
+            outcome.note_error(&std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                "treemap root is not a directory (symlinks are not followed)",
+            ));
             return outcome;
         }
-        Err(error) => { outcome.note_error(&error); return outcome; }
+        Err(error) => {
+            outcome.note_error(&error);
+            return outcome;
+        }
     }
     if limits.max_entries == 0 {
         outcome.entry_limit = true;
         outcome.complete = false;
         return outcome;
     }
-    outcome.entries.push(RawEntry { path: root.to_path_buf(), size: 0, is_dir: true });
+    outcome.entries.push(RawEntry {
+        path: root.to_path_buf(),
+        size: 0,
+        is_dir: true,
+    });
     let mut queue = std::collections::VecDeque::from([(0usize, 0usize)]);
     while let Some((directory, depth)) = queue.pop_front() {
         let reader = match std::fs::read_dir(&outcome.entries[directory].path) {
             Ok(reader) => reader,
-            Err(error) => { outcome.note_error(&error); continue; }
+            Err(error) => {
+                outcome.note_error(&error);
+                continue;
+            }
         };
         for entry in reader {
             let entry = match entry {
                 Ok(entry) => entry,
-                Err(error) => { outcome.note_error(&error); continue; }
+                Err(error) => {
+                    outcome.note_error(&error);
+                    continue;
+                }
             };
             let path = entry.path();
             let metadata = match path.symlink_metadata() {
                 Ok(metadata) => metadata,
-                Err(error) => { outcome.note_error(&error); continue; }
+                Err(error) => {
+                    outcome.note_error(&error);
+                    continue;
+                }
             };
-            if !metadata.is_dir() && !metadata.is_file() { continue; }
+            if !metadata.is_dir() && !metadata.is_file() {
+                continue;
+            }
             if depth >= limits.max_depth {
                 outcome.depth_limit = true;
                 outcome.complete = false;
@@ -103,9 +130,13 @@ pub fn scan(root: &Path, limits: ScanLimits) -> ScanOutcome {
             let is_dir = metadata.is_dir();
             let index = outcome.entries.len();
             outcome.entries.push(RawEntry {
-                path, size: if is_dir { 0 } else { metadata.len() }, is_dir,
+                path,
+                size: if is_dir { 0 } else { metadata.len() },
+                is_dir,
             });
-            if is_dir { queue.push_back((index, depth + 1)); }
+            if is_dir {
+                queue.push_back((index, depth + 1));
+            }
         }
     }
     outcome
@@ -137,7 +168,8 @@ mod tests {
             },
         );
         assert!(
-            shallow.entries
+            shallow
+                .entries
                 .iter()
                 .all(|e| e.path.strip_prefix(&dir).unwrap().components().count() <= 1)
         );
@@ -157,14 +189,33 @@ mod tests {
 
     #[test]
     fn empty_depth_boundary_and_exact_entry_cap_are_complete_but_missing_roots_are_not() {
-        let dir = std::env::temp_dir().join(format!("templar-treemap-boundary-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("templar-treemap-boundary-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let empty = scan(&dir, ScanLimits { max_entries: 1, max_depth: 0 });
+        let empty = scan(
+            &dir,
+            ScanLimits {
+                max_entries: 1,
+                max_depth: 0,
+            },
+        );
         assert!(empty.complete);
         std::fs::write(dir.join("only"), b"x").unwrap();
-        let exact = scan(&dir, ScanLimits { max_entries: 2, max_depth: 1 });
+        let exact = scan(
+            &dir,
+            ScanLimits {
+                max_entries: 2,
+                max_depth: 1,
+            },
+        );
         assert!(exact.complete);
-        let shallow = scan(&dir, ScanLimits { max_entries: 100, max_depth: 0 });
+        let shallow = scan(
+            &dir,
+            ScanLimits {
+                max_entries: 100,
+                max_depth: 0,
+            },
+        );
         assert!(!shallow.complete && shallow.depth_limit);
         let missing = scan(&dir.join("missing"), ScanLimits::default());
         assert!(!missing.complete && missing.entries.is_empty());
@@ -176,7 +227,8 @@ mod tests {
 
     #[test]
     fn symlink_targets_are_neither_followed_nor_counted_as_files() {
-        let dir = std::env::temp_dir().join(format!("templar-treemap-symlink-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("templar-treemap-symlink-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("owned")).unwrap();
         std::fs::write(dir.join("owned/real"), b"x").unwrap();
         std::os::unix::fs::symlink("owned", dir.join("link")).unwrap();
@@ -184,20 +236,28 @@ mod tests {
         let measured = scan(&dir, ScanLimits::default());
         assert!(measured.complete);
         assert_eq!(measured.entries.len(), 3);
-        assert!(!measured.entries.iter().any(|entry| entry.path.ends_with("link") || entry.path.ends_with("dangling")));
+        assert!(
+            !measured
+                .entries
+                .iter()
+                .any(|entry| entry.path.ends_with("link") || entry.path.ends_with("dangling"))
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn unreadable_directory_keeps_the_known_row_and_reports_incomplete_for_unprivileged_users() {
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = std::env::temp_dir().join(format!("templar-treemap-denied-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("templar-treemap-denied-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("private")).unwrap();
         std::fs::write(dir.join("private/secret"), b"x").unwrap();
-        std::fs::set_permissions(dir.join("private"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::set_permissions(dir.join("private"), std::fs::Permissions::from_mode(0o000))
+            .unwrap();
         let denied_here = std::fs::read_dir(dir.join("private")).is_err();
         let measured = scan(&dir, ScanLimits::default());
-        std::fs::set_permissions(dir.join("private"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(dir.join("private"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
         std::fs::remove_dir_all(dir).unwrap();
         if denied_here {
             assert!(!measured.complete && measured.unreadable_entries > 0);

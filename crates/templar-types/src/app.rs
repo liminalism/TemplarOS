@@ -91,7 +91,9 @@ impl InstanceId {
         self.0
     }
 
-    pub const fn from_uuid(uuid: Uuid) -> Self { Self(uuid) }
+    pub const fn from_uuid(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
 }
 
 impl Default for InstanceId {

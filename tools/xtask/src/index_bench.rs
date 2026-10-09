@@ -93,6 +93,54 @@ pub enum IndexBenchCommand {
     /// Print the delta between two `idle` JSON records — the before/after comparison the
     /// campaign's headline number depends on.
     IdleCompare { before: PathBuf, after: PathBuf },
+    /// Search latency, plan hit rate and queue delay while a build tree, a download and edits
+    /// churn beside a quiet tree, on an owned private bus and daemon.
+    Churn {
+        #[arg(long, default_value_t = 120)]
+        seconds: u64,
+        /// Entries in the quiet tree.
+        #[arg(long, default_value_t = 100_000)]
+        entries: u64,
+        /// Generate the quiet tree with the realistic shape instead of the balanced one.
+        #[arg(long)]
+        realistic: bool,
+        /// Put the ten edits/second in the build root, leaving the quiet root unchanged.
+        /// Without this flag, preserve the original benchmark that edits the quiet root.
+        #[arg(long)]
+        edit_build: bool,
+        /// Measure a specific owned daemon binary for reproducible before/after runs.
+        #[arg(long)]
+        binary: Option<PathBuf>,
+        #[arg(long)]
+        label: Option<String>,
+        /// Write the JSON record here, and the Markdown table beside it.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Daemon peak/private memory while it indexes, builds arrays, and serves two clients plus a
+    /// snapshot and a rebuild; then the snapshot writer and reader heap at several sizes.
+    Memory {
+        #[arg(long, default_value_t = 100_000)]
+        entries: u64,
+        /// Synthetic snapshot sizes measured in process (comma separated).
+        #[arg(long, value_delimiter = ',', default_values_t = [100_000u64, 1_000_000])]
+        scales: Vec<u64>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Bytes per search-array column, build time and peak, and query latency, in process.
+    Layout {
+        #[arg(long, default_value_t = 100_000)]
+        entries: u64,
+        #[arg(long)]
+        realistic: bool,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 pub fn run(_root: &Path, args: &IndexBenchArgs) -> Result<()> {
@@ -127,6 +175,35 @@ pub fn run(_root: &Path, args: &IndexBenchArgs) -> Result<()> {
             out.as_deref(),
         ),
         IndexBenchCommand::IdleCompare { before, after } => idle_compare(before, after),
+        IndexBenchCommand::Churn {
+            seconds,
+            entries,
+            realistic,
+            edit_build,
+            binary,
+            label,
+            out,
+        } => crate::index_load::churn(
+            *seconds,
+            *entries,
+            *realistic,
+            *edit_build,
+            binary.as_deref(),
+            label.clone(),
+            out.as_deref(),
+        ),
+        IndexBenchCommand::Memory {
+            entries,
+            scales,
+            label,
+            out,
+        } => crate::index_load::memory(*entries, scales, label.clone(), out.as_deref()),
+        IndexBenchCommand::Layout {
+            entries,
+            realistic,
+            label,
+            out,
+        } => crate::index_load::layout(*entries, *realistic, label.clone(), out.as_deref()),
     }
 }
 
@@ -298,7 +375,7 @@ fn device_of(metadata: &fs::Metadata) -> u64 {
 const FIXTURE_FILES_PER_DIR: u64 = 32;
 const FIXTURE_DIRS_PER_DIR: u64 = 8;
 
-fn build_fixture(root: &Path, target_entries: u64) -> Result<FixtureTree> {
+pub(crate) fn build_fixture(root: &Path, target_entries: u64) -> Result<FixtureTree> {
     fs::create_dir_all(root)?;
     let mut created = 0u64;
     let mut files: Vec<PathBuf> = Vec::new();
@@ -344,8 +421,8 @@ fn build_fixture(root: &Path, target_entries: u64) -> Result<FixtureTree> {
     })
 }
 
-struct FixtureTree {
-    entries: u64,
+pub(crate) struct FixtureTree {
+    pub(crate) entries: u64,
     sample_files: Vec<PathBuf>,
 }
 
@@ -407,10 +484,12 @@ struct BroadSearchLatency {
 const BROAD_NEEDLES: &[&str] = &["d", "f1", "txt", "f12.txt", "d3/d4"];
 
 /// Times every broad needle twice: through SQL (`search_with` the default planner) on `index`,
-/// then from the search arrays on a second handle to the same database that has them enabled
-/// and built. Returns both series and the build time.
-fn broad_search(index: &Index, db_path: &Path, samples: u64) -> Result<BroadSearchReport> {
-    let sql = broad_series(index, samples, true)?;
+/// then from the search arrays after reopening the same database with them enabled and built.
+/// The cache has one owner at a time, so `index` is closed first; the arrays-enabled handle is
+/// returned for whatever the caller measures next.
+fn broad_search(index: Index, db_path: &Path, samples: u64) -> Result<(BroadSearchReport, Index)> {
+    let sql = broad_series(&index, samples, true)?;
+    drop(index);
     let with_arrays = Index::open(
         db_path,
         IndexConfig {
@@ -423,12 +502,15 @@ fn broad_search(index: &Index, db_path: &Path, samples: u64) -> Result<BroadSear
     let build_ms = start.elapsed().as_secs_f64() * 1000.0;
     println!("search arrays: {rows} rows built in {build_ms:.1}ms");
     let arrays = broad_series(&with_arrays, samples, false)?;
-    Ok(BroadSearchReport {
-        sql,
-        arrays,
-        arrays_rows: rows as u64,
-        arrays_build_ms: build_ms,
-    })
+    Ok((
+        BroadSearchReport {
+            sql,
+            arrays,
+            arrays_rows: rows as u64,
+            arrays_build_ms: build_ms,
+        },
+        with_arrays,
+    ))
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -443,9 +525,13 @@ fn broad_series(index: &Index, samples: u64, sql: bool) -> Result<Vec<BroadSearc
     let planner = templar_file_index::query::Fts5TrigramPlanner;
     let run = |query: &Query| {
         if sql {
-            index.search_with(&planner, query)
+            index.search_with(
+                &planner,
+                query,
+                &templar_file_index::CallContext::internal(),
+            )
         } else {
-            index.search(query)
+            index.search(query, &templar_file_index::CallContext::internal())
         }
     };
     let mut out = Vec::new();
@@ -457,9 +543,9 @@ fn broad_series(index: &Index, samples: u64, sql: bool) -> Result<Vec<BroadSearc
             let start = Instant::now();
             let result = run(&query)?;
             timings.push(start.elapsed().as_secs_f64() * 1000.0);
-            index.close_cursor(&result.cursor);
+            index.close_cursor(&result.cursor, &templar_file_index::CallContext::internal());
         }
-        index.close_cursor(&warm.cursor);
+        index.close_cursor(&warm.cursor, &templar_file_index::CallContext::internal());
         timings.sort_by(f64::total_cmp);
         let latency = BroadSearchLatency {
             needle: (*needle).to_owned(),
@@ -740,7 +826,7 @@ fn workloads(
     let mut samples = Vec::with_capacity(search_queries as usize);
     for _ in 0..search_queries {
         let start = Instant::now();
-        let result = index.search(&query)?;
+        let result = index.search(&query, &templar_file_index::CallContext::internal())?;
         samples.push(start.elapsed().as_secs_f64() * 1000.0);
         std::hint::black_box(result.hits.len());
     }
@@ -760,12 +846,18 @@ fn workloads(
             max_ms: max,
         });
     }
-    report.broad_search = broad_search(&index, &db_path, 20)?;
+    let (broad, index) = broad_search(index, &db_path, 20)?;
+    report.broad_search = broad;
 
     // 7. Snapshot bytes and duration.
     let start = Instant::now();
     let mut sink = Vec::new();
-    let manifest = index.write_snapshot(&mut sink, &SnapshotRequest::default())?;
+    let manifest = index.write_snapshot(
+        &mut std::io::Cursor::new(&mut sink),
+        &SnapshotRequest::default(),
+        &templar_file_index::snapshot::SnapshotLimits::default(),
+        &templar_file_index::CallContext::internal(),
+    )?;
     let elapsed = start.elapsed();
     println!(
         "snapshot: {} bytes, {} entries, {:.2}ms",
@@ -824,8 +916,9 @@ fn workloads(
             elapsed,
             Some(format!("complete={}", outcome.complete)),
         ));
-        report.broad_search_2m =
-            broad_search(&big_index, &big_scratch.path().join("index.sqlite3"), 10)?;
+        let (broad, _big_index) =
+            broad_search(big_index, &big_scratch.path().join("index.sqlite3"), 10)?;
+        report.broad_search_2m = broad;
         report.db_bytes_2m = Some(db_bytes(&big_scratch.path().join("index.sqlite3")));
         println!(
             "2M db size on disk: {} bytes",
@@ -854,7 +947,7 @@ fn write_report(report: &WorkloadReport, out: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-fn percentile(sorted: &[f64], fraction: f64) -> f64 {
+pub(crate) fn percentile(sorted: &[f64], fraction: f64) -> f64 {
     if sorted.is_empty() {
         return 0.0;
     }
@@ -907,8 +1000,14 @@ fn drain_watcher<S: EventSource>(
     poll_timeout: Duration,
     quiet_polls: u32,
 ) -> Result<u64> {
-    drain_watcher_until(owner, index, clock, poll_timeout, quiet_polls,
-        Instant::now() + Duration::from_secs(120))
+    drain_watcher_until(
+        owner,
+        index,
+        clock,
+        poll_timeout,
+        quiet_polls,
+        Instant::now() + Duration::from_secs(120),
+    )
 }
 
 fn drain_watcher_until<S: EventSource>(
@@ -922,13 +1021,19 @@ fn drain_watcher_until<S: EventSource>(
     let mut applied = 0u64;
     let mut quiet = 0u32;
     loop {
-        let remaining = deadline.checked_duration_since(Instant::now())
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
             .context("watcher drain deadline exhausted; index is not proven settled")?;
         let before = owner.status(0).last_event_ms;
         let pumped = owner.pump(Some(poll_timeout.min(remaining)), clock);
         if let Some(error) = pumped.failed {
             for root in owner.tracked_roots() {
-                index.mark_stale(root, &StaleReason::WatcherFailed { detail: error.clone() })?;
+                index.mark_stale(
+                    root,
+                    &StaleReason::WatcherFailed {
+                        detail: error.clone(),
+                    },
+                )?;
             }
             bail!("watcher drain source failed: {error}");
         }
@@ -938,11 +1043,16 @@ fn drain_watcher_until<S: EventSource>(
         if !pumped.offline.is_empty() {
             bail!("watcher drain root went offline: {:?}", pumped.offline);
         }
-        let activity = !pumped.mutations.is_empty() || !pumped.repairs.is_empty()
+        let activity = !pumped.mutations.is_empty()
+            || !pumped.repairs.is_empty()
             || owner.status(0).last_event_ms != before;
         if !pumped.mutations.is_empty() {
             let count = pumped.mutations.len() as u64;
-            index.apply(MutationBatch::new(MutationSource::Watcher, pumped.mutations))
+            index
+                .apply(MutationBatch::new(
+                    MutationSource::Watcher,
+                    pumped.mutations,
+                ))
                 .context("applying watcher drain mutations")?;
             applied += count;
         }
@@ -953,18 +1063,25 @@ fn drain_watcher_until<S: EventSource>(
             }
             let trigger = match request.reason {
                 StaleReason::WatcherOverflow => Trigger::Overflow,
-                StaleReason::WatcherExhausted { armed, refused } =>
-                    Trigger::Exhausted { armed, refused },
+                StaleReason::WatcherExhausted { armed, refused } => {
+                    Trigger::Exhausted { armed, refused }
+                }
                 _ => Trigger::RenameAmbiguous,
             };
             let mut options = ScanOptions::reconcile(index.root_policy(request.root)?);
             options.budget = index.config().scan_budget;
-            let remaining = deadline.checked_duration_since(Instant::now())
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
                 .context("watcher drain deadline exhausted before reconciliation")?;
-            options.budget.max_duration = Some(options.budget.max_duration
-                .map_or(remaining, |configured| configured.min(remaining)));
-            let (outcome, _) = reconcile::reconcile(index, owner, request.root,
-                request.scope, &trigger, options).context("reconciling watcher drain loss")?;
+            options.budget.max_duration = Some(
+                options
+                    .budget
+                    .max_duration
+                    .map_or(remaining, |configured| configured.min(remaining)),
+            );
+            let (outcome, _) =
+                reconcile::reconcile(index, owner, request.root, request.scope, &trigger, options)
+                    .context("reconciling watcher drain loss")?;
             if !outcome.complete {
                 bail!("watcher drain reconciliation incomplete: {outcome:?}");
             }
@@ -1021,6 +1138,18 @@ struct IdleSample {
     seconds: u64,
     fixture_entries: u64,
     watcher_thread_found: bool,
+    #[serde(default)]
+    mount_thread_found: bool,
+    #[serde(default)]
+    psi_thread_found: bool,
+    #[serde(default)]
+    psi_schedstat_pcount_delta: Option<u64>,
+    #[serde(default)]
+    psi_voluntary_ctxt_switches_delta: Option<u64>,
+    #[serde(default)]
+    mount_schedstat_pcount_delta: Option<u64>,
+    #[serde(default)]
+    mount_voluntary_ctxt_switches_delta: Option<u64>,
     schedstat_pcount_delta: Option<u64>,
     voluntary_ctxt_switches_delta: Option<u64>,
     read_bytes_delta: Option<u64>,
@@ -1040,7 +1169,7 @@ struct IdleSample {
     owned_children_reaped: bool,
 }
 
-fn idle_binary(binary: Option<PathBuf>, profile: &str) -> Result<PathBuf> {
+pub(crate) fn idle_binary(binary: Option<PathBuf>, profile: &str) -> Result<PathBuf> {
     if let Some(binary) = binary {
         return Ok(binary);
     }
@@ -1071,13 +1200,22 @@ fn idle(
     if which("dbus-daemon").is_none() {
         bail!("dbus-daemon is not on PATH — install dbus-user-session to isolate this");
     }
-    let binary = binary.canonicalize().context("resolving the explicit filed binary")?;
+    let binary = binary
+        .canonicalize()
+        .context("resolving the explicit filed binary")?;
     let scratch = tempfile::tempdir().context("creating an idle-sampling scratch directory")?;
     let home = scratch.path().join("home");
     println!("generating a {entries}-entry fixture for idle sampling");
     build_fixture(&home, entries)?;
     let runtime = tokio::runtime::Runtime::new().context("starting the private bus executor")?;
-    let sample = runtime.block_on(sample_idle(&binary, scratch.path(), &home, seconds, entries, label))?;
+    let sample = runtime.block_on(sample_idle(
+        &binary,
+        scratch.path(),
+        &home,
+        seconds,
+        entries,
+        label,
+    ))?;
     println!("{}", serde_json::to_string_pretty(&sample)?);
     if let Some(out) = out {
         if let Some(parent) = out.parent() {
@@ -1089,10 +1227,10 @@ fn idle(
     Ok(())
 }
 
-struct OwnedChild(std::process::Child);
+pub(crate) struct OwnedChild(pub(crate) std::process::Child);
 
 impl OwnedChild {
-    fn stop(&mut self) -> Result<()> {
+    pub(crate) fn stop(&mut self) -> Result<()> {
         if self.0.try_wait()?.is_none() {
             self.0.kill()?;
         }
@@ -1108,57 +1246,96 @@ impl Drop for OwnedChild {
 }
 
 async fn sample_idle(
-    binary: &Path, scratch: &Path, home: &Path, seconds: u64, entries: u64,
+    binary: &Path,
+    scratch: &Path,
+    home: &Path,
+    seconds: u64,
+    entries: u64,
     label: Option<String>,
 ) -> Result<IdleSample> {
-    use std::{os::unix::fs::PermissionsExt as _, process::{Command, Stdio}};
-    use templar_client::{file_index::{self, Observation}, proxies::FilesIndexProxy};
+    use std::{
+        os::unix::fs::PermissionsExt as _,
+        process::{Command, Stdio},
+    };
+    use templar_client::{
+        file_index::{self, Observation},
+        proxies::FilesIndexProxy,
+    };
     for name in ["config", "data", "state", "cache", "runtime"] {
         fs::create_dir_all(scratch.join(name))?;
     }
     let runtime = scratch.join("runtime");
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
-    let mut bus = OwnedChild(Command::new("dbus-daemon")
-        .args(["--session", "--nofork", "--print-address=1"])
-        .arg(format!("--address=unix:tmpdir={}", runtime.display()))
-        .stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn()
-        .context("spawning the owned private bus")?);
+    let mut bus = OwnedChild(
+        Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .arg(format!("--address=unix:tmpdir={}", runtime.display()))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .context("spawning the owned private bus")?,
+    );
     let mut address = String::new();
     BufReader::new(bus.0.stdout.take().context("private bus address pipe")?)
         .read_line(&mut address)?;
-    if !address.starts_with("unix:") { bail!("private bus did not publish a Unix address"); }
+    if !address.starts_with("unix:") {
+        bail!("private bus did not publish a Unix address");
+    }
     let address = address.trim();
-    let mut filed = OwnedChild(Command::new(binary)
-        .arg("--index-root").arg(home)
-        .arg("--index-db").arg(scratch.join("cache/file-index-v1.sqlite3"))
-        .arg("--state-db").arg(scratch.join("state/session.db"))
-        .args(["--reserve-percent", "0"])
-        .env("HOME", home).env("XDG_CONFIG_HOME", scratch.join("config"))
-        .env("XDG_DATA_HOME", scratch.join("data")).env("XDG_STATE_HOME", scratch.join("state"))
-        .env("XDG_CACHE_HOME", scratch.join("cache")).env("XDG_RUNTIME_DIR", &runtime)
-        .env("DBUS_SESSION_BUS_ADDRESS", address).env("DBUS_SYSTEM_BUS_ADDRESS", address)
-        .env("TEMPLAR_INDEX_FIXTURE_GUARD", "1").env("RUST_LOG", "warn")
-        .stdout(Stdio::null()).stderr(Stdio::inherit()).spawn()
-        .context("spawning the owned native filed")?);
+    let mut filed = OwnedChild(
+        Command::new(binary)
+            .arg("--index-root")
+            .arg(home)
+            .arg("--index-db")
+            .arg(scratch.join("cache/file-index-v1.sqlite3"))
+            .arg("--state-db")
+            .arg(scratch.join("state/session.db"))
+            .args(["--reserve-percent", "0"])
+            .env("HOME", home)
+            .env("XDG_CONFIG_HOME", scratch.join("config"))
+            .env("XDG_DATA_HOME", scratch.join("data"))
+            .env("XDG_STATE_HOME", scratch.join("state"))
+            .env("XDG_CACHE_HOME", scratch.join("cache"))
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env("DBUS_SESSION_BUS_ADDRESS", address)
+            .env("DBUS_SYSTEM_BUS_ADDRESS", address)
+            .env("TEMPLAR_INDEX_FIXTURE_GUARD", "1")
+            .env("RUST_LOG", "warn")
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .context("spawning the owned native filed")?,
+    );
     let connection = zbus::connection::Builder::address(address)?.build().await?;
     let proxy = FilesIndexProxy::new(&connection).await?;
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut observation = None;
     let roots_before = loop {
-        if let Some(status) = filed.0.try_wait()? { bail!("owned filed exited during startup: {status}"); }
-        if Instant::now() >= deadline { bail!("native filed did not reach complete current roots within 120s"); }
+        if let Some(status) = filed.0.try_wait()? {
+            bail!("owned filed exited during startup: {status}");
+        }
+        if Instant::now() >= deadline {
+            bail!("native filed did not reach complete current roots within 120s");
+        }
         if observation.is_none()
-            && let Ok(Ok(acquired)) = tokio::time::timeout(Duration::from_secs(2),
-                Observation::acquire(&connection)).await
+            && let Ok(Ok(acquired)) =
+                tokio::time::timeout(Duration::from_secs(2), Observation::acquire(&connection))
+                    .await
         {
             observation = Some(acquired);
         }
         if observation.is_some()
-            && let Ok(Ok(roots)) = tokio::time::timeout(Duration::from_secs(2),
-                file_index::roots(&proxy)).await
+            && let Ok(Ok(roots)) =
+                tokio::time::timeout(Duration::from_secs(2), file_index::roots(&proxy)).await
             && !roots.roots.is_empty()
-            && roots.roots.iter().all(|root| root.current() && root.metadata == "verified"
-                && root.watch.as_ref().is_some_and(|watch| watch.pending_events == 0))
+            && roots.roots.iter().all(|root| {
+                root.current()
+                    && root.metadata == "verified"
+                    && root
+                        .watch
+                        .as_ref()
+                        .is_some_and(|watch| watch.pending_events == 0)
+            })
         {
             break roots;
         }
@@ -1170,24 +1347,66 @@ async fn sample_idle(
     let tid = find_thread(pid, &"templar-index-watcher"[..15])
         .context("owned filed watcher thread is absent")?;
     let before = ProcSample::read(pid, Some(tid));
+    let mount_tid = find_thread(pid, &"templar-index-mounts"[..15]);
+    let mount_before = mount_tid.map(|tid| ProcSample::read(pid, Some(tid)));
+    let psi_tid = find_thread(pid, "templar-index-p");
+    let psi_before = psi_tid.map(|tid| ProcSample::read(pid, Some(tid)));
     println!("sampling owned pid {pid} (watcher tid {tid}) for {seconds}s...");
     tokio::time::sleep(Duration::from_secs(seconds)).await;
-    if let Some(status) = filed.0.try_wait()? { bail!("owned filed exited during sampling: {status}"); }
+    if let Some(status) = filed.0.try_wait()? {
+        bail!("owned filed exited during sampling: {status}");
+    }
     let after = ProcSample::read(pid, Some(tid));
-    let roots_after = tokio::time::timeout(Duration::from_secs(2), file_index::roots(&proxy)).await??;
+    let mount_after = mount_tid.map(|tid| ProcSample::read(pid, Some(tid)));
+    let psi_after = psi_tid.map(|tid| ProcSample::read(pid, Some(tid)));
+    let roots_after =
+        tokio::time::timeout(Duration::from_secs(2), file_index::roots(&proxy)).await??;
     if roots_before.roots != roots_after.roots {
         bail!("native idle sample included namespace maintenance; roots changed");
     }
     let mut sample = IdleSample {
-        label, seconds, fixture_entries: entries, watcher_thread_found: true,
+        label,
+        seconds,
+        fixture_entries: entries,
+        watcher_thread_found: true,
+        mount_thread_found: mount_tid.is_some(),
+        psi_thread_found: psi_tid.is_some(),
+        psi_schedstat_pcount_delta: delta(
+            psi_before.as_ref().and_then(|s| s.schedstat_pcount),
+            psi_after.as_ref().and_then(|s| s.schedstat_pcount),
+        ),
+        psi_voluntary_ctxt_switches_delta: delta(
+            psi_before.as_ref().and_then(|s| s.voluntary_ctxt_switches),
+            psi_after.as_ref().and_then(|s| s.voluntary_ctxt_switches),
+        ),
+        mount_schedstat_pcount_delta: delta(
+            mount_before.as_ref().and_then(|s| s.schedstat_pcount),
+            mount_after.as_ref().and_then(|s| s.schedstat_pcount),
+        ),
+        mount_voluntary_ctxt_switches_delta: delta(
+            mount_before
+                .as_ref()
+                .and_then(|s| s.voluntary_ctxt_switches),
+            mount_after.as_ref().and_then(|s| s.voluntary_ctxt_switches),
+        ),
         schedstat_pcount_delta: delta(before.schedstat_pcount, after.schedstat_pcount),
-        voluntary_ctxt_switches_delta: delta(before.voluntary_ctxt_switches, after.voluntary_ctxt_switches),
+        voluntary_ctxt_switches_delta: delta(
+            before.voluntary_ctxt_switches,
+            after.voluntary_ctxt_switches,
+        ),
         read_bytes_delta: delta(before.read_bytes, after.read_bytes),
-        syscw_delta: delta(before.syscw, after.syscw), wchar_delta: delta(before.wchar, after.wchar),
-        binary: Some(binary.to_path_buf()), filed_pid: Some(pid), bus_pid: Some(bus.0.id()),
-        roots_before: Some(roots_before), roots_after: Some(roots_after), owned_children_reaped: false,
+        syscw_delta: delta(before.syscw, after.syscw),
+        wchar_delta: delta(before.wchar, after.wchar),
+        binary: Some(binary.to_path_buf()),
+        filed_pid: Some(pid),
+        bus_pid: Some(bus.0.id()),
+        roots_before: Some(roots_before),
+        roots_after: Some(roots_after),
+        owned_children_reaped: false,
     };
-    if let Some(mut observation) = observation { observation.close().await?; }
+    if let Some(observation) = observation {
+        observation.close().await?;
+    }
     filed.stop()?;
     bus.stop()?;
     sample.owned_children_reaped = true;
@@ -1251,7 +1470,7 @@ impl ProcSample {
     }
 }
 
-fn read_to_string(path: &str) -> Option<String> {
+pub(crate) fn read_to_string(path: &str) -> Option<String> {
     let mut buffer = String::new();
     fs::File::open(path)
         .ok()?
@@ -1275,7 +1494,7 @@ fn find_thread(pid: u32, comm_prefix: &str) -> Option<u32> {
     None
 }
 
-fn which(program: &str) -> Option<PathBuf> {
+pub(crate) fn which(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(program))
@@ -1334,21 +1553,40 @@ fn idle_compare(before: &Path, after: &Path) -> Result<()> {
 #[cfg(test)]
 mod drain_tests {
     use super::*;
-    use templar_file_index::{RootId, ScanScope, watch::{FakeSource, RawKind}};
+    use templar_file_index::{
+        RootId, ScanScope,
+        watch::{FakeSource, RawKind},
+    };
 
-    fn fixture<S: EventSource>(source: S, budget: u64) ->
-        (tempfile::TempDir, PathBuf, Index, RootId, WatchOwner<S>)
-    {
+    fn fixture<S: EventSource>(
+        source: S,
+        budget: u64,
+    ) -> (tempfile::TempDir, PathBuf, Index, RootId, WatchOwner<S>) {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("home");
         fs::create_dir(&home).unwrap();
         let index = Index::open(&temp.path().join("index.db"), IndexConfig::default()).unwrap();
         let policy = RootPolicy::default_home();
-        let root = index.add_root(&NativePath::from_path(&home), policy.clone()).unwrap().root;
-        let mut owner = WatchOwner::new(source, WatchBudget { max_watches: budget });
+        let root = index
+            .add_root(&NativePath::from_path(&home), policy.clone())
+            .unwrap()
+            .root;
+        let mut owner = WatchOwner::new(
+            source,
+            WatchBudget {
+                max_watches: budget,
+            },
+        );
         owner.track_root(root, &home, policy.clone());
-        let (outcome, _) = reconcile::reconcile(&index, &mut owner, root, ScanScope::Root,
-            &Trigger::Requested, ScanOptions::reconcile(policy)).unwrap();
+        let (outcome, _) = reconcile::reconcile(
+            &index,
+            &mut owner,
+            root,
+            ScanScope::Root,
+            &Trigger::Requested,
+            ScanOptions::reconcile(policy),
+        )
+        .unwrap();
         assert!(outcome.complete);
         (temp, home, index, root, owner)
     }
@@ -1363,19 +1601,63 @@ mod drain_tests {
         std::thread::sleep(Duration::from_millis(100));
         let clock = SystemClock::new();
         drain_watcher(&mut owner, &index, &clock, Duration::from_millis(20), 6).unwrap();
-        assert!(owner.status(0).overflow_count > 0, "fixture must exercise actual event loss");
-        assert_eq!(index.search(&Query::new("burst-")).unwrap().total, Some(10_000));
+        assert!(
+            owner.status(0).overflow_count > 0,
+            "fixture must exercise actual event loss"
+        );
+        assert_eq!(
+            index
+                .search(
+                    &Query::new("burst-"),
+                    &templar_file_index::CallContext::internal()
+                )
+                .unwrap()
+                .total,
+            Some(10_000)
+        );
         assert!(index.root_status(root).unwrap().complete);
         for number in 0..100 {
-            fs::rename(home.join(format!("burst-{number:05}.txt")),
-                home.join(format!("renamed-{number:05}.txt"))).unwrap();
+            fs::rename(
+                home.join(format!("burst-{number:05}.txt")),
+                home.join(format!("renamed-{number:05}.txt")),
+            )
+            .unwrap();
         }
         drain_watcher(&mut owner, &index, &clock, Duration::from_millis(20), 6).unwrap();
-        assert_eq!(index.search(&Query::new("renamed-")).unwrap().total, Some(100));
-        for number in 0..100 { fs::remove_file(home.join(format!("renamed-{number:05}.txt"))).unwrap(); }
+        assert_eq!(
+            index
+                .search(
+                    &Query::new("renamed-"),
+                    &templar_file_index::CallContext::internal()
+                )
+                .unwrap()
+                .total,
+            Some(100)
+        );
+        for number in 0..100 {
+            fs::remove_file(home.join(format!("renamed-{number:05}.txt"))).unwrap();
+        }
         drain_watcher(&mut owner, &index, &clock, Duration::from_millis(20), 6).unwrap();
-        assert_eq!(index.search(&Query::new("burst-")).unwrap().total, Some(9_900));
-        assert_eq!(index.search(&Query::new("renamed-")).unwrap().total, Some(0));
+        assert_eq!(
+            index
+                .search(
+                    &Query::new("burst-"),
+                    &templar_file_index::CallContext::internal()
+                )
+                .unwrap()
+                .total,
+            Some(9_900)
+        );
+        assert_eq!(
+            index
+                .search(
+                    &Query::new("renamed-"),
+                    &templar_file_index::CallContext::internal()
+                )
+                .unwrap()
+                .total,
+            Some(0)
+        );
     }
 
     #[test]
@@ -1383,11 +1665,17 @@ mod drain_tests {
         let (_temp, home, index, root, mut owner) = fixture(FakeSource::new(), 64);
         fs::write(home.join("added"), b"payload").unwrap();
         let watch = owner.source_mut().watch_for(&home).unwrap();
-        owner.source_mut().push_named(watch, "added", RawKind::Created, false);
+        owner
+            .source_mut()
+            .push_named(watch, "added", RawKind::Created, false);
         index.forget_root(root).unwrap();
-        let error = drain_watcher(&mut owner, &index, &SystemClock::new(), Duration::ZERO, 1)
-            .unwrap_err();
-        assert!(error.to_string().contains("applying watcher drain mutations"));
+        let error =
+            drain_watcher(&mut owner, &index, &SystemClock::new(), Duration::ZERO, 1).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("applying watcher drain mutations")
+        );
     }
 
     #[test]
@@ -1396,16 +1684,25 @@ mod drain_tests {
         fs::create_dir(home.join("uncovered")).unwrap();
         fs::write(home.join("uncovered/hidden"), b"payload").unwrap();
         owner.source_mut().push_overflow();
-        let error = drain_watcher(&mut owner, &index, &SystemClock::new(), Duration::ZERO, 1)
-            .unwrap_err();
+        let error =
+            drain_watcher(&mut owner, &index, &SystemClock::new(), Duration::ZERO, 1).unwrap_err();
         assert!(error.to_string().contains("reconciliation incomplete"));
         let status = index.root_status(root).unwrap();
         assert!(!status.complete);
         assert_ne!(status.state, RootState::Current);
-        assert!(drain_watcher(&mut owner, &index, &SystemClock::new(), Duration::ZERO, 1).is_err(),
-            "quiet input cannot upgrade partial coverage");
-        let error = drain_watcher_until(&mut owner, &index, &SystemClock::new(), Duration::ZERO, 1,
-            Instant::now()).unwrap_err();
+        assert!(
+            drain_watcher(&mut owner, &index, &SystemClock::new(), Duration::ZERO, 1).is_err(),
+            "quiet input cannot upgrade partial coverage"
+        );
+        let error = drain_watcher_until(
+            &mut owner,
+            &index,
+            &SystemClock::new(),
+            Duration::ZERO,
+            1,
+            Instant::now(),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("deadline exhausted"));
     }
 }

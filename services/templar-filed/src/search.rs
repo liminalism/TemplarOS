@@ -97,7 +97,7 @@ pub struct Hit {
 #[derive(Clone, Debug)]
 pub struct Index {
     store: Store,
-    core: templar_file_index::Index,
+    core: Arc<crate::index_slot::IndexSlot>,
     /// Kept alive only when `core` was opened against a private temporary database (tests and
     /// any other caller that did not ask for a durable cache); dropping it deletes the directory.
     _core_scratch: Option<Arc<tempfile::TempDir>>,
@@ -138,7 +138,7 @@ impl Index {
         .expect("opening a fresh file-index core cannot fail");
         Self {
             store,
-            core,
+            core: crate::index_slot::IndexSlot::opened(core),
             _core_scratch: Some(Arc::new(scratch)),
             skip_names: DEFAULT_SKIP_NAMES
                 .iter()
@@ -152,13 +152,14 @@ impl Index {
     /// Opens against a durable cache database at `index_db_path`
     /// (`$XDG_CACHE_HOME/templaros/file-index-v1.sqlite3` in production), so the index survives a
     /// daemon restart instead of starting empty. `max_entries`/`max_depth` of `usize::MAX` mean
-    /// uncapped.
+    /// uncapped. A cache that cannot be opened leaves this index unavailable rather than failing:
+    /// every other file service keeps running (`index_slot.rs`).
     pub fn with_index_db(
         store: Store,
         index_db_path: &Path,
         config: templar_file_index::IndexConfig,
     ) -> Result<Self> {
-        let core = templar_file_index::Index::open(index_db_path, config)?;
+        let core = crate::index_slot::IndexSlot::open(index_db_path, config)?;
         Ok(Self {
             store,
             core,
@@ -173,9 +174,17 @@ impl Index {
     }
 
     /// The index core underneath, for the `Index1` D-Bus surface (`index_host.rs`) and anything
-    /// else that needs more than this compatibility facade exposes.
+    /// else that needs more than this compatibility facade exposes; `Unavailable` while the cache
+    /// cannot be opened.
+    pub fn core(
+        &self,
+    ) -> std::result::Result<templar_file_index::Index, templar_file_index::IndexError> {
+        self.core.get()
+    }
+
+    /// Where the core is held, for availability reporting and explicit reopening.
     #[must_use]
-    pub fn core(&self) -> &templar_file_index::Index {
+    pub fn slot(&self) -> &Arc<crate::index_slot::IndexSlot> {
         &self.core
     }
 
@@ -183,25 +192,44 @@ impl Index {
     /// empty list, replaces cache configuration. This never walks a filesystem tree.
     pub fn restore_configured_roots(&self, defaults: &[PathBuf]) -> Result<()> {
         use rusqlite::OptionalExtension as _;
-        let cached = self.core.roots()?;
+        let core = self.core()?;
+        let cached = core.roots()?;
         self.store.transaction(|transaction| {
-            let initialized = transaction.query_row(
-                "SELECT value FROM schema_meta WHERE key = 'file_index_roots_initialized'",
-                [], |row| row.get::<_, i64>(0),
-            ).optional()?.is_some_and(|value| value == 1);
+            let initialized = transaction
+                .query_row(
+                    "SELECT value FROM schema_meta WHERE key = 'file_index_roots_initialized'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some_and(|value| value == 1);
             if !initialized {
-                let mut initial: Vec<(templar_file_index::NativePath, templar_file_index::RootPolicy)> =
-                    cached.iter().map(|root| Ok((root.path.clone(), self.core.root_policy(root.root)?)))
-                        .collect::<Result<_>>()?;
+                let mut initial: Vec<(
+                    templar_file_index::NativePath,
+                    templar_file_index::RootPolicy,
+                )> = cached
+                    .iter()
+                    .map(|root| Ok((root.path.clone(), core.root_policy(root.root)?)))
+                    .collect::<Result<_>>()?;
                 if initial.is_empty() {
-                    let legacy: Vec<String> = transaction.prepare("SELECT root FROM search_roots ORDER BY root")?
-                        .query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
-                    initial.extend(legacy.into_iter().map(|path| (
-                        templar_file_index::NativePath::from_path(Path::new(&path)), self.policy(),
-                    )));
+                    let legacy: Vec<String> = transaction
+                        .prepare("SELECT root FROM search_roots ORDER BY root")?
+                        .query_map([], |row| row.get(0))?
+                        .collect::<rusqlite::Result<_>>()?;
+                    initial.extend(legacy.into_iter().map(|path| {
+                        (
+                            templar_file_index::NativePath::from_path(Path::new(&path)),
+                            self.policy(),
+                        )
+                    }));
                 }
                 if initial.is_empty() {
-                    initial.extend(defaults.iter().map(|path| (templar_file_index::NativePath::from_path(path), self.policy())));
+                    initial.extend(defaults.iter().map(|path| {
+                        (
+                            templar_file_index::NativePath::from_path(path),
+                            self.policy(),
+                        )
+                    }));
                 }
                 for (path, policy) in initial {
                     transaction.execute(
@@ -218,44 +246,73 @@ impl Index {
         })?;
         let configured: Vec<(Vec<u8>, String)> = {
             let db = self.store.lock();
-            let mut statement = db.prepare("SELECT path_bytes,policy_json FROM file_index_roots ORDER BY path_bytes")?;
-            let configured = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-            configured
+            let mut statement = db.prepare(
+                "SELECT path_bytes,policy_json FROM file_index_roots ORDER BY path_bytes",
+            )?;
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?
         };
         for old in cached {
-            if !configured.iter().any(|(bytes, _)| bytes.as_slice() == old.path.as_bytes()) {
-                self.core.forget_root(old.root)?;
+            if !configured
+                .iter()
+                .any(|(bytes, _)| bytes.as_slice() == old.path.as_bytes())
+            {
+                core.forget_root(old.root)?;
             }
         }
         for (bytes, json) in configured {
             let path = templar_file_index::NativePath::from_bytes(bytes);
             let policy: templar_file_index::RootPolicy = serde_json::from_str(&json)?;
-            let root = self.core.add_root(&path, policy.clone())?;
-            self.core.set_root_policy(root.root, policy)?;
+            let root = core.add_root(&path, policy.clone())?;
+            core.set_root_policy(root.root, policy)?;
         }
         Ok(())
     }
 
     /// Internal producers read authoritative policy; native callers carry its observed hash.
-    pub fn configured_policy(&self, path: &templar_file_index::NativePath) -> Result<Option<templar_file_index::RootPolicy>> {
+    pub fn configured_policy(
+        &self,
+        path: &templar_file_index::NativePath,
+    ) -> Result<Option<templar_file_index::RootPolicy>> {
         use rusqlite::OptionalExtension as _;
-        let json: Option<String> = self.store.lock().query_row(
-            "SELECT policy_json FROM file_index_roots WHERE path_bytes=?1", [path.as_bytes()], |row| row.get(0),
-        ).optional()?;
-        json.map(|json| serde_json::from_str(&json).map_err(Into::into)).transpose()
+        let json: Option<String> = self
+            .store
+            .lock()
+            .query_row(
+                "SELECT policy_json FROM file_index_roots WHERE path_bytes=?1",
+                [path.as_bytes()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|json| serde_json::from_str(&json).map_err(Into::into))
+            .transpose()
     }
 
-    pub fn root_policy_fenced(&self, path: &templar_file_index::NativePath, expected_hash: &str) -> Result<templar_file_index::RootPolicy> {
+    pub fn root_policy_fenced(
+        &self,
+        path: &templar_file_index::NativePath,
+        expected_hash: &str,
+    ) -> Result<templar_file_index::RootPolicy> {
         let db = self.store.lock();
         checked_policy(&db, path, expected_hash, false)?.ok_or_else(|| {
-            templar_file_index::IndexError::SnapshotRequired { reason: "root policy disappeared; refresh roots" }.into()
+            templar_file_index::IndexError::SnapshotRequired {
+                reason: "root policy disappeared; refresh roots",
+            }
+            .into()
         })
     }
 
-    pub fn configure_root(&self, path: &templar_file_index::NativePath, policy: templar_file_index::RootPolicy, expected_hash: &str) -> Result<templar_file_index::RootStatus> {
-        anyhow::ensure!(path.as_bytes().first() == Some(&b'/') && !path.as_bytes().contains(&0),
-            "Index roots need an absolute native path without NUL");
+    pub fn configure_root(
+        &self,
+        path: &templar_file_index::NativePath,
+        policy: templar_file_index::RootPolicy,
+        expected_hash: &str,
+    ) -> Result<templar_file_index::RootStatus> {
+        anyhow::ensure!(
+            path.as_bytes().first() == Some(&b'/') && !path.as_bytes().contains(&0),
+            "Index roots need an absolute native path without NUL"
+        );
         // Keep the authoritative Store guard until its derived publication finishes, so two
         // concurrent settings changes cannot commit policy B then leave cache policy A visible.
         let db = self.store.lock();
@@ -268,28 +325,39 @@ impl Index {
         )?;
         transaction.execute(
             "INSERT INTO schema_meta(key,value) VALUES ('file_index_roots_initialized',1)
-             ON CONFLICT(key) DO UPDATE SET value=1", [],
+             ON CONFLICT(key) DO UPDATE SET value=1",
+            [],
         )?;
         transaction.commit()?;
-        let root = self.core.add_root(path, policy.clone())?;
-        Ok(self.core.set_root_policy(root.root, policy)?)
+        let root = self.core()?.add_root(path, policy.clone())?;
+        Ok(self.core()?.set_root_policy(root.root, policy)?)
     }
 
-    pub fn forget_root_native(&self, path: &templar_file_index::NativePath, expected_hash: &str) -> Result<Option<templar_file_index::RootId>> {
+    pub fn forget_root_native(
+        &self,
+        path: &templar_file_index::NativePath,
+        expected_hash: &str,
+    ) -> Result<Option<templar_file_index::RootId>> {
         let db = self.store.lock();
         let transaction = db.unchecked_transaction()?;
         checked_policy(&transaction, path, expected_hash, false)?;
-        let root = self.core.root_by_path(path)?.map(|status| status.root);
-        transaction.execute("DELETE FROM file_index_roots WHERE path_bytes=?1", [path.as_bytes()])?;
+        let root = self.core()?.root_by_path(path)?.map(|status| status.root);
+        transaction.execute(
+            "DELETE FROM file_index_roots WHERE path_bytes=?1",
+            [path.as_bytes()],
+        )?;
         if let Some(text) = path.as_path().to_str() {
             transaction.execute("DELETE FROM search_roots WHERE root=?1", [text])?;
         }
         transaction.execute(
             "INSERT INTO schema_meta(key,value) VALUES ('file_index_roots_initialized',1)
-             ON CONFLICT(key) DO UPDATE SET value=1", [],
+             ON CONFLICT(key) DO UPDATE SET value=1",
+            [],
         )?;
         transaction.commit()?;
-        if let Some(root) = root { self.core.forget_root(root)?; }
+        if let Some(root) = root {
+            self.core()?.forget_root(root)?;
+        }
         Ok(root)
     }
 
@@ -310,12 +378,11 @@ impl Index {
         budget
     }
 
-
     /// The index core's own status for `root`: freshness, completeness and entry count. `None`
     /// when the root has never been registered.
     pub fn root_status(&self, root: &Path) -> Result<Option<templar_file_index::RootStatus>> {
         let native = templar_file_index::NativePath::from_path(root);
-        Ok(self.core.root_by_path(&native)?)
+        Ok(self.core()?.root_by_path(&native)?)
     }
 
     /// Register a root and walk it, under this index's depth/entry budget. A budget trip commits
@@ -323,22 +390,30 @@ impl Index {
     /// [`Index::root_status`]. Re-indexing a root repairs rather than replaces: renamed or removed
     /// files are swept only when the pass was complete (§3 of the shared-index plan).
     pub fn index_root(&self, root: &Path) -> Result<usize> {
-
         let native = templar_file_index::NativePath::from_path(root);
         let policy = self.policy();
-        let expected = self.configured_policy(&native)?.map_or_else(|| "absent".to_owned(), |policy| policy.hash());
-        let root_id = self.configure_root(&native, policy.clone(), &expected)?.root;
+        let expected = self
+            .configured_policy(&native)?
+            .map_or_else(|| "absent".to_owned(), |policy| policy.hash());
+        let root_id = self
+            .configure_root(&native, policy.clone(), &expected)?
+            .root;
         let options = templar_file_index::ScanOptions {
             budget: self.budget(),
             policy,
             ..templar_file_index::ScanOptions::default()
         };
-        let outcome = self.core.scan_root(root_id, options)?;
+        let outcome = self.core()?.scan_root(root_id, options)?;
         Ok(outcome.entries as usize)
     }
 
     pub fn roots(&self) -> Result<Vec<PathBuf>> {
-        Ok(self.core.roots()?.into_iter().map(|root| root.path.into_path()).collect())
+        Ok(self
+            .core()?
+            .roots()?
+            .into_iter()
+            .map(|root| root.path.into_path())
+            .collect())
     }
 
     pub fn forget_root(&self, root: &Path) -> Result<()> {
@@ -357,6 +432,21 @@ impl Index {
     /// Search the index. An empty query matches nothing rather than everything: a drawer that
     /// dumps the whole filesystem when a search box is cleared is a bug, not a feature.
     pub fn search(&self, query: &str, roots: &[PathBuf], limit: usize) -> Result<Vec<Hit>> {
+        self.search_in(
+            query,
+            roots,
+            limit,
+            &templar_file_index::CallContext::internal(),
+        )
+    }
+
+    pub fn search_in(
+        &self,
+        query: &str,
+        roots: &[PathBuf],
+        limit: usize,
+        cx: &templar_file_index::CallContext,
+    ) -> Result<Vec<Hit>> {
         let needle = query.trim();
         if needle.is_empty() {
             return Ok(Vec::new());
@@ -371,7 +461,10 @@ impl Index {
             .iter()
             .map(|root| templar_file_index::NativePath::from_path(root))
             .collect();
-        let result = self.core.search(&core_query)?;
+        let core = self.core()?;
+        let result = core.search(&core_query, cx)?;
+        // Search1 returns only a first page and cannot use the Index1 cursor it creates.
+        core.close_cursor(&result.cursor, cx);
         let mut hits: Vec<Hit> = result
             .hits
             .into_iter()
@@ -410,18 +503,32 @@ impl Index {
 }
 
 fn checked_policy(
-    db: &rusqlite::Connection, path: &templar_file_index::NativePath, expected_hash: &str, allow_absent: bool,
+    db: &rusqlite::Connection,
+    path: &templar_file_index::NativePath,
+    expected_hash: &str,
+    allow_absent: bool,
 ) -> Result<Option<templar_file_index::RootPolicy>> {
     use rusqlite::OptionalExtension as _;
-    let json: Option<String> = db.query_row(
-        "SELECT policy_json FROM file_index_roots WHERE path_bytes=?1", [path.as_bytes()], |row| row.get(0),
-    ).optional()?;
-    let policy = json.map(|json| serde_json::from_str::<templar_file_index::RootPolicy>(&json)).transpose()?;
-    let matches = policy.as_ref().map_or(allow_absent && expected_hash == "absent", |policy| policy.hash() == expected_hash);
+    let json: Option<String> = db
+        .query_row(
+            "SELECT policy_json FROM file_index_roots WHERE path_bytes=?1",
+            [path.as_bytes()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let policy = json
+        .map(|json| serde_json::from_str::<templar_file_index::RootPolicy>(&json))
+        .transpose()?;
+    let matches = policy
+        .as_ref()
+        .map_or(allow_absent && expected_hash == "absent", |policy| {
+            policy.hash() == expected_hash
+        });
     if !matches {
         return Err(templar_file_index::IndexError::SnapshotRequired {
             reason: "root policy revision changed or root disappeared; refresh roots",
-        }.into());
+        }
+        .into());
     }
     Ok(policy)
 }
@@ -716,41 +823,87 @@ mod tests {
         use std::os::unix::ffi::OsStringExt as _;
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
-        let native = dir.path().join(std::ffi::OsString::from_vec(b"native-\xff".to_vec()));
+        let native = dir
+            .path()
+            .join(std::ffi::OsString::from_vec(b"native-\xff".to_vec()));
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&native).unwrap();
         let state_path = dir.path().join("session.sqlite3");
         let cache_path = dir.path().join("index.sqlite3");
         let store = Store::open(&state_path).unwrap();
         {
-            let index = Index::with_index_db(store.clone(), &cache_path, templar_file_index::IndexConfig::default()).unwrap();
-            index.restore_configured_roots(std::slice::from_ref(&home)).unwrap();
+            let index = Index::with_index_db(
+                store.clone(),
+                &cache_path,
+                templar_file_index::IndexConfig::default(),
+            )
+            .unwrap();
+            index
+                .restore_configured_roots(std::slice::from_ref(&home))
+                .unwrap();
             let mut policy = templar_file_index::RootPolicy::default_home();
             policy.monitoring = false;
             policy.cross_mount = true;
-            policy.coverage_rules.insert(0, templar_file_index::CoverageRule {
-                matcher: templar_file_index::CoverageMatch::Subtree { path: templar_file_index::NativePath::from_path(&native.join("excluded")) },
-                coverage: templar_file_index::Coverage::Ignored,
-            });
-            index.configure_root(&templar_file_index::NativePath::from_path(&native), policy, "absent").unwrap();
+            policy.coverage_rules.insert(
+                0,
+                templar_file_index::CoverageRule {
+                    matcher: templar_file_index::CoverageMatch::Subtree {
+                        path: templar_file_index::NativePath::from_path(&native.join("excluded")),
+                    },
+                    coverage: templar_file_index::Coverage::Ignored,
+                },
+            );
+            index
+                .configure_root(
+                    &templar_file_index::NativePath::from_path(&native),
+                    policy,
+                    "absent",
+                )
+                .unwrap();
             index.forget_root(&home).unwrap();
         }
         std::fs::remove_file(&cache_path).unwrap();
         {
-            let restored = Index::with_index_db(store.clone(), &cache_path, templar_file_index::IndexConfig::default()).unwrap();
-            restored.restore_configured_roots(std::slice::from_ref(&home)).unwrap();
+            let restored = Index::with_index_db(
+                store.clone(),
+                &cache_path,
+                templar_file_index::IndexConfig::default(),
+            )
+            .unwrap();
+            restored
+                .restore_configured_roots(std::slice::from_ref(&home))
+                .unwrap();
             assert_eq!(restored.roots().unwrap(), vec![native.clone()]);
-            let status = restored.core.root_by_path(&templar_file_index::NativePath::from_path(&native)).unwrap().unwrap();
-            let policy = restored.core.root_policy(status.root).unwrap();
+            let status = restored
+                .core()
+                .unwrap()
+                .root_by_path(&templar_file_index::NativePath::from_path(&native))
+                .unwrap()
+                .unwrap();
+            let policy = restored.core().unwrap().root_policy(status.root).unwrap();
             assert!(!policy.monitoring && policy.cross_mount);
-            assert_eq!(policy.coverage_rules[0].matcher,
-                templar_file_index::CoverageMatch::Subtree { path: templar_file_index::NativePath::from_path(&native.join("excluded")) });
+            assert_eq!(
+                policy.coverage_rules[0].matcher,
+                templar_file_index::CoverageMatch::Subtree {
+                    path: templar_file_index::NativePath::from_path(&native.join("excluded"))
+                }
+            );
             restored.forget_root(&native).unwrap();
         }
         std::fs::remove_file(&cache_path).unwrap();
-        let empty = Index::with_index_db(store, &cache_path, templar_file_index::IndexConfig::default()).unwrap();
-        empty.restore_configured_roots(std::slice::from_ref(&home)).unwrap();
-        assert!(empty.roots().unwrap().is_empty(), "an initialized empty list must not recreate HOME");
+        let empty = Index::with_index_db(
+            store,
+            &cache_path,
+            templar_file_index::IndexConfig::default(),
+        )
+        .unwrap();
+        empty
+            .restore_configured_roots(std::slice::from_ref(&home))
+            .unwrap();
+        assert!(
+            empty.roots().unwrap().is_empty(),
+            "an initialized empty list must not recreate HOME"
+        );
     }
     #[test]
     fn root_mutations_compare_authoritative_native_revision_and_never_target_another_path() {
@@ -759,25 +912,50 @@ mod tests {
         let other = templar_file_index::NativePath::from_path(&directory.path().join("b"));
         let index = Index::new(Store::in_memory().unwrap());
         let original = templar_file_index::RootPolicy::default_home();
-        let root = index.configure_root(&path, original.clone(), "absent").unwrap();
-        let updated = templar_file_index::RootPolicy { monitoring: false, ..original.clone() };
-        index.configure_root(&path, updated.clone(), &original.hash()).unwrap();
+        let root = index
+            .configure_root(&path, original.clone(), "absent")
+            .unwrap();
+        let updated = templar_file_index::RootPolicy {
+            monitoring: false,
+            ..original.clone()
+        };
+        index
+            .configure_root(&path, updated.clone(), &original.hash())
+            .unwrap();
         for error in [
-            index.root_policy_fenced(&path, &original.hash()).unwrap_err(),
-            index.configure_root(&path, original.clone(), &original.hash()).unwrap_err(),
-            index.configure_root(&path, original.clone(), "absent").unwrap_err(),
-            index.forget_root_native(&path, &original.hash()).unwrap_err(),
+            index
+                .root_policy_fenced(&path, &original.hash())
+                .unwrap_err(),
+            index
+                .configure_root(&path, original.clone(), &original.hash())
+                .unwrap_err(),
+            index
+                .configure_root(&path, original.clone(), "absent")
+                .unwrap_err(),
+            index
+                .forget_root_native(&path, &original.hash())
+                .unwrap_err(),
         ] {
-            assert!(matches!(error.downcast_ref::<templar_file_index::IndexError>(),
-                Some(templar_file_index::IndexError::SnapshotRequired { .. })));
+            assert!(matches!(
+                error.downcast_ref::<templar_file_index::IndexError>(),
+                Some(templar_file_index::IndexError::SnapshotRequired { .. })
+            ));
         }
-        assert_eq!(index.configured_policy(&path).unwrap(), Some(updated.clone()));
-        assert_eq!(index.forget_root_native(&path, &updated.hash()).unwrap(), Some(root.root));
-        let replacement = index.configure_root(&other, original.clone(), "absent").unwrap();
+        assert_eq!(
+            index.configured_policy(&path).unwrap(),
+            Some(updated.clone())
+        );
+        assert_eq!(
+            index.forget_root_native(&path, &updated.hash()).unwrap(),
+            Some(root.root)
+        );
+        let replacement = index
+            .configure_root(&other, original.clone(), "absent")
+            .unwrap();
         assert!(replacement.root.0 > root.root.0);
         assert!(index.forget_root_native(&path, &updated.hash()).is_err());
         assert_eq!(index.configured_policy(&other).unwrap(), Some(original));
-        assert_eq!(index.core.roots().unwrap()[0].path, other);
+        assert_eq!(index.core().unwrap().roots().unwrap()[0].path, other);
     }
 
     #[test]
@@ -786,29 +964,70 @@ mod tests {
         let path = templar_file_index::NativePath::from_path(directory.path());
         let index = Index::new(Store::in_memory().unwrap());
         let original = templar_file_index::RootPolicy::default_home();
-        index.configure_root(&path, original.clone(), "absent").unwrap();
+        index
+            .configure_root(&path, original.clone(), "absent")
+            .unwrap();
         let barrier = Arc::new(std::sync::Barrier::new(3));
         let policies = [
-            templar_file_index::RootPolicy { monitoring: false, ..original.clone() },
-            templar_file_index::RootPolicy { cross_mount: true, ..original.clone() },
+            templar_file_index::RootPolicy {
+                monitoring: false,
+                ..original.clone()
+            },
+            templar_file_index::RootPolicy {
+                cross_mount: true,
+                ..original.clone()
+            },
         ];
-        let workers = policies.into_iter().map(|policy| {
-            let (index, path, barrier, expected) = (index.clone(), path.clone(), barrier.clone(), original.hash());
-            std::thread::spawn(move || {
-                barrier.wait();
-                let result = index.configure_root(&path, policy.clone(), &expected);
-                (policy, result)
+        let workers = policies
+            .into_iter()
+            .map(|policy| {
+                let (index, path, barrier, expected) = (
+                    index.clone(),
+                    path.clone(),
+                    barrier.clone(),
+                    original.hash(),
+                );
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let result = index.configure_root(&path, policy.clone(), &expected);
+                    (policy, result)
+                })
             })
-        }).collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         barrier.wait();
-        let outcomes = workers.into_iter().map(|worker| worker.join().unwrap()).collect::<Vec<_>>();
-        assert_eq!(outcomes.iter().filter(|(_, result)| result.is_ok()).count(), 1);
-        let winner = &outcomes.iter().find(|(_, result)| result.is_ok()).unwrap().0;
-        let loser = outcomes.iter().find(|(_, result)| result.is_err()).unwrap().1.as_ref().unwrap_err();
-        assert!(matches!(loser.downcast_ref::<templar_file_index::IndexError>(),
-            Some(templar_file_index::IndexError::SnapshotRequired { .. })));
-        assert_eq!(index.configured_policy(&path).unwrap().as_ref(), Some(winner));
-        let root = index.core.root_by_path(&path).unwrap().unwrap();
-        assert_eq!(&index.core.root_policy(root.root).unwrap(), winner, "cache publication lost durable mutation ordering");
+        let outcomes = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outcomes.iter().filter(|(_, result)| result.is_ok()).count(),
+            1
+        );
+        let winner = &outcomes
+            .iter()
+            .find(|(_, result)| result.is_ok())
+            .unwrap()
+            .0;
+        let loser = outcomes
+            .iter()
+            .find(|(_, result)| result.is_err())
+            .unwrap()
+            .1
+            .as_ref()
+            .unwrap_err();
+        assert!(matches!(
+            loser.downcast_ref::<templar_file_index::IndexError>(),
+            Some(templar_file_index::IndexError::SnapshotRequired { .. })
+        ));
+        assert_eq!(
+            index.configured_policy(&path).unwrap().as_ref(),
+            Some(winner)
+        );
+        let root = index.core().unwrap().root_by_path(&path).unwrap().unwrap();
+        assert_eq!(
+            &index.core().unwrap().root_policy(root.root).unwrap(),
+            winner,
+            "cache publication lost durable mutation ordering"
+        );
     }
 }

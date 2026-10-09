@@ -59,7 +59,14 @@ fn real_config(root: &std::path::Path, connection: zbus::Connection) -> Result<H
         snapshotter: Arc::new(snapshot::BtrfsSnapshotter {
             commands: commands.clone(),
         }),
-        boot: deploy::detect_backend(root, commands.clone(), state_dir.join("grub"), deployment_layout.read_only, deployment_layout.mounted_esp.clone()).into(),
+        boot: deploy::detect_backend(
+            root,
+            commands.clone(),
+            state_dir.join("grub"),
+            deployment_layout.read_only,
+            deployment_layout.mounted_esp.clone(),
+        )
+        .into(),
         commands,
         clock: Arc::new(clock::SystemClock),
         polkit: Arc::new(polkit::SystemPolkit::new(connection.clone())),
@@ -202,11 +209,19 @@ async fn main() -> Result<()> {
     }
 
     state.resume();
-    connection.object_server().at(names::ROOT_PATH,
-        display_recovery::DisplayRecoveryApi::new(&cli.root, connection.clone())?)
-        .await.context("serving DisplayRecovery1")?;
-    connection.object_server().at(names::ROOT_PATH, accounts::AccountsApi(state.clone()))
-        .await.context("serving Accounts1")?;
+    connection
+        .object_server()
+        .at(
+            names::ROOT_PATH,
+            display_recovery::DisplayRecoveryApi::new(&cli.root, connection.clone())?,
+        )
+        .await
+        .context("serving DisplayRecovery1")?;
+    connection
+        .object_server()
+        .at(names::ROOT_PATH, accounts::AccountsApi(state.clone()))
+        .await
+        .context("serving Accounts1")?;
 
     connection
         .object_server()
@@ -295,19 +310,43 @@ mod tests {
         std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
         std::fs::write(installed, text).unwrap();
         std::fs::create_dir_all(root.path().join("esp/loader")).unwrap();
-        std::fs::write(root.path().join("esp/loader/loader.conf"), "default templaros-base.conf\n").unwrap();
+        std::fs::write(
+            root.path().join("esp/loader/loader.conf"),
+            "default templaros-base.conf\n",
+        )
+        .unwrap();
         let (client, server) = tokio::net::UnixStream::pair().unwrap();
         let (connection, _server) = tokio::try_join!(
             zbus::connection::Builder::unix_stream(client).p2p().build(),
-            zbus::connection::Builder::unix_stream(server).server(zbus::Guid::generate()).unwrap().p2p().build(),
-        ).unwrap();
+            zbus::connection::Builder::unix_stream(server)
+                .server(zbus::Guid::generate())
+                .unwrap()
+                .p2p()
+                .build(),
+        )
+        .unwrap();
         let config = real_config(root.path(), connection).unwrap();
-        assert_eq!(config.deployment_layout.candidate_mount("txn-1"), root.path().join("candidates/txn-1"));
-        assert_eq!(config.deployment_layout.subvolume("txn-1"), "@candidates/txn-1");
-        assert_eq!(config.deployment_layout.mounted_esp, root.path().join("esp"));
+        assert_eq!(
+            config.deployment_layout.candidate_mount("txn-1"),
+            root.path().join("candidates/txn-1")
+        );
+        assert_eq!(
+            config.deployment_layout.subvolume("txn-1"),
+            "@candidates/txn-1"
+        );
+        assert_eq!(
+            config.deployment_layout.mounted_esp,
+            root.path().join("esp")
+        );
         assert_eq!(config.boot.name(), "systemd-boot");
         let host = state::HostdState::new(config).unwrap();
-        assert_eq!(host.engine.mounted_deployment("@candidates/txn-1").unwrap(), root.path().join("candidates/txn-1"));
-        assert_eq!(host.engine.mounted_deployment("@").unwrap(), root.path().join("var/lib/templaros/roots/bootstrap"));
+        assert_eq!(
+            host.engine.mounted_deployment("@candidates/txn-1").unwrap(),
+            root.path().join("candidates/txn-1")
+        );
+        assert_eq!(
+            host.engine.mounted_deployment("@").unwrap(),
+            root.path().join("var/lib/templaros/roots/bootstrap")
+        );
     }
 }

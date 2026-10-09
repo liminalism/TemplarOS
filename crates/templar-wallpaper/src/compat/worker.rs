@@ -9,7 +9,10 @@ use std::time::{Duration, Instant};
 use templar_types::wallpaper::{RasterDescriptor, WallpaperConfig};
 
 #[derive(Debug)]
-pub struct Decoded { pub file: File, pub raster: RasterDescriptor }
+pub struct Decoded {
+    pub file: File,
+    pub raster: RasterDescriptor,
+}
 
 /// Codecs live in the temporary executable, never in the resident Wayland host.
 pub fn decode(path: &Path, decoder: &Path, config: &WallpaperConfig) -> Result<Decoded> {
@@ -20,7 +23,9 @@ pub fn decode(path: &Path, decoder: &Path, config: &WallpaperConfig) -> Result<D
     fn duplicate(file: &File) -> Result<OwnedFd> {
         // SAFETY: F_DUPFD_CLOEXEC creates a new owned descriptor or returns -1.
         let fd = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10) };
-        if fd < 0 { return Err(std::io::Error::last_os_error().into()); }
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
         // SAFETY: the successful fcntl returned a fresh descriptor.
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
@@ -32,25 +37,34 @@ pub fn decode(path: &Path, decoder: &Path, config: &WallpaperConfig) -> Result<D
         "quantize_colors": config.quantize_colors,
     });
     let mut command = Command::new(decoder);
-    command.args(["--source-fd", "3", "--output-fd", "4", "--options-json"])
+    command
+        .args(["--source-fd", "3", "--output-fd", "4", "--options-json"])
         .arg(serde_json::to_string(&options)?)
-        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
     // SAFETY: the hook only invokes async-signal-safe descriptor operations.
     unsafe {
         command.pre_exec(move || {
-            if libc::dup2(source_fd.as_raw_fd(), 3) < 0 || libc::dup2(output_fd.as_raw_fd(), 4) < 0 {
+            if libc::dup2(source_fd.as_raw_fd(), 3) < 0 || libc::dup2(output_fd.as_raw_fd(), 4) < 0
+            {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
         });
     }
-    let mut child = command.spawn().with_context(|| format!("launching {}", decoder.display()))?;
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("launching {}", decoder.display()))?;
     let mut stdout = child.stdout.take().context("worker stdout missing")?;
     // SAFETY: fcntl changes flags on our pipe only.
     let flags = unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_GETFL) };
     // SAFETY: the owned pipe descriptor is valid, and flags came from F_GETFL.
-    if flags < 0 || unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        let _ = child.kill(); let _ = child.wait();
+    if flags < 0
+        || unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+    {
+        let _ = child.kill();
+        let _ = child.wait();
         return Err(std::io::Error::last_os_error().into());
     }
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -61,9 +75,14 @@ pub fn decode(path: &Path, decoder: &Path, config: &WallpaperConfig) -> Result<D
         loop {
             loop {
                 match stdout.read(&mut block) {
-                    Ok(0) => { eof = true; break; }
+                    Ok(0) => {
+                        eof = true;
+                        break;
+                    }
                     Ok(n) => {
-                        if body.len() + n > 65536 { bail!("decoder descriptor exceeds 64 KiB"); }
+                        if body.len() + n > 65536 {
+                            bail!("decoder descriptor exceeds 64 KiB");
+                        }
                         body.extend_from_slice(&block[..n]);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -72,19 +91,36 @@ pub fn decode(path: &Path, decoder: &Path, config: &WallpaperConfig) -> Result<D
                 }
             }
             if let Some(status) = child.try_wait()? {
-                if !status.success() { bail!("decoder exited with {status}"); }
-                if eof { return Ok(serde_json::from_slice(&body).context("invalid decoder descriptor")?); }
+                if !status.success() {
+                    bail!("decoder exited with {status}");
+                }
+                if eof {
+                    return Ok(serde_json::from_slice(&body).context("invalid decoder descriptor")?);
+                }
             }
-            if Instant::now() >= deadline { bail!("decoder exceeded 60-second deadline"); }
-            let mut fd = libc::pollfd { fd: stdout.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+            if Instant::now() >= deadline {
+                bail!("decoder exceeded 60-second deadline");
+            }
+            let mut fd = libc::pollfd {
+                fd: stdout.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
             // SAFETY: poll points to one initialized pollfd for this call.
-            unsafe { libc::poll(&mut fd, 1, 20); }
+            unsafe {
+                libc::poll(&mut fd, 1, 20);
+            }
         }
     })();
-    if result.is_err() { let _ = child.kill(); }
+    if result.is_err() {
+        let _ = child.kill();
+    }
     let _ = child.wait();
     let raster = result?;
     crate::raster::seal(&output)?;
     crate::raster::validate(&output, &raster)?;
-    Ok(Decoded { file: output, raster })
+    Ok(Decoded {
+        file: output,
+        raster,
+    })
 }

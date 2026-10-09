@@ -58,7 +58,13 @@ impl Spec {
     pub(crate) fn into_model(self) -> Model {
         match self {
             Self::Files(request) => files(request),
-            Self::Choice { title, message, choices, parent, activation_token } => {
+            Self::Choice {
+                title,
+                message,
+                choices,
+                parent,
+                activation_token,
+            } => {
                 let mut model = choice(title, message, choices);
                 model.set_parent(parent);
                 model.set_activation_token(activation_token);
@@ -103,17 +109,27 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn title(&self) -> &str { &self.title }
-    pub fn activation_token(&self) -> Option<&str> { self.activation_token.as_deref() }
-    pub fn set_activation_token(&mut self, token: Option<String>) { self.activation_token = token; }
-    pub fn set_parent(&mut self, parent: crate::parent::Parent) { self.parent = parent; }
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+    pub fn activation_token(&self) -> Option<&str> {
+        self.activation_token.as_deref()
+    }
+    pub fn set_activation_token(&mut self, token: Option<String>) {
+        self.activation_token = token;
+    }
+    pub fn set_parent(&mut self, parent: crate::parent::Parent) {
+        self.parent = parent;
+    }
     fn choose(&mut self) {
         let answer = match &mut self.mode {
             Mode::Choice {
                 choices, selected, ..
             } => choices.get(*selected).cloned().map(Answer::Choice),
             Mode::Files(files) => {
-                if files.replace.is_some() { return; }
+                if files.replace.is_some() {
+                    return;
+                }
                 let paths = match files.browser.choose(files.name.text()) {
                     Ok(paths) => paths,
                     Err(message) => {
@@ -123,12 +139,17 @@ impl Model {
                 };
                 let selection = FileSelection {
                     paths,
-                    current_filter: files.browser.current_filter()
-                        .and_then(|index| files.browser.filters().get(index)).cloned()
-                        .or_else(|| (!files.browser.filters().is_empty()).then(|| FileFilter {
-                            name: "All files".into(),
-                            patterns: vec![FilterPattern::Glob("*".into())],
-                        })),
+                    current_filter: files
+                        .browser
+                        .current_filter()
+                        .and_then(|index| files.browser.filters().get(index))
+                        .cloned()
+                        .or_else(|| {
+                            (!files.browser.filters().is_empty()).then(|| FileFilter {
+                                name: "All files".into(),
+                                patterns: vec![FilterPattern::Glob("*".into())],
+                            })
+                        }),
                 };
                 if matches!(files.browser.kind(), ChooserKind::Save { .. }) {
                     let target = &selection.paths[0];
@@ -181,7 +202,13 @@ impl Model {
 
 /// Draw the body for whichever mode this dialog is in. Returns whether the listing must be
 /// re-read once `mode` is free again (the browser is borrowed for the whole of the drawing).
-fn draw_mode(ui: &mut Ui<'_>, area: Rect, mode: &mut Mode, focus: &mut Focus, accept: &mut bool) -> bool {
+fn draw_mode(
+    ui: &mut Ui<'_>,
+    area: Rect,
+    mode: &mut Mode,
+    focus: &mut Focus,
+    accept: &mut bool,
+) -> bool {
     match mode {
         Mode::Choice {
             message,
@@ -198,12 +225,7 @@ fn draw_mode(ui: &mut Ui<'_>, area: Rect, mode: &mut Mode, focus: &mut Focus, ac
             let group = Rect::new(area.x, area.y + ui.px(92), area.w, ui.px(260));
             let focused = focus.register_at(ui.input, group);
             *accept |= focused && ui.input.keys().contains(&KeyInput::Enter);
-            ui.radio_group(
-                selected,
-                group,
-                &labels,
-                focused,
-            );
+            ui.radio_group(selected, group, &labels, focused);
             false
         }
         Mode::Files(files) => draw_files(ui, area, files, focus, accept),
@@ -212,20 +234,33 @@ fn draw_mode(ui: &mut Ui<'_>, area: Rect, mode: &mut Mode, focus: &mut Focus, ac
 
 /// The file browser: a parent button and the current path, the hidden/filter controls, the
 /// scrolling listing, and a name field when saving. Returns whether the listing must be re-read.
-fn draw_files(ui: &mut Ui<'_>, area: Rect, files: &mut FileMode, focus: &mut Focus, accept: &mut bool) -> bool {
+fn draw_files(
+    ui: &mut Ui<'_>,
+    area: Rect,
+    files: &mut FileMode,
+    focus: &mut Focus,
+    accept: &mut bool,
+) -> bool {
     if let Some(selection) = &files.replace {
-        ui.label(Rect::new(area.x, area.y + ui.px(70), area.w, ui.px(36)),
-            "This file already exists. Replace it?", ui.theme.text, Align::Left);
-        ui.label(Rect::new(area.x, area.y + ui.px(110), area.w, ui.px(64)),
-            &selection.paths[0].display().to_string(), ui.theme.text_dim, Align::Left);
+        ui.label(
+            Rect::new(area.x, area.y + ui.px(70), area.w, ui.px(36)),
+            "This file already exists. Replace it?",
+            ui.theme.text,
+            Align::Left,
+        );
+        ui.label(
+            Rect::new(area.x, area.y + ui.px(110), area.w, ui.px(64)),
+            &selection.paths[0].display().to_string(),
+            ui.theme.text_dim,
+            Align::Left,
+        );
         return false;
     }
     let mut stale = false;
 
     let up = Rect::new(area.x, area.y + ui.px(50), ui.px(54), ui.px(34));
     let focused = focus.register_at(ui.input, up);
-    if ui.button_focused(up, "Up", focused) && files.browser.go_up()
-    {
+    if ui.button_focused(up, "Up", focused) && files.browser.go_up() {
         stale = true;
     }
     let directory_label = files.browser.directory().display().to_string();
@@ -274,21 +309,34 @@ fn draw_files(ui: &mut Ui<'_>, area: Rect, files: &mut FileMode, focus: &mut Foc
         let name_area = Rect::new(area.x, area.bottom() - ui.px(96), area.w, ui.px(38));
         let focused = focus.register_at(ui.input, name_area);
         *accept |= focused && ui.input.keys().contains(&KeyInput::Enter);
-        ui.text_field(
-            &mut files.name,
-            name_area,
-            "File name",
-            focused,
-            false,
-        );
+        ui.text_field(&mut files.name, name_area, "File name", focused, false);
         if let Some(error) = files.name.clipboard_error() {
-            ui.label(Rect::new(area.x, name_area.y - ui.px(24), area.w, ui.px(22)),
-                error, ui.theme.alarm, Align::Left);
+            ui.label(
+                Rect::new(area.x, name_area.y - ui.px(24), area.w, ui.px(22)),
+                error,
+                ui.theme.alarm,
+                Align::Left,
+            );
         }
     }
-    if matches!(files.browser.kind(), ChooserKind::Open { multiple: true, directory: true }) {
-        ui.label(Rect::new(area.x, area.bottom() - ui.px(48), area.w - ui.px(240), ui.px(38)),
-            &format!("{} folders selected", files.browser.selected_count()), ui.theme.text_dim, Align::Left);
+    if matches!(
+        files.browser.kind(),
+        ChooserKind::Open {
+            multiple: true,
+            directory: true
+        }
+    ) {
+        ui.label(
+            Rect::new(
+                area.x,
+                area.bottom() - ui.px(48),
+                area.w - ui.px(240),
+                ui.px(38),
+            ),
+            &format!("{} folders selected", files.browser.selected_count()),
+            ui.theme.text_dim,
+            Align::Left,
+        );
     }
 
     // Drawn last so the open menu covers the rows underneath it, not the other way round.
@@ -323,10 +371,23 @@ fn draw_controls(ui: &mut Ui<'_>, area: Rect, files: &mut FileMode, focus: &mut 
         );
         let borrowed: Vec<&str> = labels.iter().map(String::as_str).collect();
         let selected = files.browser.current_filter().map_or(0, |index| index + 1);
-        let filter_area = Rect::new(area.right() - ui.px(220), area.y + ui.px(92), ui.px(220), ui.px(32));
+        let filter_area = Rect::new(
+            area.right() - ui.px(220),
+            area.y + ui.px(92),
+            ui.px(220),
+            ui.px(32),
+        );
         let focused = focus.register_at(ui.input, filter_area);
-        if let Some(picked) = ui.dropdown_focused(&mut files.filter_menu, filter_area, &borrowed, selected, focused) {
-            files.browser.set_current_filter(if picked == 0 { None } else { Some(picked - 1) });
+        if let Some(picked) = ui.dropdown_focused(
+            &mut files.filter_menu,
+            filter_area,
+            &borrowed,
+            selected,
+            focused,
+        ) {
+            files
+                .browser
+                .set_current_filter(if picked == 0 { None } else { Some(picked - 1) });
             files.scroll = ScrollState::new();
         }
     }
@@ -344,10 +405,20 @@ fn draw_controls(ui: &mut Ui<'_>, area: Rect, files: &mut FileMode, focus: &mut 
 
 /// The listing itself, virtualised: however many entries a folder holds, only the rows on screen
 /// are drawn, and the rest are a scroll away. Returns the index of an activated row.
-fn draw_listing(ui: &mut Ui<'_>, area: Rect, files: &mut FileMode, focus: &mut Focus) -> Option<usize> {
+fn draw_listing(
+    ui: &mut Ui<'_>,
+    area: Rect,
+    files: &mut FileMode,
+    focus: &mut Focus,
+) -> Option<usize> {
     let visible = files.browser.visible();
-    let multiple_folders = matches!(files.browser.kind(),
-        ChooserKind::Open { multiple: true, directory: true });
+    let multiple_folders = matches!(
+        files.browser.kind(),
+        ChooserKind::Open {
+            multiple: true,
+            directory: true
+        }
+    );
     let focused = focus.register_at(ui.input, area);
     if visible.is_empty() {
         ui.label(
@@ -363,7 +434,15 @@ fn draw_listing(ui: &mut Ui<'_>, area: Rect, files: &mut FileMode, focus: &mut F
         .iter()
         .map(|entry| {
             if entry.is_dir() {
-                format!("{}[{}]", if files.browser.is_selected(&entry.path) { "✓ " } else { "" }, entry.name)
+                format!(
+                    "{}[{}]",
+                    if files.browser.is_selected(&entry.path) {
+                        "✓ "
+                    } else {
+                        ""
+                    },
+                    entry.name
+                )
             } else if files.browser.is_selected(&entry.path) {
                 format!("✓ {}", entry.name)
             } else {
@@ -390,24 +469,48 @@ fn draw_listing(ui: &mut Ui<'_>, area: Rect, files: &mut FileMode, focus: &mut F
                 }
             }
         });
-        files.scroll.reveal(files.cursor as i32 * row, row, area.h, labels.len() as i32 * row);
+        files.scroll.reveal(
+            files.cursor as i32 * row,
+            row,
+            area.h,
+            labels.len() as i32 * row,
+        );
     }
     ui.scroll_list(&mut files.scroll, area, &heights, |ui, index, rect| {
-        let inner = Rect::new(rect.x, rect.y,
-            rect.w - if multiple_folders { ui.px(100) } else { 0 }, rect.h - ui.px(4));
+        let inner = Rect::new(
+            rect.x,
+            rect.y,
+            rect.w - if multiple_folders { ui.px(100) } else { 0 },
+            rect.h - ui.px(4),
+        );
         if ui.button_focused(inner, &labels[index], focused && files.cursor == index) {
             files.cursor = index;
             activated = Some(index);
         }
         if multiple_folders {
-            let select = Rect::new(rect.right() - ui.px(96), rect.y, ui.px(96), rect.h - ui.px(4));
+            let select = Rect::new(
+                rect.right() - ui.px(96),
+                rect.y,
+                ui.px(96),
+                rect.h - ui.px(4),
+            );
             let select_focused = focus.register_at(ui.input, select);
-            let label = if files.browser.is_selected(&visible[index].path) { "Remove" } else { "Select" };
-            if ui.button_focused(select, label, select_focused) { picked = Some(index); }
+            let label = if files.browser.is_selected(&visible[index].path) {
+                "Remove"
+            } else {
+                "Select"
+            };
+            if ui.button_focused(select, label, select_focused) {
+                picked = Some(index);
+            }
         }
     });
-    let picked_path = picked.and_then(|index| visible.get(index)).map(|entry| entry.path.clone());
-    if let Some(path) = picked_path { files.browser.pick(path); }
+    let picked_path = picked
+        .and_then(|index| visible.get(index))
+        .map(|entry| entry.path.clone());
+    if let Some(path) = picked_path {
+        files.browser.pick(path);
+    }
     activated
 }
 
@@ -437,8 +540,11 @@ impl Surface {
     fn draw(&mut self, buffer: &mut WindowBuffer, scale: Scale, model: &mut Model) {
         let whole = Rect::new(0, 0, buffer.width as i32, buffer.height as i32);
         let was_confirming = model.confirming_replace();
-        self.focus.handle_tab(self.input.keys(), self.input.modifiers());
-        if self.focus.current().is_none() { self.focus.set(0); }
+        self.focus
+            .handle_tab(self.input.keys(), self.input.modifiers());
+        if self.focus.current().is_none() {
+            self.focus.set(0);
+        }
         if self.semantics_active {
             if was_confirming {
                 self.semantics.begin_scoped(&model.title, 1);
@@ -456,20 +562,34 @@ impl Surface {
             scale,
             &mut self.kernel,
         );
-        let mut ui = if self.semantics_active { ui.with_semantics(&mut self.semantics) } else { ui };
+        let mut ui = if self.semantics_active {
+            ui.with_semantics(&mut self.semantics)
+        } else {
+            ui
+        };
         ui.painter.fill_rect(whole, ui.theme.background);
         let area = whole.inset(ui.px(20));
         ui.heading(Rect::new(area.x, area.y, area.w, ui.px(44)), &model.title);
         if let Some(notice) = &model.parent_notice {
-            ui.label(Rect::new(area.x, area.y + ui.px(38), area.w, ui.px(20)),
-                notice, ui.theme.text_dim, Align::Left);
+            ui.label(
+                Rect::new(area.x, area.y + ui.px(38), area.w, ui.px(20)),
+                notice,
+                ui.theme.text_dim,
+                Align::Left,
+            );
         }
         // The directory listing is re-read after the match: `model.mode` is borrowed for the
         // whole of it, so navigation only records that a refresh is due.
         let mut accept_requested = false;
         // Reserve a stable line for request-local parenting diagnostics without covering controls.
         let body = Rect::new(area.x, area.y + ui.px(24), area.w, area.h - ui.px(24));
-        let listing_is_stale = draw_mode(&mut ui, body, &mut model.mode, &mut self.focus, &mut accept_requested);
+        let listing_is_stale = draw_mode(
+            &mut ui,
+            body,
+            &mut model.mode,
+            &mut self.focus,
+            &mut accept_requested,
+        );
         if listing_is_stale && let Mode::Files(files) = &mut model.mode {
             files.browser.refresh();
         }
@@ -504,9 +624,17 @@ impl Surface {
             model.cancel();
         }
         let focused = self.focus.register_at(ui.input, accept);
-        let accepted = ui.button_focused(accept, if was_confirming { "Replace" } else { "Choose" }, focused);
+        let accepted = ui.button_focused(
+            accept,
+            if was_confirming { "Replace" } else { "Choose" },
+            focused,
+        );
         if !cancelled && (accepted || accept_requested) {
-            if was_confirming { model.confirm_replace(); } else { model.choose(); }
+            if was_confirming {
+                model.confirm_replace();
+            } else {
+                model.choose();
+            }
         }
         let confirmation_changed = was_confirming != model.confirming_replace();
         if confirmation_changed {
@@ -515,7 +643,9 @@ impl Surface {
             ui.input.clear_accessible_text_edit();
         }
         self.input.end_frame();
-        if listing_is_stale || model.exit || confirmation_changed { self.semantics.invalidate(); }
+        if listing_is_stale || model.exit || confirmation_changed {
+            self.semantics.invalidate();
+        }
     }
 }
 
@@ -538,17 +668,30 @@ impl PixelApp for DialogApp {
     fn attach(&mut self, waker: pixelkit_windowing::Waker) {
         self.waker = Some(waker.clone());
         let appearance_waker = waker.clone();
-        self.appearance = Some(templar_client::appearance::AppearanceObserver::new(move || appearance_waker.wake()));
-        self.surface.input.attach_clipboard(pixelkit_shell::clipboard::ClipboardWorker::new(move || waker.wake()));
+        self.appearance = Some(templar_client::appearance::AppearanceObserver::new(
+            move || appearance_waker.wake(),
+        ));
+        self.surface
+            .input
+            .attach_clipboard(pixelkit_shell::clipboard::ClipboardWorker::new(move || {
+                waker.wake()
+            }));
     }
     fn on_native_window(&mut self, window: &winit::window::Window) {
         self.parent_binding = None;
-        let Some(waker) = &self.waker else { return; };
+        let Some(waker) = &self.waker else {
+            return;
+        };
         match crate::parent::Binding::connect(&self.model.parent, window, waker.clone()) {
             Ok(binding) => {
-                self.model.parent_notice = Some(if binding.is_none() {
-                    "No parent supplied; independent dialog."
-                } else { "Linking requesting window; no activation inferred." }.into());
+                self.model.parent_notice = Some(
+                    if binding.is_none() {
+                        "No parent supplied; independent dialog."
+                    } else {
+                        "Linking requesting window; no activation inferred."
+                    }
+                    .into(),
+                );
                 self.parent_binding = binding;
             }
             Err(error) => {
@@ -565,19 +708,33 @@ impl PixelApp for DialogApp {
                 Err(notice) => {
                     self.parent_binding = None;
                     self.model.parent_notice = Some(notice.into());
-                    tracing::warn!(notice, "native parent unavailable; dialog remains reachable without activation grant");
+                    tracing::warn!(
+                        notice,
+                        "native parent unavailable; dialog remains reachable without activation grant"
+                    );
                 }
             }
         }
-        if let Some(update) = self.appearance.as_mut().and_then(|observer| observer.take_update()) {
+        if let Some(update) = self
+            .appearance
+            .as_mut()
+            .and_then(|observer| observer.take_update())
+        {
             match update {
                 Ok(appearance) => self.surface.theme = templar_ui::theme_for(&appearance.palette),
-                Err(error) => self.model.error = Some(format!("Appearance observation unavailable: {error}")),
+                Err(error) => {
+                    self.model.error = Some(format!("Appearance observation unavailable: {error}"))
+                }
             }
         }
-        let changed = !self.surface.input.keys().is_empty() || self.surface.input.press_position().is_some();
+        let changed =
+            !self.surface.input.keys().is_empty() || self.surface.input.press_position().is_some();
         self.surface.draw(buffer, scale, &mut self.model);
-        if changed { if let Some(waker) = &self.waker { waker.wake(); } }
+        if changed {
+            if let Some(waker) = &self.waker {
+                waker.wake();
+            }
+        }
     }
     fn on_key(&mut self, key: &KeyInput) {
         if *key == KeyInput::Escape {
@@ -601,7 +758,9 @@ impl PixelApp for DialogApp {
     }
     fn on_ime(&mut self, event: &pixelkit_windowing::ImeEvent) {
         match event {
-            pixelkit_windowing::ImeEvent::Preedit(text, _) => self.surface.input.set_composition(text),
+            pixelkit_windowing::ImeEvent::Preedit(text, _) => {
+                self.surface.input.set_composition(text)
+            }
             pixelkit_windowing::ImeEvent::Commit(text) => {
                 self.surface.input.set_composition("");
                 for character in text.chars() {
@@ -613,15 +772,28 @@ impl PixelApp for DialogApp {
         }
     }
     fn on_focus_changed(&mut self, focused: bool) {
-        if !focused { self.surface.input.blur(); self.surface.semantics.invalidate(); }
+        if !focused {
+            self.surface.input.blur();
+            self.surface.semantics.invalidate();
+        }
     }
-    fn ime_allowed(&self) -> bool { self.ime_cursor_area().is_some() }
+    fn ime_allowed(&self) -> bool {
+        self.ime_cursor_area().is_some()
+    }
     fn ime_cursor_area(&self) -> Option<pixelkit_windowing::ImeCursorArea> {
-        let Mode::Files(files) = &self.model.mode else { return None };
-        if files.replace.is_some() { return None; }
+        let Mode::Files(files) = &self.model.mode else {
+            return None;
+        };
+        if files.replace.is_some() {
+            return None;
+        }
         let area = files.name.caret_area()?;
-        Some(pixelkit_windowing::ImeCursorArea { x: area.x as f64, y: area.y as f64,
-            width: area.w as f64, height: area.h as f64 })
+        Some(pixelkit_windowing::ImeCursorArea {
+            x: area.x as f64,
+            y: area.y as f64,
+            width: area.w as f64,
+            height: area.h as f64,
+        })
     }
     fn on_modifiers(&mut self, modifiers: Modifiers) {
         self.surface.input.modifiers_changed(modifiers);
@@ -639,9 +811,14 @@ impl PixelApp for DialogApp {
         self.surface.input.scrolled(dx, dy);
     }
     fn poll_window(&mut self) -> Option<WindowRequest> {
-        if !self.close_requested && (self.model.exit
-            || self.abandoned.load(Ordering::Acquire)
-            || self.answer.as_ref().is_some_and(|answer| answer.is_closed())) {
+        if !self.close_requested
+            && (self.model.exit
+                || self.abandoned.load(Ordering::Acquire)
+                || self
+                    .answer
+                    .as_ref()
+                    .is_some_and(|answer| answer.is_closed()))
+        {
             self.close_requested = true;
             return Some(WindowRequest::Close);
         }
@@ -665,7 +842,9 @@ impl PixelApp for DialogApp {
         Some(self.surface.semantics.update())
     }
     fn on_accessibility_action(&mut self, request: pixelkit_ui::semantics::ActionRequest) {
-        self.surface.semantics.action(&mut self.surface.input, request);
+        self.surface
+            .semantics
+            .action(&mut self.surface.input, request);
     }
     fn on_accessibility_deactivated(&mut self) {
         self.surface.input.clear_accessible_text_edit();
@@ -764,8 +943,11 @@ mod tests {
         fn new() -> Self {
             static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             loop {
-                let path = std::env::temp_dir().join(format!("templar-chooser-{}-{}",
-                    std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+                let path = std::env::temp_dir().join(format!(
+                    "templar-chooser-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
                 match std::fs::create_dir(&path) {
                     Ok(()) => return Self(path),
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -776,27 +958,39 @@ mod tests {
     }
 
     impl Drop for TestDirectory {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     fn save_model(directory: &TestDirectory, name: &str) -> Model {
         files(ChooserRequest {
-            kind: ChooserKind::Save { current_name: Some(name.into()) },
+            kind: ChooserKind::Save {
+                current_name: Some(name.into()),
+            },
             app_id: "org.templaros.Test".into(),
             title: "Save".into(),
             activation_token: None,
             parent: Default::default(),
             starting_directory: directory.0.clone(),
             filters: vec![
-                FileFilter { name: "Page".into(), patterns: vec![FilterPattern::Glob("*.html".into())] },
-                FileFilter { name: "Text".into(), patterns: vec![FilterPattern::Mime("text/plain".into())] },
+                FileFilter {
+                    name: "Page".into(),
+                    patterns: vec![FilterPattern::Glob("*.html".into())],
+                },
+                FileFilter {
+                    name: "Text".into(),
+                    patterns: vec![FilterPattern::Mime("text/plain".into())],
+                },
             ],
             current_filter: Some(0),
         })
     }
 
     fn file_mode(model: &mut Model) -> &mut FileMode {
-        let Mode::Files(files) = &mut model.mode else { panic!("file mode") };
+        let Mode::Files(files) = &mut model.mode else {
+            panic!("file mode")
+        };
         files
     }
 
@@ -812,7 +1006,10 @@ mod tests {
         assert!(model.answer.is_none());
         assert!(!model.exit);
         model.choose();
-        assert!(model.answer.is_none(), "Choose cannot substitute for Replace");
+        assert!(
+            model.answer.is_none(),
+            "Choose cannot substitute for Replace"
+        );
         model.cancel();
         assert!(!model.confirming_replace());
         assert!(model.answer.is_none());
@@ -823,12 +1020,19 @@ mod tests {
 
         file_mode(&mut model).name.set_text("new.txt");
         model.choose();
-        let Some(Answer::Files(selection)) = &model.answer else { panic!("save answer") };
+        let Some(Answer::Files(selection)) = &model.answer else {
+            panic!("save answer")
+        };
         assert!(model.exit);
         assert_eq!(selection.paths, [directory.0.join("new.txt")]);
-        assert_eq!(selection.current_filter.as_ref().unwrap().patterns,
-            [FilterPattern::Mime("text/plain".into())]);
-        assert!(!directory.0.join("new.txt").exists(), "the picker never writes the save");
+        assert_eq!(
+            selection.current_filter.as_ref().unwrap().patterns,
+            [FilterPattern::Mime("text/plain".into())]
+        );
+        assert!(
+            !directory.0.join("new.txt").exists(),
+            "the picker never writes the save"
+        );
         assert_eq!(std::fs::read(&target).unwrap(), b"original");
     }
 
@@ -842,7 +1046,9 @@ mod tests {
         assert!(model.confirming_replace());
         model.confirm_replace();
         assert!(model.exit);
-        let Some(Answer::Files(selection)) = model.answer else { panic!("save answer") };
+        let Some(Answer::Files(selection)) = model.answer else {
+            panic!("save answer")
+        };
         assert_eq!(selection.paths, [target.clone()]);
         assert_eq!(std::fs::read(target).unwrap(), b"original");
     }
@@ -867,10 +1073,16 @@ mod tests {
         let mut model = save_model(&directory, "new.html");
         file_mode(&mut model).browser.set_current_filter(None);
         model.choose();
-        let Some(Answer::Files(selection)) = model.answer else { panic!("save answer") };
-        assert_eq!(selection.current_filter, Some(FileFilter {
-            name: "All files".into(), patterns: vec![FilterPattern::Glob("*".into())],
-        }));
+        let Some(Answer::Files(selection)) = model.answer else {
+            panic!("save answer")
+        };
+        assert_eq!(
+            selection.current_filter,
+            Some(FileFilter {
+                name: "All files".into(),
+                patterns: vec![FilterPattern::Glob("*".into())],
+            })
+        );
     }
 
     #[test]

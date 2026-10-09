@@ -1,0 +1,474 @@
+{
+  "label": "after-wp12",
+  "seconds": 120,
+  "quiet_entries": 100000,
+  "build_entries": 20000,
+  "shape": "synthetic",
+  "build_bursts": 63,
+  "build_files_created": 315000,
+  "download_appends": 1251,
+  "edits": 1260,
+  "edit_scope": "build",
+  "scopes": [
+    {
+      "scope": "quiet",
+      "search": {
+        "samples": 985,
+        "p50_ms": 2.675987,
+        "p95_ms": 3.275643,
+        "p99_ms": 3.610575,
+        "max_ms": 712.4428929999999
+      },
+      "first_fetch": {
+        "samples": 985,
+        "p50_ms": 1.494533,
+        "p95_ms": 1.862631,
+        "p99_ms": 1.96655,
+        "max_ms": 2.4562310000000003
+      },
+      "strategies": {
+        "arrays": 984,
+        "like-scan": 1
+      },
+      "arrays_hit_rate": 0.9989847715736041,
+      "queue_ms": {
+        "samples": 985,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0
+      },
+      "errors": {}
+    },
+    {
+      "scope": "build",
+      "search": {
+        "samples": 985,
+        "p50_ms": 2.4465179999999997,
+        "p95_ms": 49.434682,
+        "p99_ms": 1209.344778,
+        "max_ms": 2062.83644
+      },
+      "first_fetch": {
+        "samples": 985,
+        "p50_ms": 1.4661730000000002,
+        "p95_ms": 1.9278710000000001,
+        "p99_ms": 2.154484,
+        "max_ms": 2.462946
+      },
+      "strategies": {
+        "arrays": 232,
+        "arrays+overlay": 656,
+        "fts5-trigram": 44,
+        "like-scan": 53
+      },
+      "arrays_hit_rate": 0.9015228426395939,
+      "queue_ms": {
+        "samples": 985,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0
+      },
+      "errors": {}
+    },
+    {
+      "scope": "all",
+      "search": {
+        "samples": 985,
+        "p50_ms": 7.174118,
+        "p95_ms": 72.411511,
+        "p99_ms": 2671.1089779999998,
+        "max_ms": 3876.286901
+      },
+      "first_fetch": {
+        "samples": 985,
+        "p50_ms": 1.56831,
+        "p95_ms": 2.000164,
+        "p99_ms": 2.1770549999999997,
+        "max_ms": 3.671065
+      },
+      "strategies": {
+        "arrays+overlay": 895,
+        "fts5-trigram": 43,
+        "like-scan": 47
+      },
+      "arrays_hit_rate": 0.9086294416243654,
+      "queue_ms": {
+        "samples": 985,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0
+      },
+      "errors": {}
+    }
+  ],
+  "daemon_threads_max": 30,
+  "browse": {
+    "samples": 1233,
+    "p50_ms": 0.5157980000000001,
+    "p95_ms": 0.734895,
+    "p99_ms": 0.881185,
+    "max_ms": 1.003166
+  },
+  "browse_errors": 0,
+  "final_roots": {
+    "roots": [
+      {
+        "root": 1,
+        "path_b64": "L3RtcC8udG1wYjZ3akgyL2hvbWU=",
+        "display": "/tmp/.tmpb6wjH2/home",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 2,
+        "complete": true,
+        "entry_count": 1,
+        "policy_hash": "6ffb614dd1581176",
+        "last_scan_ms": 1791476242747,
+        "last_reconcile_started_ms": 1791476242747,
+        "last_reconcile_finished_ms": 1791476242747,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 24005,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": 126596,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        },
+        "volume": {
+          "dev_id": 38,
+          "uuid": null,
+          "label": null,
+          "fs_type": "tmpfs",
+          "fs_uuid": null,
+          "fsid": "Fsid { val: [-421138577, -631586012] }",
+          "mount_point": {
+            "bytes_b64": "L3RtcA==",
+            "display": "/tmp"
+          },
+          "mount_root": {
+            "bytes_b64": "Lw==",
+            "display": "/"
+          },
+          "mount_id": 32,
+          "confidence": "weak"
+        },
+        "offline_reason": null,
+        "offline_since_ms": null,
+        "observed_fingerprint": null,
+        "nested_in": null,
+        "contains": []
+      },
+      {
+        "root": 2,
+        "path_b64": "L3RtcC8udG1wYjZ3akgyL3F1aWV0",
+        "display": "/tmp/.tmpb6wjH2/quiet",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 4,
+        "complete": true,
+        "entry_count": 100001,
+        "policy_hash": "28ed3df1b7e41719",
+        "last_scan_ms": 1791476243736,
+        "last_reconcile_started_ms": 1791476242748,
+        "last_reconcile_finished_ms": 1791476243736,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 24005,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": 126596,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        },
+        "volume": {
+          "dev_id": 38,
+          "uuid": null,
+          "label": null,
+          "fs_type": "tmpfs",
+          "fs_uuid": null,
+          "fsid": "Fsid { val: [-421138577, -631586012] }",
+          "mount_point": {
+            "bytes_b64": "L3RtcA==",
+            "display": "/tmp"
+          },
+          "mount_root": {
+            "bytes_b64": "Lw==",
+            "display": "/"
+          },
+          "mount_id": 32,
+          "confidence": "weak"
+        },
+        "offline_reason": null,
+        "offline_since_ms": null,
+        "observed_fingerprint": null,
+        "nested_in": null,
+        "contains": []
+      },
+      {
+        "root": 3,
+        "path_b64": "L3RtcC8udG1wYjZ3akgyL2J1aWxk",
+        "display": "/tmp/.tmpb6wjH2/build",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 110,
+        "complete": true,
+        "entry_count": 21210,
+        "policy_hash": "28ed3df1b7e41719",
+        "last_scan_ms": 1791476244011,
+        "last_reconcile_started_ms": 1791476243816,
+        "last_reconcile_finished_ms": 1791476244011,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 24005,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": 126596,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        },
+        "volume": {
+          "dev_id": 38,
+          "uuid": null,
+          "label": null,
+          "fs_type": "tmpfs",
+          "fs_uuid": null,
+          "fsid": "Fsid { val: [-421138577, -631586012] }",
+          "mount_point": {
+            "bytes_b64": "L3RtcA==",
+            "display": "/tmp"
+          },
+          "mount_root": {
+            "bytes_b64": "Lw==",
+            "display": "/"
+          },
+          "mount_id": 32,
+          "confidence": "weak"
+        },
+        "offline_reason": null,
+        "offline_since_ms": null,
+        "observed_fingerprint": null,
+        "nested_in": null,
+        "contains": []
+      },
+      {
+        "root": 4,
+        "path_b64": "L3RtcC8udG1wYjZ3akgyL2Rvd25sb2Fk",
+        "display": "/tmp/.tmpb6wjH2/download",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 111,
+        "complete": true,
+        "entry_count": 5,
+        "policy_hash": "28ed3df1b7e41719",
+        "last_scan_ms": 1791476244030,
+        "last_reconcile_started_ms": 1791476244029,
+        "last_reconcile_finished_ms": 1791476244030,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 24005,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": 126596,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        },
+        "volume": {
+          "dev_id": 38,
+          "uuid": null,
+          "label": null,
+          "fs_type": "tmpfs",
+          "fs_uuid": null,
+          "fsid": "Fsid { val: [-421138577, -631586012] }",
+          "mount_point": {
+            "bytes_b64": "L3RtcA==",
+            "display": "/tmp"
+          },
+          "mount_root": {
+            "bytes_b64": "Lw==",
+            "display": "/"
+          },
+          "mount_id": 32,
+          "confidence": "weak"
+        },
+        "offline_reason": null,
+        "offline_since_ms": null,
+        "observed_fingerprint": null,
+        "nested_in": null,
+        "contains": []
+      }
+    ],
+    "diagnostics": {
+      "schema_version": 8,
+      "generation": 111,
+      "planner": "fts5-trigram",
+      "fts_available": true,
+      "change_seq_floor": 212531,
+      "change_seq_head": 312531,
+      "cursor_count": 0,
+      "availability": {
+        "state": "available",
+        "reason": null,
+        "since_ms": null
+      },
+      "storage": {
+        "main_bytes": 184463360,
+        "wal_bytes": 110358352,
+        "shm_bytes": 229376
+      }
+    },
+    "cache_identity": "e51bb28076c0c5b23fb6e88645217811"
+  },
+  "array_stats": {
+    "generation": 111,
+    "rows": 124674,
+    "bytes": 7153007,
+    "capacity_bytes": 7153007,
+    "columns": [
+      {
+        "name": "by_mtime_desc",
+        "bytes": 498696,
+        "capacity_bytes": 498696
+      },
+      {
+        "name": "by_name",
+        "bytes": 498696,
+        "capacity_bytes": 498696
+      },
+      {
+        "name": "by_size",
+        "bytes": 498696,
+        "capacity_bytes": 498696
+      },
+      {
+        "name": "dirs_by_id",
+        "bytes": 192440,
+        "capacity_bytes": 192440
+      },
+      {
+        "name": "flags",
+        "bytes": 124674,
+        "capacity_bytes": 124674
+      },
+      {
+        "name": "ids",
+        "bytes": 498696,
+        "capacity_bytes": 498696
+      },
+      {
+        "name": "kind",
+        "bytes": 124674,
+        "capacity_bytes": 124674
+      },
+      {
+        "name": "mtime",
+        "bytes": 997392,
+        "capacity_bytes": 997392
+      },
+      {
+        "name": "name_end",
+        "bytes": 498696,
+        "capacity_bytes": 498696
+      },
+      {
+        "name": "name_rank",
+        "bytes": 498696,
+        "capacity_bytes": 498696
+      },
+      {
+        "name": "names",
+        "bytes": 726867,
+        "capacity_bytes": 726867
+      },
+      {
+        "name": "size",
+        "bytes": 997392,
+        "capacity_bytes": 997392
+      },
+      {
+        "name": "subtree_end",
+        "bytes": 498696,
+        "capacity_bytes": 498696
+      },
+      {
+        "name": "subtree_start",
+        "bytes": 498696,
+        "capacity_bytes": 498696
+      }
+    ],
+    "roots": [
+      {
+        "root": 1,
+        "generation": 2,
+        "built_change_seq": 5109,
+        "rows": 1,
+        "bytes": 62,
+        "last_build_ms": 0,
+        "refusal": null,
+        "overlay_rows": 0,
+        "overlay_bytes": 0,
+        "overlay_change_seq": 5109
+      },
+      {
+        "root": 2,
+        "generation": 4,
+        "built_change_seq": 4,
+        "rows": 100001,
+        "bytes": 5735063,
+        "last_build_ms": 89,
+        "refusal": null,
+        "overlay_rows": 0,
+        "overlay_bytes": 0,
+        "overlay_change_seq": 4
+      },
+      {
+        "root": 3,
+        "generation": 108,
+        "built_change_seq": 306441,
+        "rows": 24668,
+        "bytes": 1417635,
+        "last_build_ms": 82,
+        "refusal": "snapshot required: overlay exceeds row bound",
+        "overlay_rows": 9339,
+        "overlay_bytes": 841357,
+        "overlay_change_seq": 311216
+      },
+      {
+        "root": 4,
+        "generation": 111,
+        "built_change_seq": 5109,
+        "rows": 4,
+        "bytes": 247,
+        "last_build_ms": 0,
+        "refusal": null,
+        "overlay_rows": 5,
+        "overlay_bytes": 861,
+        "overlay_change_seq": 312531
+      }
+    ],
+    "retained_bytes": 7995225
+  },
+  "overlay_peak_bytes": 908224
+}

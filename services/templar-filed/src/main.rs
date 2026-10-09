@@ -90,7 +90,8 @@ async fn main() -> Result<()> {
         .with_context(|| format!("opening state db {}", db_path.display()))?;
     tracing::info!(path = %db_path.display(), "state store ready");
 
-    let home = std::env::var_os("HOME").map(PathBuf::from)
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
         .context("HOME is required; refusing to index the filesystem root as a fallback")?;
     let index_db_path = cli.index_db.clone().unwrap_or_else(default_index_db_path);
     let index = Index::with_index_db(
@@ -109,28 +110,29 @@ async fn main() -> Result<()> {
         },
     )
     .with_context(|| format!("opening file index {}", index_db_path.display()))?;
-    tracing::info!(path = %index_db_path.display(), "file index ready");
-
-    // Persisted choices survive cache deletion and an intentionally empty root list survives
-    // restart. Registration is cheap; only the watcher walks after the bus name is claimed.
-    index.restore_configured_roots(std::slice::from_ref(&home))?;
-    for path in &cli.index_roots {
-        let native = templar_file_index::NativePath::from_path(path);
-        let existing = index.configured_policy(&native)?;
-        let expected = existing.as_ref().map_or_else(|| "absent".to_owned(), templar_file_index::RootPolicy::hash);
-        index.configure_root(&native, existing.unwrap_or_default(), &expected)?;
+    let slot = index.slot().clone();
+    match slot.current() {
+        Some(_) => tracing::info!(path = %index_db_path.display(), "file index ready"),
+        None => {
+            tracing::warn!(path = %index_db_path.display(), availability = ?slot.availability(),
+            "file index unavailable; browsing, operations, trash and previews still serve");
+        }
     }
-    let core = index.core().clone();
 
+    let lanes = templar_filed::index_lanes::Lanes::start().context("starting index lanes")?;
+    slot.set_maintenance_executor(lanes.clone());
     let service = FileService::new(
         Arc::new(SqliteJournal::new(store.clone())),
         ExecutorConfig {
             reserve_percent: cli.reserve_percent,
-            index_sink: Some(templar_filed::watcher::OperationSink::shared(core.clone())),
+            index_sink: Some(templar_filed::watcher::OperationSink::over_slot(
+                slot.clone(),
+            )),
             ..ExecutorConfig::default()
         },
         Recents::new(store.clone()),
-        index,
+        index.clone(),
+        lanes.clone(),
         LastDirectoryStore::new(store.clone(), home.clone()),
         cli.reserve_percent,
     );
@@ -161,7 +163,10 @@ async fn main() -> Result<()> {
             );
         }
         println!("recents:   {}", service.recents.list(None, 1000)?.len());
-        println!("index:     {} root(s)", service.index.roots()?.len());
+        match service.index.roots() {
+            Ok(roots) => println!("index:     {} root(s)", roots.len()),
+            Err(error) => println!("index:     unavailable ({error})"),
+        }
         return Ok(());
     }
 
@@ -220,31 +225,66 @@ async fn main() -> Result<()> {
         .context("looking up the hosted Index1 object")?
         .signal_emitter()
         .clone();
-    core.set_change_sink(Arc::new(Index1Signals::new(
-        emitter,
-        tokio::runtime::Handle::current(),
-    )));
-
-    // Arming watches, walking a never-scanned root and repairing a stale one all happen after the
-    // bus name is claimed and all run on the watcher's own thread: no client ever waits on a scan,
-    // and a root that already has a committed generation is served from it immediately (the
-    // warm-start policy) rather than rescanned synchronously.
-    let watcher_plan = classify_roots(&core)?;
-    // Default downtime acceleration on supported btrfs roots with a privileged checkpoint
-    // authority. The pointer belongs beside authoritative session state, including runs outside
-    // a systemd unit; lack of STATE_DIRECTORY must not silently disable the default path.
-    let delta = Some(templar_filed::watcher::DeltaSetup {
-        handle: tokio::runtime::Handle::current(),
-        state_path: db_path.with_file_name("delta-checkpoint.json"),
-    });
-    let watcher_handle = templar_filed::watcher::spawn(core, watcher_plan, delta)
-        .context("starting the index watcher")?;
-    observer::register(watcher_handle.control());
-    let departures = watch_for_departing_consumers(&connection).await?;
-    connection.request_name(names::BUS_NAME).await.context("claiming org.templaros.Files after observation readiness")?;
+    let watcher_slot: Arc<std::sync::Mutex<Option<templar_filed::watcher::WatcherHandle>>> =
+        Arc::default();
+    let bring_up = {
+        let index = index.clone();
+        let index_roots = cli.index_roots.clone();
+        let home = home.clone();
+        let watcher_slot = Arc::clone(&watcher_slot);
+        let runtime = tokio::runtime::Handle::current();
+        let checkpoint = db_path.with_file_name("delta-checkpoint.json");
+        move |core: &templar_file_index::Index| -> Result<()> {
+            // Persisted choices survive cache deletion and an intentionally empty root list
+            // survives restart. Registration is cheap; only the watcher walks.
+            index.restore_configured_roots(std::slice::from_ref(&home))?;
+            for path in &index_roots {
+                let native = templar_file_index::NativePath::from_path(path);
+                let existing = index.configured_policy(&native)?;
+                let expected = existing
+                    .as_ref()
+                    .map_or_else(|| "absent".to_owned(), templar_file_index::RootPolicy::hash);
+                index.configure_root(&native, existing.unwrap_or_default(), &expected)?;
+            }
+            let signals = Index1Signals::new(emitter.clone(), runtime.clone());
+            core.set_change_sink(Arc::new(signals.clone()));
+            // Arming watches, walking a never-scanned root and repairing a stale one all run on
+            // the watcher's own thread: no client ever waits on a scan, and a root that already
+            // has a committed generation is served from it immediately (the warm-start policy).
+            let watcher_plan = classify_roots(core)?;
+            // Default downtime acceleration on supported btrfs roots with a privileged checkpoint
+            // authority. The pointer belongs beside authoritative session state.
+            let delta = Some(templar_filed::watcher::DeltaSetup {
+                handle: runtime.clone(),
+                state_path: checkpoint.clone(),
+            });
+            let handle = templar_filed::watcher::spawn(core.clone(), watcher_plan, delta)
+                .context("starting the index watcher")?;
+            observer::register(handle.control());
+            *watcher_slot.lock().expect("the watcher handle lock") = Some(handle);
+            // Consumers that saw an unavailable cache resubscribe on this.
+            templar_file_index::ChangeSink::generation_advanced(&signals, core.generation()?, &[]);
+            Ok(())
+        }
+    };
+    match slot.current() {
+        Some(core) => bring_up(&core)?,
+        None => slot.on_revival(move |core| {
+            if let Err(error) = bring_up(core) {
+                tracing::error!(%error, "the file index reopened but could not be brought up");
+            }
+        }),
+    }
+    let departures = watch_for_departing_consumers(&connection, Arc::clone(&slot), lanes).await?;
+    connection
+        .request_name(names::BUS_NAME)
+        .await
+        .context("claiming org.templaros.Files after observation readiness")?;
 
     tracing::info!(name = names::BUS_NAME, "templar-filed ready");
-    departures.await.context("joining the index consumer-loss bridge")?;
+    departures
+        .await
+        .context("joining the index consumer-loss bridge")?;
     anyhow::bail!("index consumer-loss subscription ended; refusing unobservable lifetime pins");
 }
 
@@ -252,15 +292,30 @@ async fn main() -> Result<()> {
 ///
 /// Explicit observations have no renewal timer. Install the unique-name-loss subscription
 /// before claiming the public name, and terminate if it ends rather than keeping immortal pins.
-async fn watch_for_departing_consumers(connection: &zbus::Connection) -> Result<tokio::task::JoinHandle<()>> {
+/// The departed caller's cursors go with it, so they stop pinning tombstones at once instead of
+/// at their idle expiry.
+async fn watch_for_departing_consumers(
+    connection: &zbus::Connection,
+    slot: Arc<templar_filed::index_slot::IndexSlot>,
+    lanes: Arc<templar_filed::index_lanes::Lanes>,
+) -> Result<tokio::task::JoinHandle<()>> {
     use futures_util::StreamExt as _;
-    let proxy = zbus::fdo::DBusProxy::new(connection).await.context("connecting the consumer-loss bridge")?;
-    let mut changes = proxy.receive_name_owner_changed().await.context("subscribing to consumer name loss")?;
+    let proxy = zbus::fdo::DBusProxy::new(connection)
+        .await
+        .context("connecting the consumer-loss bridge")?;
+    let mut changes = proxy
+        .receive_name_owner_changed()
+        .await
+        .context("subscribing to consumer name loss")?;
     Ok(tokio::spawn(async move {
         while let Some(signal) = changes.next().await {
             let Ok(args) = signal.args() else { continue };
             if args.name().starts_with(':') && args.new_owner().is_none() {
                 observer::forget_consumer(args.name());
+                lanes.cancel_caller(args.name());
+                if let Some(core) = slot.current() {
+                    core.release_owner(args.name());
+                }
             }
         }
     }))

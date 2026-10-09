@@ -88,8 +88,13 @@ impl<B: Backend + 'static> DataDeviceHandler for TemplarCompState<B> {
 }
 
 impl<B: Backend + 'static> smithay::input::dnd::DndGrabHandler for TemplarCompState<B> {
-    fn dropped(&mut self, _target: Option<DndTarget<'_, Self>>, _validated: bool,
-        _seat: Seat<Self>, _location: Point<f64, Logical>) {
+    fn dropped(
+        &mut self,
+        _target: Option<DndTarget<'_, Self>>,
+        _validated: bool,
+        _seat: Seat<Self>,
+        _location: Point<f64, Logical>,
+    ) {
         // Called under the grab mutex: clear plain state only, never refresh pointer focus here.
         self.native_file_drag_active = false;
         self.dwell = None;
@@ -100,25 +105,47 @@ impl<B: Backend + 'static> smithay::input::dnd::DndGrabHandler for TemplarCompSt
     }
 }
 impl<B: Backend + 'static> WaylandDndGrabHandler for TemplarCompState<B> {
-    fn dnd_requested<S: Source>(&mut self, source: S, _icon: Option<WlSurface>,
-        seat: Seat<Self>, serial: Serial, type_: GrabType) {
+    fn dnd_requested<S: Source>(
+        &mut self,
+        source: S,
+        _icon: Option<WlSurface>,
+        seat: Seat<Self>,
+        serial: Serial,
+        type_: GrabType,
+    ) {
         if self.session_lock.locked {
             source.cancel();
             return;
         }
-        let file_drag = source.metadata().is_some_and(|metadata|
-            metadata.mime_types.iter().any(|mime| mime == templar_types::uri_list::MIME_TYPE));
+        let file_drag = source.metadata().is_some_and(|metadata| {
+            metadata
+                .mime_types
+                .iter()
+                .any(|mime| mime == templar_types::uri_list::MIME_TYPE)
+        });
         match type_ {
             GrabType::Pointer => {
-                let Some(pointer) = seat.get_pointer() else { source.cancel(); return; };
-                let Some(start) = pointer.grab_start_data() else { source.cancel(); return; };
+                let Some(pointer) = seat.get_pointer() else {
+                    source.cancel();
+                    return;
+                };
+                let Some(start) = pointer.grab_start_data() else {
+                    source.cancel();
+                    return;
+                };
                 let grab = DnDGrab::new_pointer(&self.display_handle, start, source, seat);
                 self.native_file_drag_active = file_drag;
                 pointer.set_grab(self, grab, serial, Focus::Keep);
             }
             GrabType::Touch => {
-                let Some(touch) = seat.get_touch() else { source.cancel(); return; };
-                let Some(start) = touch.grab_start_data() else { source.cancel(); return; };
+                let Some(touch) = seat.get_touch() else {
+                    source.cancel();
+                    return;
+                };
+                let Some(start) = touch.grab_start_data() else {
+                    source.cancel();
+                    return;
+                };
                 let grab = DnDGrab::new_touch(&self.display_handle, start, source, seat);
                 self.native_file_drag_active = false;
                 touch.set_grab(self, grab, serial);
@@ -303,8 +330,11 @@ pub struct TabControlPress {
 impl TabControlPress {
     fn matches(self, target: PressTarget, layout: Option<templar_window::WindowLayout>) -> bool {
         target == PressTarget::Affordance(self.window_id, Affordance::Button(self.control))
-            && layout.is_some_and(|layout| layout::tab_control_tags(&layout).into_iter()
-                .any(|(control, rect)| control == self.control && rect == self.rect))
+            && layout.is_some_and(|layout| {
+                layout::tab_control_tags(&layout)
+                    .into_iter()
+                    .any(|(control, rect)| control == self.control && rect == self.rect)
+            })
     }
 }
 
@@ -359,10 +389,9 @@ enum PressTarget {
 fn press_target_at(candidates: &[PressCandidate], pos: TemplarPoint) -> PressTarget {
     for candidate in candidates {
         if candidate.has_frame && !candidate.maximized {
-            for (index, square) in
-                templar_window::WindowLayout::resize_squares(candidate.geometry)
-                    .iter()
-                    .enumerate()
+            for (index, square) in templar_window::WindowLayout::resize_squares(candidate.geometry)
+                .iter()
+                .enumerate()
             {
                 if rect_contains(*square, pos) {
                     let corner = templar_window::Corner::ALL[index];
@@ -413,7 +442,8 @@ fn tab_approach_at(candidates: &[PressCandidate], pos: TemplarPoint) -> Option<W
             if tab_aims_at(tabs, pos)
                 || near_inside_edge
                 || templar_window::WindowLayout::activation_regions(client)
-                    .into_iter().any(|region| rect_contains(region, pos))
+                    .into_iter()
+                    .any(|region| rect_contains(region, pos))
             {
                 return Some(candidate.window_id);
             }
@@ -428,9 +458,15 @@ fn tab_approach_at(candidates: &[PressCandidate], pos: TemplarPoint) -> Option<W
 fn tab_aims_at(tabs: TabHitRects, pos: TemplarPoint) -> bool {
     let corridor = |rect: templar_window::Rect| {
         let margin = templar_window::geometry::RESIZE_MARGIN;
-        rect_contains(templar_window::Rect::new(
-            rect.x - margin, rect.y - margin, rect.width + 2 * margin, rect.height + 2 * margin,
-        ), pos)
+        rect_contains(
+            templar_window::Rect::new(
+                rect.x - margin,
+                rect.y - margin,
+                rect.width + 2 * margin,
+                rect.height + 2 * margin,
+            ),
+            pos,
+        )
     };
     (tabs.title_visible && corridor(tabs.layout.title))
         || (tabs.controls_visible && tabs.layout.controls.iter().any(|(_, rect)| corridor(*rect)))
@@ -989,7 +1025,10 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     ) {
         // Physical seat events advance the sole idle clock. Inventory hotplug does not invent
         // user activity or postpone a lock/suspend deadline.
-        if !matches!(&event, InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }) {
+        if !matches!(
+            &event,
+            InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }
+        ) {
             self.note_activity();
         }
         match event {
@@ -1176,8 +1215,10 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         );
 
         if self.name_tab_menu.open.is_some()
-            && (escape_pressed || action.as_ref().is_some_and(|action| action.is_some())
-                || self.pending_super_reveal.is_some() || self.session_lock.locked)
+            && (escape_pressed
+                || action.as_ref().is_some_and(|action| action.is_some())
+                || self.pending_super_reveal.is_some()
+                || self.session_lock.locked)
         {
             self.name_tab_menu.dismiss();
             B::request_redraw(self);
@@ -1299,16 +1340,29 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let output = match output_name {
             Some(name) => {
                 let id = self.display_control.output_id_for_alias(name);
-                self.space.outputs().find(|output| output.name() == name || id.is_some_and(|id| output.name() == id.0))
-            },
+                self.space.outputs().find(|output| {
+                    output.name() == name || id.is_some_and(|id| output.name() == id.0)
+                })
+            }
             None => {
                 let primary = self.display_control.primary_id();
-                self.space.outputs().find(|output| primary.is_some_and(|id| output.name() == id.0)).or_else(|| self.space.outputs().next())
-            },
+                self.space
+                    .outputs()
+                    .find(|output| primary.is_some_and(|id| output.name() == id.0))
+                    .or_else(|| self.space.outputs().next())
+            }
         };
-        let Some(output) = output else { return; };
-        let Some(pos) = crate::viewport::absolute_position(&self.space, output,
-            event.position_transformed((1, 1).into()), self.backend_data.absolute_input_transform(output)) else { return; };
+        let Some(output) = output else {
+            return;
+        };
+        let Some(pos) = crate::viewport::absolute_position(
+            &self.space,
+            output,
+            event.position_transformed((1, 1).into()),
+            self.backend_data.absolute_input_transform(output),
+        ) else {
+            return;
+        };
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer();
         let Some(pointer) = pointer else { return };
@@ -1359,14 +1413,21 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
 
         if self.session_lock.locked
-            || !matches!(self.window_service.presentation(), templar_window::Presentation::Normal)
+            || !matches!(
+                self.window_service.presentation(),
+                templar_window::Presentation::Normal
+            )
         {
             self.name_tab_menu.dismiss();
         }
-        if !self.session_lock.locked && self.name_tab_menu.button(
-            &mut self.window_service, to_templar_point(pointer.current_location()), button,
-            button_state == ButtonState::Pressed,
-        ) {
+        if !self.session_lock.locked
+            && self.name_tab_menu.button(
+                &mut self.window_service,
+                to_templar_point(pointer.current_location()),
+                button,
+                button_state == ButtonState::Pressed,
+            )
+        {
             crate::space_sync::sync_after_change(self);
             self.refresh_name_menu_pointer(serial, event.time_msec());
             return;
@@ -1394,7 +1455,10 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                     let pos = to_templar_point(pointer.current_location());
                     if !self.session_lock.locked
                         && self.popup_owner_at(pointer.current_location()).is_none()
-                        && pressed.matches(self.press_target_at(pos), self.window_service.window_layout(pressed.window_id))
+                        && pressed.matches(
+                            self.press_target_at(pos),
+                            self.window_service.window_layout(pressed.window_id),
+                        )
                     {
                         self.activate_tab_control(pressed.window_id, pressed.control);
                     }
@@ -1418,8 +1482,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 .seat
                 .get_pointer()
                 .is_some_and(|grabbed| grabbed.is_grabbed());
-            self.swallowing_press = button == BTN_LEFT
-                && swallow_matching_release(compositor_owned, grab_installed);
+            self.swallowing_press =
+                button == BTN_LEFT && swallow_matching_release(compositor_owned, grab_installed);
             if compositor_owned {
                 if self.name_tab_menu.open.is_some() {
                     self.refresh_name_menu_pointer(serial, event.time_msec());
@@ -1445,10 +1509,24 @@ impl<B: Backend + 'static> TemplarCompState<B> {
 
     /// Menu ownership changes even when no window geometry or stacking rank changed.
     fn refresh_name_menu_pointer(&mut self, serial: Serial, time: u32) {
-        let Some(pointer) = self.seat.get_pointer().filter(|pointer| !pointer.is_grabbed()) else { return; };
+        let Some(pointer) = self
+            .seat
+            .get_pointer()
+            .filter(|pointer| !pointer.is_grabbed())
+        else {
+            return;
+        };
         let location = pointer.current_location();
         let under = self.surface_under(location);
-        pointer.motion(self, under, &MotionEvent { location, serial, time });
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location,
+                serial,
+                time,
+            },
+        );
         pointer.frame(self);
         self.update_perimeter_cursor(to_templar_point(location));
     }
@@ -1529,7 +1607,9 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             .filter_map(|window_id| {
                 let record = self.window_service.window(window_id)?;
                 let framed = self.window_service.has_frame(window_id);
-                let tabs = self.window_service.window_layout(window_id)
+                let tabs = self
+                    .window_service
+                    .window_layout(window_id)
                     .map(|layout| TabHitRects {
                         layout,
                         title_visible: self.window_service.title_revealed(window_id),
@@ -1556,7 +1636,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         if self.session_lock.locked || self.pointer_gesture_active() {
             return;
         }
-        if self.name_tab_menu.open.is_some_and(|menu| rect_contains(menu.panel, pos)) {
+        if self
+            .name_tab_menu
+            .open
+            .is_some_and(|menu| rect_contains(menu.panel, pos))
+        {
             self.show_compositor_cursor(Some("default"));
             return;
         }
@@ -1616,8 +1700,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
         // Real file DnD may ask for Home without releasing its source. Every other held-button
         // gesture still blocks dwell; a thrown/moved/resized window is not a Home request.
-        let intent = dwell_during_grab(self.pointer_gesture_active(),
-            self.native_file_drag_active, self.dwell_intent_at(pos));
+        let intent = dwell_during_grab(
+            self.pointer_gesture_active(),
+            self.native_file_drag_active,
+            self.dwell_intent_at(pos),
+        );
         let now = crate::window_bridge::now_monotonic_ns(&self.clock);
         self.dwell = dwell_after_motion(self.dwell.take(), intent, pos, now);
         if self.dwell.is_some() && !self.dwell_timer_pending {
@@ -1667,11 +1754,14 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 // Aiming at a visible title/control freezes the tabs; anywhere else on the
                 // window lets them follow. Set before selecting, so the just-aimed corner
                 // is the one that holds.
-                let aiming = tab_aims_at(TabHitRects {
-                    layout,
-                    title_visible: self.window_service.title_revealed(window_id),
-                    controls_visible: self.window_service.controls_revealed(window_id),
-                }, pos);
+                let aiming = tab_aims_at(
+                    TabHitRects {
+                        layout,
+                        title_visible: self.window_service.title_revealed(window_id),
+                        controls_visible: self.window_service.controls_revealed(window_id),
+                    },
+                    pos,
+                );
                 self.window_service.set_tab_latched(window_id, aiming);
                 if self
                     .window_service
@@ -1708,7 +1798,9 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     fn arm_dwell_timer(&mut self) {
         self.dwell_timer_pending = true;
         let now = crate::window_bridge::now_monotonic_ns(&self.clock);
-        let delay = self.window_service.next_tab_deadline()
+        let delay = self
+            .window_service
+            .next_tab_deadline()
             .map(|at| Duration::from_nanos(at.saturating_sub(now)))
             .unwrap_or(Duration::from_millis(DWELL_MS))
             .min(Duration::from_millis(DWELL_MS));
@@ -1744,7 +1836,10 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         }
         if self.pointer_gesture_active() {
             if self.native_file_drag_active
-                && self.dwell.as_ref().is_some_and(|dwell| dwell.intent == DwellIntent::HomeCorner)
+                && self
+                    .dwell
+                    .as_ref()
+                    .is_some_and(|dwell| dwell.intent == DwellIntent::HomeCorner)
             {
                 // Home reveal is the only native-drag exception. Keep name-tab deadlines
                 // frozen for the grab, rather than spinning on a deadline we cannot fire.
@@ -1894,7 +1989,6 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         self.window_service.toggle_always_on_top(window_id);
         crate::space_sync::sync_after_change(self);
     }
-
 
     /// Whether a peek on `output` should stay up: the pointer is still on the edge that opened
     /// it, or anywhere on the shell's own surface.
@@ -2111,9 +2205,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
 
     /// Whether a compositor-run pointer gesture (a move or a resize) is in progress.
     fn pointer_gesture_active(&self) -> bool {
-        self.swallowing_press || self.seat
-            .get_pointer()
-            .is_some_and(|pointer| pointer.is_grabbed())
+        self.swallowing_press
+            || self
+                .seat
+                .get_pointer()
+                .is_some_and(|pointer| pointer.is_grabbed())
     }
 
     /// One pointer button while the window overview is up. `true` when the mode took the event and
@@ -2239,7 +2335,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let popup_owner = self.popup_owner_at(location);
         if let Some((window_id, root)) = popup_owner {
             if self.window_service.is_client_window(window_id) {
-                if !self.window_service.window(window_id).is_some_and(|window| window.activated) {
+                if !self
+                    .window_service
+                    .window(window_id)
+                    .is_some_and(|window| window.activated)
+                {
                     activate_window(self, window_id);
                 }
             } else if let Some(keyboard) = self.seat.get_keyboard() {
@@ -2254,9 +2354,16 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         if button == 0x111
             && let PressTarget::Affordance(window_id, Affordance::Tag) = target
             && self.window_service.is_client_window(window_id)
-            && matches!(self.window_service.layer_of(window_id), Some(Layer::Normal | Layer::AppOnTop))
-            && let Some(output) = self.window_service.outputs().iter()
-                .find(|output| rect_contains(output.logical, pos)).map(|output| output.logical)
+            && matches!(
+                self.window_service.layer_of(window_id),
+                Some(Layer::Normal | Layer::AppOnTop)
+            )
+            && let Some(output) = self
+                .window_service
+                .outputs()
+                .iter()
+                .find(|output| rect_contains(output.logical, pos))
+                .map(|output| output.logical)
         {
             self.name_tab_menu.show(window_id, pos, output, button);
             self.dwell = None;
@@ -2306,15 +2413,24 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 Affordance::Button(control) => {
                     if let Some(layout) = self.window_service.window_layout(window_id)
                         && let Some((_, rect)) = layout::tab_control_tags(&layout)
-                            .into_iter().find(|(tag, _)| *tag == control)
+                            .into_iter()
+                            .find(|(tag, _)| *tag == control)
                     {
-                        self.pending_tab_control = Some(TabControlPress { window_id, control, rect });
+                        self.pending_tab_control = Some(TabControlPress {
+                            window_id,
+                            control,
+                            rect,
+                        });
                     }
                     return true;
                 }
                 // A screen-filling title remains a pin/click route; restore precedes move.
-                Affordance::Tag if self.window_service.window(window_id)
-                    .is_some_and(|window| window.covers_screen()) => {
+                Affordance::Tag
+                    if self
+                        .window_service
+                        .window(window_id)
+                        .is_some_and(|window| window.covers_screen()) =>
+                {
                     self.toggle_always_on_top(window_id);
                     return true;
                 }
@@ -2439,7 +2555,9 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 crate::viewport::output_geometry(&self.space, output)
                     .is_some_and(|geometry| geometry.to_f64().contains(pos))
             })?;
-            let origin = crate::viewport::output_geometry(&self.space, output)?.loc.to_f64();
+            let origin = crate::viewport::output_geometry(&self.space, output)?
+                .loc
+                .to_f64();
             let surface = self.session_lock.surfaces.get(&output.name())?;
             return Some((surface.wl_surface().clone(), origin));
         }
@@ -2616,8 +2734,16 @@ pub enum DwellIntent {
     BarPromote(String),
 }
 
-fn dwell_during_grab(grabbed: bool, native_file_drag: bool, intent: Option<DwellIntent>) -> Option<DwellIntent> {
-    if grabbed && !(native_file_drag && intent == Some(DwellIntent::HomeCorner)) { None } else { intent }
+fn dwell_during_grab(
+    grabbed: bool,
+    native_file_drag: bool,
+    intent: Option<DwellIntent>,
+) -> Option<DwellIntent> {
+    if grabbed && !(native_file_drag && intent == Some(DwellIntent::HomeCorner)) {
+        None
+    } else {
+        intent
+    }
 }
 
 /// A dwell in progress: what it is for, where the pointer settled, and when it settled there.
@@ -2664,7 +2790,6 @@ fn in_home_corner(output: templar_window::Rect, pos: TemplarPoint) -> bool {
         && pos.y < output.y + CORNER_SQUARE
 }
 
-
 /// Whether `pos` is in the band along `output`'s bottom edge that opens a peek — the bottom-left
 /// corner **included**, which is the corner the affordance is drawn in
 /// (`chrome::collect_output_chrome`).
@@ -2702,15 +2827,45 @@ mod tests {
 
     #[test]
     fn native_file_drag_alone_can_dwell_for_home_without_releasing_its_source() {
-        assert_eq!(dwell_during_grab(true, true, Some(DwellIntent::HomeCorner)), Some(DwellIntent::HomeCorner));
-        assert_eq!(dwell_during_grab(true, false, Some(DwellIntent::HomeCorner)), None);
-        assert_eq!(dwell_during_grab(true, true, Some(DwellIntent::BarPeek("panel".into()))), None);
-        assert_eq!(dwell_during_grab(true, true, Some(DwellIntent::BarPromote("panel".into()))), None);
-        assert_eq!(dwell_during_grab(false, false, Some(DwellIntent::HomeCorner)), Some(DwellIntent::HomeCorner));
+        assert_eq!(
+            dwell_during_grab(true, true, Some(DwellIntent::HomeCorner)),
+            Some(DwellIntent::HomeCorner)
+        );
+        assert_eq!(
+            dwell_during_grab(true, false, Some(DwellIntent::HomeCorner)),
+            None
+        );
+        assert_eq!(
+            dwell_during_grab(true, true, Some(DwellIntent::BarPeek("panel".into()))),
+            None
+        );
+        assert_eq!(
+            dwell_during_grab(true, true, Some(DwellIntent::BarPromote("panel".into()))),
+            None
+        );
+        assert_eq!(
+            dwell_during_grab(false, false, Some(DwellIntent::HomeCorner)),
+            Some(DwellIntent::HomeCorner)
+        );
         let pos = TemplarPoint { x: 2, y: 2 };
-        let start = dwell_after_motion(None, dwell_during_grab(true, true, Some(DwellIntent::HomeCorner)), pos, 0).unwrap();
-        let continued = dwell_after_motion(Some(start), Some(DwellIntent::HomeCorner), pos, DWELL_MS * 1_000_000).unwrap();
-        assert_eq!(continued.since_ns, 0, "native drag motion preserves a real corner dwell");
+        let start = dwell_after_motion(
+            None,
+            dwell_during_grab(true, true, Some(DwellIntent::HomeCorner)),
+            pos,
+            0,
+        )
+        .unwrap();
+        let continued = dwell_after_motion(
+            Some(start),
+            Some(DwellIntent::HomeCorner),
+            pos,
+            DWELL_MS * 1_000_000,
+        )
+        .unwrap();
+        assert_eq!(
+            continued.since_ns, 0,
+            "native drag motion preserves a real corner dwell"
+        );
     }
 
     fn output(x: i32, y: i32, width: i32, height: i32) -> Rectangle<i32, Logical> {
@@ -2956,10 +3111,19 @@ mod tests {
         let window = framed_at(1, Rect::new(300, 300, 640, 480), Corner::TopRight);
         let original = window.tabs.unwrap().layout;
         let rect = original.control_rect(templar_window::TabControl::Close);
-        let pressed = TabControlPress { window_id: window.window_id, control: ControlTag::Close, rect };
+        let pressed = TabControlPress {
+            window_id: window.window_id,
+            control: ControlTag::Close,
+            rect,
+        };
         let target = press_target_at(&[window], rect.center());
         assert!(pressed.matches(target, Some(original)));
-        let moved = WindowLayout::new(original.client, Corner::BottomLeft, original.placement, screen());
+        let moved = WindowLayout::new(
+            original.client,
+            Corner::BottomLeft,
+            original.placement,
+            screen(),
+        );
         assert!(!pressed.matches(target, Some(moved)));
         assert!(!pressed.matches(target, None));
         assert!(!pressed.matches(PressTarget::Nothing, Some(original)));
@@ -2967,13 +3131,21 @@ mod tests {
         hidden.tabs.as_mut().unwrap().controls_visible = false;
         assert!(!pressed.matches(press_target_at(&[hidden], rect.center()), Some(original)));
         let higher = card(2, rect);
-        assert!(!pressed.matches(press_target_at(&[higher, window], rect.center()), Some(original)));
+        assert!(!pressed.matches(
+            press_target_at(&[higher, window], rect.center()),
+            Some(original)
+        ));
     }
 
     #[test]
     fn opposite_controls_keep_the_aim_corridor_at_the_far_corner() {
         let tabs = TabHitRects {
-            layout: WindowLayout::new(Rect::new(300, 300, 640, 480), Corner::TopLeft, TabPlacement::OppositeCorners, screen()),
+            layout: WindowLayout::new(
+                Rect::new(300, 300, 640, 480),
+                Corner::TopLeft,
+                TabPlacement::OppositeCorners,
+                screen(),
+            ),
             title_visible: true,
             controls_visible: true,
         };
@@ -3156,16 +3328,14 @@ mod tests {
             let window = framed_at(1, Rect::new(300, 300, 640, 480), corner);
             let candidates = [window];
             let layout = window.tabs.expect("framed").layout;
-            for (index, square) in
-                WindowLayout::resize_squares(window.geometry).iter().enumerate()
+            for (index, square) in WindowLayout::resize_squares(window.geometry)
+                .iter()
+                .enumerate()
             {
                 let expected = Corner::ALL[index];
                 assert_eq!(
                     press_target_at(&candidates, square.center()),
-                    PressTarget::Affordance(
-                        WindowId(1),
-                        Affordance::Edge(expected.resize_edges())
-                    ),
+                    PressTarget::Affordance(WindowId(1), Affordance::Edge(expected.resize_edges())),
                     "{expected:?} square at layout corner {corner:?}"
                 );
             }

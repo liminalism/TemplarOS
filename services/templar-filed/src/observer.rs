@@ -30,12 +30,16 @@
 //! `Dormant`, and neither happens when no consumer has ever taken a lease — which is why the idle
 //! machine still reaches a genuinely unbounded wait.
 
+use parking_lot::Mutex;
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering}, mpsc},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::Duration,
 };
-use parking_lot::Mutex;
 
 use templar_file_index::watch::SourceWaker;
 
@@ -135,8 +139,11 @@ impl Observer {
     /// A consumer asked something of the index. Returns `Some(Arm)` when that has to wake the
     /// tree up.
     pub fn lease(&mut self, client: &str, now_ms: i64) -> Option<Transition> {
-        self.leases.entry(client.to_owned())
-            .and_modify(|consumer| consumer.expiry_ms = now_ms.saturating_add(self.config.lease_ttl_ms))
+        self.leases
+            .entry(client.to_owned())
+            .and_modify(|consumer| {
+                consumer.expiry_ms = now_ms.saturating_add(self.config.lease_ttl_ms);
+            })
             .or_insert_with(|| Consumer {
                 expiry_ms: now_ms.saturating_add(self.config.lease_ttl_ms),
                 observations: HashSet::new(),
@@ -168,9 +175,9 @@ impl Observer {
     }
 
     pub fn unobserve(&mut self, client: &str, token: u64, now_ms: i64) {
-        if self.leases.get_mut(client).is_some_and(|consumer|
-            consumer.observations.remove(&token) && consumer.observations.is_empty())
-        {
+        if self.leases.get_mut(client).is_some_and(|consumer| {
+            consumer.observations.remove(&token) && consumer.observations.is_empty()
+        }) {
             self.release(client, now_ms);
         }
     }
@@ -191,7 +198,8 @@ impl Observer {
 
     /// Expire what has run out and decide whether the state must change.
     pub fn tick(&mut self, now_ms: i64) -> Option<Transition> {
-        self.leases.retain(|_, consumer| !consumer.observations.is_empty() || consumer.expiry_ms > now_ms);
+        self.leases
+            .retain(|_, consumer| !consumer.observations.is_empty() || consumer.expiry_ms > now_ms);
         self.enter_grace_if_idle(now_ms);
         if self.state == ObserverState::Grace
             && self.grace_until_ms.is_some_and(|until| now_ms >= until)
@@ -222,9 +230,12 @@ impl Observer {
         let deadline = match self.state {
             ObserverState::Dormant => return None,
             ObserverState::Grace => self.grace_until_ms?,
-            ObserverState::Resuming | ObserverState::Active =>
-                self.leases.values().filter(|consumer| consumer.observations.is_empty())
-                    .map(|consumer| consumer.expiry_ms).min()?,
+            ObserverState::Resuming | ObserverState::Active => self
+                .leases
+                .values()
+                .filter(|consumer| consumer.observations.is_empty())
+                .map(|consumer| consumer.expiry_ms)
+                .min()?,
         };
         Some(Duration::from_millis(
             u64::try_from(deadline.saturating_sub(now_ms)).unwrap_or(0),
@@ -243,8 +254,16 @@ pub enum Command {
     Release(String),
     Observe(String, u64, Arc<AtomicBool>),
     Unobserve(String, u64),
-    Reconcile(templar_file_index::RootId, templar_file_index::reconcile::Trigger),
+    Reconcile(
+        templar_file_index::RootId,
+        templar_file_index::reconcile::Trigger,
+    ),
     ForgetRoot(templar_file_index::RootId),
+    VolumeChange(
+        templar_file_index::RootId,
+        templar_file_index::volume::Presence,
+    ),
+    MountBoundary(templar_file_index::RootId, templar_file_index::NativePath),
 }
 
 /// A non-blocking handle onto the watcher loop.
@@ -262,7 +281,11 @@ pub struct WatcherControl {
 impl WatcherControl {
     #[must_use]
     pub fn new(commands: mpsc::Sender<Command>, waker: Option<SourceWaker>) -> Self {
-        Self { commands, waker, liveness: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            commands,
+            waker,
+            liveness: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Best effort by construction: a watcher that has stopped is not a reason to fail a query.
@@ -278,14 +301,18 @@ impl WatcherControl {
             // Revoke before enqueueing: a delayed handler cannot pin after Release was drained.
             alive.store(false, Ordering::SeqCst);
         }
-        self.commands.send(command).map_err(|_| "index watcher is unavailable".to_owned())?;
+        self.commands
+            .send(command)
+            .map_err(|_| "index watcher is unavailable".to_owned())?;
         self.wake();
         Ok(())
     }
 
     pub fn observation_liveness(&self, client: &str) -> Arc<AtomicBool> {
         let mut clients = self.liveness.lock();
-        if let Some(alive) = clients.get(client) { return alive.clone(); }
+        if let Some(alive) = clients.get(client) {
+            return alive.clone();
+        }
         let alive = Arc::new(AtomicBool::new(true));
         clients.insert(client.to_owned(), alive.clone());
         alive
@@ -346,14 +373,20 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let control = WatcherControl::new(sender, None);
         let alive = control.observation_liveness(":1.42");
-        control.send_required(Command::Observe(":1.42".to_owned(), 1, alive.clone())).unwrap();
-        control.send_required(Command::Release(":1.42".to_owned())).unwrap();
+        control
+            .send_required(Command::Observe(":1.42".to_owned(), 1, alive.clone()))
+            .unwrap();
+        control
+            .send_required(Command::Release(":1.42".to_owned()))
+            .unwrap();
         assert!(!alive.load(Ordering::SeqCst));
         assert!(control.liveness.lock().is_empty());
         let mut observer = Observer::new(config());
         while let Ok(command) = receiver.try_recv() {
             match command {
-                Command::Observe(name, token, alive) if alive.load(Ordering::SeqCst) => { observer.observe(&name, token, 0); }
+                Command::Observe(name, token, alive) if alive.load(Ordering::SeqCst) => {
+                    observer.observe(&name, token, 0);
+                }
                 Command::Release(name) => observer.release(&name, 0),
                 _ => {}
             }
@@ -373,7 +406,10 @@ mod tests {
         observer.lease(":1.42", 50_000);
         assert_eq!(observer.next_deadline(50_000), None);
         observer.release(":1.42", 50_000);
-        assert_eq!(observer.next_deadline(50_000), Some(Duration::from_millis(500)));
+        assert_eq!(
+            observer.next_deadline(50_000),
+            Some(Duration::from_millis(500))
+        );
         assert_eq!(observer.tick(50_500), Some(Transition::Disarm));
         assert_eq!(observer.observe(":1.99", 2, 51_000), Some(Transition::Arm));
     }

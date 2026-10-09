@@ -27,8 +27,8 @@ pub mod settings;
 pub mod unit;
 pub mod uri_list;
 pub mod variant;
-pub mod workload;
 pub mod wallpaper;
+pub mod workload;
 
 pub use action::{ActionCategory, ActionDecl, Chord, Key, Modifiers, Requires};
 pub use app::{
@@ -41,4 +41,6 @@ pub use variant::{
     AppOriginKind, AppProvenance, AppVariantId, LaunchMechanism, LogicalAppId, TrustTier,
     UpdateOwner,
 };
-pub use workload::{ResourceId, ResourceIdentity, ResourceMetadata, WorkloadClass, WorkloadId, WorkloadRecord};
+pub use workload::{
+    ResourceId, ResourceIdentity, ResourceMetadata, WorkloadClass, WorkloadId, WorkloadRecord,
+};

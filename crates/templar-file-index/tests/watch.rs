@@ -80,6 +80,57 @@ fn fixture_with(build: impl FnOnce(&std::path::Path)) -> Fixture {
 }
 
 #[test]
+fn a_burst_of_new_directories_cannot_spend_every_allowance_in_one_pump() {
+    let mut fixture = fixture();
+    // Six directories of 900 files: each fits the per-directory inline cap, but together they
+    // exceed the pump-wide budget, so the tail of the burst must become repairs, not mutations.
+    for dir in 0..6 {
+        let unpacked = fixture.tree.join("notes").join(format!("unpacked-{dir}"));
+        fs::create_dir_all(&unpacked).unwrap();
+        for file in 0..900 {
+            fs::write(unpacked.join(format!("part-{file:04}")), b"x").unwrap();
+        }
+    }
+    let notes = fixture
+        .owner
+        .source_mut()
+        .watch_for(&fixture.tree.join("notes"))
+        .expect("the notes directory was armed by the first pass");
+    for dir in 0..6 {
+        fixture.owner.source_mut().push_named(
+            notes,
+            &format!("unpacked-{dir}"),
+            RawKind::Created,
+            true,
+        );
+    }
+
+    let pumped = fixture.owner.pump(Some(Duration::ZERO), &fixture.clock);
+    assert!(
+        pumped.mutations.len() <= 3_600 + 6 * 3,
+        "the pump budget bounds inline absorbs: {} mutations",
+        pumped.mutations.len()
+    );
+    assert_eq!(
+        pumped.repairs.len(),
+        2,
+        "the two directories past the budget become repairs"
+    );
+    for repair in &pumped.repairs {
+        let ScanScope::Subtree(path) = &repair.scope else {
+            panic!(
+                "a spilled absorb is a subtree repair, not {:?}",
+                repair.scope
+            );
+        };
+        assert!(
+            path.to_path().starts_with(fixture.tree.join("notes")),
+            "the repair covers the spilled directory"
+        );
+    }
+}
+
+#[test]
 fn watch_create_appears_within_bound() {
     let mut fixture = fixture();
     let before = fixture.index.generation().unwrap().0;
@@ -137,7 +188,13 @@ fn watch_create_appears_within_bound() {
     );
 
     for name in ["second", "third"] {
-        let result = fixture.index.search(&Query::new(name)).expect("a search");
+        let result = fixture
+            .index
+            .search(
+                &Query::new(name),
+                &templar_file_index::CallContext::internal(),
+            )
+            .expect("a search");
         assert!(
             result
                 .hits

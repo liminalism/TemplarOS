@@ -1509,7 +1509,30 @@ impl Check for FileIndexHealth {
             diagnostics.change_seq_floor,
             diagnostics.change_seq_head,
         )];
-        let mut any_error = false;
+        lines.push(format!(
+            "availability: {} reason={:?}",
+            diagnostics.availability.state, diagnostics.availability.reason
+        ));
+        lines.push(format!(
+            "storage: main={} WAL={} SHM={} total={} bytes",
+            diagnostics.storage.main_bytes,
+            diagnostics.storage.wal_bytes,
+            diagnostics.storage.shm_bytes,
+            diagnostics.storage.total()
+        ));
+        lines.extend(templar_file_index::diagnostics::runtime_lines(
+            diagnostics.runtime.as_ref(),
+        ));
+        let warnings = templar_file_index::diagnostics::health_warnings(
+            diagnostics.storage,
+            diagnostics.runtime.as_ref(),
+        );
+        let mut any_error = !diagnostics.availability.is_available() || !warnings.is_empty();
+        lines.extend(
+            warnings
+                .into_iter()
+                .map(|warning| format!("warning: {warning}")),
+        );
         for root in &roots {
             let (line, root_had_error) = describe_index_root(root);
             any_error |= root_had_error;
@@ -1529,7 +1552,7 @@ impl Check for FileIndexHealth {
                 diagnostics.schema_version,
                 diagnostics.generation,
             ),
-            lines.join("; "),
+            lines.join("\n"),
         )
     }
 }
@@ -1549,6 +1572,10 @@ enum FileIndexProbe {
 /// Read only the existing derived store. Do not open session state or construct the filed owner:
 /// both paths migrate and perform recovery writes, which are forbidden in a diagnostic probe.
 fn open_index_for_diagnostics() -> FileIndexProbe {
+    if let Some(diagnostics) = live_index_diagnostics() {
+        let roots = diagnostics.roots.clone();
+        return FileIndexProbe::Ready(diagnostics, roots);
+    }
     let Some(db_path) = index_db_path() else {
         return FileIndexProbe::Skipped(
             "no $HOME/$XDG_CACHE_HOME to locate the index cache",
@@ -1573,6 +1600,41 @@ fn open_index_for_diagnostics() -> FileIndexProbe {
     }
 }
 
+/// Bounded read-only call on a separate thread because Check is synchronous and callers may
+/// already be running Tokio. NoAutoStart preserves a stopped service and its disk fallback.
+fn live_index_diagnostics() -> Option<templar_file_index::Diagnostics> {
+    std::thread::Builder::new()
+        .name("templar-doctor-index".into())
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            runtime.block_on(async {
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    let connection = zbus::Connection::session().await.ok()?;
+                    let proxy = templar_client::proxies::FilesIndexProxy::new(&connection)
+                        .await
+                        .ok()?;
+                    let response: Option<String> = proxy
+                        .inner()
+                        .call_with_flags("Roots", zbus::proxy::MethodFlags::NoAutoStart.into(), &())
+                        .await
+                        .ok()?;
+                    let value: serde_json::Value = serde_json::from_str(&response?).ok()?;
+                    serde_json::from_value(value.get("diagnostics")?.clone()).ok()
+                })
+                .await
+                .ok()
+                .flatten()
+            })
+        })
+        .ok()?
+        .join()
+        .ok()
+        .flatten()
+}
+
 /// One `RootStatus` as a `templar doctor` detail line: state, entry count, why it is stale (if it
 /// is), the watcher's own backend/limits/armed/refused/last-event report, and the last
 /// reconciliation. Returns the line and whether it carries a genuine error (a watcher error or a
@@ -1590,18 +1652,34 @@ fn describe_index_root(root: &templar_file_index::RootStatus) -> (String, bool) 
         root.generation,
         root.complete,
     );
+    let _ = write!(
+        line,
+        " — metadata={} identity={:?} fs_type={:?} fs_uuid={:?} fsid={:?} mount_id={:?} mount_point={:?} mount_root={:?} nested_in={:?} contains={:?} offline_reason={:?}",
+        root.metadata.as_str(),
+        root.volume.confidence,
+        root.volume.fs_type,
+        root.volume.fs_uuid,
+        root.volume.fsid,
+        root.volume.mount_id,
+        root.volume.mount_point.as_ref().map(|p| p.display()),
+        root.volume.mount_root.as_ref().map(|p| p.display()),
+        root.nested_in,
+        root.contains,
+        root.offline_reason
+    );
     if let Some(reason) = &root.reason {
-        let _ = write!(line, " — stale: {reason}");
+        let _ = write!(line, " — reason: {reason}");
     }
     match &root.watch {
         Some(watch) => {
             let _ = write!(
                 line,
-                " — watcher {} armed={} refused={} limit={} queue_limit={} overflow_count={} \
+                " — watcher {} required={} armed={} refused={} limit={} queue_limit={} overflow_count={} \
                  last_event_ms={}",
                 watch.backend,
+                watch.required_display(),
                 watch.watches_armed,
-                watch.watches_refused,
+                watch.refused_display(),
                 watch
                     .watch_limit
                     .map_or_else(|| "?".to_owned(), |v| v.to_string()),

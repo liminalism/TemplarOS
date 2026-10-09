@@ -1807,8 +1807,7 @@ mod tests {
     fn every_compositor_bound_chord_is_declared_in_the_action_manifest() {
         // `check-actions` reads the manifest and the shell surfaces; this is the direction it
         // cannot see — a chord the compositor binds but nothing declares.
-        const MANIFEST: &str =
-            include_str!("../../../crates/templar-types/src/action.rs");
+        const MANIFEST: &str = include_str!("../../../crates/templar-types/src/action.rs");
         for action in [
             RecoveryAction::ShowAllWindows,
             RecoveryAction::EscapeFullscreenOrModal,

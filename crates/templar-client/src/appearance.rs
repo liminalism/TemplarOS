@@ -1,6 +1,6 @@
 //! Subscribe before reading shared appearance; notification delivery wakes the existing UI loop.
 use crate::proxies::SettingsProxy;
-use templar_types::appearance::{Appearance, THEME_KEY, ACCENT_KEY, REDUCED_MOTION_KEY};
+use templar_types::appearance::{ACCENT_KEY, Appearance, REDUCED_MOTION_KEY, THEME_KEY};
 use tokio::sync::{oneshot, watch};
 
 #[derive(Debug)]
@@ -14,10 +14,19 @@ impl AppearanceObserver {
         let (sender, updates) = watch::channel(None);
         let (stop, mut stopped) = oneshot::channel();
         std::thread::spawn(move || {
-            let publish = |value| { sender.send_replace(Some(value)); wake(); };
-            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            let publish = |value| {
+                sender.send_replace(Some(value));
+                wake();
+            };
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
                 Ok(runtime) => runtime,
-                Err(error) => { publish(Err(error.to_string())); return; }
+                Err(error) => {
+                    publish(Err(error.to_string()));
+                    return;
+                }
             };
             runtime.block_on(async {
                 let observe = async {
@@ -51,38 +60,64 @@ impl AppearanceObserver {
                 }
             });
         });
-        Self { updates, stop: Some(stop), terminal_seen: false }
+        Self {
+            updates,
+            stop: Some(stop),
+            terminal_seen: false,
+        }
     }
     pub fn take_update(&mut self) -> Option<Result<Appearance, String>> {
         let changed = match self.updates.has_changed() {
             Ok(changed) => changed,
-            Err(_) if !self.terminal_seen => { self.terminal_seen = true; true }
+            Err(_) if !self.terminal_seen => {
+                self.terminal_seen = true;
+                true
+            }
             Err(_) => false,
         };
-        if changed { self.updates.borrow_and_update().clone() } else { None }
+        if changed {
+            self.updates.borrow_and_update().clone()
+        } else {
+            None
+        }
     }
 }
 impl Drop for AppearanceObserver {
-    fn drop(&mut self) { if let Some(stop) = self.stop.take() { let _ = stop.send(()); } }
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+    }
 }
 async fn read(proxy: &SettingsProxy<'_>) -> Result<Appearance, String> {
     use templar_types::settings::{Observation, SettingObservation};
     let snapshot: Observation<Vec<SettingObservation<serde_json::Value>>> =
         serde_json::from_str(&proxy.inspect().await.map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())?;
-    let get = |key| snapshot.value.iter().find(|entry| entry.key == key)
-        .map(|entry| &entry.value).ok_or_else(|| format!("Appearance snapshot omitted {key}"));
-    Ok(Appearance::from_settings(choice(get(THEME_KEY)?)?, choice(get(ACCENT_KEY)?)?,
-        boolean(get(REDUCED_MOTION_KEY)?)?))
+    let get = |key| {
+        snapshot
+            .value
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(|entry| &entry.value)
+            .ok_or_else(|| format!("Appearance snapshot omitted {key}"))
+    };
+    Ok(Appearance::from_settings(
+        choice(get(THEME_KEY)?)?,
+        choice(get(ACCENT_KEY)?)?,
+        boolean(get(REDUCED_MOTION_KEY)?)?,
+    ))
 }
 fn choice(value: &serde_json::Value) -> Result<&str, String> {
     (value.get("type").and_then(serde_json::Value::as_str) == Some("choice"))
-        .then(|| value.get("value").and_then(serde_json::Value::as_str)).flatten()
+        .then(|| value.get("value").and_then(serde_json::Value::as_str))
+        .flatten()
         .ok_or_else(|| "Appearance value is not a choice".to_owned())
 }
 fn boolean(value: &serde_json::Value) -> Result<bool, String> {
     (value.get("type").and_then(serde_json::Value::as_str) == Some("bool"))
-        .then(|| value.get("value").and_then(serde_json::Value::as_bool)).flatten()
+        .then(|| value.get("value").and_then(serde_json::Value::as_bool))
+        .flatten()
         .ok_or_else(|| "Reduced-motion value is not a boolean".to_owned())
 }
 
@@ -92,7 +127,10 @@ mod tests {
 
     #[test]
     fn service_tagged_values_are_read_without_coercing_unknown_shapes() {
-        assert_eq!(choice(&serde_json::json!({"type":"choice","value":"dark"})).unwrap(), "dark");
+        assert_eq!(
+            choice(&serde_json::json!({"type":"choice","value":"dark"})).unwrap(),
+            "dark"
+        );
         assert!(boolean(&serde_json::json!({"type":"bool","value":true})).unwrap());
         assert!(choice(&serde_json::json!({"Choice":"dark"})).is_err());
         assert!(boolean(&serde_json::json!({"type":"bool","value":"true"})).is_err());
@@ -101,7 +139,11 @@ mod tests {
     #[test]
     fn observer_keeps_only_latest_state_and_reports_terminal_error_once() {
         let (sender, updates) = watch::channel(None);
-        let mut observer = AppearanceObserver { updates, stop: None, terminal_seen: false };
+        let mut observer = AppearanceObserver {
+            updates,
+            stop: None,
+            terminal_seen: false,
+        };
         sender.send_replace(Some(Ok(Appearance::default())));
         let dark = Appearance::from_settings("dark", "blue", true);
         sender.send_replace(Some(Ok(dark)));
@@ -109,7 +151,10 @@ mod tests {
         assert_eq!(observer.take_update(), None);
         sender.send_replace(Some(Err("subscription closed".to_owned())));
         drop(sender);
-        assert_eq!(observer.take_update(), Some(Err("subscription closed".to_owned())));
+        assert_eq!(
+            observer.take_update(),
+            Some(Err("subscription closed".to_owned()))
+        );
         assert_eq!(observer.take_update(), None);
     }
 }

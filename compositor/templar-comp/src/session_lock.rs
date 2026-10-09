@@ -43,16 +43,25 @@ impl SessionLockState {
     /// Current-generation physical-output coverage, not a historical Locked acknowledgement.
     /// Inaccessible last-owned outputs remain required and cannot be attested by another output.
     pub fn protected_covered(&self) -> bool {
-        self.locked && !self.unknown_physical_outputs && self.coverage.iter().all(|(_, presented)| *presented)
+        self.locked
+            && !self.unknown_physical_outputs
+            && self.coverage.iter().all(|(_, presented)| *presented)
     }
 
     pub fn requires_protected_frame(&self, output: &Output) -> bool {
-        self.locked && self.coverage.iter().any(|(old, presented)| old == output && !presented)
+        self.locked
+            && self
+                .coverage
+                .iter()
+                .any(|(old, presented)| old == output && !presented)
     }
 
     pub fn reset_coverage(&mut self) {
         if self.locked {
-            self.generation = self.generation.checked_add(1).expect("lock generation exhausted");
+            self.generation = self
+                .generation
+                .checked_add(1)
+                .expect("lock generation exhausted");
             for (_, presented) in &mut self.coverage {
                 *presented = false;
             }
@@ -60,14 +69,22 @@ impl SessionLockState {
     }
 
     pub fn sync_physical_state(&mut self, unknown_physical_outputs: bool) -> bool {
-        if self.unknown_physical_outputs == unknown_physical_outputs { return false; }
+        if self.unknown_physical_outputs == unknown_physical_outputs {
+            return false;
+        }
         self.unknown_physical_outputs = unknown_physical_outputs;
         self.reset_coverage();
-        if self.locked { self.confirm_if_covered(); }
+        if self.locked {
+            self.confirm_if_covered();
+        }
         true
     }
 
-    pub fn outputs_changed<'a>(&mut self, outputs: impl Iterator<Item = &'a Output>, unknown_physical_outputs: bool) {
+    pub fn outputs_changed<'a>(
+        &mut self,
+        outputs: impl Iterator<Item = &'a Output>,
+        unknown_physical_outputs: bool,
+    ) {
         self.sync_physical_state(unknown_physical_outputs);
         if !self.locked {
             return;
@@ -78,8 +95,13 @@ impl SessionLockState {
                 if let Some(surface) = self.surfaces.get(&output.name())
                     && let Some(visible) = crate::viewport::visible_physical_size(output)
                 {
-                    let logical: smithay::utils::Size<i32, smithay::utils::Logical> = visible.to_f64().to_logical(output.current_scale().fractional_scale()).to_i32_round();
-                    surface.with_pending_state(|state| state.size = Some((logical.w.max(1) as u32, logical.h.max(1) as u32).into()));
+                    let logical: smithay::utils::Size<i32, smithay::utils::Logical> = visible
+                        .to_f64()
+                        .to_logical(output.current_scale().fractional_scale())
+                        .to_i32_round();
+                    surface.with_pending_state(|state| {
+                        state.size = Some((logical.w.max(1) as u32, logical.h.max(1) as u32).into())
+                    });
                     surface.send_configure();
                 }
                 let presented = previous
@@ -102,7 +124,8 @@ impl SessionLockState {
     }
 
     fn confirm_if_covered(&mut self) {
-        if !self.unknown_physical_outputs && self.coverage.iter().all(|(_, presented)| *presented)
+        if !self.unknown_physical_outputs
+            && self.coverage.iter().all(|(_, presented)| *presented)
             && let Some(confirmation) = self.confirmation.take()
         {
             confirmation.lock();
@@ -122,7 +145,11 @@ impl<B: Backend + 'static> SessionLockHandler for TemplarCompState<B> {
         }
         self.session_lock.locked = true;
         self.name_tab_menu = crate::chrome::NameTabMenu::default();
-        self.session_lock.generation = self.session_lock.generation.checked_add(1).expect("lock generation exhausted");
+        self.session_lock.generation = self
+            .session_lock
+            .generation
+            .checked_add(1)
+            .expect("lock generation exhausted");
         self.session_lock.confirmation = Some(confirmation);
         self.session_lock.coverage.clear();
         self.close_rail("session locked");
@@ -132,11 +159,15 @@ impl<B: Backend + 'static> SessionLockHandler for TemplarCompState<B> {
         }
         if let Some(pointer) = self.seat.get_pointer() {
             pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), 0);
-            pointer.motion(self, None, &smithay::input::pointer::MotionEvent {
-                location: pointer.current_location(),
-                serial: SERIAL_COUNTER.next_serial(),
-                time: 0,
-            });
+            pointer.motion(
+                self,
+                None,
+                &smithay::input::pointer::MotionEvent {
+                    location: pointer.current_location(),
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: 0,
+                },
+            );
         }
         if let Some(touch) = self.seat.get_touch() {
             touch.cancel(self);
@@ -148,9 +179,16 @@ impl<B: Backend + 'static> SessionLockHandler for TemplarCompState<B> {
         self.swallowing_press = false;
         self.dwell = None;
         self.screencopy.retire_all_previews();
-        let generation = self.screencopy.demand.as_ref().map_or(0, |demand| demand.generation());
+        let generation = self
+            .screencopy
+            .demand
+            .as_ref()
+            .map_or(0, |demand| demand.generation());
         self.screencopy.set_shell_demand(generation, Vec::new());
-        self.session_lock.outputs_changed(self.space.outputs(), self.backend_data.unknown_physical_outputs());
+        self.session_lock.outputs_changed(
+            self.space.outputs(),
+            self.backend_data.unknown_physical_outputs(),
+        );
         self.wake_for_protected_frame();
         crate::compositor_control::publish_activity(self);
         // A pre-lock frame may still be in flight. Only its successor can cover an output.
@@ -203,7 +241,10 @@ mod tests {
     use super::*;
     #[test]
     fn unknown_initial_physical_image_prevents_vacuous_lock_coverage() {
-        let mut lock = SessionLockState { locked: true, ..Default::default() };
+        let mut lock = SessionLockState {
+            locked: true,
+            ..Default::default()
+        };
         lock.outputs_changed(std::iter::empty(), true);
         assert!(!lock.protected_covered());
         let unknown_generation = lock.frame_generation();

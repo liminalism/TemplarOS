@@ -30,7 +30,9 @@ impl ResourcesClient for templar_client::proxies::ResourcesProxy<'_> {
         self.targets().await.context("Resources1.Targets")
     }
     async fn explain_target(&self, resource_id: &str) -> Result<String> {
-        self.explain_target(resource_id).await.context("Resources1.ExplainTarget")
+        self.explain_target(resource_id)
+            .await
+            .context("Resources1.ExplainTarget")
     }
     async fn stage(&self) -> Result<String> {
         self.stage().await.context("Resources1.Stage")
@@ -265,4 +267,3 @@ pub fn parse_traces(traces_json: &str) -> Vec<TraceRecord> {
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
 }
-

@@ -303,22 +303,33 @@ pub struct SleepWatch {
 }
 
 impl SleepWatch {
-    pub fn readiness(&self) -> watch::Receiver<bool> { self.ready.clone() }
+    pub fn readiness(&self) -> watch::Receiver<bool> {
+        self.ready.clone()
+    }
 }
 
 impl Drop for SleepWatch {
     fn drop(&mut self) {
         self.state.send_replace(false);
-        if let Some(task) = self.task.take() { task.abort(); }
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 }
 
 /// Watch logind for `PrepareForSleep`. One match rule, no polling, no wakeups of its own.
 ///
 /// No system bus or a lost stream leaves sleep-delay capability unavailable.
-pub fn spawn_sleep_watch(system_connection: Option<zbus::Connection>, edges: SessionEdges) -> SleepWatch {
+pub fn spawn_sleep_watch(
+    system_connection: Option<zbus::Connection>,
+    edges: SessionEdges,
+) -> SleepWatch {
     let (state, ready) = watch::channel(false);
-    let mut owner = SleepWatch { ready, state, task: None };
+    let mut owner = SleepWatch {
+        ready,
+        state,
+        task: None,
+    };
     let Some(connection) = system_connection else {
         tracing::warn!("no system bus; sleep will not be counted against session time");
         return owner;
@@ -337,7 +348,8 @@ pub fn spawn_sleep_watch(system_connection: Option<zbus::Connection>, edges: Ses
                 return;
             }
         };
-        let mut stream = match zbus::MessageStream::for_match_rule(rule, &connection, Some(4)).await {
+        let mut stream = match zbus::MessageStream::for_match_rule(rule, &connection, Some(4)).await
+        {
             Ok(stream) => stream,
             Err(error) => {
                 tracing::warn!(%error, "watching logind for PrepareForSleep");
@@ -354,7 +366,9 @@ pub fn spawn_sleep_watch(system_connection: Option<zbus::Connection>, edges: Ses
                 }
             };
             match message.body().deserialize::<bool>() {
-                Ok(going_to_sleep) => { let _ = edges.send(SessionEdge::Sleeping(going_to_sleep)); }
+                Ok(going_to_sleep) => {
+                    let _ = edges.send(SessionEdge::Sleeping(going_to_sleep));
+                }
                 Err(error) => tracing::warn!(%error, "invalid logind sleep signal"),
             }
         }
@@ -797,5 +811,4 @@ mod tests {
             ["can:PowerOff", "can:Reboot", "can:Suspend"]
         );
     }
-
 }

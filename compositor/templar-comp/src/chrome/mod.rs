@@ -24,14 +24,14 @@
 //! buried window's title over the translucent terminal in front of it.
 
 pub mod cache;
+mod identification;
 pub mod layout;
 pub mod paint;
 pub mod text;
-mod identification;
 
 use cache::{CachedWidget, WidgetKey};
 use smithay::{
-    backend::renderer::{element::memory::MemoryRenderBufferRenderElement, ImportMem},
+    backend::renderer::{ImportMem, element::memory::MemoryRenderBufferRenderElement},
     desktop::{Space, Window},
     output::Output,
     utils::{Logical, Physical, Point},
@@ -103,26 +103,44 @@ impl NameTabMenuTarget {
     pub fn row(&self, index: usize) -> Rect {
         let top = self.panel.height * index as i32 / 3;
         let bottom = self.panel.height * (index as i32 + 1) / 3;
-        Rect::new(self.panel.x, self.panel.y + top, self.panel.width, bottom - top)
+        Rect::new(
+            self.panel.x,
+            self.panel.y + top,
+            self.panel.width,
+            bottom - top,
+        )
     }
 
     pub fn choice_at(&self, pos: templar_window::Point) -> Option<WindowStacking> {
-        Self::ROWS.iter().enumerate().find_map(|(index, (choice, _))| {
-            let row = self.row(index);
-            (pos.x >= row.x && pos.x < row.right() && pos.y >= row.y && pos.y < row.bottom())
-                .then_some(*choice)
-        })
+        Self::ROWS
+            .iter()
+            .enumerate()
+            .find_map(|(index, (choice, _))| {
+                let row = self.row(index);
+                (pos.x >= row.x && pos.x < row.right() && pos.y >= row.y && pos.y < row.bottom())
+                    .then_some(*choice)
+            })
     }
 }
 
 impl NameTabMenu {
-    pub fn show(&mut self, window_id: WindowId, pos: templar_window::Point, output: Rect, button: u32) {
+    pub fn show(
+        &mut self,
+        window_id: WindowId,
+        pos: templar_window::Point,
+        output: Rect,
+        button: u32,
+    ) {
         let width = 200.min(output.width);
         let height = 90.min(output.height);
         self.open = Some(NameTabMenuTarget {
             window_id,
-            panel: Rect::new(pos.x.clamp(output.x, output.right() - width),
-                pos.y.clamp(output.y, output.bottom() - height), width, height),
+            panel: Rect::new(
+                pos.x.clamp(output.x, output.right() - width),
+                pos.y.clamp(output.y, output.bottom() - height),
+                width,
+                height,
+            ),
         });
         // Own the opening secondary-button release, without starting a primary drag/pin.
         self.pressed = Some((button, None));
@@ -133,12 +151,20 @@ impl NameTabMenu {
     }
 
     /// Claim complete button pairs, committing only a primary release on its pressed row.
-    pub fn button<C: templar_window::IdentityCache>(&mut self, service: &mut WindowService<C>,
-        pos: templar_window::Point, button: u32, pressed: bool) -> bool
-    {
+    pub fn button<C: templar_window::IdentityCache>(
+        &mut self,
+        service: &mut WindowService<C>,
+        pos: templar_window::Point,
+        button: u32,
+        pressed: bool,
+    ) -> bool {
         if !pressed {
-            let Some((held, choice)) = self.pressed else { return self.open.is_some(); };
-            if held != button { return true; }
+            let Some((held, choice)) = self.pressed else {
+                return self.open.is_some();
+            };
+            if held != button {
+                return true;
+            }
             self.pressed = None;
             if let Some(choice) = choice {
                 if let Some(target) = self.open
@@ -151,7 +177,9 @@ impl NameTabMenu {
             }
             return true;
         }
-        let Some(target) = self.open else { return self.pressed.is_some(); };
+        let Some(target) = self.open else {
+            return self.pressed.is_some();
+        };
         let choice = target.choice_at(pos);
         self.pressed = Some((button, (button == 0x110).then_some(choice).flatten()));
         if choice.is_none() || !service.is_visible(target.window_id) {
@@ -261,19 +289,37 @@ impl ChromeState {
 
     /// Repaint owned chrome without replacing window cards, output placement, or scene state.
     pub fn update_appearance(&mut self, appearance: templar_types::appearance::Appearance) -> bool {
-        if self.appearance == appearance { return false; }
+        if self.appearance == appearance {
+            return false;
+        }
         self.appearance = appearance;
-        for widget in self.name_tags.values_mut()
+        for widget in self
+            .name_tags
+            .values_mut()
             .chain(self.control_tags.values_mut())
-            .chain(self.identification.values_mut().map(|identification| &mut identification.widget))
+            .chain(
+                self.identification
+                    .values_mut()
+                    .map(|identification| &mut identification.widget),
+            )
             .chain(self.taskfield_labels.values_mut())
             .chain(self.taskfield_headers.iter_mut())
             .chain(self.taskfield_ring.iter_mut())
             .chain(self.switcher_rows.values_mut())
             .chain(self.name_tab_menu_rows.iter_mut())
             .chain(self.gate_outline.iter_mut())
-            .chain(self.outlines.values_mut().flat_map(|widgets| widgets.iter_mut()))
-            .chain([&mut self.pressure, &mut self.lock, &mut self.taskfield_scrim, &mut self.switcher_heading, &mut self.peek])
+            .chain(
+                self.outlines
+                    .values_mut()
+                    .flat_map(|widgets| widgets.iter_mut()),
+            )
+            .chain([
+                &mut self.pressure,
+                &mut self.lock,
+                &mut self.taskfield_scrim,
+                &mut self.switcher_heading,
+                &mut self.peek,
+            ])
         {
             widget.invalidate();
         }
@@ -347,7 +393,10 @@ pub fn collect_output_chrome<R: ImportMem>(
     output: &Output,
     renderer: &mut R,
     background: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) -> (Vec<MemoryRenderBufferRenderElement<R>>, bool) where R::TextureId: Clone + Send + 'static {
+) -> (Vec<MemoryRenderBufferRenderElement<R>>, bool)
+where
+    R::TextureId: Clone + Send + 'static,
+{
     let Some(output_geometry) = crate::viewport::output_geometry(inputs.space, output) else {
         return (Vec::new(), false);
     };
@@ -381,15 +430,34 @@ pub fn collect_output_chrome<R: ImportMem>(
     if let Some(text) = chrome.display_recovery.as_ref() {
         let width = (local_rect.width - 24).max(1);
         let colour = paint::opaque(chrome.appearance.palette.shell_fill);
-        let fonts = chrome.fonts.as_mut().map(|fonts| (&mut fonts.cache, fonts.face));
+        let fonts = chrome
+            .fonts
+            .as_mut()
+            .map(|fonts| (&mut fonts.cache, fonts.face));
         if let Some(element) = chrome.display_recovery_widget.ensure(
-            WidgetKey::new(text, colour), (width, 42), output_scale,
-            Point::from((12.0 * output_scale, (local_rect.height - 54).max(0) as f64 * output_scale)),
-            &mut chrome.scratch, renderer, |painter, pixel_w, pixel_h| {
-                paint::scatter_label(painter, pixel_w, pixel_h, text, colour, fonts,
-                    scale_factor(pixel_w, width));
+            WidgetKey::new(text, colour),
+            (width, 42),
+            output_scale,
+            Point::from((
+                12.0 * output_scale,
+                (local_rect.height - 54).max(0) as f64 * output_scale,
+            )),
+            &mut chrome.scratch,
+            renderer,
+            |painter, pixel_w, pixel_h| {
+                paint::scatter_label(
+                    painter,
+                    pixel_w,
+                    pixel_h,
+                    text,
+                    colour,
+                    fonts,
+                    scale_factor(pixel_w, width),
+                );
             },
-        ) { elements.push(element); }
+        ) {
+            elements.push(element);
+        }
     }
 
     if let Some(overlay) = &inputs.recovery_protocol.pressure_overlay {
@@ -448,11 +516,20 @@ pub fn collect_output_chrome<R: ImportMem>(
     chrome.taskfield_headers.clear();
     chrome.taskfield_ring.clear();
 
-    if let Some(menu) = inputs.name_tab_menu.open
+    if let Some(menu) = inputs
+        .name_tab_menu
+        .open
         .filter(|menu| inputs.window_service.is_visible(menu.window_id))
     {
-        collect_name_tab_menu(chrome, inputs.window_service, menu, output_rect, output_scale,
-            renderer, &mut elements);
+        collect_name_tab_menu(
+            chrome,
+            inputs.window_service,
+            menu,
+            output_rect,
+            output_scale,
+            renderer,
+            &mut elements,
+        );
     }
 
     collect_peek_affordance(
@@ -522,7 +599,9 @@ fn collect_peek_affordance<R: ImportMem>(
     output_scale: f64,
     renderer: &mut R,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     if gesture_gate.config().enabled
         || window_service.peek_output().is_some()
         || !screen_filled_by_a_window(window_service, output_rect)
@@ -563,7 +642,9 @@ fn collect_gesture_gate<R: ImportMem>(
     output_scale: f64,
     renderer: &mut R,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     let config = gesture_gate.config();
     if !config.enabled || !config.learning {
         chrome.gate_outline.clear();
@@ -656,7 +737,9 @@ pub fn collect_window_chrome<R: ImportMem>(
     output_scale: f64,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
     renderer: &mut R,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     // All client windows share one visibility policy, including fullscreen overlays.
     if window_service.is_client_window(window_id) {
         if window_service.title_revealed(window_id) {
@@ -713,7 +796,10 @@ fn paint_lock_screen<R: ImportMem>(
     output_scale: f64,
     location: Point<f64, Physical>,
     renderer: &mut R,
-) -> Option<MemoryRenderBufferRenderElement<R>> where R::TextureId: Clone + Send + 'static {
+) -> Option<MemoryRenderBufferRenderElement<R>>
+where
+    R::TextureId: Clone + Send + 'static,
+{
     let palette = &chrome.appearance.palette;
     let key = WidgetKey::new("locked", paint::opaque(palette.ground));
     let fonts = chrome.fonts.as_mut().map(|f| (&mut f.cache, f.face));
@@ -744,7 +830,10 @@ fn paint_pressure_overlay<R: ImportMem>(
     output_scale: f64,
     location: Point<f64, Physical>,
     renderer: &mut R,
-) -> Option<MemoryRenderBufferRenderElement<R>> where R::TextureId: Clone + Send + 'static {
+) -> Option<MemoryRenderBufferRenderElement<R>>
+where
+    R::TextureId: Clone + Send + 'static,
+{
     let palette = &chrome.appearance.palette;
     let key = WidgetKey::new(overlay.message.clone(), paint::opaque(palette.danger_soft))
         .with_secondary(overlay.offender_app_id.clone().unwrap_or_default())
@@ -783,24 +872,54 @@ fn paint_pressure_overlay<R: ImportMem>(
 }
 
 fn collect_name_tab_menu<R: ImportMem>(
-    chrome: &mut ChromeState, service: &WindowService<DbusIdentityCache>,
-    menu: NameTabMenuTarget, output: Rect, scale: f64, renderer: &mut R,
+    chrome: &mut ChromeState,
+    service: &WindowService<DbusIdentityCache>,
+    menu: NameTabMenuTarget,
+    output: Rect,
+    scale: f64,
+    renderer: &mut R,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
-    if menu.panel.intersection_area(output) == 0 { return; }
+) where
+    R::TextureId: Clone + Send + 'static,
+{
+    if menu.panel.intersection_area(output) == 0 {
+        return;
+    }
     for (index, (choice, label)) in NameTabMenuTarget::ROWS.into_iter().enumerate() {
         let row = menu.row(index);
-        let selected = service.window(menu.window_id).is_some_and(|window| window.stacking == choice);
+        let selected = service
+            .window(menu.window_id)
+            .is_some_and(|window| window.stacking == choice);
         let palette = &chrome.appearance.palette;
-        let background = paint::opaque(if selected { palette.accent_soft } else { palette.system_shell });
-        let fonts = chrome.fonts.as_mut().map(|fonts| (&mut fonts.cache, fonts.face));
+        let background = paint::opaque(if selected {
+            palette.accent_soft
+        } else {
+            palette.system_shell
+        });
+        let fonts = chrome
+            .fonts
+            .as_mut()
+            .map(|fonts| (&mut fonts.cache, fonts.face));
         if let Some(element) = chrome.name_tab_menu_rows[index].ensure(
             WidgetKey::new(label, background).with_variant(u32::from(selected)),
-            (row.width, row.height), scale,
+            (row.width, row.height),
+            scale,
             to_physical(row, Point::from((output.x, output.y)), scale),
-            &mut chrome.scratch, renderer,
-            move |painter, width, height| paint::switcher_row(painter, width, height, label,
-                selected, false, fonts, scale_factor(width, row.width), palette),
+            &mut chrome.scratch,
+            renderer,
+            move |painter, width, height| {
+                paint::switcher_row(
+                    painter,
+                    width,
+                    height,
+                    label,
+                    selected,
+                    false,
+                    fonts,
+                    scale_factor(width, row.width),
+                    palette,
+                )
+            },
         ) {
             elements.push(element);
         }
@@ -814,7 +933,9 @@ fn collect_switcher<R: ImportMem>(
     output_scale: f64,
     renderer: &mut R,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     let heading_rows = usize::from(switcher.heading.is_some());
     // More windows than the output has rows for: show the stretch around the selection rather
     // than letting the panel's clamp cut rows off the bottom, where the walk would vanish.
@@ -900,8 +1021,13 @@ fn collect_switcher_heading<R: ImportMem>(
     output_scale: f64,
     renderer: &mut R,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
-    let background = accent.map_or(paint::opaque(chrome.appearance.palette.system_shell), paint::opaque);
+) where
+    R::TextureId: Clone + Send + 'static,
+{
+    let background = accent.map_or(
+        paint::opaque(chrome.appearance.palette.system_shell),
+        paint::opaque,
+    );
     let key = WidgetKey::new(heading.to_owned(), background);
     let heading = heading.to_owned();
     let fonts = chrome.fonts.as_mut().map(|f| (&mut f.cache, f.face));
@@ -952,7 +1078,9 @@ fn collect_taskfield<R: ImportMem>(
     renderer: &mut R,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
     background: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     let origin = Point::from((output_rect.x, output_rect.y));
 
     // The scrim, over this whole output. It is what makes the mode read as a mode: the desktop
@@ -1039,12 +1167,17 @@ fn taskfield_headers<R: ImportMem>(
     output_scale: f64,
     renderer: &mut R,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     chrome
         .taskfield_headers
         .resize_with(sections.len(), CachedWidget::new);
     for (widget, (rect, label, accent)) in chrome.taskfield_headers.iter_mut().zip(sections) {
-        let colour = accent.map_or(paint::opaque(chrome.appearance.palette.shell_fill), paint::opaque);
+        let colour = accent.map_or(
+            paint::opaque(chrome.appearance.palette.shell_fill),
+            paint::opaque,
+        );
         let fonts = chrome.fonts.as_mut().map(|f| (&mut f.cache, f.face));
         let text = label.clone();
         if let Some(element) = widget.ensure(
@@ -1082,7 +1215,9 @@ fn taskfield_labels<R: ImportMem>(
     output_scale: f64,
     renderer: &mut R,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     // One title band per card, inside the bottom of the card itself: the card *is* the window, so
     // there is no tile below it to hang a strip off, and a strip outside it would overlap the next
     // row. `scatter_label_band` splits the rectangle the same way it always did.
@@ -1142,7 +1277,9 @@ fn taskfield_ring<R: ImportMem>(
     output_scale: f64,
     renderer: &mut R,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     // The selection ring, four bars just *outside* the selected card so none of the window's own
     // pixels are covered — the same construction, and the same reason, as a group's outline.
     let ring = taskfield
@@ -1188,7 +1325,9 @@ fn collect_name_tag<R: ImportMem>(
     output_scale: f64,
     renderer: &mut R,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     let Some(window) = window_service.window(window_id) else {
         return;
     };
@@ -1281,7 +1420,9 @@ fn collect_group_outline<R: ImportMem>(
     output_scale: f64,
     renderer: &mut R,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     let outline = window_service
         .group_of(window_id)
         .filter(|group| {
@@ -1344,7 +1485,9 @@ fn collect_control_tags<R: ImportMem>(
     output_scale: f64,
     renderer: &mut R,
     elements: &mut Vec<MemoryRenderBufferRenderElement<R>>,
-) where R::TextureId: Clone + Send + 'static {
+) where
+    R::TextureId: Clone + Send + 'static,
+{
     let Some(layout) = window_service.window_layout(window_id) else {
         return;
     };
@@ -1355,7 +1498,11 @@ fn collect_control_tags<R: ImportMem>(
         x,
         y,
         tags.iter().map(|(_, rect)| rect.right()).max().unwrap_or(x) - x,
-        tags.iter().map(|(_, rect)| rect.bottom()).max().unwrap_or(y) - y,
+        tags.iter()
+            .map(|(_, rect)| rect.bottom())
+            .max()
+            .unwrap_or(y)
+            - y,
     );
     if output_rect.intersection(union).is_none() {
         return;
@@ -1382,9 +1529,14 @@ fn collect_control_tags<R: ImportMem>(
         output_scale,
     );
     let local = tags.map(|(tag, rect)| {
-        (tag, Rect::new(rect.x - union.x, rect.y - union.y, rect.width, rect.height))
+        (
+            tag,
+            Rect::new(rect.x - union.x, rect.y - union.y, rect.width, rect.height),
+        )
     });
-    let widget = chrome.control_tags.entry(window_id)
+    let widget = chrome
+        .control_tags
+        .entry(window_id)
         .or_insert_with(CachedWidget::new_transparent);
     if let Some(element) = widget.ensure(
         key,
@@ -1411,7 +1563,9 @@ fn scale_factor(pixel_dimension: i32, logical_dimension: i32) -> f32 {
     pixel_dimension as f32 / logical_dimension.max(1) as f32
 }
 
-pub fn clear_identification(chrome: &mut ChromeState) { chrome.identification.clear(); }
+pub fn clear_identification(chrome: &mut ChromeState) {
+    chrome.identification.clear();
+}
 
 pub fn collect_identification<R: ImportMem>(
     chrome: &mut ChromeState,
@@ -1420,51 +1574,119 @@ pub fn collect_identification<R: ImportMem>(
     label: &str,
     calibration: bool,
     renderer: &mut R,
-) -> Option<smithay::backend::renderer::element::utils::RescaleRenderElement<MemoryRenderBufferRenderElement<R>>>
-where R::TextureId: Clone + Send + 'static {
-    let signal = output.current_transform().transform_size(output.current_mode()?.size);
-    let margins = if crate::viewport::hardware(output) { templar_types::display::Insets::default() } else { crate::viewport::margins(output) };
+) -> Option<
+    smithay::backend::renderer::element::utils::RescaleRenderElement<
+        MemoryRenderBufferRenderElement<R>,
+    >,
+>
+where
+    R::TextureId: Clone + Send + 'static,
+{
+    let signal = output
+        .current_transform()
+        .transform_size(output.current_mode()?.size);
+    let margins = if crate::viewport::hardware(output) {
+        templar_types::display::Insets::default()
+    } else {
+        crate::viewport::margins(output)
+    };
     let palette = &chrome.appearance.palette;
-    let fonts = chrome.fonts.as_mut().map(|fonts| (&mut fonts.cache, fonts.face));
-    let identification = chrome.identification.entry(output.clone()).or_insert_with(|| IdentificationWidget { number, label: label.to_owned(), calibration, margins, widget: CachedWidget::new_transparent() });
-    if identification.number != number || identification.label != label || identification.calibration != calibration || identification.margins != margins {
+    let fonts = chrome
+        .fonts
+        .as_mut()
+        .map(|fonts| (&mut fonts.cache, fonts.face));
+    let identification = chrome
+        .identification
+        .entry(output.clone())
+        .or_insert_with(|| IdentificationWidget {
+            number,
+            label: label.to_owned(),
+            calibration,
+            margins,
+            widget: CachedWidget::new_transparent(),
+        });
+    if identification.number != number
+        || identification.label != label
+        || identification.calibration != calibration
+        || identification.margins != margins
+    {
         identification.number = number;
-        identification.label.clear(); identification.label.push_str(label);
-        identification.calibration = calibration; identification.margins = margins;
+        identification.label.clear();
+        identification.label.push_str(label);
+        identification.calibration = calibration;
+        identification.margins = margins;
         identification.widget.invalidate();
     }
     let element = identification.widget.ensure(
-        WidgetKey::new("", 0), (signal.w, signal.h), 1.0, (0.0, 0.0).into(), &mut chrome.scratch, renderer,
-        move |painter, width, height| identification::paint(painter, width, height, number, label, calibration, margins, fonts, palette),
+        WidgetKey::new("", 0),
+        (signal.w, signal.h),
+        1.0,
+        (0.0, 0.0).into(),
+        &mut chrome.scratch,
+        renderer,
+        move |painter, width, height| {
+            identification::paint(
+                painter,
+                width,
+                height,
+                number,
+                label,
+                calibration,
+                margins,
+                fonts,
+                palette,
+            )
+        },
     )?;
-    Some(smithay::backend::renderer::element::utils::RescaleRenderElement::from_element(element, (0, 0).into(), 1.0 / output.current_scale().fractional_scale()))
+    Some(
+        smithay::backend::renderer::element::utils::RescaleRenderElement::from_element(
+            element,
+            (0, 0).into(),
+            1.0 / output.current_scale().fractional_scale(),
+        ),
+    )
 }
 
 #[cfg(test)]
 mod name_tab_menu_tests {
     use super::*;
-    use templar_window::{CachedIdentity, ClientKind, IdentityCache, Output, Point};
     use templar_types::WindowClaims;
+    use templar_window::{CachedIdentity, ClientKind, IdentityCache, Output, Point};
 
     struct UnknownIdentity;
     impl IdentityCache for UnknownIdentity {
-        fn resolve_cached(&self, _: u32, _: &WindowClaims) -> Option<CachedIdentity> { None }
+        fn resolve_cached(&self, _: u32, _: &WindowClaims) -> Option<CachedIdentity> {
+            None
+        }
         fn request_resolution(&self, _: WindowId, _: u32, _: WindowClaims) {}
     }
 
     fn windows() -> (WindowService<UnknownIdentity>, WindowId, WindowId) {
         let output = Output::new("test", Rect::new(0, 0, 800, 600), 1000);
         let mut service = WindowService::new(UnknownIdentity, vec![output]);
-        let first = service.on_toplevel_mapped(1, ClientKind::Application,
-            WindowClaims::default(), "first".into(), Rect::new(100, 100, 300, 200));
-        let second = service.on_toplevel_mapped(2, ClientKind::Application,
-            WindowClaims::default(), "second".into(), Rect::new(200, 200, 300, 200));
+        let first = service.on_toplevel_mapped(
+            1,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "first".into(),
+            Rect::new(100, 100, 300, 200),
+        );
+        let second = service.on_toplevel_mapped(
+            2,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "second".into(),
+            Rect::new(200, 200, 300, 200),
+        );
         (service, first, second)
     }
 
     fn row_point(menu: &NameTabMenu, index: usize) -> Point {
         let row = menu.open.unwrap().row(index);
-        Point { x: row.x + row.width / 2, y: row.y + row.height / 2 }
+        Point {
+            x: row.x + row.width / 2,
+            y: row.y + row.height / 2,
+        }
     }
 
     #[test]
@@ -1472,24 +1694,44 @@ mod name_tab_menu_tests {
         let (mut service, first, second) = windows();
         let mut menu = NameTabMenu::default();
         for (index, preference) in [
-            (0, WindowStacking::AlwaysOnTop), (1, WindowStacking::Normal),
-            (2, WindowStacking::AlwaysOnBottom), (1, WindowStacking::Normal),
+            (0, WindowStacking::AlwaysOnTop),
+            (1, WindowStacking::Normal),
+            (2, WindowStacking::AlwaysOnBottom),
+            (1, WindowStacking::Normal),
         ] {
-            menu.show(first, Point { x: 790, y: 590 }, Rect::new(0, 0, 800, 600), 0x111);
+            menu.show(
+                first,
+                Point { x: 790, y: 590 },
+                Rect::new(0, 0, 800, 600),
+                0x111,
+            );
             let point = row_point(&menu, index);
             assert!(menu.button(&mut service, point, 0x111, false));
             service.activate(second);
             let before_press = service.window(first).unwrap().stacking;
             assert!(menu.button(&mut service, point, 0x110, true));
-            assert_eq!(service.window(first).unwrap().stacking, before_press, "a press must not commit");
+            assert_eq!(
+                service.window(first).unwrap().stacking,
+                before_press,
+                "a press must not commit"
+            );
             assert!(menu.button(&mut service, point, 0x110, false));
             assert!(menu.open.is_none());
             assert_eq!(service.window(first).unwrap().stacking, preference);
-            assert_eq!(service.window(second).unwrap().stacking, WindowStacking::Normal);
+            assert_eq!(
+                service.window(second).unwrap().stacking,
+                WindowStacking::Normal
+            );
             assert!(service.window(second).unwrap().activated);
             assert!(!service.window(first).unwrap().activated);
-            assert_eq!(service.stacking_order().first().copied(),
-                Some(if preference == WindowStacking::AlwaysOnTop { first } else { second }));
+            assert_eq!(
+                service.stacking_order().first().copied(),
+                Some(if preference == WindowStacking::AlwaysOnTop {
+                    first
+                } else {
+                    second
+                })
+            );
         }
     }
 
@@ -1505,7 +1747,10 @@ mod name_tab_menu_tests {
         service.on_toplevel_destroyed(first);
         assert!(menu.button(&mut service, point, 0x110, false));
         assert!(menu.open.is_none());
-        assert_eq!(service.window(second).unwrap().stacking, WindowStacking::Normal);
+        assert_eq!(
+            service.window(second).unwrap().stacking,
+            WindowStacking::Normal
+        );
         menu.show(second, Point { x: 100, y: 100 }, output, 0x111);
         assert!(menu.button(&mut service, point, 0x111, false));
         let outside = Point { x: 0, y: 0 };
@@ -1515,8 +1760,13 @@ mod name_tab_menu_tests {
         assert!(!menu.button(&mut service, outside, 0x110, true));
         menu.show(second, Point { x: 100, y: 100 }, output, 0x111);
         menu.dismiss();
-        assert!(menu.button(&mut service, point, 0x111, false),
-            "Escape/destroy dismissal still owns the secondary opening release");
-        assert_eq!(service.window(second).unwrap().stacking, WindowStacking::Normal);
+        assert!(
+            menu.button(&mut service, point, 0x111, false),
+            "Escape/destroy dismissal still owns the secondary opening release"
+        );
+        assert_eq!(
+            service.window(second).unwrap().stacking,
+            WindowStacking::Normal
+        );
     }
 }

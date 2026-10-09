@@ -1783,7 +1783,7 @@ record legeos.work.bounded-watch-handoff-and-repair-supersession-20260909/2 : wo
 
 record legeos.work.bounded-watch-handoff-and-repair-supersession-20260909/3 : work {
     title "P1 — the inotify handoff and each poll are bounded, and queued repairs are deduplicated with roots subsuming subtrees"
-    state active
+    state completed
     scope [
         path "crates/templar-file-index/src/watch.rs",
         path "crates/templar-file-index/tests/watch.rs",
@@ -1800,7 +1800,10 @@ record legeos.work.bounded-watch-handoff-and-repair-supersession-20260909/3 : wo
                 """
             method command
             command "cargo test -p lege-file-index --test watch"
-            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+            verified_by [
+                @legeos.evidence.effectiveness-1-scoped-tests-20260909/1,
+                @legeos.evidence.index-current-correctness-fixtures-20261008/1
+            ]
         }
         check repair-supersession {
             statement """
@@ -1808,7 +1811,10 @@ record legeos.work.bounded-watch-handoff-and-repair-supersession-20260909/3 : wo
                 """
             method command
             command "cargo test -p lege-filed watcher"
-            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+            verified_by [
+                @legeos.evidence.effectiveness-1-scoped-tests-20260909/1,
+                @legeos.evidence.index-current-correctness-fixtures-20261008/1
+            ]
         }
     }
     derived_from [
@@ -7294,6 +7300,38 @@ record legeos.work.hands-on-run-5-fixes/2 : work {
     author "dk"
 }
 
+record legeos.work.hdmi-pressure-recovery-20261008/1 : work {
+    title "Watchdog exit without core at critical memory pressure"
+    state completed
+    scope [
+        path "compositor/templar-comp/src/watchdog.rs",
+        path "docs/architecture/hdmi-validation-handoff.md",
+        path "session/units/user/templar-comp.service"
+    ]
+    intent """
+        Address the observed memory-pressure recovery delay from compositor core collection: at the existing enabled watchdog deadline, use a failure exit without a core when known available-memory or full-PSI measurements are critical, retaining diagnostic aborts at ordinary pressure. Read pressure only at expiry, preserve unknown-data semantics and avoid live desktop or global policy changes. Native source and owned subprocess checks do not qualify HDMI hardware, GPU isolation, display-manager restart or uninterruptible kernel waits.
+        """
+    acceptance {
+        check pressure-decision {
+            statement """
+                Watchdog regression tests exercise threshold boundaries, PSI-only and unknown/malformed measurements; an owned subprocess exits with status 70 without signal or core flag.
+                """
+            method command
+            command "cargo test --offline -p templar-comp watchdog:: -- --test-threads=2"
+            verified_by [ @legeos.evidence.hdmi-pressure-recovery-tests-20261008/1 ]
+        }
+        check qualification-boundary {
+            statement """
+                The handoff records the source recovery change and limits while leaving physical HDMI and power/suspend qualification open; no installed or live service is changed.
+                """
+            method observation
+            verified_by [ @legeos.evidence.hdmi-pressure-recovery-boundary-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.pdf-homegarden-hdmi-20261007/1 ]
+    author "dk"
+}
+
 record legeos.work.home-app-drag-and-app-groups/1 : work {
     title "Lane C — Home: drag an application out of the search results onto the field, and app-on-app makes an app group"
     state superseded
@@ -11856,6 +11894,2230 @@ record legeos.work.index-children-parent-id-contract-20260909/1 : work {
     part_of [ @legeos.work.memory-polling-indexing-effectiveness-20260909 ]
 }
 
+record legeos.work.index-chunked-subtree-rename-20261009/1 : work {
+    title "Chunked subtree rename application"
+    state proposed
+    intent """
+        Split MoveDirectory application into bounded descendant batches (e.g. 2k rows per transaction) instead of one transaction rewriting every descendant path. A rename of a 100k-file tree currently holds the writer and grows one huge transaction; chunking bounds turn latency and WAL pressure while keeping each chunk atomic.
+        """
+    note """
+        Deferred from the 2026-10-09 resource batch: medium complexity with atomicity/observability semantics to settle (partial-rename visibility across chunks, crash mid-chunks, change-log shape). Per-commit batching already narrowed the common case to watcher-scale renames.
+        """
+    part_of [ @legeos.work.file-index-maintenance ]
+    author "dk"
+}
+
+record legeos.work.index-hdd-maintenance-pacing-20261009/1 : work {
+    title "HDD-aware maintenance pacing"
+    state proposed
+    intent """
+        Pace index maintenance for rotational media: detect rotational backing (e.g. /sys/block/*/queue/rotational for the database device) and use a slower checkpoint/maintenance cadence with larger batch windows, so HDD machines do not pay SSD-tuned fsync/checkpoint frequency as seek storms.
+        """
+    note """
+        Deferred from the 2026-10-09 resource batch: needs a product decision (which devices qualify, exact cadences) plus a detection path that is honest on overlays, loopback, and network mounts rather than guessing.
+        """
+    part_of [ @legeos.work.file-index-maintenance ]
+    author "dk"
+}
+
+record legeos.work.index-integrated-search-gui-20261008/1 : work {
+    title "Future integrated Index1 search GUI with a large FSearch-style window"
+    state proposed
+    scope [
+        path "apps/**",
+        path "crates/templar-session-core/src/providers.rs",
+        path "distro/**",
+        path "docs/indexing-dev/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Owner direction 2026-10-08: build an own integrated Index1 search GUI with a large FSearch-style window. Use the shared service for query, paging, generation and freshness rather than recreating a private index. Define the concrete application/UI/provider plan before implementation; preserve native-byte actions and honest retained-result bounds. The current FSearch fork remains a qualified prototype. The original WP14 shell/FSearch generation comparison and WP16 fork adoption are deferred; this proposed follow-up is not an implemented or accepted consumer.
+        """
+    note "Requested as future direction while the current parent continues independent index, Silvaview, crash and WP17 closure work. No agent deployment or live-session changes."
+    depends_on [ @legeos.work.index-wp7-wp8-20261008/1 ]
+    part_of [ @legeos.work.silvaview-and-fsearch-share-the-index/1 ]
+    author "dk"
+}
+
+record legeos.work.index-lazy-search-overlay-20261009/1 : work {
+    title "Lazy search-overlay refresh by tier visibility"
+    state proposed
+    intent """
+        Make request_search_overlay_updates lazy: only roots whose tiers_for includes a visible/search tier pay for overlay refresh per commit; Unlisted-only roots skip it. The overlay exists to serve search visibility, so refreshing it for tiers no query can return is pure overhead on every apply.
+        """
+    note """
+        Deferred from the 2026-10-09 resource batch: needs a check of the tier/visibility contract (which tiers queries can actually return) before narrowing the refresh, otherwise search results could go stale for covered roots.
+        """
+    part_of [ @legeos.work.file-index-maintenance ]
+    author "dk"
+}
+
+record legeos.work.index-noop-reconcile-guard-20261009/1 : work {
+    title "Skip generation publish on no-op reconciles"
+    state proposed
+    intent """
+        Skip publish_generation (and its signals + overlay refresh) when a reconcile commit changed nothing: compare staged row count / content hash against the live generation before publishing, so no-op reconciles cost a scan but no generation advance, no consumer wakeups, and no WAL checkpoint pressure.
+        """
+    note """
+        Deferred from the 2026-10-09 resource batch: generation-advance expectations are load-bearing (consumers key cursors and freshness off generations); skipping advances needs care to prove no consumer depends on the heartbeat.
+        """
+    part_of [ @legeos.work.file-index-maintenance ]
+    author "dk"
+}
+
+record legeos.work.index-offline-consumer-actions-20261008/1 : work {
+    title "Fence Silvaview known-offline native actions"
+    state superseded
+    scope [ path "distro/forks/silvaview/**", path "docs/measurements/**" ]
+    intent "Fence known-offline Silvaview service-tree file-manager actions during WP17 continuation. Preserve cached display and native clipboard paths; prevent opening an indexed path under an offline root or while the source is loading/failed. Implementation belongs to the owning ../Silvaview-rs repository, with actual commit/source hashes retained; no live desktop or external file manager is launched in fixtures. Preserve existing user Cargo profiles and screenshot."
+    acceptance {
+        check guarded-native-actions {
+            statement """
+                Pure GUI target tests refuse known-offline/loading/failed actions, permit ready available native paths, and preserve feature-off builds.
+                """
+            method command
+            command "cargo test --features templaros --lib; cargo test --no-default-features --lib"
+        }
+        check offline-projection {
+            statement """
+                Service snapshot decoding retains native offline-root action bounds while leaving the cached logical-size tree and freshness visible.
+                """
+            method command
+            command "cargo test --features templaros --lib"
+        }
+    }
+    depends_on [ @legeos.work.index-wp15-silvaview-20261008/2 ]
+    part_of [ @legeos.work.silvaview-and-fsearch-share-the-index/1 ]
+    author "dk"
+}
+
+record legeos.work.index-offline-consumer-actions-20261008/2 : work {
+    title "Fence Silvaview known-offline native actions"
+    state completed
+    scope [ path "distro/forks/silvaview/**", path "docs/measurements/**" ]
+    intent "Fence known-offline Silvaview service-tree file-manager actions during WP17 continuation. Preserve cached display and native clipboard paths; prevent opening an indexed path under an offline root or while the source is loading/failed. Implementation belongs to the owning ../Silvaview-rs repository, with actual commit/source hashes retained; no live desktop or external file manager is launched in fixtures. Preserve existing user Cargo profiles and screenshot."
+    acceptance {
+        check guarded-native-actions {
+            statement """
+                Pure GUI target tests refuse known-offline/loading/failed actions, permit ready available native paths, preserve lossless clipboard representations and feedback, and preserve feature-off builds.
+                """
+            method command
+            command "cargo test --features templaros --all-targets; cargo test --no-default-features --all-targets"
+            verified_by [ @legeos.evidence.index-offline-consumer-actions-20261008/1 ]
+        }
+        check offline-projection {
+            statement """
+                Service snapshot decoding retains native offline-root action bounds while leaving the cached logical-size tree and freshness visible.
+                """
+            method command
+            command "cargo test --features templaros --all-targets"
+            verified_by [ @legeos.evidence.index-offline-consumer-actions-20261008/1 ]
+        }
+    }
+    depends_on [ @legeos.work.index-wp15-silvaview-20261008/2 ]
+    part_of [ @legeos.work.silvaview-and-fsearch-share-the-index/1 ]
+    supersedes [ @legeos.work.index-offline-consumer-actions-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-shared-sealed-snapshots/1 : work {
+    title "Measured follow-up: share immutable sealed snapshots"
+    state proposed
+    scope [
+        path "crates/templar-file-index/src/snapshot.rs",
+        path "services/templar-filed/src/index_host.rs"
+    ]
+    intent """
+        Evaluate sharing immutable sealed snapshots across equivalent generation/scope/mask/detail requests only after WP6 memory step (c) shows a measured need. WP8 deliberately retains one newly written memfd per request; any cache must respect snapshot_seq, caller cancellation, quotas, ownership and bounded retention. No implementation or acceptance is claimed here.
+        """
+    part_of [ @legeos.work.file-index-core/3 ]
+    author "dk"
+}
+
+record legeos.work.index-signal-coalescing-20261009/1 : work {
+    title "Latest-wins coalescing for index change signals"
+    state proposed
+    intent """
+        Coalesce GenerationAdvanced/change emissions latest-wins: replace the per-commit tokio::spawn in Index1Signals with one long-lived emitter task fed by a channel, so a burst of commits emits one signal carrying the newest generation instead of N tasks. ChangesSince already tolerates skipped generations, so consumers stay correct.
+        """
+    note """
+        Deferred from the 2026-10-09 resource batch: changes signal timing semantics (per-generation → coalesced) for FSearch/Silvaview consumers; needs explicit consumer-impact review. Commit volume already collapsed ~500x by OperationSink batching, which proportionally reduced the spawns.
+        """
+    part_of [ @legeos.work.file-index-maintenance ]
+    author "dk"
+}
+
+record legeos.work.index-summary-directory-aggregates/1 : work {
+    title "Summary follow-up: cached totals for materialized directories"
+    state proposed
+    scope [
+        path "crates/templar-client/src/tree_source.rs",
+        path "crates/templar-file-index/src/aggregate.rs",
+        path "crates/templar-file-index/src/generation.rs",
+        path "crates/templar-file-index/src/mutation.rs"
+    ]
+    intent """
+        Populate generation-consistent cached recursive totals for Detailed and Inventory directories so summary-first treemaps cover ordinary files as well as existing Opaque aggregates. Maintain bounded updates and honest stale/unreadable status through scan and mutation publication, without a reader-triggered filesystem walk. WP8 uses existing aggregates and explicitly marks missing totals partial; this proposal does not claim current summaries are complete.
+        """
+    part_of [ @legeos.work.file-index-core/3 ]
+    author "dk"
+}
+
+record legeos.work.index-volume-identity-cache-20261009/1 : work {
+    title "Cache volume identity across apply batches"
+    state proposed
+    intent """
+        Cache the observed VolumeIdentity per root across apply batches so ensure_present stops re-running mountinfo parse + statx/statfs + by-uuid readdir scan on every commit. Design: Index holds Mutex<HashMap<RootId, VolumeIdentity>>; presence() revalidates cheaply (stat st_dev vs cached dev_id) and only re-identifies on mismatch; cache invalidates on MountMonitor change events, provider identify errors, and root offline/accept transitions.
+        """
+    note """
+        Deferred from the 2026-10-09 resource batch: the fence is WP9 safety-critical and wrong caching could mask a volume swap (e.g. mount --move keeps st_dev). Needs the MountMonitor invalidation path designed against mounts.rs plus real-mount acceptance, which is still open. Per-commit cost already reduced ~500x by OperationSink batching.
+        """
+    part_of [ @legeos.work.file-index-maintenance ]
+    author "dk"
+}
+
+record legeos.work.index-wp0-baseline-20261008/1 : work {
+    title "WP0 baseline"
+    state proposed
+    scope [
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "services/templar-filed/**"
+    ]
+    intent "Record the pre-fix baseline, reproductions, contract freeze and canonical ledger kickoff from WP0."
+    note "Before-fix logs prove generation and nested-scope failures plus a busy second cache owner. The original chmod000 before-fix failure is not present; the new exact current regression does not recreate that missing baseline. The baseline2M attempt hit Btrfs ENOSPC. Do not call these missing observations passes."
+    acceptance {
+        check baseline {
+            statement """
+                Baseline native/private report and100k/2M workload observations exist, with exit codes and failures stated.
+                """
+            method command
+            command "retained index-wp0 baseline/workload logs and owned scale report"
+            verified_by [ @legeos.evidence.index-wp0-baseline-logs-20261008/1 ]
+        }
+        check contract-gates {
+            statement """
+                Additive JSON/error/AcceptVolume and frozen interface gates pass.
+                """
+            method command
+            command "just check-interfaces"
+            verified_by [ @legeos.evidence.index-wp17-interface-reconciled-20261008/1 ]
+        }
+        check ledger-valid {
+            statement """
+                Registered scoping sources and a parent with one child per WP exist; the ledger validates.
+                """
+            method command
+            command "akr build; akr validate"
+            verified_by [ @legeos.evidence.index-wp17-acceptance-ledger-20261008/1 ]
+        }
+        check reproductions {
+            statement """
+                The three original reproductions (generation, nested within, chmod000 cache parent) fail before the fixes for their stated reasons.
+                """
+            method command
+            command "retained index-wp0 repro-before.log"
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp1-generations-20261008/1 : work {
+    title "WP1 generations"
+    state completed
+    scope [
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "services/templar-filed/**"
+    ]
+    intent "Implement WP1 commit-time generation publication and transactional root removal."
+    note "The strengthened native property now passes four cases with exactly 1000 strictly increasing publication commits each. The 384-test core/filed cohort also passes all named generation and existing maintenance fixtures; historical weaker action coverage remains explicit."
+    acceptance {
+        check existing-maintenance {
+            statement """
+                Existing reconcile/downtime/Btrfs fixture unit tests pass with preserved semantics.
+                """
+            method command
+            command "scripts/test-nonzero.sh -p templar-file-index -p templar-filed"
+            verified_by [ @legeos.evidence.index-wp1-wp4-native-audit-20261008/1 ]
+        }
+        check four-regressions {
+            statement """
+                All four named WP1 generation/row/cursor/root-removal regressions pass.
+                """
+            method command
+            command "cargo test -p templar-file-index --test generations"
+            verified_by [ @legeos.evidence.index-wp1-wp4-native-audit-20261008/1 ]
+        }
+        check thousand-commits {
+            statement """
+                Published head is strictly monotonic across1000 interleaved scan/mutation publication commits in each property case.
+                """
+            method command
+            command "cargo test -p templar-file-index --test generations the_published_head_is_strictly_monotonic_across_interleaved_commits"
+            verified_by [ @legeos.evidence.index-wp1-wp4-native-audit-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp10-paging-20261008/1 : work {
+    title "WP10 typed client errors and native shell paging"
+    state superseded
+    scope [
+        path "crates/templar-client/**",
+        path "services/templar-filed/tests/**",
+        path "shell/templar-shell/**"
+    ]
+    intent "Implement WP10 of docs/indexing-dev/implementation-plan.md: stable search tags, named typed errors, bounded lazy page fetches and cached row heights, stale-query rejection and refresh preserving native selection, with private-daemon and owned render evidence. Installed UI qualification remains owner-run."
+    acceptance {
+        check owned-render {
+            statement """
+                Headless search rendering and an owned nested session show scrolling beyond 258 matches to the final match, with screenshot evidence.
+                """
+            method manual
+        }
+        check typed-and-paged {
+            statement """
+                Typed errors, missing-page admission, old-query rejection and snapshot refresh selection tests pass; 2000 private-daemon matches remain consistent through rename and refresh.
+                """
+            method command
+            command "cargo test -p templar-client -p templar-shell -p templar-filed"
+        }
+    }
+    part_of [ @legeos.work.file-index-core/3 ]
+    author "dk"
+}
+
+record legeos.work.index-wp10-paging-20261008/2 : work {
+    title "WP10 typed client errors and native shell paging"
+    state superseded
+    scope [
+        path "crates/templar-client/**",
+        path "services/templar-filed/tests/**",
+        path "shell/templar-shell/**"
+    ]
+    intent "Implement WP10 of docs/indexing-dev/implementation-plan.md: stable search tags, named typed errors, bounded lazy page fetches and cached row heights, stale-query rejection and refresh preserving native selection, with private-daemon and owned render evidence. Installed UI qualification remains owner-run."
+    note "Typed errors, native 2000-match private-daemon paging/rename refresh and headless final native match rendering pass. Actual owned nested-display and installed-session paging are unobserved; acceptance remains open. No pixelkit APIs or the apps-only launcher changed."
+    acceptance {
+        check owned-render {
+            statement """
+                Headless search rendering and an owned nested session show scrolling beyond 258 matches to the final match, with screenshot evidence.
+                """
+            method manual
+        }
+        check typed-and-paged {
+            statement """
+                Typed errors, missing-page admission, old-query rejection and snapshot refresh selection tests pass; 2000 private-daemon matches remain consistent through rename and refresh.
+                """
+            method command
+            command "cargo test -p templar-client -p templar-shell -p templar-filed"
+            verified_by [ @legeos.evidence.index-wp10-native-paging-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.file-index-core/3 ]
+    supersedes [ @legeos.work.index-wp10-paging-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp10-paging-20261008/3 : work {
+    title "WP10 typed client errors and native shell paging"
+    state active
+    scope [
+        path "crates/templar-client/**",
+        path "services/templar-filed/tests/**",
+        path "shell/templar-shell/**"
+    ]
+    intent "Implement WP10 of docs/indexing-dev/implementation-plan.md: stable search tags, named typed errors, bounded lazy page fetches and cached row heights, stale-query rejection and refresh preserving native selection, with private-daemon and owned render evidence. Installed UI qualification remains owner-run."
+    note "Typed errors, native 2000-match private-daemon paging/rename refresh and headless final native match rendering pass. Actual owned nested-display and installed-session paging are unobserved; acceptance remains open. No pixelkit APIs or the apps-only launcher changed."
+    acceptance {
+        check owned-render {
+            statement """
+                Headless search rendering and an owned nested session show scrolling beyond 258 matches to the final match, with screenshot evidence.
+                """
+            method manual
+        }
+        check typed-and-paged {
+            statement """
+                Typed errors, missing-page admission, old-query rejection and snapshot refresh selection tests pass; 2000 private-daemon matches remain consistent through rename and refresh.
+                """
+            method command
+            command "cargo test -p templar-client -p templar-shell -p templar-filed"
+            verified_by [ @legeos.evidence.index-wp10-native-paging-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    supersedes [ @legeos.work.index-wp10-paging-20261008/2 ]
+    author "dk"
+}
+
+record legeos.work.index-wp11-shards-20261008/1 : work {
+    title "WP11 root-local compact search shards"
+    state superseded
+    scope [
+        path "crates/templar-file-index/src/arrays.rs",
+        path "crates/templar-file-index/src/lib.rs",
+        path "crates/templar-file-index/src/query.rs",
+        path "crates/templar-file-index/tests/search_parity.rs",
+        path "docs/measurements/**",
+        path "tools/xtask/src/index_bench.rs"
+    ]
+    intent "Implement WP11 of docs/indexing-dev/implementation-plan.md: root-local immutable shards valid only at each committed root generation, per-root maintenance build admission, SQL fallback for mixed validity, deterministic multi-root ordering, compact names/boxed exact-capacity columns/base-relative IDs, 512MiB retained-array budget, and before/after layout and churn evidence. WP12 starts only from the measured gate."
+    acceptance {
+        check churn {
+            statement """
+                Owned 100k quiet-root churn report has at least 95% arrays hits, quiet first-page p95 below 50ms, no greater than 10% quiet-index p95 regression, and churning-root measurements for the WP12 gate.
+                """
+            method command
+            command "xtask index-bench churn"
+        }
+        check compact-layout {
+            statement """
+                Layout reports quantify per-row bytes and build RSS before/after; compact IDs/names/boxed columns are retained only with correct parity and measured savings.
+                """
+            method command
+            command "xtask index-bench layout"
+        }
+        check parity-and-identity {
+            statement """
+                SQL/array parity passes for all scopes, multiple roots and interleaved mutations; a dirty root does not disable another root's shard; entry-ID reuse cannot alias stale shard rows.
+                """
+            method command
+            command "cargo test -p templar-file-index --test search_parity"
+        }
+    }
+    part_of [ @legeos.work.file-index-core/3 ]
+    author "dk"
+}
+
+record legeos.work.index-wp11-shards-20261008/2 : work {
+    title "WP11 root-local compact search shards"
+    state superseded
+    scope [
+        path "crates/templar-file-index/src/arrays.rs",
+        path "crates/templar-file-index/src/lib.rs",
+        path "crates/templar-file-index/src/query.rs",
+        path "crates/templar-file-index/tests/search_parity.rs",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**",
+        path "services/templar-filed/src/lib.rs",
+        path "services/templar-filed/src/pressure.rs",
+        path "services/templar-filed/src/watcher.rs",
+        path "tools/xtask/src/index_bench.rs",
+        path "tools/xtask/src/index_load.rs"
+    ]
+    intent "Implement WP11 of docs/indexing-dev/implementation-plan.md: root-local immutable shards valid only at each committed root generation, per-root maintenance build admission, SQL fallback for mixed validity, deterministic multi-root ordering, compact names/boxed exact-capacity columns/base-relative IDs, 512MiB retained-array budget, and before/after layout and churn evidence. WP12 starts only from the measured gate."
+    note "WP11 scope includes the optional cgroup PSI notification monitor and a reproducible churn mode that puts edits in the build root. The legacy edit-quiet workload remains available and labelled; the quiet-root gate uses edit-build mode. A raw-name merge uses bounded primary-key lookups in the validating SQLite view; no per-row raw names are retained."
+    acceptance {
+        check churn {
+            statement """
+                Owned 100k quiet-root churn report has at least 95% arrays hits, quiet first-page p95 below 50ms, no greater than 10% quiet-index p95 regression, and churning-root measurements for the WP12 gate.
+                """
+            method command
+            command "xtask index-bench churn"
+            verified_by [ @legeos.evidence.index-wp11-churn-20261008/1 ]
+        }
+        check compact-layout {
+            statement """
+                Layout reports quantify per-row bytes and build RSS before/after; compact IDs/names/boxed columns are retained only with correct parity and measured savings.
+                """
+            method command
+            command "xtask index-bench layout"
+            verified_by [ @legeos.evidence.index-wp11-layout-20261008/1 ]
+        }
+        check parity-and-identity {
+            statement """
+                SQL/array parity passes for all scopes, multiple roots and interleaved mutations; a dirty root does not disable another root's shard; entry-ID reuse cannot alias stale shard rows.
+                """
+            method command
+            command "cargo test -p templar-file-index --test search_parity"
+            verified_by [ @legeos.evidence.index-wp11-native-regressions-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.file-index-core/3 ]
+    supersedes [ @legeos.work.index-wp11-shards-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp11-shards-20261008/3 : work {
+    title "WP11 root-local compact search shards"
+    state completed
+    scope [
+        path "crates/templar-file-index/src/arrays.rs",
+        path "crates/templar-file-index/src/lib.rs",
+        path "crates/templar-file-index/src/query.rs",
+        path "crates/templar-file-index/tests/search_parity.rs",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**",
+        path "services/templar-filed/src/lib.rs",
+        path "services/templar-filed/src/pressure.rs",
+        path "services/templar-filed/src/watcher.rs",
+        path "tools/xtask/src/index_bench.rs",
+        path "tools/xtask/src/index_load.rs"
+    ]
+    intent "Implement WP11 of docs/indexing-dev/implementation-plan.md: root-local immutable shards valid only at each committed root generation, per-root maintenance build admission, SQL fallback for mixed validity, deterministic multi-root ordering, compact names/boxed exact-capacity columns/base-relative IDs, 512MiB retained-array budget, and before/after layout and churn evidence. WP12 starts only from the measured gate."
+    note "WP11 scope includes the optional cgroup PSI notification monitor and a reproducible churn mode that puts edits in the build root. The legacy edit-quiet workload remains available and labelled; the quiet-root gate uses edit-build mode. A raw-name merge uses bounded primary-key lookups in the validating SQLite view; no per-row raw names are retained."
+    acceptance {
+        check churn {
+            statement """
+                Owned 100k quiet-root churn report has at least 95% arrays hits, quiet first-page p95 below 50ms, no greater than 10% quiet-index p95 regression, and churning-root measurements for the WP12 gate.
+                """
+            method command
+            command "xtask index-bench churn"
+            verified_by [ @legeos.evidence.index-wp11-churn-20261008/1 ]
+        }
+        check compact-layout {
+            statement """
+                Layout reports quantify per-row bytes and build RSS before/after; compact IDs/names/boxed columns are retained only with correct parity and measured savings.
+                """
+            method command
+            command "xtask index-bench layout"
+            verified_by [ @legeos.evidence.index-wp11-layout-20261008/1 ]
+        }
+        check parity-and-identity {
+            statement """
+                SQL/array parity passes for all scopes, multiple roots and interleaved mutations; a dirty root does not disable another root's shard; entry-ID reuse cannot alias stale shard rows.
+                """
+            method command
+            command "cargo test -p templar-file-index --test search_parity"
+            verified_by [ @legeos.evidence.index-wp11-native-regressions-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    supersedes [ @legeos.work.index-wp11-shards-20261008/2 ]
+    author "dk"
+}
+
+record legeos.work.index-wp12-overlay-20261008/1 : work {
+    title "WP12 bounded generation-pinned search overlay"
+    state superseded
+    scope [
+        path "crates/templar-file-index/src/arrays.rs",
+        path "crates/templar-file-index/src/lib.rs",
+        path "crates/templar-file-index/src/mutation.rs",
+        path "crates/templar-file-index/src/overlay.rs",
+        path "crates/templar-file-index/src/query.rs",
+        path "crates/templar-file-index/tests/search_parity.rs",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**"
+    ]
+    intent """
+        Implement WP12 from docs/indexing-dev/implementation-plan.md. The owned WP11 edit-build workload observed churning-root p95 1641.50ms and arrays hit rate 22.48%, meeting both gate conditions. Retain an immutable base plus bounded committed-change copy-on-write overlay at one root generation/change sequence, generation-safe row identity, exact SQL parity and native scope/sort semantics; declare path-sort and over-bound fallbacks, throttle compaction, and measure the resulting churn latency and overlay memory. No stale-base query or unbounded per-keystroke rebuild is permitted.
+        """
+    acceptance {
+        check bounded-overlay {
+            statement """
+                Overlay publication is one committed root generation/change sequence; bounds and delayed compaction apply, memory is reported and retired views remain immutable.
+                """
+            method command
+            command "cargo test -p templar-file-index overlay"
+        }
+        check churn-latency {
+            statement """
+                Owned paired 100k churn report has churning-root initial-page p95 below150ms, arrays+overlay hit rate and memory reported, while quiet-root performance remains qualified.
+                """
+            method command
+            command "xtask index-bench churn --edit-build"
+        }
+        check mutation-parity {
+            statement """
+                Base+overlay matches SQL after random create/delete/file rename/directory rename/metadata batches, including native paths, counts, ranks, sort order and reused entry IDs. A directory move beyond the overlay bound uses SQL.
+                """
+            method command
+            command "cargo test -p templar-file-index --test search_parity"
+        }
+    }
+    depends_on [ @legeos.work.index-wp11-shards-20261008/2 ]
+    part_of [ @legeos.work.file-index-core/3 ]
+    supported_by [ @legeos.evidence.index-wp11-churn-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp12-overlay-20261008/2 : work {
+    title "WP12 bounded generation-pinned search overlay"
+    state superseded
+    scope [
+        path "crates/templar-file-index/src/arrays.rs",
+        path "crates/templar-file-index/src/lib.rs",
+        path "crates/templar-file-index/src/mutation.rs",
+        path "crates/templar-file-index/src/overlay.rs",
+        path "crates/templar-file-index/src/query.rs",
+        path "crates/templar-file-index/tests/search_parity.rs",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**",
+        path "tools/xtask/src/index_load.rs"
+    ]
+    intent """
+        Implement WP12 from docs/indexing-dev/implementation-plan.md. The owned WP11 edit-build workload observed churning-root p95 1641.50ms and arrays hit rate 22.48%, meeting both gate conditions. Retain an immutable base plus bounded committed-change copy-on-write overlay at one root generation/change sequence, generation-safe row identity, exact SQL parity and native scope/sort semantics; declare path-sort and over-bound fallbacks, throttle compaction, and measure the resulting churn latency and overlay memory. No stale-base query or unbounded per-keystroke rebuild is permitted.
+        """
+    note "Scope includes benchmark overlay-hit accounting and sampled overlay bytes. Public directory change markers are expanded with the existing indexed written/deleted row-generation ranges in the maintenance read view; raw change history alone omits descendants. The row bound counts distinct affected identities; a base identity with an upsert counts once. Rescans or a pruned feed require a new base."
+    acceptance {
+        check bounded-overlay {
+            statement """
+                Overlay publication is one committed root generation/change sequence; bounds and delayed compaction apply, memory is reported and retired views remain immutable.
+                """
+            method command
+            command "cargo test -p templar-file-index overlay"
+            verified_by [ @legeos.evidence.index-wp12-native-regressions-20261008/1 ]
+        }
+        check churn-latency {
+            statement """
+                Owned paired 100k churn report has churning-root initial-page p95 below150ms, arrays+overlay hit rate and memory reported, while quiet-root performance remains qualified.
+                """
+            method command
+            command "xtask index-bench churn --edit-build"
+            verified_by [ @legeos.evidence.index-wp12-final-churn-20261008/1 ]
+        }
+        check mutation-parity {
+            statement """
+                Base+overlay matches SQL after random create/delete/file rename/directory rename/metadata batches, including native paths, counts, ranks, sort order and reused entry IDs. A directory move beyond the overlay bound uses SQL.
+                """
+            method command
+            command "cargo test -p templar-file-index --test search_parity"
+            verified_by [ @legeos.evidence.index-wp12-native-regressions-20261008/1 ]
+        }
+    }
+    depends_on [ @legeos.work.index-wp11-shards-20261008/2 ]
+    part_of [ @legeos.work.file-index-core/3 ]
+    supersedes [ @legeos.work.index-wp12-overlay-20261008/1 ]
+    supported_by [ @legeos.evidence.index-wp11-churn-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp12-overlay-20261008/3 : work {
+    title "WP12 bounded generation-pinned search overlay"
+    state completed
+    scope [
+        path "crates/templar-file-index/src/arrays.rs",
+        path "crates/templar-file-index/src/lib.rs",
+        path "crates/templar-file-index/src/mutation.rs",
+        path "crates/templar-file-index/src/overlay.rs",
+        path "crates/templar-file-index/src/query.rs",
+        path "crates/templar-file-index/tests/search_parity.rs",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**",
+        path "tools/xtask/src/index_load.rs"
+    ]
+    intent """
+        Implement WP12 from docs/indexing-dev/implementation-plan.md. The owned WP11 edit-build workload observed churning-root p95 1641.50ms and arrays hit rate 22.48%, meeting both gate conditions. Retain an immutable base plus bounded committed-change copy-on-write overlay at one root generation/change sequence, generation-safe row identity, exact SQL parity and native scope/sort semantics; declare path-sort and over-bound fallbacks, throttle compaction, and measure the resulting churn latency and overlay memory. No stale-base query or unbounded per-keystroke rebuild is permitted.
+        """
+    note "Scope includes benchmark overlay-hit accounting and sampled overlay bytes. Public directory change markers are expanded with the existing indexed written/deleted row-generation ranges in the maintenance read view; raw change history alone omits descendants. The row bound counts distinct affected identities; a base identity with an upsert counts once. Rescans or a pruned feed require a new base."
+    acceptance {
+        check bounded-overlay {
+            statement """
+                Overlay publication is one committed root generation/change sequence; bounds and delayed compaction apply, memory is reported and retired views remain immutable.
+                """
+            method command
+            command "cargo test -p templar-file-index overlay"
+            verified_by [ @legeos.evidence.index-wp12-native-regressions-20261008/1 ]
+        }
+        check churn-latency {
+            statement """
+                Owned paired 100k churn report has churning-root initial-page p95 below150ms, arrays+overlay hit rate and memory reported, while quiet-root performance remains qualified.
+                """
+            method command
+            command "xtask index-bench churn --edit-build"
+            verified_by [ @legeos.evidence.index-wp12-final-churn-20261008/1 ]
+        }
+        check mutation-parity {
+            statement """
+                Base+overlay matches SQL after random create/delete/file rename/directory rename/metadata batches, including native paths, counts, ranks, sort order and reused entry IDs. A directory move beyond the overlay bound uses SQL.
+                """
+            method command
+            command "cargo test -p templar-file-index --test search_parity"
+            verified_by [ @legeos.evidence.index-wp12-native-regressions-20261008/1 ]
+        }
+    }
+    depends_on [ @legeos.work.index-wp11-shards-20261008/2 ]
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    supersedes [ @legeos.work.index-wp12-overlay-20261008/2 ]
+    supported_by [ @legeos.evidence.index-wp11-churn-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp13-diagnostics-20261008/1 : work {
+    title "WP13 typed index diagnostics, WAL maintenance and health surfaces"
+    state superseded
+    scope [
+        path "apps/templar-settings/src/files.rs",
+        path "cli/templar/src/doctor/checks.rs",
+        path "cli/templar/src/files.rs",
+        path "crates/templar-client/src/file_index.rs",
+        path "crates/templar-file-index/src/arrays.rs",
+        path "crates/templar-file-index/src/diagnostics.rs",
+        path "crates/templar-file-index/src/generation.rs",
+        path "crates/templar-file-index/src/lib.rs",
+        path "crates/templar-file-index/src/mutation.rs",
+        path "crates/templar-file-index/src/query.rs",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**",
+        path "services/templar-filed/src/index_host.rs",
+        path "services/templar-filed/src/index_lanes.rs",
+        path "services/templar-filed/src/index_metrics.rs",
+        path "services/templar-filed/src/lib.rs"
+    ]
+    intent """
+        Implement WP13 from docs/indexing-dev/implementation-plan.md. Publish typed runtime diagnostics for lanes, root shards/overlays, snapshot exports, cursors, readers, WAL, watches and volume identity; perform PASSIVE checkpoints after scan commits and each64mutation batches, with guarded TRUNCATE above64MiB and no reader older30s, solely on maintenance. Extend read-only doctor/CLI and Files Settings with storage/runtime health, freshness, ownership/volume and accelerator status; keep unavailable/offline states honest. Qualify the complete field rendering against an owned private daemon and a headless offline-volume Settings fixture. No installed services, live-session changes or private SQLite consumer access.
+        """
+    acceptance {
+        check maintenance-and-counters {
+            statement """
+                Native tests cover WAL/SHM storage, maintenance-only checkpoint scheduling/truncation reader-age guards, typed lane/shard/snapshot/cursor/reader metrics and process-local lifetime accounting.
+                """
+            method command
+            command "cargo test -p templar-file-index -p templar-filed"
+        }
+        check private-doctor {
+            statement """
+                templar doctor --check file-index against an owned private daemon prints every WP13 runtime/storage/watch/volume field and gives unavailable, WAL, reader-age and low-hit-rate warnings; read-only disk fallback remains usable.
+                """
+            method command
+            command "templar doctor --check file-index"
+        }
+        check settings-freshness {
+            statement """
+                CLI rendering tests and headless Settings Files rendering show split freshness, cache availability/retry, watch coverage, nesting, accelerator bytes/hit rate and a different-volume root with identity confidence and explicit action.
+                """
+            method command
+            command "cargo test -p templar; templar-settings --print --page index"
+        }
+    }
+    depends_on [
+        @legeos.work.index-wp11-shards-20261008/2,
+        @legeos.work.index-wp12-overlay-20261008/2,
+        @legeos.work.index-wp7-wp8-20261008/1
+    ]
+    part_of [ @legeos.work.file-index-core/3 ]
+    author "dk"
+}
+
+record legeos.work.index-wp13-diagnostics-20261008/2 : work {
+    title "WP13 typed index diagnostics, WAL maintenance and health surfaces"
+    state superseded
+    scope [
+        path "apps/templar-settings/src/files.rs",
+        path "cli/templar/src/doctor/checks.rs",
+        path "cli/templar/src/files.rs",
+        path "cli/templar/src/main.rs",
+        path "crates/templar-client/src/file_index.rs",
+        path "crates/templar-file-index/src/arrays.rs",
+        path "crates/templar-file-index/src/diagnostics.rs",
+        path "crates/templar-file-index/src/generation.rs",
+        path "crates/templar-file-index/src/lib.rs",
+        path "crates/templar-file-index/src/model.rs",
+        path "crates/templar-file-index/src/mutation.rs",
+        path "crates/templar-file-index/src/query.rs",
+        path "crates/templar-file-index/src/watch.rs",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**",
+        path "services/templar-filed/src/index_host.rs",
+        path "services/templar-filed/src/index_lanes.rs",
+        path "services/templar-filed/src/index_metrics.rs",
+        path "services/templar-filed/src/lib.rs",
+        path "services/templar-filed/src/watcher.rs"
+    ]
+    intent """
+        Implement WP13 from docs/indexing-dev/implementation-plan.md. Publish typed runtime diagnostics for lanes, root shards/overlays, snapshot exports, cursors, readers, WAL, watches and volume identity; perform PASSIVE checkpoints after scan commits and each64mutation batches, with guarded TRUNCATE above64MiB and no reader older30s, solely on maintenance. Extend read-only doctor/CLI and Files Settings with storage/runtime health, freshness, ownership/volume and accelerator status; keep unavailable/offline states honest. Qualify the complete field rendering against an owned private daemon and a headless offline-volume Settings fixture. No installed services, live-session changes or private SQLite consumer access.
+        """
+    acceptance {
+        check maintenance-and-counters {
+            statement """
+                Native tests cover WAL/SHM storage, maintenance-only checkpoint scheduling/truncation reader-age guards, typed lane/shard/snapshot/cursor/reader metrics and process-local lifetime accounting.
+                """
+            method command
+            command "cargo test -p templar-file-index -p templar-filed"
+        }
+        check private-doctor {
+            statement """
+                templar doctor --check file-index against an owned private daemon prints every WP13 runtime/storage/watch/volume field and gives unavailable, WAL, reader-age and low-hit-rate warnings; read-only disk fallback remains usable.
+                """
+            method command
+            command "templar doctor --check file-index"
+        }
+        check settings-freshness {
+            statement """
+                CLI rendering tests and headless Settings Files rendering show split freshness, cache availability/retry, watch coverage, nesting, accelerator bytes/hit rate and a different-volume root with identity confidence and explicit action.
+                """
+            method command
+            command "cargo test -p templar; templar-settings --print --page index"
+        }
+    }
+    depends_on [
+        @legeos.work.index-wp11-shards-20261008/2,
+        @legeos.work.index-wp12-overlay-20261008/2,
+        @legeos.work.index-wp7-wp8-20261008/1
+    ]
+    part_of [ @legeos.work.file-index-core/3 ]
+    supersedes [ @legeos.work.index-wp13-diagnostics-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp13-diagnostics-20261008/3 : work {
+    title "WP13 typed index diagnostics, WAL maintenance and health surfaces"
+    state superseded
+    scope [
+        path "apps/templar-settings/src/files.rs",
+        path "cli/templar/src/doctor/checks.rs",
+        path "cli/templar/src/files.rs",
+        path "cli/templar/src/main.rs",
+        path "crates/templar-client/src/file_index.rs",
+        path "crates/templar-file-index/src/arrays.rs",
+        path "crates/templar-file-index/src/diagnostics.rs",
+        path "crates/templar-file-index/src/generation.rs",
+        path "crates/templar-file-index/src/lib.rs",
+        path "crates/templar-file-index/src/model.rs",
+        path "crates/templar-file-index/src/mutation.rs",
+        path "crates/templar-file-index/src/query.rs",
+        path "crates/templar-file-index/src/watch.rs",
+        path "crates/templar-file-index/tests/btrfs_delta_fixture.rs",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**",
+        path "services/templar-filed/src/index_host.rs",
+        path "services/templar-filed/src/index_lanes.rs",
+        path "services/templar-filed/src/index_metrics.rs",
+        path "services/templar-filed/src/lib.rs",
+        path "services/templar-filed/src/watcher.rs"
+    ]
+    intent """
+        Implement WP13 from docs/indexing-dev/implementation-plan.md. Publish typed runtime diagnostics for lanes, root shards/overlays, snapshot exports, cursors, readers, WAL, watches and volume identity; perform PASSIVE checkpoints after scan commits and each64mutation batches, with guarded TRUNCATE above64MiB and no reader older30s, solely on maintenance. Extend read-only doctor/CLI and Files Settings with storage/runtime health, freshness, ownership/volume and accelerator status; keep unavailable/offline states honest. Qualify the complete field rendering against an owned private daemon and a headless offline-volume Settings fixture. No installed services, live-session changes or private SQLite consumer access.
+        """
+    acceptance {
+        check maintenance-and-counters {
+            statement """
+                Native tests cover WAL/SHM storage, maintenance-only checkpoint scheduling/truncation reader-age guards, typed lane/shard/snapshot/cursor/reader metrics and process-local lifetime accounting.
+                """
+            method command
+            command "cargo test -p templar-file-index -p templar-filed"
+            verified_by [ @legeos.evidence.index-wp13-native-20261008/1 ]
+        }
+        check private-doctor {
+            statement """
+                templar doctor --check file-index against an owned private daemon prints every WP13 runtime/storage/watch/volume field and gives unavailable, WAL, reader-age and low-hit-rate warnings; read-only disk fallback remains usable.
+                """
+            method command
+            command "templar doctor --check file-index"
+            verified_by [ @legeos.evidence.index-wp13-private-doctor-20261008/1 ]
+        }
+        check settings-freshness {
+            statement """
+                CLI rendering tests and headless Settings Files rendering show split freshness, cache availability/retry, watch coverage, nesting, accelerator bytes/hit rate and a different-volume root with identity confidence and explicit action.
+                """
+            method command
+            command "cargo test -p templar; templar-settings --print --page index"
+            verified_by [ @legeos.evidence.index-wp13-settings-20261008/1 ]
+        }
+    }
+    depends_on [
+        @legeos.work.index-wp11-shards-20261008/2,
+        @legeos.work.index-wp12-overlay-20261008/2,
+        @legeos.work.index-wp7-wp8-20261008/1
+    ]
+    part_of [ @legeos.work.file-index-core/3 ]
+    supersedes [ @legeos.work.index-wp13-diagnostics-20261008/2 ]
+    author "dk"
+}
+
+record legeos.work.index-wp13-diagnostics-20261008/4 : work {
+    title "WP13 typed index diagnostics, WAL maintenance and health surfaces"
+    state completed
+    scope [
+        path "apps/templar-settings/src/files.rs",
+        path "cli/templar/src/doctor/checks.rs",
+        path "cli/templar/src/files.rs",
+        path "cli/templar/src/main.rs",
+        path "crates/templar-client/src/file_index.rs",
+        path "crates/templar-file-index/src/arrays.rs",
+        path "crates/templar-file-index/src/diagnostics.rs",
+        path "crates/templar-file-index/src/generation.rs",
+        path "crates/templar-file-index/src/lib.rs",
+        path "crates/templar-file-index/src/model.rs",
+        path "crates/templar-file-index/src/mutation.rs",
+        path "crates/templar-file-index/src/query.rs",
+        path "crates/templar-file-index/src/watch.rs",
+        path "crates/templar-file-index/tests/btrfs_delta_fixture.rs",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**",
+        path "services/templar-filed/src/index_host.rs",
+        path "services/templar-filed/src/index_lanes.rs",
+        path "services/templar-filed/src/index_metrics.rs",
+        path "services/templar-filed/src/lib.rs",
+        path "services/templar-filed/src/watcher.rs"
+    ]
+    intent """
+        Implement WP13 from docs/indexing-dev/implementation-plan.md. Publish typed runtime diagnostics for lanes, root shards/overlays, snapshot exports, cursors, readers, WAL, watches and volume identity; perform PASSIVE checkpoints after scan commits and each64mutation batches, with guarded TRUNCATE above64MiB and no reader older30s, solely on maintenance. Extend read-only doctor/CLI and Files Settings with storage/runtime health, freshness, ownership/volume and accelerator status; keep unavailable/offline states honest. Qualify the complete field rendering against an owned private daemon and a headless offline-volume Settings fixture. No installed services, live-session changes or private SQLite consumer access.
+        """
+    acceptance {
+        check maintenance-and-counters {
+            statement """
+                Native tests cover WAL/SHM storage, maintenance-only checkpoint scheduling/truncation reader-age guards, typed lane/shard/snapshot/cursor/reader metrics and process-local lifetime accounting.
+                """
+            method command
+            command "cargo test -p templar-file-index -p templar-filed"
+            verified_by [ @legeos.evidence.index-wp13-native-20261008/1 ]
+        }
+        check private-doctor {
+            statement """
+                templar doctor --check file-index against an owned private daemon prints every WP13 runtime/storage/watch/volume field and gives unavailable, WAL, reader-age and low-hit-rate warnings; read-only disk fallback remains usable.
+                """
+            method command
+            command "templar doctor --check file-index"
+            verified_by [ @legeos.evidence.index-wp13-private-doctor-20261008/1 ]
+        }
+        check settings-freshness {
+            statement """
+                CLI rendering tests and headless Settings Files rendering show split freshness, cache availability/retry, watch coverage, nesting, accelerator bytes/hit rate and a different-volume root with identity confidence and explicit action.
+                """
+            method command
+            command "cargo test -p templar; templar-settings --print --page index"
+            verified_by [ @legeos.evidence.index-wp13-settings-20261008/1 ]
+        }
+    }
+    depends_on [
+        @legeos.work.index-wp11-shards-20261008/2,
+        @legeos.work.index-wp12-overlay-20261008/2,
+        @legeos.work.index-wp7-wp8-20261008/1
+    ]
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    supersedes [ @legeos.work.index-wp13-diagnostics-20261008/3 ]
+    author "dk"
+}
+
+record legeos.work.index-wp14-fsearch-20261008/1 : work {
+    title "WP14 FSearch remote shared-index fork and native package"
+    state superseded
+    scope [
+        path "distro/forks/fsearch/**",
+        path "distro/forks/manifest.toml",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**"
+    ]
+    intent """
+        Implement WP14 at the exact upstream FSearch pin05ed650ab101ee3d61795fa5eeeb5c32e1e366c3, preserving GPL-2.0-or-later provenance and reproducible downstream packaging patches. Index-mode builds replace every local database/scanner/watch source with a worker-backed Index1 implementation of the existing database API. Support typed query translation, bounded remote pages and native-byte actions, stable entry-ID selection, generation refresh and typed error handling, honest unsupported modes and roots/preferences owned by Settings. Build the actual DEB and observe owned private GTK integration with5000entries/nonUTF8names/no private database/watches/tree enumeration, then retain same-generation nested shell/FSearch evidence. Default provider switch belongs WP16; physical/install/HDMI gates stay explicit.
+        """
+    acceptance {
+        check nested-generation {
+            statement """
+                Actual owned nested session displays FSearch info and native shell notice at the same generation for the same query, with retained screenshots and native actions.
+                """
+            method manual
+        }
+        check private-shared-index {
+            statement """
+                Owned private filed+GTK/Xvfb5000entry/nonUTF8 fixture exercises query/sort/pages/native paths/selection/freshness and typed errors; FSearch holds zero inotify/fanotify FDs, creates no fsearch.db and performs no recursive fixture enumeration (GTK theme/icon allowlist retained).
+                """
+            method command
+            command "distro/forks/fsearch/tests/remote-index.sh"
+        }
+        check query-and-build {
+            statement """
+                Pinned GPL source with reproducible index-mode patch and Meson pure query translation tests builds the actual TemplarOS FSearch Debian package through scripts/build-fork-deb.sh; scanner/database-file/watch implementations are absent from the index-mode object graph.
+                """
+            method command
+            command "scripts/build-fork-deb.sh fsearch"
+        }
+    }
+    depends_on [
+        @legeos.work.index-wp13-diagnostics-20261008/3,
+        @legeos.work.index-wp7-wp8-20261008/1
+    ]
+    part_of [ @legeos.work.silvaview-and-fsearch-share-the-index/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp14-fsearch-20261008/2 : work {
+    title "WP14 FSearch remote shared-index fork and native package"
+    state superseded
+    scope [
+        path "distro/forks/fsearch/**",
+        path "distro/forks/manifest.toml",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**"
+    ]
+    intent """
+        Implement WP14 at the exact upstream FSearch pin05ed650ab101ee3d61795fa5eeeb5c32e1e366c3, preserving GPL-2.0-or-later provenance and reproducible downstream packaging patches. Index-mode builds replace every local database/scanner/watch source with a worker-backed Index1 implementation of the existing database API. Support typed query translation, bounded remote pages and native-byte actions, stable entry-ID selection, generation refresh and typed error handling, honest unsupported modes and roots/preferences owned by Settings. Build the actual DEB and observe owned private GTK integration with5000entries/nonUTF8names/no private database/watches/tree enumeration, then retain same-generation nested shell/FSearch evidence. Default provider switch belongs WP16; physical/install/HDMI gates stay explicit.
+        """
+    acceptance {
+        check nested-generation {
+            statement """
+                Actual owned nested session displays FSearch info and native shell notice at the same generation for the same query, with retained screenshots and native actions.
+                """
+            method manual
+        }
+        check private-shared-index {
+            statement """
+                Owned private filed+GTK/Xvfb5000entry/nonUTF8 fixture exercises query/sort/pages/native paths/selection/freshness and typed errors; FSearch holds zero inotify/fanotify FDs, creates no fsearch.db and performs no recursive fixture enumeration (GTK theme/icon allowlist retained).
+                """
+            method command
+            command "distro/forks/fsearch/tests/remote-index.sh"
+            verified_by [ @legeos.evidence.index-wp14-private-20261008/1 ]
+        }
+        check query-and-build {
+            statement """
+                Pinned GPL source with reproducible index-mode patch and Meson pure query translation tests builds the actual TemplarOS FSearch Debian package through scripts/build-fork-deb.sh; scanner/database-file/watch implementations are absent from the index-mode object graph.
+                """
+            method command
+            command "scripts/build-fork-deb.sh fsearch"
+            verified_by [ @legeos.evidence.index-wp14-package-20261008/1 ]
+        }
+    }
+    depends_on [
+        @legeos.work.index-wp13-diagnostics-20261008/3,
+        @legeos.work.index-wp7-wp8-20261008/1
+    ]
+    part_of [ @legeos.work.silvaview-and-fsearch-share-the-index/1 ]
+    supersedes [ @legeos.work.index-wp14-fsearch-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp14-fsearch-20261008/3 : work {
+    title "WP14 FSearch remote shared-index fork and native package"
+    state superseded
+    scope [
+        path "distro/forks/fsearch/**",
+        path "distro/forks/manifest.toml",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**"
+    ]
+    intent """
+        Implement WP14 at the exact upstream FSearch pin05ed650ab101ee3d61795fa5eeeb5c32e1e366c3, preserving GPL-2.0-or-later provenance and reproducible downstream packaging patches. Index-mode builds replace every local database/scanner/watch source with a worker-backed Index1 implementation of the existing database API. Support typed query translation, bounded remote pages and native-byte actions, stable entry-ID selection, generation refresh and typed error handling, honest unsupported modes and roots/preferences owned by Settings. Build the actual DEB and observe owned private GTK integration with5000entries/nonUTF8names/no private database/watches/tree enumeration, retain the resulting fork as a qualified prototype. On 2026-10-08 the owner deferred the same-generation nested shell/FSearch check and selected a future own integrated Index1 GUI with a large FSearch-style window. The prototype is not final provider acceptance; no default switch is authorized by these results. Physical/install/HDMI gates stay explicit.
+        """
+    note "Owner instruction 2026-10-08: defer the original nested-generation comparison; neither the retired native Files search notice nor PCManFM Find is the final consumer route. Preserve the actual working FSearch Index1 fork/package evidence as a prototype. A future integrated Index1 search GUI is separate work; WP16 shipping/default adoption remains deferred pending that consumer decision."
+    acceptance {
+        check nested-generation {
+            statement """
+                DEFERRED BY OWNER 2026-10-08: actual owned nested session displays FSearch info and native shell notice at the same generation for the same query, with retained screenshots and native actions.
+                """
+            method manual
+        }
+        check private-shared-index {
+            statement """
+                Owned private filed+GTK/Xvfb5000entry/nonUTF8 fixture exercises query/sort/pages/native paths/selection/freshness and typed errors; FSearch holds zero inotify/fanotify FDs, creates no fsearch.db and performs no recursive fixture enumeration (GTK theme/icon allowlist retained).
+                """
+            method command
+            command "distro/forks/fsearch/tests/remote-index.sh"
+            verified_by [ @legeos.evidence.index-wp14-private-20261008/1 ]
+        }
+        check query-and-build {
+            statement """
+                Pinned GPL source with reproducible index-mode patch and Meson pure query translation tests builds the actual TemplarOS FSearch Debian package through scripts/build-fork-deb.sh; scanner/database-file/watch implementations are absent from the index-mode object graph.
+                """
+            method command
+            command "scripts/build-fork-deb.sh fsearch"
+            verified_by [ @legeos.evidence.index-wp14-package-20261008/1 ]
+        }
+    }
+    depends_on [
+        @legeos.work.index-wp13-diagnostics-20261008/4,
+        @legeos.work.index-wp7-wp8-20261008/1
+    ]
+    part_of [ @legeos.work.silvaview-and-fsearch-share-the-index/1 ]
+    supersedes [ @legeos.work.index-wp14-fsearch-20261008/2 ]
+    author "dk"
+}
+
+record legeos.work.index-wp14-fsearch-20261008/4 : work {
+    title "WP14 FSearch remote shared-index fork and native package"
+    state active
+    scope [
+        path "distro/forks/fsearch/**",
+        path "distro/forks/manifest.toml",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**"
+    ]
+    intent """
+        Implement WP14 at the exact upstream FSearch pin05ed650ab101ee3d61795fa5eeeb5c32e1e366c3, preserving GPL-2.0-or-later provenance and reproducible downstream packaging patches. Index-mode builds replace every local database/scanner/watch source with a worker-backed Index1 implementation of the existing database API. Support typed query translation, bounded remote pages and native-byte actions, stable entry-ID selection, generation refresh and typed error handling, honest unsupported modes and roots/preferences owned by Settings. Build the actual DEB and observe owned private GTK integration with5000entries/nonUTF8names/no private database/watches/tree enumeration, retain the resulting fork as a qualified prototype. On 2026-10-08 the owner deferred the same-generation nested shell/FSearch check and selected a future own integrated Index1 GUI with a large FSearch-style window. The prototype is not final provider acceptance; no default switch is authorized by these results. Physical/install/HDMI gates stay explicit.
+        """
+    note "Owner instruction 2026-10-08: defer the original nested-generation comparison; neither the retired native Files search notice nor PCManFM Find is the final consumer route. Preserve the actual working FSearch Index1 fork/package evidence as a prototype. A future integrated Index1 search GUI is separate work; WP16 shipping/default adoption remains deferred pending that consumer decision."
+    acceptance {
+        check nested-generation {
+            statement """
+                DEFERRED BY OWNER 2026-10-08: actual owned nested session displays FSearch info and native shell notice at the same generation for the same query, with retained screenshots and native actions.
+                """
+            method manual
+        }
+        check private-shared-index {
+            statement """
+                Owned private filed+GTK/Xvfb5000entry/nonUTF8 fixture exercises query/sort/pages/native paths/selection/freshness and typed errors; FSearch holds zero inotify/fanotify FDs, creates no fsearch.db and performs no recursive fixture enumeration (GTK theme/icon allowlist retained).
+                """
+            method command
+            command "distro/forks/fsearch/tests/remote-index.sh"
+            verified_by [ @legeos.evidence.index-wp14-private-20261008/1 ]
+        }
+        check query-and-build {
+            statement """
+                Pinned GPL source with reproducible index-mode patch and Meson pure query translation tests builds the actual TemplarOS FSearch Debian package through scripts/build-fork-deb.sh; scanner/database-file/watch implementations are absent from the index-mode object graph.
+                """
+            method command
+            command "scripts/build-fork-deb.sh fsearch"
+            verified_by [ @legeos.evidence.index-wp14-package-20261008/1 ]
+        }
+    }
+    depends_on [
+        @legeos.work.index-wp13-diagnostics-20261008/4,
+        @legeos.work.index-wp7-wp8-20261008/1
+    ]
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    supersedes [ @legeos.work.index-wp14-fsearch-20261008/3 ]
+    author "dk"
+}
+
+record legeos.work.index-wp15-silvaview-20261008/1 : work {
+    title "WP15 Silvaview shared-index source and native projection"
+    state superseded
+    scope [
+        path "distro/forks/silvaview/**",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**"
+    ]
+    intent """
+        Implement WP15 in the owning ../Silvaview-rs repository, preserving the person's existing Cargo.toml local-Vello change and screenshot. Add optional Linux templaros feature with store-free snapshot reader and minimal Index1 proxies; auto/service/scan modes with fallback only for absent/incompatible/uncovered initial service. Summary depth4, expansion on zoom, native-byte actions, honest indexed logical size/generation/freshness, and event-driven one-second generation debounce. Qualify policy parity and zero recursive enumeration using an owned private bus and native fixture; run the real service-mode binary in an owned nested session. G7 compact tree is optional and must be measured before adoption. No live desktop, daemon, mount or deployment changes.
+        """
+    note "Implementation belongs to sibling Silvaview and its own commits. LegeOS scope covers retained measurements/packaging; sibling source freshness must be recorded by its actual commit and source hashes, not inferred from a LegeOS path watch. Existing user modifications remain uncommitted."
+    acceptance {
+        check nested-service-binary {
+            statement """
+                The actual Silvaview binary runs in service mode on the owned nested session and visibly displays source, generation, freshness and indexed logical size.
+                """
+            method manual
+        }
+        check private-policy-parity {
+            statement """
+                Owned private filed fixture launches service mode without recursive fixture enumeration and matches direct-scan totals under explicitly declared symlink/mount/exclude/hardlink policy; generation refresh and stale/failure truth are exercised.
+                """
+            method command
+            command "scripts/test-templaros-index.sh"
+        }
+        check service-policy-and-snapshots {
+            statement """
+                Native Silvaview tests cover service never scanning, auto fallback only for absent/incompatible/uncovered service, bounded validated snapshots, native paths and summary aggregates without double counting.
+                """
+            method command
+            command "cargo test --features templaros"
+        }
+    }
+    depends_on [ @legeos.work.index-wp7-wp8-20261008/1 ]
+    part_of [ @legeos.work.silvaview-and-fsearch-share-the-index/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp15-silvaview-20261008/2 : work {
+    title "WP15 Silvaview shared-index source and native projection"
+    state superseded
+    scope [
+        path "distro/forks/silvaview/**",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**",
+        path "scripts/nested-session.sh"
+    ]
+    intent """
+        Implement WP15 in the owning ../Silvaview-rs repository, preserving the person's existing Cargo.toml local-Vello change and screenshot. Add optional Linux templaros feature with store-free snapshot reader and minimal Index1 proxies; auto/service/scan modes with fallback only for absent/incompatible/uncovered initial service. Summary depth4, expansion on zoom, native-byte actions, honest indexed logical size/generation/freshness, and event-driven one-second generation debounce. Qualify policy parity and zero recursive enumeration using an owned private bus and native fixture; run the real service-mode binary in an owned nested session. G7 compact tree is optional and must be measured before adoption. No live desktop, daemon, mount or deployment changes.
+        """
+    note "Implementation belongs to sibling Silvaview and its own commits. LegeOS scope covers retained measurements/packaging; sibling source freshness must be recorded by its actual commit and source hashes, not inferred from a LegeOS path watch. Existing user modifications remain uncommitted."
+    acceptance {
+        check nested-service-binary {
+            statement """
+                The actual Silvaview binary runs in service mode on the owned nested session and visibly displays source, generation, freshness and indexed logical size.
+                """
+            method manual
+            verified_by [ @legeos.evidence.index-wp15-nested-20261008/1 ]
+        }
+        check private-policy-parity {
+            statement """
+                Owned private filed fixture launches service mode without recursive fixture enumeration and matches direct-scan totals under explicitly declared symlink/mount/exclude/hardlink policy; generation refresh and stale/failure truth are exercised.
+                """
+            method command
+            command "scripts/test-templaros-index.sh"
+            verified_by [ @legeos.evidence.index-wp15-private-20261008/1 ]
+        }
+        check service-policy-and-snapshots {
+            statement """
+                Native Silvaview tests cover service never scanning, auto fallback only for absent/incompatible/uncovered service, bounded validated snapshots, native paths and summary aggregates without double counting.
+                """
+            method command
+            command "cargo test --features templaros"
+            verified_by [ @legeos.evidence.index-wp15-native-20261008/1 ]
+        }
+    }
+    depends_on [ @legeos.work.index-wp7-wp8-20261008/1 ]
+    part_of [ @legeos.work.silvaview-and-fsearch-share-the-index/1 ]
+    supersedes [ @legeos.work.index-wp15-silvaview-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp15-silvaview-20261008/3 : work {
+    title "WP15 Silvaview shared-index source and native projection"
+    state completed
+    scope [
+        path "distro/forks/silvaview/**",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**",
+        path "scripts/nested-session.sh"
+    ]
+    intent """
+        Implement WP15 in the owning ../Silvaview-rs repository, preserving the person's existing Cargo.toml local-Vello change and screenshot. Add optional Linux templaros feature with store-free snapshot reader and minimal Index1 proxies; auto/service/scan modes with fallback only for absent/incompatible/uncovered initial service. Summary depth4, expansion on zoom, native-byte actions, honest indexed logical size/generation/freshness, and event-driven one-second generation debounce. Qualify policy parity and zero recursive enumeration using an owned private bus and native fixture; run the real service-mode binary in an owned nested session. G7 compact tree is optional and must be measured before adoption. No live desktop, daemon, mount or deployment changes.
+        """
+    note "Implementation belongs to sibling Silvaview and its own commits. LegeOS scope covers retained measurements/packaging; sibling source freshness must be recorded by its actual commit and source hashes, not inferred from a LegeOS path watch. Existing user modifications remain uncommitted."
+    acceptance {
+        check nested-service-binary {
+            statement """
+                The actual Silvaview binary runs in service mode on the owned nested session and visibly displays source, generation, freshness and indexed logical size.
+                """
+            method manual
+            verified_by [ @legeos.evidence.index-wp15-nested-20261008/1 ]
+        }
+        check private-policy-parity {
+            statement """
+                Owned private filed fixture launches service mode without recursive fixture enumeration and matches direct-scan totals under explicitly declared symlink/mount/exclude/hardlink policy; generation refresh and stale/failure truth are exercised.
+                """
+            method command
+            command "scripts/test-templaros-index.sh"
+            verified_by [ @legeos.evidence.index-wp15-private-20261008/1 ]
+        }
+        check service-policy-and-snapshots {
+            statement """
+                Native Silvaview tests cover service never scanning, auto fallback only for absent/incompatible/uncovered service, bounded validated snapshots, native paths and summary aggregates without double counting.
+                """
+            method command
+            command "cargo test --features templaros"
+            verified_by [ @legeos.evidence.index-wp15-native-20261008/1 ]
+        }
+    }
+    depends_on [ @legeos.work.index-wp7-wp8-20261008/1 ]
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    supersedes [ @legeos.work.index-wp15-silvaview-20261008/2 ]
+    author "dk"
+}
+
+record legeos.work.index-wp16-provider-adoption-20261008/1 : work {
+    title "WP16 provider adoption"
+    state proposed
+    scope [
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "services/templar-filed/**"
+    ]
+    intent "Original WP16 fork provider/default adoption is deferred by the owner pending an own integrated Index1 search GUI."
+    note "Owner amendment2026-10-08: defer FSearch fork shipping/default adoption. FSearch and PCManFM do not easily integrate with Index1. The proposed own GUI is future work; do not ship the prototype or mark adoption complete."
+    acceptance {
+        check provider-and-gates {
+            statement """
+                Provider tests, full interface and packaging gates pass for the selected adoption, after its consumer acceptance.
+                """
+            method command
+            command "cargo test -p templar-session-core; just check-interfaces; xtask check-packaging"
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp17-qualification-20261008/1 : work {
+    title "WP17 owned crash journeys and installed developer-day closure"
+    state superseded
+    scope [
+        path "CHANGELOG.md",
+        path "crates/templar-file-index/tests/**",
+        path "docs/architecture/files.md",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "scripts/test-index-crashes.*",
+        path "services/templar-filed/tests/**"
+    ]
+    intent """
+        WP17 qualification and closure of docs/indexing-dev/implementation-plan.md. Exercise precise owned process death at the scan commit and partial snapshot write of the unmodified native filed; observe SQLite head/rows/change sequence integrity, surviving sealed descriptors, and client SnapshotRequired/resnapshot after a private restart. Exercise the production Btrfs delta apply/fence code with the owned fake-checkpoint test fixture; label real Btrfs mount support separately. Retain actual source/binary hashes and commands, refresh architecture/plan/CHANGELOG, and gather final native interface/packaging gates. The installed developer day uses one build-set, real Home/project/churn/download/PCMan renames/NTFS unplug-return/logout-login/FSearch/Silvaview and doctor. It is owner-run, with no agent live-session changes. Never delete the WP8 oracle or claim installed/physical closure without those observations.
+        """
+    note "The original WP14 shell notice acceptance refers to a retired ordinary native Files route. Clarification is pending; WP16 still depends on its acceptance. Owned software/nested observations do not satisfy installed or physical HDMI gates."
+    acceptance {
+        check closure-gates-and-docs {
+            statement """
+                Final native regressions, interface and packaging gates pass, with current architecture/plan/CHANGELOG and an auditable coherent package set prepared for owner validation.
+                """
+            method command
+        }
+        check owned-crash-journeys {
+            statement """
+                Owned scan commit, partial snapshot and Btrfs delta process-crash journeys retain whole committed generations; private restarted clients resnapshot instead of accepting old cursors. Any fake filesystem/checkpoint boundaries are stated explicitly.
+                """
+            method command
+            command "scripts/test-index-crashes.sh"
+        }
+        check owner-installed-developer-day {
+            statement """
+                The owner records one coherent installed build-set developer day over real Home/project, cargo churn, downloads, external PCManFM renames, second NTFS volume unplug-return, logout-login/filed restart and shared FSearch/Silvaview warm launch with doctor/churn output.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.shared-incremental-file-index/3 ]
+    author "dk"
+}
+
+record legeos.work.index-wp17-qualification-20261008/2 : work {
+    title "WP17 owned crash journeys and installed developer-day closure"
+    state superseded
+    scope [
+        path "CHANGELOG.md",
+        path "crates/templar-file-index/tests/**",
+        path "docs/architecture/files.md",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "docs/planning/integrated-indexing.md",
+        path "scripts/test-index-crashes.*",
+        path "services/templar-filed/tests/**"
+    ]
+    intent """
+        WP17 qualification and closure of docs/indexing-dev/implementation-plan.md. Exercise precise owned process death at the scan commit and partial snapshot write of the unmodified native filed; observe SQLite head/rows/change sequence integrity, surviving sealed descriptors, and client SnapshotRequired/resnapshot after a private restart. Exercise the production Btrfs delta apply/fence code with the owned fake-checkpoint test fixture; label real Btrfs mount support separately. Retain actual source/binary hashes and commands, refresh architecture/plan/CHANGELOG, and gather final native interface/packaging gates. The installed developer day uses one build-set, real Home/project/churn/download/PCMan renames/NTFS unplug-return/logout-login/FSearch/Silvaview and doctor. It is owner-run, with no agent live-session changes. Never delete the WP8 oracle or claim installed/physical closure without those observations.
+        """
+    note "The original WP14 shell notice acceptance refers to a retired ordinary native Files route. Clarification is pending; WP16 still depends on its acceptance. Owned software/nested observations do not satisfy installed or physical HDMI gates."
+    acceptance {
+        check closure-gates-and-docs {
+            statement """
+                Final native regressions, interface and packaging gates pass, with current architecture/plan/CHANGELOG and an auditable coherent package set prepared for owner validation.
+                """
+            method command
+        }
+        check owned-crash-journeys {
+            statement """
+                Owned scan commit, partial snapshot and Btrfs delta process-crash journeys retain whole committed generations; private restarted clients resnapshot instead of accepting old cursors. Any fake filesystem/checkpoint boundaries are stated explicitly.
+                """
+            method command
+            command "scripts/test-index-crashes.sh"
+        }
+        check owner-installed-developer-day {
+            statement """
+                The owner records one coherent installed build-set developer day over real Home/project, cargo churn, downloads, external PCManFM renames, second NTFS volume unplug-return, logout-login/filed restart and shared FSearch/Silvaview warm launch with doctor/churn output.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.shared-incremental-file-index/3 ]
+    supersedes [ @legeos.work.index-wp17-qualification-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp17-qualification-20261008/3 : work {
+    title "WP17 owned crash journeys and installed developer-day closure"
+    state superseded
+    scope [
+        path "CHANGELOG.md",
+        path "crates/templar-file-index/tests/**",
+        path "docs/architecture/files.md",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "docs/planning/integrated-indexing.md",
+        path "scripts/test-index-crashes.*",
+        path "services/templar-filed/tests/**"
+    ]
+    intent """
+        WP17 qualification and closure of docs/indexing-dev/implementation-plan.md. Exercise precise owned process death at the scan commit and partial snapshot write of the unmodified native filed; observe SQLite head/rows/change sequence integrity, surviving sealed descriptors, and client SnapshotRequired/resnapshot after a private restart. Exercise the production Btrfs delta apply/fence code with the owned fake-checkpoint test fixture; label real Btrfs mount support separately. Retain actual source/binary hashes and commands, refresh architecture/plan/CHANGELOG, and gather final native interface/packaging gates. The installed developer day uses one build-set, real Home/project/churn/download/PCMan renames/NTFS unplug-return/logout-login/FSearch/Silvaview and doctor. It is owner-run, with no agent live-session changes. Never delete the WP8 oracle or claim installed/physical closure without those observations.
+        """
+    note "The original WP14 shell notice acceptance refers to a retired ordinary native Files route. Clarification is pending; WP16 still depends on its acceptance. Owned software/nested observations do not satisfy installed or physical HDMI gates."
+    acceptance {
+        check closure-gates-and-docs {
+            statement """
+                Final native regressions, interface and packaging gates pass, with current architecture/plan/CHANGELOG and an auditable coherent package set prepared for owner validation.
+                """
+            method command
+        }
+        check owned-crash-journeys {
+            statement """
+                Owned scan commit, partial snapshot and Btrfs delta process-crash journeys retain whole committed generations; private restarted clients resnapshot instead of accepting old cursors. Any fake filesystem/checkpoint boundaries are stated explicitly.
+                """
+            method command
+            command "scripts/test-index-crashes.sh"
+            verified_by [ @legeos.evidence.index-wp17-owned-crashes-20261008/1 ]
+        }
+        check owner-installed-developer-day {
+            statement """
+                The owner records one coherent installed build-set developer day over real Home/project, cargo churn, downloads, external PCManFM renames, second NTFS volume unplug-return, logout-login/filed restart and shared FSearch/Silvaview warm launch with doctor/churn output.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.shared-incremental-file-index/3 ]
+    supersedes [ @legeos.work.index-wp17-qualification-20261008/2 ]
+    author "dk"
+}
+
+record legeos.work.index-wp17-qualification-20261008/4 : work {
+    title "WP17 owned crash journeys and installed developer-day closure"
+    state superseded
+    scope [
+        path "CHANGELOG.md",
+        path "crates/templar-file-index/tests/**",
+        path "docs/architecture/files.md",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "docs/planning/integrated-indexing.md",
+        path "scripts/test-index-crashes.*",
+        path "services/templar-filed/tests/**"
+    ]
+    intent """
+        WP17 qualification and closure of docs/indexing-dev/implementation-plan.md. Exercise precise owned process death at the scan commit and partial snapshot write of the unmodified native filed; observe SQLite head/rows/change sequence integrity, surviving sealed descriptors, and client SnapshotRequired/resnapshot after a private restart. Exercise the production Btrfs delta apply/fence code with the owned fake-checkpoint test fixture; label real Btrfs mount support separately. Retain actual source/binary hashes and commands, refresh architecture/plan/CHANGELOG, and gather final native interface/packaging gates. The installed developer day uses one build-set, real Home/project/churn/download/PCMan renames/NTFS unplug-return/logout-login/FSearch/Silvaview and doctor. It is owner-run, with no agent live-session changes. Never delete the WP8 oracle or claim installed/physical closure without those observations.
+        """
+    note "The owner deferred the original WP14 shell/FSearch generation comparison on 2026-10-08 and selected a future own integrated Index1 GUI with a large FSearch-style window. FSearch fork evidence remains a prototype; WP16 default adoption is deferred. Owned software/nested observations do not satisfy installed or physical HDMI gates."
+    acceptance {
+        check closure-gates-and-docs {
+            statement """
+                Final native regressions, interface and packaging gates pass, with current architecture/plan/CHANGELOG and an auditable coherent package set prepared for owner validation.
+                """
+            method command
+        }
+        check owned-crash-journeys {
+            statement """
+                Owned scan commit, partial snapshot and Btrfs delta process-crash journeys retain whole committed generations; private restarted clients resnapshot instead of accepting old cursors. Any fake filesystem/checkpoint boundaries are stated explicitly.
+                """
+            method command
+            command "scripts/test-index-crashes.sh"
+            verified_by [ @legeos.evidence.index-wp17-owned-crashes-20261008/1 ]
+        }
+        check owner-installed-developer-day {
+            statement """
+                The owner records one coherent installed build-set developer day over real Home/project, cargo churn, downloads, external PCManFM renames, second NTFS volume unplug-return, logout-login/filed restart and shared FSearch/Silvaview warm launch with doctor/churn output.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.shared-incremental-file-index/3 ]
+    supersedes [ @legeos.work.index-wp17-qualification-20261008/3 ]
+    author "dk"
+}
+
+record legeos.work.index-wp17-qualification-20261008/5 : work {
+    title "WP17 owned crash journeys and installed developer-day closure"
+    state superseded
+    scope [
+        path "CHANGELOG.md",
+        path "cli/templar/src/garden_session.rs",
+        path "crates/templar-file-index/src/**",
+        path "crates/templar-file-index/tests/**",
+        path "crates/templar-wallpaper/src/**",
+        path "docs/architecture/files.md",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "docs/planning/integrated-indexing.md",
+        path "scripts/test-index-crashes.*",
+        path "services/templar-filed/tests/**"
+    ]
+    intent """
+        WP17 qualification and closure of docs/indexing-dev/implementation-plan.md. Exercise precise owned process death at the scan commit and partial snapshot write of the unmodified native filed; observe SQLite head/rows/change sequence integrity, surviving sealed descriptors, and client SnapshotRequired/resnapshot after a private restart. Exercise the production Btrfs delta apply/fence code with the owned fake-checkpoint test fixture; label real Btrfs mount support separately. Retain actual source/binary hashes and commands, refresh architecture/plan/CHANGELOG, and gather final native interface/packaging gates. The installed developer day uses one build-set, real Home/project/churn/download/PCMan renames/NTFS unplug-return/logout-login/Silvaview and doctor; the original search GUI comparison is deferred by the owner. It is owner-run, with no agent live-session changes. Never delete the WP8 oracle or claim installed/physical closure without those observations.
+        """
+    note "The owner deferred the original WP14 shell/FSearch generation comparison on 2026-10-08 and selected a future own integrated Index1 GUI with a large FSearch-style window. FSearch fork evidence remains a prototype; WP16 default adoption is deferred. The private ten-package cohort passes 1505 tests with eleven ignored, later Settings confirmation passes seventy-five, and refreshed owned crash journeys pass. Index/wallpaper all-target Clippy passes; wider CI lint remains open at six existing session catalogue diagnostics. The coherent package set is not yet prepared. Owned software/nested observations do not satisfy installed or physical HDMI gates."
+    acceptance {
+        check closure-gates-and-docs {
+            statement """
+                Final native regressions, interface and packaging gates pass, with current architecture/plan/CHANGELOG and an auditable coherent package set prepared for owner validation.
+                """
+            method command
+        }
+        check owned-crash-journeys {
+            statement """
+                Owned scan commit, partial snapshot and Btrfs delta process-crash journeys retain whole committed generations; private restarted clients resnapshot instead of accepting old cursors. Any fake filesystem/checkpoint boundaries are stated explicitly.
+                """
+            method command
+            command "scripts/test-index-crashes.sh"
+            verified_by [
+                @legeos.evidence.index-wp17-owned-crashes-20261008/1,
+                @legeos.evidence.index-wp17-refreshed-crashes-20261008/1
+            ]
+        }
+        check owner-installed-developer-day {
+            statement """
+                The owner records one coherent installed build-set developer day over real Home/project, cargo churn, downloads, external PCManFM renames, second NTFS volume unplug-return, logout-login/filed restart and Silvaview warm launch with doctor/churn output. The search GUI comparison/warm launch is deferred by the owner until the own integrated Index1 GUI is available.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.shared-incremental-file-index/3 ]
+    supersedes [ @legeos.work.index-wp17-qualification-20261008/4 ]
+    author "dk"
+}
+
+record legeos.work.index-wp17-qualification-20261008/6 : work {
+    title "WP17 owned crash journeys and installed developer-day closure"
+    state superseded
+    scope [
+        path "CHANGELOG.md",
+        path "cli/templar/src/garden_session.rs",
+        path "crates/templar-file-index/src/**",
+        path "crates/templar-file-index/tests/**",
+        path "crates/templar-wallpaper/src/**",
+        path "docs/architecture/files.md",
+        path "docs/architecture/hdmi-validation-handoff.md",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "docs/planning/integrated-indexing.md",
+        path "scripts/test-index-crashes.*",
+        path "services/templar-filed/tests/**"
+    ]
+    intent """
+        WP17 qualification and closure of docs/indexing-dev/implementation-plan.md. Exercise precise owned process death at the scan commit and partial snapshot write of the unmodified native filed; observe SQLite head/rows/change sequence integrity, surviving sealed descriptors, and client SnapshotRequired/resnapshot after a private restart. Exercise the production Btrfs delta apply/fence code with the owned fake-checkpoint test fixture; label real Btrfs mount support separately. Retain actual source/binary hashes and commands, refresh architecture/plan/CHANGELOG, and gather final native interface/packaging gates. The installed developer day uses one build-set, real Home/project/churn/download/PCMan renames/NTFS unplug-return/logout-login/Silvaview and doctor; the original search GUI comparison is deferred by the owner. It is owner-run, with no agent live-session changes. Never delete the WP8 oracle or claim installed/physical closure without those observations.
+        """
+    note "The owner deferred the original WP14 shell/FSearch generation comparison on 2026-10-08 and selected a future own integrated Index1 GUI with a large FSearch-style window. FSearch remains a qualified prototype; WP16 default adoption is deferred. The final private ten-package cohort passes 1506 tests with eleven ignored; refreshed owned crash journeys and the full interface/ownership declaration recipe pass. A coherent 23-package native set at 0.1.0~dev1791495062+g12295f3.dirty is prepared with actual control/hash/stamp and packaged compositor/helper checks. The primary build uses the shared native tree with a retained closed source archive; LiminalView was separately rebuilt offline from its archive. Index/wallpaper all-target Clippy passes; broader lint stops at six existing session catalogue diagnostics and whole-workspace formatting reports 213 files. Separate Silvaview action continuation passes 48 feature-on/32 feature-off tests and refreshed private worker parity. Owned software/artifact observations do not satisfy installed or physical HDMI gates."
+    acceptance {
+        check closure-gates-and-docs {
+            statement """
+                Final native regressions, interface and packaging gates pass, with current architecture/plan/CHANGELOG and an auditable coherent package set prepared for owner validation.
+                """
+            method command
+            verified_by [
+                @legeos.evidence.index-wp17-final-native-20261008/1,
+                @legeos.evidence.index-wp17-packages-20261008/1
+            ]
+        }
+        check owned-crash-journeys {
+            statement """
+                Owned scan commit, partial snapshot and Btrfs delta process-crash journeys retain whole committed generations; private restarted clients resnapshot instead of accepting old cursors. Any fake filesystem/checkpoint boundaries are stated explicitly.
+                """
+            method command
+            command "scripts/test-index-crashes.sh"
+            verified_by [
+                @legeos.evidence.index-wp17-owned-crashes-20261008/1,
+                @legeos.evidence.index-wp17-refreshed-crashes-20261008/1
+            ]
+        }
+        check owner-installed-developer-day {
+            statement """
+                The owner records one coherent installed build-set developer day over real Home/project, cargo churn, downloads, external PCManFM renames, second NTFS volume unplug-return, logout-login/filed restart and Silvaview warm launch with doctor/churn output. The search GUI comparison/warm launch is deferred by the owner until the own integrated Index1 GUI is available.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.shared-incremental-file-index/3 ]
+    supersedes [ @legeos.work.index-wp17-qualification-20261008/5 ]
+    author "dk"
+}
+
+record legeos.work.index-wp17-qualification-20261008/7 : work {
+    title "WP17 owned crash journeys and installed developer-day closure"
+    state superseded
+    scope [
+        path "CHANGELOG.md",
+        path "cli/templar/src/garden_session.rs",
+        path "crates/templar-file-index/src/**",
+        path "crates/templar-file-index/tests/**",
+        path "crates/templar-wallpaper/src/**",
+        path "docs/architecture/files.md",
+        path "docs/architecture/hdmi-validation-handoff.md",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "docs/planning/integrated-indexing.md",
+        path "scripts/test-index-crashes.*",
+        path "services/templar-filed/tests/**"
+    ]
+    intent """
+        WP17 qualification and closure of docs/indexing-dev/implementation-plan.md. Exercise precise owned process death at the scan commit and partial snapshot write of the unmodified native filed; observe SQLite head/rows/change sequence integrity, surviving sealed descriptors, and client SnapshotRequired/resnapshot after a private restart. Exercise the production Btrfs delta apply/fence code with the owned fake-checkpoint test fixture; label real Btrfs mount support separately. Retain actual source/binary hashes and commands, refresh architecture/plan/CHANGELOG, and gather final native interface/packaging gates. The installed developer day uses one build-set, real Home/project/churn/download/PCMan renames/NTFS unplug-return/logout-login/Silvaview and doctor; the original search GUI comparison is deferred by the owner. It is owner-run, with no agent live-session changes. Never delete the WP8 oracle or claim installed/physical closure without those observations.
+        """
+    note "The owner deferred the original WP14 shell/FSearch generation comparison on 2026-10-08 and selected a future own integrated Index1 GUI with a large FSearch-style window. FSearch remains a qualified prototype; WP16 default adoption is deferred. The final private ten-package cohort passes 1506 tests with eleven ignored; refreshed owned crash journeys and the full interface/ownership declaration recipe pass. A coherent 23-package native set at 0.1.0~dev1791495062+g12295f3.dirty is prepared with actual control/hash/stamp and packaged compositor/helper checks. The primary build uses the shared native tree with a retained closed source archive; LiminalView was separately rebuilt offline from its archive. Index/wallpaper all-target Clippy passes; broader lint stops at six existing session catalogue diagnostics and whole-workspace formatting reports 213 files. Separate Silvaview action continuation passes 48 feature-on/32 feature-off tests and refreshed private worker parity. Owned software/artifact observations do not satisfy installed or physical HDMI gates."
+    acceptance {
+        check closure-gates-and-docs {
+            statement """
+                Final native regressions, interface and packaging gates pass, with current architecture/plan/CHANGELOG and an auditable coherent package set prepared for owner validation.
+                """
+            method command
+            verified_by [
+                @legeos.evidence.index-wp17-final-native-20261008/1,
+                @legeos.evidence.index-wp17-packages-20261008/1
+            ]
+        }
+        check owned-crash-journeys {
+            statement """
+                Owned scan commit, partial snapshot and Btrfs delta process-crash journeys retain whole committed generations; private restarted clients resnapshot instead of accepting old cursors. Any fake filesystem/checkpoint boundaries are stated explicitly.
+                """
+            method command
+            command "scripts/test-index-crashes.sh"
+            verified_by [
+                @legeos.evidence.index-wp17-owned-crashes-20261008/1,
+                @legeos.evidence.index-wp17-refreshed-crashes-20261008/1
+            ]
+        }
+        check owner-installed-developer-day {
+            statement """
+                The owner records one coherent installed build-set developer day over real Home/project, cargo churn, downloads, external PCManFM renames, second NTFS volume unplug-return, logout-login/filed restart and Silvaview warm launch with doctor/churn output. The search GUI comparison/warm launch is deferred by the owner until the own integrated Index1 GUI is available.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    supersedes [ @legeos.work.index-wp17-qualification-20261008/6 ]
+    author "dk"
+}
+
+record legeos.work.index-wp17-qualification-20261008/8 : work {
+    title "WP17 owned crash journeys and installed developer-day closure"
+    state superseded
+    scope [
+        path "CHANGELOG.md",
+        path "cli/templar/src/garden_session.rs",
+        path "crates/templar-file-index/src/**",
+        path "crates/templar-file-index/tests/**",
+        path "crates/templar-wallpaper/src/**",
+        path "docs/architecture/files.md",
+        path "docs/architecture/hdmi-validation-handoff.md",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "docs/planning/integrated-indexing.md",
+        path "scripts/test-index-crashes.*",
+        path "services/templar-filed/tests/**"
+    ]
+    intent """
+        WP17 qualification and closure of docs/indexing-dev/implementation-plan.md. Exercise precise owned process death at the scan commit and partial snapshot write of the unmodified native filed; observe SQLite head/rows/change sequence integrity, surviving sealed descriptors, and client SnapshotRequired/resnapshot after a private restart. Exercise the production Btrfs delta apply/fence code with the owned fake-checkpoint test fixture; label real Btrfs mount support separately. Retain actual source/binary hashes and commands, refresh architecture/plan/CHANGELOG, and gather final native interface/packaging gates. The installed developer day uses one build-set, real Home/project/churn/download/PCMan renames/NTFS unplug-return/logout-login/Silvaview and doctor; the original search GUI comparison is deferred by the owner. It is owner-run, with no agent live-session changes. Never delete the WP8 oracle or claim installed/physical closure without those observations.
+        """
+    note "The owner deferred the legacy WP14 comparison and WP16 FSearch adoption for a future own integrated Index1 GUI with a large FSearch-style window. The post-lint private ten-package cohort passes 1757 tests, zero failed and eleven ignored; all 623 recorded source hashes match. Required core/filed/client all-target Clippy with -D warnings passes without new suppressions; whole-workspace all-target compilation and the full interface recipe pass. All three precise owned debug crash journeys pass on current binaries, with the fake checkpoint boundary explicit. The fresh 23-package native set 0.1.0~dev1791502518+gebc54d2.dirty is verified with controls/hashes/seven runtime stamps and packaged compositor/helper self-checks; all 625 archived first-party Rust/TOML/lock hashes match the shared native source. The source archive is retained rather than used for an isolated workspace rebuild; LiminalView was separately rebuilt offline from its archive. The 206-file full-format failure remains open (193 LegeOS files also fail in tracked HEAD and 13 are sibling Pixelkit); 208 raw paths include two aliases. Earlier 1506/384-test, idle, scale and package observations remain historical and counts are not added. The installed developer day, real volumes, retired nested GUI acceptance and physical HDMI remain open; the WP8 oracle is retained."
+    acceptance {
+        check closure-gates-and-docs {
+            statement """
+                Final native regressions, interface and packaging gates pass, with current architecture/plan/CHANGELOG and an auditable coherent package set prepared for owner validation.
+                """
+            method command
+            verified_by [
+                @legeos.evidence.index-final-interfaces-20261008/1,
+                @legeos.evidence.index-post-lint-native-20261008/1,
+                @legeos.evidence.index-post-lint-packages-20261009/1,
+                @legeos.evidence.index-required-clippy-20261008/1,
+                @legeos.evidence.index-workspace-check-20261008/1,
+                @legeos.evidence.index-wp17-final-native-20261008/1,
+                @legeos.evidence.index-wp17-packages-20261008/1
+            ]
+        }
+        check owned-crash-journeys {
+            statement """
+                Owned scan commit, partial snapshot and Btrfs delta process-crash journeys retain whole committed generations; private restarted clients resnapshot instead of accepting old cursors. Any fake filesystem/checkpoint boundaries are stated explicitly.
+                """
+            method command
+            command "scripts/test-index-crashes.sh"
+            verified_by [
+                @legeos.evidence.index-post-lint-crashes-20261009/1,
+                @legeos.evidence.index-wp17-owned-crashes-20261008/1,
+                @legeos.evidence.index-wp17-refreshed-crashes-20261008/1
+            ]
+        }
+        check owner-installed-developer-day {
+            statement """
+                The owner records one coherent installed build-set developer day over real Home/project, cargo churn, downloads, external PCManFM renames, second NTFS volume unplug-return, logout-login/filed restart and Silvaview warm launch with doctor/churn output. The search GUI comparison/warm launch is deferred by the owner until the own integrated Index1 GUI is available.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    supersedes [ @legeos.work.index-wp17-qualification-20261008/7 ]
+    author "dk"
+}
+
+record legeos.work.index-wp17-qualification-20261008/9 : work {
+    title "WP17 owned crash journeys and installed developer-day closure"
+    state active
+    scope [
+        path "CHANGELOG.md",
+        path "cli/templar/src/garden_session.rs",
+        path "crates/templar-file-index/src/**",
+        path "crates/templar-file-index/tests/**",
+        path "crates/templar-types/src/display.rs",
+        path "crates/templar-wallpaper/src/**",
+        path "docs/architecture/files.md",
+        path "docs/architecture/hdmi-validation-handoff.md",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "docs/planning/integrated-indexing.md",
+        path "scripts/test-index-crashes.*",
+        path "services/templar-filed/tests/**"
+    ]
+    intent """
+        WP17 qualification and closure of docs/indexing-dev/implementation-plan.md. Exercise precise owned process death at the scan commit and partial snapshot write of the unmodified native filed; observe SQLite head/rows/change sequence integrity, surviving sealed descriptors, and client SnapshotRequired/resnapshot after a private restart. Exercise the production Btrfs delta apply/fence code with the owned fake-checkpoint test fixture; label real Btrfs mount support separately. Retain actual source/binary hashes and commands, refresh architecture/plan/CHANGELOG, and gather final native interface/packaging gates. The installed developer day uses one build-set, real Home/project/churn/download/PCMan renames/NTFS unplug-return/logout-login/Silvaview and doctor; the original search GUI comparison is deferred by the owner. It is owner-run, with no agent live-session changes. Never delete the WP8 oracle or claim installed/physical closure without those observations.
+        """
+    note "October 9 formatting corrected exactly 206 files (193 LegeOS, 13 Pixelkit), with 610 original Rust files and the formatter patch retained. Existing geometry and duplicate-timing calculations were extracted into display helpers for lint, with error ordering, bounds, scoring and ties preserved. Full workspace formatting and all-target compilation, required Index1 all-target Clippy without new suppressions and the full interface recipe pass. The fresh eleven-package private run passes 1803 tests, zero failed and eleven ignored; all 675 captured source inputs still match. All three fresh debug crash journeys pass with the fake checkpoint boundary explicit. The fresh 23-package native set 0.1.0~dev1791505403+gebc54d2.dirty is independently verified with controls/hashes/seven runtime stamps and packaged compositor/helper self-checks; all 625 archived first-party Rust/TOML/lock files match. First-party packages use the shared tree with a retained archive, not an isolated workspace rebuild; LiminalView was separately rebuilt offline. Earlier cohorts remain historical and counts are not added. The owner deferred WP14's legacy comparison and WP16 FSearch adoption for a future own integrated Index1 GUI with a large FSearch-style window. WP0's missing historical permission reproduction, WP9 real volumes, WP10 retired nested search-view acceptance, the installed developer day and physical HDMI remain open; the WP8 oracle is retained."
+    acceptance {
+        check closure-gates-and-docs {
+            statement """
+                Final native regressions, interface and packaging gates pass, with current architecture/plan/CHANGELOG and an auditable coherent package set prepared for owner validation.
+                """
+            method command
+            verified_by [
+                @legeos.evidence.index-final-interfaces-20261008/1,
+                @legeos.evidence.index-post-format-check-20261009/1,
+                @legeos.evidence.index-post-format-interfaces-20261009/1,
+                @legeos.evidence.index-post-format-lint-20261009/1,
+                @legeos.evidence.index-post-format-native-20261009/1,
+                @legeos.evidence.index-post-format-packages-20261009/1,
+                @legeos.evidence.index-post-lint-native-20261008/1,
+                @legeos.evidence.index-post-lint-packages-20261009/1,
+                @legeos.evidence.index-required-clippy-20261008/1,
+                @legeos.evidence.index-workspace-check-20261008/1,
+                @legeos.evidence.index-workspace-format-pass-20261009/1,
+                @legeos.evidence.index-wp17-final-native-20261008/1,
+                @legeos.evidence.index-wp17-packages-20261008/1
+            ]
+        }
+        check owned-crash-journeys {
+            statement """
+                Owned scan commit, partial snapshot and Btrfs delta process-crash journeys retain whole committed generations; private restarted clients resnapshot instead of accepting old cursors. Any fake filesystem/checkpoint boundaries are stated explicitly.
+                """
+            method command
+            command "scripts/test-index-crashes.sh"
+            verified_by [
+                @legeos.evidence.index-post-format-crashes-20261009/1,
+                @legeos.evidence.index-post-lint-crashes-20261009/1,
+                @legeos.evidence.index-wp17-owned-crashes-20261008/1,
+                @legeos.evidence.index-wp17-refreshed-crashes-20261008/1
+            ]
+        }
+        check owner-installed-developer-day {
+            statement """
+                The owner records one coherent installed build-set developer day over real Home/project, cargo churn, downloads, external PCManFM renames, second NTFS volume unplug-return, logout-login/filed restart and Silvaview warm launch with doctor/churn output. The search GUI comparison/warm launch is deferred by the owner until the own integrated Index1 GUI is available.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    supersedes [ @legeos.work.index-wp17-qualification-20261008/8 ]
+    author "dk"
+}
+
+record legeos.work.index-wp2-scope-parity-20261008/1 : work {
+    title "WP2 scope parity"
+    state completed
+    scope [
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "services/templar-filed/**"
+    ]
+    intent "Implement WP2 normalized disjoint scopes, nested-root path ordering and SQL/array parity."
+    note "The native parity run now passes 512 random cases and 512 cases for each of the three recorded seeds (2048 cases), including ordered every-page parity. Historical 64-case seed coverage remains explicit."
+    acceptance {
+        check existing-oracle {
+            statement """
+                The existing SQL/arrays equivalence test remains passing.
+                """
+            method command
+            command "cargo test -p templar-file-index the_search_arrays_answer_exactly_what_sql_answers"
+            verified_by [ @legeos.evidence.index-wp1-wp4-native-audit-20261008/1 ]
+        }
+        check named-regressions {
+            statement """
+                Nested, duplicate/adjacent scope and nested root ordering regressions and every-page SQL parity pass.
+                """
+            method command
+            command "cargo test -p templar-file-index --test search_parity"
+            verified_by [ @legeos.evidence.index-wp1-wp4-native-audit-20261008/1 ]
+        }
+        check recorded-property-runs {
+            statement """
+                512 cases pass for the default seed and each of three recorded seeds.
+                """
+            method command
+            command "cargo test -p templar-file-index --test search_parity"
+            verified_by [ @legeos.evidence.index-wp1-wp4-native-audit-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp3-root-ownership-20261008/1 : work {
+    title "WP3 root ownership"
+    state completed
+    scope [
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "services/templar-filed/**"
+    ]
+    intent "Implement WP3 most-specific ownership on scan/watch/repair and transfer on registration/removal."
+    note "The native production snapshot decoder now passes the registered parent/nested-root case with non-UTF8 path bytes, no duplicates and exact equality to a fresh treemap scan. Existing acquisition and private-runtime fixtures also pass."
+    acceptance {
+        check acquisition-tests {
+            statement """
+                The four WP3 nested ownership/watch/transfer/no-duplicate tests pass.
+                """
+            method command
+            command "cargo test -p templar-file-index --test reconcile"
+            verified_by [ @legeos.evidence.index-wp1-wp4-native-audit-20261008/1 ]
+        }
+        check decoded-snapshot {
+            statement """
+                A snapshot across both registered roots decodes in tree_source with no duplicate native paths.
+                """
+            method command
+            command "cargo test -p templar-client -p templar-filed --test snapshot_consumer"
+            verified_by [ @legeos.evidence.index-wp1-wp4-native-audit-20261008/1 ]
+        }
+        check private-runtime {
+            statement """
+                The existing private runtime behavior remains passing.
+                """
+            method command
+            command "cargo test -p templar-filed --test private_runtime"
+            verified_by [ @legeos.evidence.index-wp1-wp4-native-audit-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp4-cache-recovery-20261008/1 : work {
+    title "WP4 cache recovery"
+    state completed
+    scope [
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "services/templar-filed/**"
+    ]
+    intent "Implement WP4 classified open failures, exclusive owner lock, whole-cache quarantine and available file operations while Index1 is unavailable."
+    note "The exact chmod 000 parent regression now passes, preserving main/WAL/SHM bytes. Busy/read-only/corrupt/future-schema/quarantine and private Unavailable/retry fixtures pass in the same native cohort; the missing original chmod 000 baseline reproduction stays open under WP0."
+    acceptance {
+        check cache-and-runtime {
+            statement """
+                Busy, permission, corruption, future-schema, quarantine retention and private Unavailable/retry tests pass.
+                """
+            method command
+            command "cargo test -p templar-file-index --test cache_recovery; cargo test -p templar-filed --test private_runtime"
+            verified_by [ @legeos.evidence.index-wp1-wp4-native-audit-20261008/1 ]
+        }
+        check quarantine-contract {
+            statement """
+                The prior cannot-read cache test asserts preserved quarantined bytes; its comment states the contract change.
+                """
+            method command
+            command "cargo test -p templar-file-index a_database_this_build_cannot_read_is_rebuilt_rather_than_refused"
+            verified_by [ @legeos.evidence.index-wp1-wp4-native-audit-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp5-cursor-ownership-20261008/1 : work {
+    title "WP5 cursor ownership"
+    state completed
+    scope [
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "services/templar-filed/**"
+    ]
+    intent "Implement WP5 per-caller cursor ownership/caps, expiry before retention reads and event-driven departure cleanup."
+    acceptance {
+        check cursor-tests {
+            statement """
+                Expiry/tombstone, departure, cross-owner unknown/no-op, isolation and existing cursor tests pass; private bus departure drops the cursor count.
+                """
+            method command
+            command "cargo test -p templar-file-index --test cursors; cargo test -p templar-filed --test private_runtime"
+            verified_by [ @legeos.evidence.index-wp17-final-native-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp6-measurements-20261008/1 : work {
+    title "WP6 measurements"
+    state completed
+    scope [
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "services/templar-filed/**"
+    ]
+    intent "Implement WP6 churn, memory and layout measurements with owned fixtures and realistic native names."
+    note "Retained before-lanes-shards churn, memory and layout reports are committed as ebc54d2dd9dee9df23dadf1ec5c2d8a83e92c020, six documentation files only. Measurements were captured before WP7/WP8/WP11; their publication is later, not a new run. Churn/memory use an owned private daemon; layout is in-process as WP6 Changes specifies. All 61 source hashes from the latest native test audit still match; shared implementation remains uncommitted."
+    acceptance {
+        check prior-baselines {
+            statement """
+                Before WP7/WP8/WP11 changes, churn and memory baseline numbers are measured and reports committed.
+                """
+            method command
+            command "retained before-lanes-shards reports and Git report history"
+            verified_by [ @legeos.evidence.index-wp6-baselines-committed-20261008/1 ]
+        }
+        check private-bus {
+            statement """
+                No live user bus is used by measurement daemons.
+                """
+            method command
+            command "owned private-daemon command/log/source provenance"
+            verified_by [
+                @legeos.evidence.index-wp6-baselines-committed-20261008/1,
+                @legeos.evidence.index-wp6-before-reports-20261008/1
+            ]
+        }
+        check subcommands {
+            statement """
+                Churn, memory and layout subcommands run against their specified owned fixtures, with no live bus.
+                """
+            method command
+            command "xtask index-bench churn; xtask index-bench memory; xtask index-bench layout"
+            verified_by [
+                @legeos.evidence.index-wp6-baselines-committed-20261008/1,
+                @legeos.evidence.index-wp6-before-reports-20261008/1
+            ]
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp7-lanes-20261008/1 : work {
+    title "WP7 lanes"
+    state completed
+    scope [
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "services/templar-filed/**"
+    ]
+    intent "WP7 canonical acceptance entry for the implementation qualified by index-wp7-wp8-20261008/1."
+    note "The existing combined WP7/WP8 record remains historical evidence; this per-WP entry makes original acceptance individually reviewable."
+    acceptance {
+        check idle {
+            statement """
+                Settled idle observer/worker measurements record zero timer-driven wakeups, with transient thread limitations explicit.
+                """
+            method command
+            command "xtask index-bench idle and owned all-thread sampler"
+            verified_by [ @legeos.evidence.index-wp17-quiet-all-threads-20261008/1 ]
+        }
+        check responsiveness-and-bounds {
+            statement """
+                WP6 churn reports Browse responsiveness and bounded static worker/thread counts.
+                """
+            method command
+            command "xtask index-bench churn"
+            verified_by [ @legeos.evidence.index-wp7-scheduling-measurement-20261008/1 ]
+        }
+        check tests {
+            statement """
+                Lane, cancellation, bounded-reader and Search1 routing tests pass.
+                """
+            method command
+            command "scripts/test-nonzero.sh -p templar-file-index -p templar-filed"
+            verified_by [ @legeos.evidence.index-wp17-final-native-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp7-wp8-20261008/1 : work {
+    title "Index WP7/WP8: lanes and bounded streaming snapshots"
+    state completed
+    scope [
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "crates/templar-treemap/**",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "services/templar-filed/**",
+        path "shell/templar-shell/**",
+        path "tools/xtask/**"
+    ]
+    intent """
+        Continue the interrupted WP7 and WP8 implementation from docs/indexing-dev/implementation-plan.md: bounded execution lanes and readers, caller cancellation, streaming seekable snapshots, borrowed entries, sealed mmap consumption, summary-first treemap and bounded expansion. Preserve the preceding WP0-WP6 working tree. Record native regression, private runtime, idle/churn and synthetic 100k/1M snapshot measurements. This slice does not complete WP9-WP17 or installed hardware qualification. Missing Detailed directory aggregates remain explicit partial summaries; cached summary rollups and shared immutable snapshots are separate proposals.
+        """
+    acceptance {
+        check contract-gates {
+            statement """
+                Frozen interfaces, proxies and interface signatures still pass after the internal API cutover.
+                """
+            method command
+            command "xtask check-interfaces; xtask check-proxies; xtask check-interface-signatures"
+            verified_by [ @legeos.evidence.index-wp7-wp8-contract-gates-20261008/1 ]
+        }
+        check memory-bound {
+            statement """
+                Synthetic 100k/1M snapshot writer RSS deltas differ by less than 8 MiB; sealed payload and mmap-plus-final-vector memory are reported with methodology limits.
+                """
+            method command
+            command "xtask index-bench memory --entries 100000 --scales 100000,1000000"
+            verified_by [ @legeos.evidence.index-wp8-memory-20261008/1 ]
+        }
+        check native-regressions {
+            statement """
+                Core, filed, client, treemap, shell and compositor regressions pass on native Linux, including cancellation, reader limits, writer byte parity, CRC, quotas, sealed snapshots and treemap totals.
+                """
+            method command
+            command "cargo test --offline -p templar-file-index -p templar-filed -p templar-client -p templar-treemap -p templar-shell -p templar-comp -- --test-threads=2"
+            verified_by [ @legeos.evidence.index-wp7-wp8-native-regressions-20261008/1 ]
+        }
+        check owned-runtime {
+            statement """
+                Eight private typing clients complete 160 queries with success or Busy/Cancelled while Browse answers within 100 ms; private sealed snapshot checks and the production snapshot consumer pass.
+                """
+            method command
+            command "cargo test --offline -p templar-filed --test private_runtime --test snapshot_consumer"
+            verified_by [ @legeos.evidence.index-wp7-owned-browse-20261008/1 ]
+        }
+        check scheduling-measurement {
+            statement """
+                Owned churn reports search latency, queue wait, Browse responsiveness and bounded thread counts, and the owned settled idle measurement records zero watcher wakeups.
+                """
+            method command
+            command "xtask index-bench churn; xtask index-bench idle"
+            verified_by [ @legeos.evidence.index-wp7-scheduling-measurement-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.file-index-core/3 ]
+    author "dk"
+}
+
+record legeos.work.index-wp8-snapshots-20261008/1 : work {
+    title "WP8 snapshots"
+    state completed
+    scope [
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "services/templar-filed/**"
+    ]
+    intent "WP8 canonical acceptance entry for streaming format-identical snapshots and borrowed sealed mmap consumption."
+    note "The test-only old writer oracle remains until actual WP17 installed closure. RSS deltas are not allocation-profiler heap measurements."
+    acceptance {
+        check consumer {
+            statement """
+                Production snapshot_consumer passes.
+                """
+            method command
+            command "cargo test -p templar-filed --test snapshot_consumer"
+            verified_by [ @legeos.evidence.index-wp17-final-native-20261008/1 ]
+        }
+        check memory {
+            statement """
+                WP6 reports service writer memory independent of entry count and client mapped-plus-final-vector peaks with stated methodology.
+                """
+            method command
+            command "xtask index-bench memory"
+            verified_by [ @legeos.evidence.index-wp8-memory-20261008/1 ]
+        }
+        check sealed-runtime {
+            statement """
+                Private runtime sealed-snapshot checks pass.
+                """
+            method command
+            command "cargo test -p templar-filed --test private_runtime"
+            verified_by [ @legeos.evidence.index-wp17-final-native-20261008/1 ]
+        }
+        check tests {
+            statement """
+                Streaming writer parity, CRC, quotas, cancellation and borrowed-reader tests pass.
+                """
+            method command
+            command "scripts/test-nonzero.sh -p templar-file-index -p templar-client -p templar-treemap"
+            verified_by [ @legeos.evidence.index-wp17-final-native-20261008/1 ]
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp9-volumes-20261008/1 : work {
+    title "WP9: native volume identity and mount lifecycle"
+    state superseded
+    scope [
+        path "apps/templar-settings/src/files.rs",
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "interfaces/**",
+        path "scripts/index-volume-fixture.sh",
+        path "services/templar-filed/**"
+    ]
+    intent """
+        Implement WP9 of docs/indexing-dev/implementation-plan.md: native-byte mountinfo identity, schema 0008, conservative volume presence gates, poll-driven mount changes including mount-over boundaries, offline retention and fenced AcceptVolume, Settings volume actions, and fake/provider plus real owner-run volume fixtures. This work remains open until its real-mount acceptance is observed; no installed services or live mounts are mutated by the agent.
+        """
+    acceptance {
+        check identity-and-retention {
+            statement """
+                Volume parser/identity and fake-provider index tests cover absent/different disks, retained rows, fenced acceptance in one generation, unverified full reconciliation and shadowed subtree boundaries.
+                """
+            method command
+            command "cargo test -p templar-file-index -p templar-filed volume"
+        }
+        check idle-and-interface {
+            statement """
+                The mount thread blocks in poll without an idle timer, owned idle measurements remain zero, and additive AcceptVolume signatures pass the frozen interface gates.
+                """
+            method command
+            command "xtask index-bench idle; xtask check-interface-signatures"
+        }
+        check owner-mount-journey {
+            statement """
+                The owner-run private loopback fixture passes mount, detach, return, changed-path and different-volume decisions with row retention and watch rearm; its log is retained.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.file-index-core/3 ]
+    author "dk"
+}
+
+record legeos.work.index-wp9-volumes-20261008/2 : work {
+    title "WP9: native volume identity and mount lifecycle"
+    state superseded
+    scope [
+        path "apps/templar-settings/src/files.rs",
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "interfaces/**",
+        path "scripts/index-volume-fixture.sh",
+        path "services/templar-filed/**"
+    ]
+    intent """
+        Implement WP9 of docs/indexing-dev/implementation-plan.md: native-byte mountinfo identity, schema 0008, conservative volume presence gates, poll-driven mount changes including mount-over boundaries, offline retention and fenced AcceptVolume, Settings volume actions, and fake/provider plus real owner-run volume fixtures. This work remains open until its real-mount acceptance is observed; no installed services or live mounts are mutated by the agent.
+        """
+    note "Native source/build/tests and event-driven idle observations are retained. Real mounts and automatic discovery/display of a relocated strong identity remain unqualified; no installed services or live mounts were changed. See docs/indexing-dev/continuation-2026-10-08.md."
+    acceptance {
+        check identity-and-retention {
+            statement """
+                Volume parser/identity and fake-provider index tests cover absent/different disks, retained rows, fenced acceptance in one generation, unverified full reconciliation and shadowed subtree boundaries.
+                """
+            method command
+            command "cargo test -p templar-file-index -p templar-filed volume"
+            verified_by [ @legeos.evidence.index-wp9-native-volumes-20261008/1 ]
+        }
+        check idle-and-interface {
+            statement """
+                The mount thread blocks in poll without an idle timer, owned idle measurements remain zero, and additive AcceptVolume signatures pass the frozen interface gates.
+                """
+            method command
+            command "xtask index-bench idle; xtask check-interface-signatures"
+            verified_by [ @legeos.evidence.index-wp9-idle-20261008/1 ]
+        }
+        check owner-mount-journey {
+            statement """
+                The owner-run private loopback fixture passes mount, detach, return, changed-path and different-volume decisions with row retention and watch rearm; its log is retained.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.file-index-core/3 ]
+    supersedes [ @legeos.work.index-wp9-volumes-20261008/1 ]
+    author "dk"
+}
+
+record legeos.work.index-wp9-volumes-20261008/3 : work {
+    title "WP9: native volume identity and mount lifecycle"
+    state superseded
+    scope [
+        path "apps/templar-settings/src/files.rs",
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "docs/architecture/files.md",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/index-*relocation*",
+        path "interfaces/**",
+        path "scripts/index-volume-fixture.sh",
+        path "services/templar-filed/**"
+    ]
+    intent """
+        Implement WP9 of docs/indexing-dev/implementation-plan.md: native-byte mountinfo identity, schema 0008, conservative volume presence gates, poll-driven mount changes including mount-over boundaries, offline retention and fenced AcceptVolume, Settings volume actions, and fake/provider plus real owner-run volume fixtures. This work remains open until its real-mount acceptance is observed; no installed services or live mounts are mutated by the agent.
+        """
+    note "Native relocation discovery/display now passes thirteen injected-provider volume cases and seventy-five Settings tests; the observed-location action confirms the new UUID/mount-root before removing the old registration. Watcher/mount scheduler and I/O deltas remain zero; the refreshed sample recorded one pressure-monitor wakeup without sampled cause. Real owner mounts/NTFS/installed Settings remain unqualified. No live services or mounts were changed."
+    acceptance {
+        check identity-and-retention {
+            statement """
+                Volume parser/identity and injected-provider index tests cover absent/different disks, retained rows, fenced acceptance in one generation, unverified full reconciliation, shadowed subtree boundaries, unique strong relocation hints, native bytes, ambiguity and cache invalidation. Settings confirms the new strong identity before old registration removal.
+                """
+            method command
+            command "cargo test -p templar-file-index --test volumes; scripts/test-nonzero.sh -p templar-settings"
+            verified_by [
+                @legeos.evidence.index-wp9-native-volumes-20261008/1,
+                @legeos.evidence.index-wp9-relocation-20261008/1
+            ]
+        }
+        check idle-and-interface {
+            statement """
+                The mount thread blocks in poll without an idle timer, owned watcher/mount idle measurements remain zero, and additive AcceptVolume signatures pass the frozen interface gates. Pressure-monitor events are reported separately.
+                """
+            method command
+            command "xtask index-bench idle; xtask check-interface-signatures"
+            verified_by [
+                @legeos.evidence.index-wp17-interface-reconciled-20261008/1,
+                @legeos.evidence.index-wp9-idle-20261008/1,
+                @legeos.evidence.index-wp9-relocation-idle-20261008/1
+            ]
+        }
+        check owner-mount-journey {
+            statement """
+                The owner-run private loopback fixture passes mount, detach, return, changed-path and different-volume decisions with row retention and watch rearm; its log is retained.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.file-index-core/3 ]
+    supersedes [ @legeos.work.index-wp9-volumes-20261008/2 ]
+    author "dk"
+}
+
+record legeos.work.index-wp9-volumes-20261008/4 : work {
+    title "WP9: native volume identity and mount lifecycle"
+    state active
+    scope [
+        path "apps/templar-settings/src/files.rs",
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "docs/architecture/files.md",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/index-*relocation*",
+        path "interfaces/**",
+        path "scripts/index-volume-fixture.sh",
+        path "services/templar-filed/**"
+    ]
+    intent """
+        Implement WP9 of docs/indexing-dev/implementation-plan.md: native-byte mountinfo identity, schema 0008, conservative volume presence gates, poll-driven mount changes including mount-over boundaries, offline retention and fenced AcceptVolume, Settings volume actions, and fake/provider plus real owner-run volume fixtures. This work remains open until its real-mount acceptance is observed; no installed services or live mounts are mutated by the agent.
+        """
+    note "Native relocation discovery/display now passes thirteen injected-provider volume cases and seventy-five Settings tests; the observed-location action confirms the new UUID/mount-root before removing the old registration. Watcher/mount scheduler and I/O deltas remain zero; the refreshed sample recorded one pressure-monitor wakeup without sampled cause. Real owner mounts/NTFS/installed Settings remain unqualified. No live services or mounts were changed."
+    acceptance {
+        check identity-and-retention {
+            statement """
+                Volume parser/identity and injected-provider index tests cover absent/different disks, retained rows, fenced acceptance in one generation, unverified full reconciliation, shadowed subtree boundaries, unique strong relocation hints, native bytes, ambiguity and cache invalidation. Settings confirms the new strong identity before old registration removal.
+                """
+            method command
+            command "cargo test -p templar-file-index --test volumes; scripts/test-nonzero.sh -p templar-settings"
+            verified_by [
+                @legeos.evidence.index-wp9-native-volumes-20261008/1,
+                @legeos.evidence.index-wp9-relocation-20261008/1
+            ]
+        }
+        check idle-and-interface {
+            statement """
+                The mount thread blocks in poll without an idle timer, owned watcher/mount idle measurements remain zero, and additive AcceptVolume signatures pass the frozen interface gates. Pressure-monitor events are reported separately.
+                """
+            method command
+            command "xtask index-bench idle; xtask check-interface-signatures"
+            verified_by [
+                @legeos.evidence.index-wp17-interface-reconciled-20261008/1,
+                @legeos.evidence.index-wp9-idle-20261008/1,
+                @legeos.evidence.index-wp9-relocation-idle-20261008/1
+            ]
+        }
+        check owner-mount-journey {
+            statement """
+                The owner-run private loopback fixture passes mount, detach, return, changed-path and different-volume decisions with row retention and watch rearm; its log is retained.
+                """
+            method manual
+        }
+    }
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    supersedes [ @legeos.work.index-wp9-volumes-20261008/3 ]
+    author "dk"
+}
+
 record legeos.work.install-onto-the-laptop-partitions-20260909/1 : work {
     title "Install TemplarOS into the free block Windows left on the OS drive"
     state proposed
@@ -12851,6 +15113,44 @@ record legeos.work.launcher-and-one-folder-route-20260908/1 : work {
     }
     implements [ @legeos.decision.the-home-field-is-a-launcher-not-a-search ]
     part_of [ @legeos.milestone.developer-edition-0-1 ]
+}
+
+record legeos.work.legacy-pam-boot-recovery-20261009/1 : work {
+    title "Recover greetd and sudo after account gate enabled on legacy var layout"
+    state active
+    scope [
+        path "installer/account-login-gate.py",
+        path "packaging/templaros-hostd/postinst",
+        path "tests/integration/test-hostd-pam-upgrade.py"
+    ]
+    intent """
+        Recover the installed 2026-10-09 greetd failure and prevent legacy-layout PAM lockout on package upgrades.
+        """
+    note """
+        Offline repair applied with pam-auth-update; backup in TemplarOS /root/boot-recovery-20261009-083902. Corrected actual libpam probe gives account status 4 with backup and 0 with repaired configuration, for greetd-greeter and sudo. Postinst source fixed and ten tests pass. Source fix is not a rebuilt installed package; next rebuild must include working-tree change. Native login and sudo password authentication await owner reboot. Existing ledger schema errors remain; Lubuntu akr 0.5.1 rejects closed_at fields and other existing records.
+        """
+    acceptance {
+        check boot {
+            statement """
+                User boots TemplarOS and can use sudo.
+                """
+            method manual
+        }
+        check pam {
+            statement """
+                Installed greetd-greeter and sudo PAM account checks succeed after reproducing failure.
+                """
+            method command
+            verified_by [ @legeos.evidence.offline-pam-recovery-20261009 ]
+        }
+        check upgrade {
+            statement """
+                Legacy upgrades do not activate incompatible gate and preserve pending-maintenance protection.
+                """
+            method command
+            verified_by [ @legeos.evidence.legacy-pam-upgrade-tests-20261009 ]
+        }
+    }
 }
 
 record legeos.work.logical-app-and-variant-identity/1 : work {
@@ -15580,6 +17880,47 @@ record legeos.work.shared-incremental-file-index/3 : work {
     author "dk"
 }
 
+record legeos.work.shared-index-completion-20261008/1 : work {
+    title "Shared file index completion WP0-WP17"
+    state active
+    scope [
+        path "apps/templar-settings/**",
+        path "crates/templar-client/**",
+        path "crates/templar-file-index/**",
+        path "distro/forks/**",
+        path "docs/indexing-dev/**",
+        path "docs/measurements/**",
+        path "services/templar-filed/**",
+        path "shell/templar-shell/**",
+        path "tools/xtask/**"
+    ]
+    intent "Finish WP0-WP17 of docs/indexing-dev/implementation-plan.md under the shared incremental file-index campaign. Preserve each acceptance and original observations, record native/private software and package results separately from installed and physical qualification, and retain the WP8 oracle until installed closure. The owner deferred the legacy WP14 comparison and WP16 FSearch adoption in favor of a future own integrated Index1 search GUI."
+    acceptance {
+        check installed-closure {
+            statement """
+                The owner-run installed developer day and real consumer/volume journeys establish the deployed cohort; the one-shared-index milestone is closed only from those observations.
+                """
+            method manual
+        }
+        check ledger-valid {
+            statement """
+                The complete work/evidence ledger validates, preserving warnings and original failed/inconclusive results.
+                """
+            method command
+            command "akr build; akr validate"
+        }
+        check wp-acceptance {
+            statement """
+                Every non-deferred WP child has evidence for every acceptance check, with remaining historical, nested, real-mount and installed gaps explicit.
+                """
+            method command
+            command "akr get per-WP heads"
+        }
+    }
+    part_of [ @legeos.work.shared-incremental-file-index/3 ]
+    author "dk"
+}
+
 record legeos.work.silvaview-and-fsearch-share-the-index/1 : work {
     title "The FSearch fork and Silvaview service mode consume the LegeOS index generation instead of scanning"
     state proposed
@@ -15672,7 +18013,7 @@ record legeos.work.snapshot-single-read-transaction-20260909/2 : work {
 
 record legeos.work.snapshot-single-read-transaction-20260909/3 : work {
     title "P1/P2 — a snapshot frame is one SQLite read transaction, with its change cursor taken from the same view"
-    state active
+    state completed
     scope [
         path "crates/templar-file-index/src/snapshot.rs",
         path "crates/templar-file-index/tests/consumer_contract.rs"
@@ -15688,7 +18029,10 @@ record legeos.work.snapshot-single-read-transaction-20260909/3 : work {
                 """
             method command
             command "cargo test -p lege-file-index snapshot"
-            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+            verified_by [
+                @legeos.evidence.effectiveness-1-scoped-tests-20260909/1,
+                @legeos.evidence.index-current-correctness-fixtures-20261008/1
+            ]
         }
     }
     depends_on [
@@ -16166,7 +18510,7 @@ record legeos.work.subtree-repair-preserves-root-truth-20260909/2 : work {
 
 record legeos.work.subtree-repair-preserves-root-truth-20260909/3 : work {
     title "P1 — a complete subtree pass never upgrades a root to Current or clears its whole-root stale reason"
-    state active
+    state completed
     scope [
         path "crates/templar-file-index/src/generation.rs",
         path "crates/templar-file-index/tests/**"
@@ -16182,7 +18526,10 @@ record legeos.work.subtree-repair-preserves-root-truth-20260909/3 : work {
                 """
             method command
             command "cargo test -p lege-file-index subtree"
-            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+            verified_by [
+                @legeos.evidence.effectiveness-1-scoped-tests-20260909/1,
+                @legeos.evidence.index-current-correctness-fixtures-20261008/1
+            ]
         }
     }
     derived_from [
@@ -17102,7 +19449,7 @@ record legeos.work.watcher-recovery-durable-and-ordered-20260909/2 : work {
 
 record legeos.work.watcher-recovery-durable-and-ordered-20260909/3 : work {
     title "P1 — a failed apply queues a repair, and a repair does not run until the invalidation it answers has settled"
-    state active
+    state completed
     scope [
         path "crates/templar-file-index/src/coalesce.rs",
         path "services/templar-filed/src/watcher.rs"
@@ -17118,7 +19465,10 @@ record legeos.work.watcher-recovery-durable-and-ordered-20260909/3 : work {
                 """
             method command
             command "cargo test -p lege-filed watcher"
-            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+            verified_by [
+                @legeos.evidence.effectiveness-1-scoped-tests-20260909/1,
+                @legeos.evidence.index-current-correctness-fixtures-20261008/1
+            ]
         }
         check overflow-then-settle {
             statement """
@@ -17126,7 +19476,10 @@ record legeos.work.watcher-recovery-durable-and-ordered-20260909/3 : work {
                 """
             method command
             command "cargo test -p lege-filed watcher"
-            verified_by [ @legeos.evidence.effectiveness-1-scoped-tests-20260909/1 ]
+            verified_by [
+                @legeos.evidence.effectiveness-1-scoped-tests-20260909/1,
+                @legeos.evidence.index-current-correctness-fixtures-20261008/1
+            ]
         }
     }
     derived_from [

@@ -40,12 +40,16 @@ pub async fn reconcile_instances(
             // Only the manager's fresh record may restore an existing instance.
             if let Some(unit) = live.iter().find(|unit| unit.instance_id == record.id) {
                 let current = InstanceRecord {
-                    id: unit.instance_id, app_id: unit.app_id.clone(),
-                    systemd_unit: unit.unit_name.clone(), control_group: unit.control_group.clone(),
+                    id: unit.instance_id,
+                    app_id: unit.app_id.clone(),
+                    systemd_unit: unit.unit_name.clone(),
+                    control_group: unit.control_group.clone(),
                 };
                 if current.has_managed_identity() {
                     registry.register_instance(current.clone());
-                    if let Err(error) = store.transaction(|tx| appd_store::save_instance_within(tx, &current)) {
+                    if let Err(error) =
+                        store.transaction(|tx| appd_store::save_instance_within(tx, &current))
+                    {
                         tracing::warn!(%error, instance = %current.id, "failed to refresh restored instance");
                     }
                     restored += 1;

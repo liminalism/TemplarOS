@@ -748,6 +748,7 @@ pub(super) fn remove(state: &mut State, node: DrmNode) {
     state.backend_data.secondary.checked = None;
     fail_cutover(state, "Secondary GPU removed during transaction".into());
     crate::backend::recompute_outputs(state);
+    crate::compositor_control::maybe_emergency_fallback(state);
 }
 fn unmap(state: &mut State, output: RemoteOutput) {
     if let Some(retry) = output.retry {
@@ -1026,6 +1027,9 @@ fn receive(state: &mut State, event: Event) {
                 state.backend_data.secondary.checked = None;
             }
             crate::backend::recompute_outputs_with_event(state, topology);
+            if topology {
+                crate::compositor_control::maybe_emergency_fallback(state);
+            }
             request_redraw_node(state, node);
         }
         Event::Tested {

@@ -1,0 +1,204 @@
+{
+  "scan_commit": {
+    "boundary": {
+      "phase": "scan-commit",
+      "pid": 883261,
+      "function": "templar_file_index::generation::ScanSession::commit_transaction",
+      "line": 642
+    },
+    "paused": {
+      "head": 6,
+      "row_count": 5002,
+      "roots": [
+        [
+          1,
+          6,
+          1
+        ],
+        [
+          2,
+          4,
+          5001
+        ]
+      ],
+      "change_count": 3,
+      "last_change": [
+        3,
+        6
+      ],
+      "row_sha256": "abb3de979fee9199cb46ee1969c06f21e70d6a6007945233a157fd861cde4ab4"
+    },
+    "after_kill": {
+      "head": 6,
+      "row_count": 5002,
+      "roots": [
+        [
+          1,
+          6,
+          1
+        ],
+        [
+          2,
+          4,
+          5001
+        ]
+      ],
+      "change_count": 3,
+      "last_change": [
+        3,
+        6
+      ],
+      "row_sha256": "abb3de979fee9199cb46ee1969c06f21e70d6a6007945233a157fd861cde4ab4"
+    },
+    "old_cursor_error": "g-io-error-quark: GDBus.Error:org.templaros.Files.Index1.Error.SnapshotRequired: the cursor has expired or was never issued by this process (36)",
+    "fresh_generation": 11,
+    "fresh_entries": 5002,
+    "old_sealed_frame_survived": true
+  },
+  "snapshot_write": {
+    "boundary": {
+      "phase": "snapshot-write",
+      "pid": 883333,
+      "function": "templar_file_index::snapshot::store::write_entries_section<&mut std::fs::File>",
+      "line": 428,
+      "entry_count": 2500,
+      "payload_bytes": 392700
+    },
+    "partial_memfd": [
+      {
+        "size": 262185,
+        "header_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "seals": 0
+      }
+    ],
+    "call_response": [
+      {
+        "error": "g-dbus-error-quark: GDBus.Error:org.freedesktop.DBus.Error.NoReply: Message recipient disconnected from message bus without replying (4)"
+      }
+    ],
+    "paused": {
+      "head": 15,
+      "row_count": 5003,
+      "roots": [
+        [
+          1,
+          13,
+          1
+        ],
+        [
+          2,
+          15,
+          5002
+        ]
+      ],
+      "change_count": 7,
+      "last_change": [
+        7,
+        15
+      ],
+      "row_sha256": "d73c6cf07d5443b92c4a0f9cc3664569a5d34b48ef438978fc7b483ce27d4195"
+    },
+    "after_kill": {
+      "head": 15,
+      "row_count": 5003,
+      "roots": [
+        [
+          1,
+          13,
+          1
+        ],
+        [
+          2,
+          15,
+          5002
+        ]
+      ],
+      "change_count": 7,
+      "last_change": [
+        7,
+        15
+      ],
+      "row_sha256": "d73c6cf07d5443b92c4a0f9cc3664569a5d34b48ef438978fc7b483ce27d4195"
+    },
+    "old_cursor_error": "g-io-error-quark: GDBus.Error:org.templaros.Files.Index1.Error.SnapshotRequired: the cursor has expired or was never issued by this process (36)",
+    "resnapshot_generation": 19,
+    "old_sealed_frame_survived": true
+  },
+  "delta_apply": {
+    "boundary": {
+      "phase": "delta-apply",
+      "pid": 883408,
+      "function": "templar_file_index::store::Index::apply_transaction",
+      "line": 464
+    },
+    "paused": {
+      "head": 4,
+      "row_count": 1,
+      "roots": [
+        [
+          1,
+          4,
+          1
+        ]
+      ],
+      "change_count": 2,
+      "last_change": [
+        2,
+        4
+      ],
+      "row_sha256": "693107677f09626f99389210e7e75b9b66a11e70680636f45cf072b90aaf176f"
+    },
+    "after_kill": {
+      "head": 4,
+      "row_count": 1,
+      "roots": [
+        [
+          1,
+          4,
+          1
+        ]
+      ],
+      "change_count": 2,
+      "last_change": [
+        2,
+        4
+      ],
+      "row_sha256": "693107677f09626f99389210e7e75b9b66a11e70680636f45cf072b90aaf176f"
+    },
+    "checkpoint_pointer_sha256": "cf7f29892b4a13d7838e41d428e900387474714dad0a7fc42a863489b9bd0a43",
+    "pending_fence_retained": true,
+    "production_reopen_refused_replay": true,
+    "checkpoint_provider": "fake; no Btrfs mount or send ioctl"
+  },
+  "binaries": {
+    "filed": {
+      "path": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/debug/templar-filed",
+      "sha256": "3806fd3d0371165473810bc95e3caff2eb9157f7fe1be91eb5fcac5e9690249e"
+    },
+    "filed_tests": {
+      "path": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/debug/deps/templar_filed-878ad9658abd0712",
+      "sha256": "04387617703933e494fbcebb8076903586e9407fab1e6d39b1ee1c44dc431a44"
+    },
+    "reopen_test": {
+      "path": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/debug/deps/crash_reopen-3e262faf8e00526e",
+      "sha256": "797e5e2f0dd0a8ef1a16305f54767db7a5c2d6edae497fc77753eb0c25b49c12"
+    },
+    "gdb": {
+      "path": "/home/dk/rust-projects/LegeOS/.agent/scratch/native-ui-runtime/root/usr/bin/gdb",
+      "sha256": "e5272927fc1b40345748dfa4133ec2a50caeb5f209a44099dd2c48679911c59c"
+    }
+  },
+  "installed_or_physical_qualification": false,
+  "source_sha256": {
+    "crates/templar-file-index/src/generation.rs": "3a10051888e18a7877b3389af532d839211a77bd30add6e8b2870ac481a9848e",
+    "crates/templar-file-index/src/snapshot.rs": "8df4ce4ec5fc33dca6c289c7b5171c5697510ccb04be147a5bec853d548bccfc",
+    "crates/templar-file-index/src/mutation.rs": "2a1b82c08bced3efe7c45c6d9352595e8f83b2dd1af243c2fa73676d193a1574",
+    "crates/templar-file-index/src/volume.rs": "9cbcc617b744f44833a7d89e63a44dea7e4da21408740c0ef0703ee983fbcb62",
+    "services/templar-filed/src/index_host.rs": "951936d0648960b7d1e5665000bea3a75d0919dde291b9a222d9c636a1e0298f",
+    "services/templar-filed/src/mounts.rs": "5be218ca519863e47e7953498789e86543c97dbae007681b610e8e987cb568e5",
+    "scripts/test-index-crashes.py": "a6f446a2f418d5548802ec2f79bd75ea6729e70beddf502e02e739bf3000dc25",
+    "services/templar-filed/tests/crash_reopen.rs": "f1c0d3522e163a016619ae95aa9cd825079790ba240c7838e07052089228b18c"
+  },
+  "head": "12295f351ab14e649f900573190060cd88a7251e",
+  "working_tree": true
+}

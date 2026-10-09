@@ -44,10 +44,8 @@ pub fn build_tree(entries: &[RawEntry]) -> FileTree {
     path_map.insert(root_path.clone(), tree.root);
 
     for entry in entries.iter().filter(|e| e.is_dir) {
-        if entry.path == root_path {
-            continue;
-        }
-        ensure_node(&mut tree, &mut path_map, &entry.path);
+        let id = ensure_node(&mut tree, &mut path_map, &entry.path);
+        tree.directory_bytes[id.index()] = entry.size;
     }
     for entry in entries.iter().filter(|e| !e.is_dir) {
         let classification = extensions::classify_path(&entry.path);
@@ -138,6 +136,44 @@ fn ensure_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_directory_bytes_are_kept_without_fake_leaf_rows_or_double_counting() {
+        let entries = vec![
+            RawEntry {
+                path: "/root".into(),
+                size: 5,
+                is_dir: true,
+            },
+            RawEntry {
+                path: "/root/cache".into(),
+                size: 19,
+                is_dir: true,
+            },
+            RawEntry {
+                path: "/root/visible.txt".into(),
+                size: 7,
+                is_dir: false,
+            },
+        ];
+        let mut tree = build_tree(&entries);
+        assert_eq!(tree.get(tree.root).size, 31);
+        assert_eq!(tree.nodes.len(), 3);
+        assert_eq!(
+            tree.nodes
+                .iter()
+                .find(|node| node.name == "cache")
+                .unwrap()
+                .size,
+            19
+        );
+        aggregate::aggregate_sizes(&mut tree);
+        assert_eq!(
+            tree.get(tree.root).size,
+            31,
+            "reaggregation must preserve the cached base exactly once"
+        );
+    }
 
     #[test]
     fn entries_become_a_tree_with_aggregated_sizes_and_size_sorted_children() {

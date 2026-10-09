@@ -13,7 +13,6 @@ use std::{
     path::Path,
 };
 
-
 struct WallpaperFixture {
     image: templar_types::wallpaper::WallpaperImage,
     mapping: Result<templar_wallpaper::raster::RasterMapping, String>,
@@ -155,22 +154,29 @@ pub fn install<B: Backend + 'static>(
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     socket.set_nonblocking(true)?;
     let mut held = HashSet::new();
-    let (wallpaper_sender, wallpaper_receiver) = smithay::reexports::calloop::channel::channel::<WallpaperFixture>();
+    let (wallpaper_sender, wallpaper_receiver) =
+        smithay::reexports::calloop::channel::channel::<WallpaperFixture>();
     let wallpaper_busy = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let completed = wallpaper_busy.clone();
-    handle.insert_source(wallpaper_receiver, move |event, (), state| {
-        if let smithay::reexports::calloop::channel::Event::Msg(fixture) = event {
-            completed.store(false, std::sync::atomic::Ordering::Release);
-            let output = fixture.image.output.clone();
-            let result = if fixture.image.display_revision != state.display_control.revision() {
-                Err("Test wallpaper topology changed during mapping".into())
-            } else {
-                fixture.mapping.and_then(|mapping| state.wallpaper.accept(fixture.image, mapping))
-            };
-            if let Err(failure) = result { state.wallpaper.reject(&output, failure); }
-            B::request_redraw(state);
-        }
-    }).map_err(|error| anyhow::anyhow!("installing test wallpaper import: {error}"))?;
+    handle
+        .insert_source(wallpaper_receiver, move |event, (), state| {
+            if let smithay::reexports::calloop::channel::Event::Msg(fixture) = event {
+                completed.store(false, std::sync::atomic::Ordering::Release);
+                let output = fixture.image.output.clone();
+                let result = if fixture.image.display_revision != state.display_control.revision() {
+                    Err("Test wallpaper topology changed during mapping".into())
+                } else {
+                    fixture
+                        .mapping
+                        .and_then(|mapping| state.wallpaper.accept(fixture.image, mapping))
+                };
+                if let Err(failure) = result {
+                    state.wallpaper.reject(&output, failure);
+                }
+                B::request_redraw(state);
+            }
+        })
+        .map_err(|error| anyhow::anyhow!("installing test wallpaper import: {error}"))?;
     handle
         .insert_source(
             Generic::new(socket, Interest::READ, Mode::Level),
@@ -183,7 +189,13 @@ pub fn install<B: Backend + 'static>(
                         Err(error) => return Err(error),
                     };
                     let response = match std::str::from_utf8(&buffer[..length]) {
-                        Ok(command) => execute(state, command, &mut held, &wallpaper_sender, &wallpaper_busy),
+                        Ok(command) => execute(
+                            state,
+                            command,
+                            &mut held,
+                            &wallpaper_sender,
+                            &wallpaper_busy,
+                        ),
                         Err(_) => Err(anyhow::anyhow!("command is not UTF-8")),
                     };
                     if let Some(peer) = peer.as_pathname() {
@@ -233,40 +245,100 @@ fn execute<B: Backend + 'static>(
         }
         [Some("wallpaper-clear"), None, None, None] => {
             let revision = state.wallpaper.observation().revision;
-            state.wallpaper.clear(revision, None).map_err(anyhow::Error::msg)?;
+            state
+                .wallpaper
+                .clear(revision, None)
+                .map_err(anyhow::Error::msg)?;
             B::request_redraw(state);
             return Ok(serde_json::to_value(state.wallpaper.observation())?);
         }
-        [Some("wallpaper-fixture"), Some(sizing), Some(format), Some(source)] => {
-            anyhow::ensure!(!state.session_lock.locked && !state.idle.blanked(), "fixture requires an unlocked lit output");
+        [
+            Some("wallpaper-fixture"),
+            Some(sizing),
+            Some(format),
+            Some(source),
+        ] => {
+            anyhow::ensure!(
+                !state.session_lock.locked && !state.idle.blanked(),
+                "fixture requires an unlocked lit output"
+            );
             let sizing = serde_json::from_value(serde_json::Value::String(sizing.into()))?;
             let format = match format {
                 "rgba" => templar_types::wallpaper::PixelFormat::Rgba8,
                 "indexed" => templar_types::wallpaper::PixelFormat::Indexed8,
                 _ => anyhow::bail!("fixture format must be rgba or indexed"),
             };
-            let (width, height) = source.split_once('x').ok_or_else(|| anyhow::anyhow!("source must be WIDTHxHEIGHT"))?;
+            let (width, height) = source
+                .split_once('x')
+                .ok_or_else(|| anyhow::anyhow!("source must be WIDTHxHEIGHT"))?;
             let (source_width, source_height) = (width.parse::<u32>()?, height.parse::<u32>()?);
-            anyhow::ensure!(source_width > 0 && source_height > 0, "empty source dimensions");
-            let output = state.space.outputs().next().ok_or_else(|| anyhow::anyhow!("no nested output"))?.name();
+            anyhow::ensure!(
+                source_width > 0 && source_height > 0,
+                "empty source dimensions"
+            );
+            let output = state
+                .space
+                .outputs()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("no nested output"))?
+                .name();
             let revision = state.wallpaper.observation().revision;
-            let palette = vec![[255,0,0,255], [0,255,0,255], [0,0,255,255], [255,255,255,255]];
+            let palette = vec![
+                [255, 0, 0, 255],
+                [0, 255, 0, 255],
+                [0, 0, 255, 255],
+                [255, 255, 255, 255],
+            ];
             let indexed = format == templar_types::wallpaper::PixelFormat::Indexed8;
             let image = templar_types::wallpaper::WallpaperImage {
-                revision: revision.at_generation(revision.generation + 1), display_revision: state.display_control.revision(),
-                output: templar_types::display::DisplayId(output), sizing, ground: [24,26,30,255], transition_budget_bytes: 16 * 1024 * 1024,
-                raster: templar_types::wallpaper::RasterDescriptor { version: 1, width: 2, height: 2, source_width, source_height, stride: if indexed { 2 } else { 8 }, format, palette: if indexed { palette.clone() } else { Vec::new() }, bytes: if indexed { 4 } else { 16 } },
+                revision: revision.at_generation(revision.generation + 1),
+                display_revision: state.display_control.revision(),
+                output: templar_types::display::DisplayId(output),
+                sizing,
+                ground: [24, 26, 30, 255],
+                transition_budget_bytes: 16 * 1024 * 1024,
+                raster: templar_types::wallpaper::RasterDescriptor {
+                    version: 1,
+                    width: 2,
+                    height: 2,
+                    source_width,
+                    source_height,
+                    stride: if indexed { 2 } else { 8 },
+                    format,
+                    palette: if indexed { palette.clone() } else { Vec::new() },
+                    bytes: if indexed { 4 } else { 16 },
+                },
             };
-            anyhow::ensure!(wallpaper_busy.compare_exchange(false, true, std::sync::atomic::Ordering::AcqRel, std::sync::atomic::Ordering::Acquire).is_ok(), "one wallpaper fixture is already mapping");
+            anyhow::ensure!(
+                wallpaper_busy
+                    .compare_exchange(
+                        false,
+                        true,
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire
+                    )
+                    .is_ok(),
+                "one wallpaper fixture is already mapping"
+            );
             let sender = wallpaper_sender.clone();
             std::thread::spawn(move || {
                 use std::io::Write;
                 let mapping = (|| -> anyhow::Result<_> {
                     let mut file = templar_wallpaper::raster::create_memfd()?;
-                    if indexed { file.write_all(&[0,1,2,3])?; } else { for color in palette { file.write_all(&color)?; } }
+                    if indexed {
+                        file.write_all(&[0, 1, 2, 3])?;
+                    } else {
+                        for color in palette {
+                            file.write_all(&color)?;
+                        }
+                    }
                     templar_wallpaper::raster::seal(&file)?;
-                    Ok(templar_wallpaper::raster::RasterMapping::new(&file, &image.raster)?)
-                })().map_err(|error| error.to_string());
+                    Ok(templar_wallpaper::raster::RasterMapping::new(
+                        &file,
+                        &image.raster,
+                    )?)
+                })()
+                .map_err(|error| error.to_string());
                 let _ = sender.send(WallpaperFixture { image, mapping });
             });
             return Ok(serde_json::json!({"pending": true}));
@@ -301,11 +373,11 @@ fn execute<B: Backend + 'static>(
             });
             return Ok(
                 serde_json::json!({"windows": windows, "pointer": pointer, "stacking": state.window_service.stacking_order().iter().map(|id| id.0).collect::<Vec<_>>(), "home": state.window_service.home_revealed(), "selected": state.switcher.as_ref().map(|switcher| switcher.selected.0), "presentation_in_space": presentation_in_space,
-                    "name_tab_menu": state.name_tab_menu.open.map(|menu| serde_json::json!({
-                        "window": menu.window_id.0, "panel": menu.panel,
-                        "rows": crate::chrome::NameTabMenuTarget::ROWS.iter().enumerate().map(|(index, (choice, label))|
-                            serde_json::json!({"choice": format!("{choice:?}"), "label": label, "rect": menu.row(index)})).collect::<Vec<_>>()
-                    }))}),
+                "name_tab_menu": state.name_tab_menu.open.map(|menu| serde_json::json!({
+                    "window": menu.window_id.0, "panel": menu.panel,
+                    "rows": crate::chrome::NameTabMenuTarget::ROWS.iter().enumerate().map(|(index, (choice, label))|
+                        serde_json::json!({"choice": format!("{choice:?}"), "label": label, "rect": menu.row(index)})).collect::<Vec<_>>()
+                }))}),
             );
         }
         [
@@ -344,7 +416,11 @@ fn execute<B: Backend + 'static>(
             );
             // The control socket accepts physical canvas pixels; production absolute producers
             // expose unit coordinates before the viewport maps/clips them into logical space.
-            let mode = state.space.outputs().next().and_then(|output| output.current_mode())
+            let mode = state
+                .space
+                .outputs()
+                .next()
+                .and_then(|output| output.current_mode())
                 .ok_or_else(|| anyhow::anyhow!("nested output has no native mode"))?;
             anyhow::ensure!(mode.size.w > 0 && mode.size.h > 0, "empty nested canvas");
             event.x /= f64::from(mode.size.w);

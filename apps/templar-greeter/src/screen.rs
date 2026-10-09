@@ -109,7 +109,8 @@ impl GreeterScreen {
         let keys = ui.input.keys();
         let popup_open = self.session_dropdown.is_open();
         // Even a modal frame must restart registration, but its Tab belongs to the popup.
-        self.focus.handle_tab(if popup_open { &[] } else { keys }, ui.input.modifiers());
+        self.focus
+            .handle_tab(if popup_open { &[] } else { keys }, ui.input.modifiers());
 
         // On the very first frame nothing has focus yet, and a keyboard-only user has no pointer
         // to click the username field into focus with — so default the first slot to focused
@@ -122,7 +123,9 @@ impl GreeterScreen {
         // that Escape dismisses it; it must not also cancel the authentication underneath.
         let picker_opens_before_escape = self.focus.current() == Some(1)
             && !data.sessions.is_empty()
-            && keys.iter().take_while(|key| **key != KeyInput::Escape)
+            && keys
+                .iter()
+                .take_while(|key| **key != KeyInput::Escape)
                 .any(|key| matches!(key, KeyInput::Enter | KeyInput::Character(' ')));
         let enter = keys.contains(&KeyInput::Enter) && !popup_open;
         let escape = keys.contains(&KeyInput::Escape) && !popup_open && !picker_opens_before_escape;
@@ -198,7 +201,13 @@ impl GreeterScreen {
                     Align::Left,
                 );
                 if prompt.needs_response {
-                    ui.text_field(&mut self.response, inner, &prompt.message, focused, prompt.secret);
+                    ui.text_field(
+                        &mut self.response,
+                        inner,
+                        &prompt.message,
+                        focused,
+                        prompt.secret,
+                    );
                     let text = self.response.text();
                     (enter && focused)
                         .then_some(GreeterAction::SubmitResponse(Some(text.to_owned())))
@@ -255,7 +264,11 @@ impl GreeterScreen {
             let names: Vec<&str> = sessions.iter().map(|entry| entry.name.as_str()).collect();
 
             if let Some(picked) = ui.dropdown_focused(
-                &mut self.session_dropdown, area, &names, self.selected_session, focused,
+                &mut self.session_dropdown,
+                area,
+                &names,
+                self.selected_session,
+                focused,
             ) {
                 self.selected_session = picked;
             }
@@ -312,7 +325,9 @@ impl GreeterScreen {
 
     fn draw_status_line(&self, ui: &mut Ui<'_>, cursor: i32, inner: Rect, data: &GreeterData<'_>) {
         let error = match data.flow {
-            LoginFlow::Idle { error } => error.as_deref().or_else(|| self.username.clipboard_error()),
+            LoginFlow::Idle { error } => {
+                error.as_deref().or_else(|| self.username.clipboard_error())
+            }
             LoginFlow::Authenticating { .. } => self.response.clipboard_error(),
             LoginFlow::ReadyToStart { .. } => None,
         };
@@ -691,18 +706,35 @@ mod tests {
             username: "alice".to_owned(),
             prompt: Prompt::new(AuthMessageType::Secret, "Password:".to_owned()),
         };
-        let data = GreeterData { flow: &flow, sessions: &[] };
+        let data = GreeterData {
+            flow: &flow,
+            sessions: &[],
+        };
         let mut semantics = pixelkit_ui::semantics::Semantics::default();
         semantics.begin("Login");
-        let mut ui = Ui::new(Painter::new(&mut h.buffer), &mut h.text, &mut h.input,
-            templar_ui::theme_for(&templar_types::appearance::LIGHT), Scale::ONE, &mut h.kernel)
-            .with_semantics(&mut semantics);
+        let mut ui = Ui::new(
+            Painter::new(&mut h.buffer),
+            &mut h.text,
+            &mut h.input,
+            templar_ui::theme_for(&templar_types::appearance::LIGHT),
+            Scale::ONE,
+            &mut h.kernel,
+        )
+        .with_semantics(&mut semantics);
         screen.draw(&mut ui, area(), &data);
         drop(ui);
         let tree = semantics.update();
-        let (_, password) = tree.nodes.iter().find(|(_, node)| node.label() == Some("Password:")).unwrap();
+        let (_, password) = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Password:"))
+            .unwrap();
         assert_eq!(password.value(), None);
-        assert!(tree.nodes.iter().all(|(_, node)| node.value() != Some("secret-never-export-this")));
+        assert!(
+            tree.nodes
+                .iter()
+                .all(|(_, node)| node.value() != Some("secret-never-export-this"))
+        );
     }
     #[test]
     fn debug_output_still_shows_the_username_which_is_not_secret() {
@@ -722,7 +754,10 @@ mod tests {
             username: "alice".to_owned(),
             prompt: Prompt::new(AuthMessageType::Secret, "Password:".to_owned()),
         };
-        let data = GreeterData { flow: &flow, sessions: &sessions };
+        let data = GreeterData {
+            flow: &flow,
+            sessions: &sessions,
+        };
         h.input.key(KeyInput::Enter);
         let action = h.frame(|ui| {
             let action = screen.draw(ui, area(), &data);
@@ -742,7 +777,11 @@ mod tests {
         assert_eq!(screen.focus.current(), Some(1));
         h.input.key(KeyInput::Tab);
         h.frame(|ui| screen.draw(ui, area(), &data));
-        assert_eq!(screen.focus.current(), Some(2), "dismissal restores the form's three-slot traversal");
+        assert_eq!(
+            screen.focus.current(),
+            Some(2),
+            "dismissal restores the form's three-slot traversal"
+        );
         h.input.key(KeyInput::Tab);
         h.frame(|ui| screen.draw(ui, area(), &data));
         assert_eq!(screen.focus.current(), Some(0));
@@ -758,7 +797,10 @@ mod tests {
             username: "alice".to_owned(),
             prompt: Prompt::new(AuthMessageType::Secret, "Password:".to_owned()),
         };
-        let data = GreeterData { flow: &flow, sessions: &sessions };
+        let data = GreeterData {
+            flow: &flow,
+            sessions: &sessions,
+        };
         h.frame(|ui| screen.draw(ui, area(), &data));
         h.input.key(KeyInput::Tab);
         h.input.key(KeyInput::Enter);

@@ -1,5 +1,9 @@
 use zbus::{proxy, zvariant::OwnedFd};
-#[proxy(interface = "org.templaros.Bluetooth1", default_service = "org.templaros.Session", default_path = "/org/templaros/Session/Bluetooth")]
+#[proxy(
+    interface = "org.templaros.Bluetooth1",
+    default_service = "org.templaros.Session",
+    default_path = "/org/templaros/Session/Bluetooth"
+)]
 pub trait Bluetooth {
     fn inventory(&self) -> zbus::Result<String>;
     fn acquire_ui(&self) -> zbus::Result<()>;

@@ -11,8 +11,8 @@
 
 use crate::{
     clients::{AppStateClient, AssociationsClient},
-    request::{owned_value, response, with_request},
     host::{UiError, UiResult},
+    request::{owned_value, response, with_request},
 };
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc};
@@ -61,18 +61,27 @@ impl AppChooserUi for NativeUi {
         // The person picks a name; the frontend is answered with the id it offered for it.
         let choices = request.choices;
         // Include IDs: two desktop entries can have identical display labels.
-        let labels = request.labels.into_iter().zip(&choices)
-            .map(|(label, id)| format!("{label} ({id})")).collect::<Vec<_>>();
-        let answer = self.0.request(crate::dialog::Spec::Choice {
-            title: "Open with".into(),
-            message,
-            choices: labels.clone(),
-            parent: request.parent,
-            activation_token: request.activation_token,
-        }).await?;
+        let labels = request
+            .labels
+            .into_iter()
+            .zip(&choices)
+            .map(|(label, id)| format!("{label} ({id})"))
+            .collect::<Vec<_>>();
+        let answer = self
+            .0
+            .request(crate::dialog::Spec::Choice {
+                title: "Open with".into(),
+                message,
+                choices: labels.clone(),
+                parent: request.parent,
+                activation_token: request.activation_token,
+            })
+            .await?;
         match answer {
-            Some(crate::dialog::Answer::Choice(picked)) => Ok(labels.iter()
-                .position(|label| *label == picked).and_then(|at| choices.get(at).cloned())),
+            Some(crate::dialog::Answer::Choice(picked)) => Ok(labels
+                .iter()
+                .position(|label| *label == picked)
+                .and_then(|at| choices.get(at).cloned())),
             None => Ok(None),
             _ => Err(UiError("unexpected graphical answer".into())),
         }
@@ -234,7 +243,12 @@ impl AppChooserApi {
         options: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<(u32, HashMap<String, OwnedValue>)> {
         with_request(connection, &handle, header.sender(), || {
-            self.choose_application(app_id, choices, &options, crate::parent::Parent::parse(parent_window))
+            self.choose_application(
+                app_id,
+                choices,
+                &options,
+                crate::parent::Parent::parse(parent_window),
+            )
         })
         .await
     }
@@ -242,8 +256,14 @@ impl AppChooserApi {
     /// Dynamic narrowing is not implemented by this host. Refuse honestly
     /// rather than acknowledge an update while showing obsolete choices.
     #[zbus(name = "UpdateChoices")]
-    async fn update_choices(&self, _handle: OwnedObjectPath, _choices: Vec<String>) -> zbus::fdo::Result<()> {
-        Err(zbus::fdo::Error::NotSupported("native AppChooser cannot update a live choice list".into()))
+    async fn update_choices(
+        &self,
+        _handle: OwnedObjectPath,
+        _choices: Vec<String>,
+    ) -> zbus::fdo::Result<()> {
+        Err(zbus::fdo::Error::NotSupported(
+            "native AppChooser cannot update a live choice list".into(),
+        ))
     }
 }
 
@@ -307,7 +327,13 @@ mod tests {
             apps: Arc::new(FakeApps::default()),
             ui: Arc::new(NoUiAvailable),
         };
-        let (code, results) = api.choose_application("org.templaros.Portal", vec!["org.templaros.Viewer".into(), "org.example.Other".into()], &options(&[("uri", "file:///a.pdf")]), crate::parent::Parent::None)
+        let (code, results) = api
+            .choose_application(
+                "org.templaros.Portal",
+                vec!["org.templaros.Viewer".into(), "org.example.Other".into()],
+                &options(&[("uri", "file:///a.pdf")]),
+                crate::parent::Parent::None,
+            )
             .await;
         assert_eq!(code, response::SUCCESS);
         assert_eq!(
@@ -332,7 +358,13 @@ mod tests {
             apps: Arc::new(FakeApps::default()),
             ui: Arc::new(NoUiAvailable),
         };
-        let (code, _) = api.choose_application("org.templaros.Portal", vec!["org.example.Other".into()], &options(&[("uri", "file:///a.pdf")]), crate::parent::Parent::None)
+        let (code, _) = api
+            .choose_application(
+                "org.templaros.Portal",
+                vec!["org.example.Other".into()],
+                &options(&[("uri", "file:///a.pdf")]),
+                crate::parent::Parent::None,
+            )
             .await;
         assert_eq!(code, response::OTHER);
     }
@@ -348,7 +380,13 @@ mod tests {
             apps: Arc::new(FakeApps::default()),
             ui: Arc::new(NoUiAvailable),
         };
-        let (code, results) = api.choose_application("org.templaros.Portal", vec!["org.templaros.Viewer".into()], &options(&[("content_type", "application/pdf")]), crate::parent::Parent::None)
+        let (code, results) = api
+            .choose_application(
+                "org.templaros.Portal",
+                vec!["org.templaros.Viewer".into()],
+                &options(&[("content_type", "application/pdf")]),
+                crate::parent::Parent::None,
+            )
             .await;
         assert_eq!(code, response::SUCCESS);
         assert_eq!(
@@ -364,7 +402,13 @@ mod tests {
             apps: Arc::new(FakeApps::default()),
             ui: Arc::new(NoUiAvailable),
         };
-        let (code, results) = api.choose_application("org.templaros.Portal", vec!["org.example.Other".into()], &HashMap::new(), crate::parent::Parent::None)
+        let (code, results) = api
+            .choose_application(
+                "org.templaros.Portal",
+                vec!["org.example.Other".into()],
+                &HashMap::new(),
+                crate::parent::Parent::None,
+            )
             .await;
         assert_eq!(code, response::OTHER);
         assert!(results.contains_key("error"));
@@ -397,7 +441,13 @@ mod tests {
             ui: Arc::new(NoUiAvailable),
         };
 
-        let (code, results) = api.choose_application("org.mozilla.firefox", vec!["org.templaros.Viewer.desktop".into(), "gimp".into()], &options(&[("uri", "file:///home/u/Downloads/report.pdf")]), crate::parent::Parent::None)
+        let (code, results) = api
+            .choose_application(
+                "org.mozilla.firefox",
+                vec!["org.templaros.Viewer.desktop".into(), "gimp".into()],
+                &options(&[("uri", "file:///home/u/Downloads/report.pdf")]),
+                crate::parent::Parent::None,
+            )
             .await;
 
         assert_eq!(code, response::SUCCESS);

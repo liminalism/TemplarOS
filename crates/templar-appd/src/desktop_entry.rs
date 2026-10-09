@@ -232,26 +232,48 @@ impl ExecTemplate {
             match token {
                 ExecToken::Literal(word) => arguments.push(word.as_str().into()),
                 ExecToken::SingleFile => {
-                    if let Some(target) = targets.first() { arguments.push(target.path.as_os_str().to_owned()); }
+                    if let Some(target) = targets.first() {
+                        arguments.push(target.path.as_os_str().to_owned());
+                    }
                 }
-                ExecToken::MultipleFiles => arguments.extend(targets.iter().map(|target| target.path.as_os_str().to_owned())),
+                ExecToken::MultipleFiles => arguments.extend(
+                    targets
+                        .iter()
+                        .map(|target| target.path.as_os_str().to_owned()),
+                ),
                 ExecToken::SingleUrl => {
-                    if let Some(target) = targets.first() { arguments.push(target.uri.as_str().into()); }
+                    if let Some(target) = targets.first() {
+                        arguments.push(target.uri.as_str().into());
+                    }
                 }
-                ExecToken::MultipleUrls => arguments.extend(targets.iter().map(|target| target.uri.as_str().into())),
+                ExecToken::MultipleUrls => {
+                    arguments.extend(targets.iter().map(|target| target.uri.as_str().into()))
+                }
                 ExecToken::Icon => {
-                    if !icon.is_empty() { arguments.push("--icon".into()); arguments.push(icon.into()); }
+                    if !icon.is_empty() {
+                        arguments.push("--icon".into());
+                        arguments.push(icon.into());
+                    }
                 }
                 ExecToken::TranslatedName => arguments.push(translated_name.into()),
-                ExecToken::DesktopFilePath => arguments.push(desktop_file_path.as_os_str().to_owned()),
+                ExecToken::DesktopFilePath => {
+                    arguments.push(desktop_file_path.as_os_str().to_owned())
+                }
             }
         }
         arguments
     }
 
     pub fn accepts_files(&self) -> bool {
-        self.0.iter().any(|token| matches!(token, ExecToken::SingleFile | ExecToken::MultipleFiles
-            | ExecToken::SingleUrl | ExecToken::MultipleUrls))
+        self.0.iter().any(|token| {
+            matches!(
+                token,
+                ExecToken::SingleFile
+                    | ExecToken::MultipleFiles
+                    | ExecToken::SingleUrl
+                    | ExecToken::MultipleUrls
+            )
+        })
     }
 }
 
@@ -651,7 +673,9 @@ pub fn derive_manifest(
         aliases.flatpak_ids.insert(flatpak_id.clone());
     }
     aliases.executable_paths.insert(executable.clone());
-    aliases.executable_paths.insert(executable_for_provenance.clone());
+    aliases
+        .executable_paths
+        .insert(executable_for_provenance.clone());
 
     let display_name = if entry.name.is_empty() {
         desktop_id.trim_end_matches(".desktop").to_owned()
@@ -756,9 +780,13 @@ mod tests {
     use std::collections::HashMap;
 
     fn file_targets(paths: &[&str]) -> Vec<FileTarget> {
-        paths.iter().map(|path| FileTarget {
-            path: (*path).into(), uri: templar_types::uri_list::encode_path(Path::new(path)),
-        }).collect()
+        paths
+            .iter()
+            .map(|path| FileTarget {
+                path: (*path).into(),
+                uri: templar_types::uri_list::encode_path(Path::new(path)),
+            })
+            .collect()
     }
 
     struct StaticResolver {
@@ -844,7 +872,12 @@ Icon=templar-viewer
     #[test]
     fn single_file_code_takes_only_the_first_target() {
         let template = ExecTemplate::parse("templar-viewer %f");
-        let args = template.expand_arguments(&file_targets(&["/tmp/a.pdf", "/tmp/b.pdf"]), "", "", Path::new(""));
+        let args = template.expand_arguments(
+            &file_targets(&["/tmp/a.pdf", "/tmp/b.pdf"]),
+            "",
+            "",
+            Path::new(""),
+        );
         assert_eq!(args, vec!["/tmp/a.pdf"]);
         assert_eq!(
             ExecTemplate::parse("templar-viewer %f").expand_arguments(&[], "", "", Path::new("")),
@@ -855,22 +888,46 @@ Icon=templar-viewer
     #[test]
     fn native_file_and_uri_codes_preserve_distinct_bytes_and_cardinality() {
         use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
-        let paths = [b"/tmp/name-\xff.pdf".to_vec(), b"/tmp/name-\xfe.pdf".to_vec()];
-        let targets: Vec<_> = paths.iter().map(|bytes| {
-            let path = PathBuf::from(OsString::from_vec(bytes.clone()));
-            let uri = templar_types::uri_list::encode_path(&path);
-            FileTarget { path, uri }
-        }).collect();
-        let first = ExecTemplate::parse("viewer --reader %f").expand_arguments(&targets, "", "", Path::new(""));
+        let paths = [
+            b"/tmp/name-\xff.pdf".to_vec(),
+            b"/tmp/name-\xfe.pdf".to_vec(),
+        ];
+        let targets: Vec<_> = paths
+            .iter()
+            .map(|bytes| {
+                let path = PathBuf::from(OsString::from_vec(bytes.clone()));
+                let uri = templar_types::uri_list::encode_path(&path);
+                FileTarget { path, uri }
+            })
+            .collect();
+        let first = ExecTemplate::parse("viewer --reader %f").expand_arguments(
+            &targets,
+            "",
+            "",
+            Path::new(""),
+        );
         assert_eq!(first.len(), 2);
         assert_eq!(first[1].as_bytes(), paths[0]);
-        let all = ExecTemplate::parse("viewer --reader %F").expand_arguments(&targets, "", "", Path::new(""));
+        let all = ExecTemplate::parse("viewer --reader %F").expand_arguments(
+            &targets,
+            "",
+            "",
+            Path::new(""),
+        );
         assert_eq!(all.len(), 3);
         assert_eq!(all[1].as_bytes(), paths[0]);
         assert_eq!(all[2].as_bytes(), paths[1]);
-        let uris = ExecTemplate::parse("viewer %U").expand_arguments(&targets, "", "", Path::new(""));
-        assert_eq!(uris, [OsString::from(&targets[0].uri), OsString::from(&targets[1].uri)]);
-        let uri = ExecTemplate::parse("viewer %u").expand_arguments(&targets, "", "", Path::new(""));
+        let uris =
+            ExecTemplate::parse("viewer %U").expand_arguments(&targets, "", "", Path::new(""));
+        assert_eq!(
+            uris,
+            [
+                OsString::from(&targets[0].uri),
+                OsString::from(&targets[1].uri)
+            ]
+        );
+        let uri =
+            ExecTemplate::parse("viewer %u").expand_arguments(&targets, "", "", Path::new(""));
         assert_eq!(uri, [OsString::from(&targets[0].uri)]);
         assert_ne!(targets[0].uri, targets[1].uri);
     }
@@ -1043,9 +1100,12 @@ Icon=templar-viewer
                 .contains("org.templaros.Viewer.desktop")
         );
         assert_eq!(
-            derived
-                .exec_template
-                .expand_arguments(&file_targets(&["/tmp/a.pdf"]), "", "", Path::new("")),
+            derived.exec_template.expand_arguments(
+                &file_targets(&["/tmp/a.pdf"]),
+                "",
+                "",
+                Path::new("")
+            ),
             vec!["--reader", "/tmp/a.pdf"]
         );
     }
@@ -1080,7 +1140,12 @@ Icon=templar-viewer
                 .contains("org.mozilla.firefox")
         );
         assert_eq!(
-            derived.exec_template.expand_arguments(&file_targets(&["/tmp/a.pdf"]), "", "", Path::new("")),
+            derived.exec_template.expand_arguments(
+                &file_targets(&["/tmp/a.pdf"]),
+                "",
+                "",
+                Path::new("")
+            ),
             ["run", "org.mozilla.firefox", "file:///tmp/a.pdf"],
         );
     }

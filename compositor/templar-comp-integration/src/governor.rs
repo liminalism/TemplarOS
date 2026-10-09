@@ -38,7 +38,13 @@ impl GovernorNotifier {
 
     /// Fallback for a genuinely resolved native instance whose peer PID is unavailable.
     pub fn set_instance_state(&self, instance_id: InstanceId, foreground: bool, visible: bool) {
-        let _ = self.tx.send(Event::State(instance_id, InstanceState { foreground, visible }));
+        let _ = self.tx.send(Event::State(
+            instance_id,
+            InstanceState {
+                foreground,
+                visible,
+            },
+        ));
     }
 
     pub fn forget_instance(&self, instance_id: InstanceId) {
@@ -47,7 +53,13 @@ impl GovernorNotifier {
 
     /// The caller must aggregate all windows belonging to this actual peer PID first.
     pub fn set_process_state(&self, pid: u32, foreground: bool, visible: bool) {
-        let _ = self.tx.send(Event::Process(pid, InstanceState { foreground, visible }));
+        let _ = self.tx.send(Event::Process(
+            pid,
+            InstanceState {
+                foreground,
+                visible,
+            },
+        ));
     }
 
     /// Remove the PID when its last window disappears. This does not forget a headless workload.
@@ -65,7 +77,9 @@ async fn run(mut events: mpsc::UnboundedReceiver<Event>) {
     let mut departed = Vec::new();
 
     loop {
-        let Some(first) = events.recv().await else { return; };
+        let Some(first) = events.recv().await else {
+            return;
+        };
         apply(first, &mut instances, &mut processes, &mut forgotten);
         let setup = async {
             let connection = zbus::Connection::session().await?;
@@ -76,7 +90,8 @@ async fn run(mut events: mpsc::UnboundedReceiver<Event>) {
             let owners = bus.receive_name_owner_changed().await?;
             let targets = proxy.receive_targets_changed().await?;
             Ok::<_, zbus::Error>((proxy, owners, targets, connection))
-        }.await;
+        }
+        .await;
         let (mut active, mut owners, mut targets, connection) = match setup {
             Ok(setup) => setup,
             Err(error) => {
@@ -105,10 +120,13 @@ async fn run(mut events: mpsc::UnboundedReceiver<Event>) {
                 match active.resolve_pid(pid).await {
                     Ok(key) => {
                         if let Some(id) = ResourceId::parse(&key) {
-                            combined.entry(id).and_modify(|value| {
-                                value.foreground |= state.foreground;
-                                value.visible |= state.visible;
-                            }).or_insert(*state);
+                            combined
+                                .entry(id)
+                                .and_modify(|value| {
+                                    value.foreground |= state.foreground;
+                                    value.visible |= state.visible;
+                                })
+                                .or_insert(*state);
                         }
                     }
                     Err(error) => {
@@ -119,28 +137,48 @@ async fn run(mut events: mpsc::UnboundedReceiver<Event>) {
             }
             // A failed read is not evidence that a previously visible resource became headless.
             if resolution_failed {
-                for (id, state) in &published { combined.entry(*id).or_insert(*state); }
+                for (id, state) in &published {
+                    combined.entry(*id).or_insert(*state);
+                }
             }
             departed.clear();
-            departed.extend(published.keys().filter(|id| !combined.contains_key(id)).copied());
+            departed.extend(
+                published
+                    .keys()
+                    .filter(|id| !combined.contains_key(id))
+                    .copied(),
+            );
             let mut uuid_buffer = [0_u8; 36];
             for id in &departed {
                 let key = id.uuid().hyphenated().encode_lower(&mut uuid_buffer);
                 match active.set_instance_state(key, false, false).await {
-                    Ok(()) => { published.remove(id); }
+                    Ok(()) => {
+                        published.remove(id);
+                    }
                     Err(error) => tracing::debug!(%error, %id, "clearing window enrichment failed"),
                 }
             }
             for (id, state) in &combined {
-                if published.get(id) == Some(state) { continue; }
+                if published.get(id) == Some(state) {
+                    continue;
+                }
                 let key = id.uuid().hyphenated().encode_lower(&mut uuid_buffer);
-                match active.set_instance_state(key, state.foreground, state.visible).await {
-                    Ok(()) => { published.insert(*id, *state); }
-                    Err(error) => tracing::debug!(%error, %id, "publishing window enrichment failed"),
+                match active
+                    .set_instance_state(key, state.foreground, state.visible)
+                    .await
+                {
+                    Ok(()) => {
+                        published.insert(*id, *state);
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, %id, "publishing window enrichment failed")
+                    }
                 }
             }
             for id in forgotten.drain(..) {
-                if combined.contains_key(&id) { continue; }
+                if combined.contains_key(&id) {
+                    continue;
+                }
                 let key = id.uuid().hyphenated().encode_lower(&mut uuid_buffer);
                 if let Err(error) = active.forget_instance(key).await {
                     tracing::debug!(%error, %id, "forgetting native instance failed");
@@ -201,7 +239,11 @@ fn apply(
             instances.remove(&id);
             forgotten.push(id);
         }
-        Event::Process(pid, state) => { processes.insert(pid, state); }
-        Event::ProcessGone(pid) => { processes.remove(&pid); }
+        Event::Process(pid, state) => {
+            processes.insert(pid, state);
+        }
+        Event::ProcessGone(pid) => {
+            processes.remove(&pid);
+        }
     }
 }

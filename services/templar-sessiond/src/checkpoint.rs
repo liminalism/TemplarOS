@@ -89,16 +89,28 @@ impl PeerResolver for DbusPeerResolver {
         let Ok(owner) = dbus.get_name_owner(name).await else {
             return Ok(None);
         };
-        let pid = dbus.get_connection_unix_process_id(owner.clone().into()).await?;
-        let identity = self.registry.resolve_window(pid, &templar_types::WindowClaims::default())
+        let pid = dbus
+            .get_connection_unix_process_id(owner.clone().into())
+            .await?;
+        let identity = self
+            .registry
+            .resolve_window(pid, &templar_types::WindowClaims::default())
             .with_context(|| format!("verifying pid {pid} (peer of {bus_name})"))?;
         Ok(verified_peer(owner, identity))
     }
 }
 
-fn verified_peer(owner: zbus::names::OwnedUniqueName, identity: templar_appd::identity::IdentityResolution) -> Option<ResolvedPeer> {
-    if !identity.confidence.is_verified() || identity.app_id.is_none() { return None; }
-    Some(ResolvedPeer { instance: identity.instance_id?, owner })
+fn verified_peer(
+    owner: zbus::names::OwnedUniqueName,
+    identity: templar_appd::identity::IdentityResolution,
+) -> Option<ResolvedPeer> {
+    if !identity.confidence.is_verified() || identity.app_id.is_none() {
+        return None;
+    }
+    Some(ResolvedPeer {
+        instance: identity.instance_id?,
+        owner,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -249,21 +261,35 @@ mod tests {
         let registry = Registry::default();
         let app = "org.example.Checkpoint".parse().unwrap();
         registry.insert_manifest(AppManifest {
-            id: app, display_name: "Checkpoint".into(), primary_desktop_file_id: "checkpoint.desktop".into(),
-            executable: "/usr/bin/true".into(), aliases: AppAliases::default(), mime_types: Default::default(),
-            resource_class: ResourceClass::Normal, supports_checkpoint: true, icon: None,
-            categories: Default::default(), keywords: Default::default(), no_display: false,
-            provenance: None, provides: Vec::new(),
+            id: app,
+            display_name: "Checkpoint".into(),
+            primary_desktop_file_id: "checkpoint.desktop".into(),
+            executable: "/usr/bin/true".into(),
+            aliases: AppAliases::default(),
+            mime_types: Default::default(),
+            resource_class: ResourceClass::Normal,
+            supports_checkpoint: true,
+            icon: None,
+            categories: Default::default(),
+            keywords: Default::default(),
+            no_display: false,
+            provenance: None,
+            provides: Vec::new(),
         });
         let app = "org.example.Checkpoint".parse().unwrap();
         let instance = InstanceId::new();
         let unit_name = unit::unit_name(&app, instance);
-        let group = std::path::PathBuf::from(format!("/user.slice/user-1000.slice/user@1000.service/app.slice/{unit_name}"));
+        let group = std::path::PathBuf::from(format!(
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/{unit_name}"
+        ));
         let owner = || zbus::names::OwnedUniqueName::try_from(":1.23").unwrap();
         let claims = templar_types::WindowClaims::default();
         assert!(verified_peer(owner(), registry.resolve_cgroup(group.clone(), &claims)).is_none());
         registry.register_instance(InstanceRecord {
-            id: instance, app_id: app, systemd_unit: unit_name, control_group: group.clone(),
+            id: instance,
+            app_id: app,
+            systemd_unit: unit_name,
+            control_group: group.clone(),
         });
         let identity = registry.resolve_cgroup(group.clone(), &claims);
         assert_eq!(verified_peer(owner(), identity).unwrap().instance, instance);
@@ -348,13 +374,19 @@ mod tests {
     #[async_trait]
     impl CheckpointCaller for FixedCaller {
         async fn call(&self, bus_name: &str, _request_json: &str) -> Result<String> {
-            assert_eq!(bus_name, ":1.23", "request must pin the verified unique owner");
+            assert_eq!(
+                bus_name, ":1.23",
+                "request must pin the verified unique owner"
+            );
             Ok(self.0.clone())
         }
     }
 
     fn peer(instance: InstanceId) -> ResolvedPeer {
-        ResolvedPeer { instance, owner: ":1.23".try_into().unwrap() }
+        ResolvedPeer {
+            instance,
+            owner: ":1.23".try_into().unwrap(),
+        }
     }
 
     #[tokio::test]

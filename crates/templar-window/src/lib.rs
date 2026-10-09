@@ -27,8 +27,8 @@ pub use commands::{
     ActivationGrant, CommandContext, CommandEffect, CommandError, RevealHome, WindowCommand,
 };
 pub use geometry::{
-    Corner, Direction, Output, PhysicalPoint, Point, RecoveryAffordance, Rect, ResizeEdges,
-    RESIZE_SQUARE, TAB_ACTIVATION_DEPTH, TAB_CONTROL_GAP, TAB_CONTROL_SIZE, TAB_EXIT_GRACE_MS,
+    Corner, Direction, Output, PhysicalPoint, Point, RESIZE_SQUARE, RecoveryAffordance, Rect,
+    ResizeEdges, TAB_ACTIVATION_DEPTH, TAB_CONTROL_GAP, TAB_CONTROL_SIZE, TAB_EXIT_GRACE_MS,
     TAB_HYSTERESIS, TAB_REVEAL_GRACE_MS, TAB_TITLE_MAX_WIDTH, TAB_TITLE_MIN_WIDTH, TabControl,
     TabPlacement, TabPolicy, WindowLayout, bounding_rect, is_beside, is_recoverable,
     logical_to_physical, move_into_view, physical_to_logical, place_beside, recovery_affordance,

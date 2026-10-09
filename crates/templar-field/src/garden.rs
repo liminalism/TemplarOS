@@ -125,10 +125,18 @@ fn plan_place(
     span: Span,
     corner: HomeCorner,
 ) -> Option<Tended> {
-    let seed = view.root.as_os_str().as_encoded_bytes().iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    });
-    let room = Span::new(span.cols.max(GROWTH_ROOM.cols), span.rows.max(GROWTH_ROOM.rows));
+    let seed = view
+        .root
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
+    let room = Span::new(
+        span.cols.max(GROWTH_ROOM.cols),
+        span.rows.max(GROWTH_ROOM.rows),
+    );
     let seeded = Cell::new(
         (seed % u64::from(doc.cols.saturating_sub(room.cols) + 1)) as u16,
         ((seed >> 32) % u64::from(doc.rows.saturating_sub(room.rows) + 1)) as u16,
@@ -290,8 +298,14 @@ mod tests {
         let FieldOp::Place { landing, .. } = &ops[0].op else {
             panic!("{:?}", ops[0].op)
         };
-        let again = tend(&doc, &[view("/home/dk/src/templaros", Some(Span::new(2, 2)))], HomeCorner::TopRight);
-        let FieldOp::Place { landing: other, .. } = &again[0].op else { panic!("not placed") };
+        let again = tend(
+            &doc,
+            &[view("/home/dk/src/templaros", Some(Span::new(2, 2)))],
+            HomeCorner::TopRight,
+        );
+        let FieldOp::Place { landing: other, .. } = &again[0].op else {
+            panic!("not placed")
+        };
         assert_eq!(landing.cell, other.cell);
         assert!(landing.cell.col <= 6 && landing.cell.row <= 4);
     }

@@ -1,0 +1,251 @@
+{
+  "label": "after-wp7-wp8",
+  "seconds": 120,
+  "quiet_entries": 100000,
+  "build_entries": 20000,
+  "shape": "synthetic",
+  "build_bursts": 63,
+  "build_files_created": 315000,
+  "download_appends": 1242,
+  "edits": 1250,
+  "scopes": [
+    {
+      "scope": "quiet",
+      "search": {
+        "samples": 325,
+        "p50_ms": 3.116264,
+        "p95_ms": 989.275893,
+        "p99_ms": 1983.998479,
+        "max_ms": 3586.645278
+      },
+      "first_fetch": {
+        "samples": 325,
+        "p50_ms": 1.6264960000000002,
+        "p95_ms": 2.201346,
+        "p99_ms": 2.3396879999999998,
+        "max_ms": 2.504852
+      },
+      "strategies": {
+        "arrays": 255,
+        "fts5-trigram": 34,
+        "like-scan": 36
+      },
+      "arrays_hit_rate": 0.7846153846153846,
+      "queue_ms": {
+        "samples": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0
+      },
+      "errors": {}
+    },
+    {
+      "scope": "build",
+      "search": {
+        "samples": 325,
+        "p50_ms": 2.673547,
+        "p95_ms": 805.9961450000001,
+        "p99_ms": 1976.6122950000001,
+        "max_ms": 2330.176148
+      },
+      "first_fetch": {
+        "samples": 325,
+        "p50_ms": 1.60676,
+        "p95_ms": 2.324352,
+        "p99_ms": 2.60905,
+        "max_ms": 2.707251
+      },
+      "strategies": {
+        "arrays": 255,
+        "fts5-trigram": 34,
+        "like-scan": 36
+      },
+      "arrays_hit_rate": 0.7846153846153846,
+      "queue_ms": {
+        "samples": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0
+      },
+      "errors": {}
+    },
+    {
+      "scope": "all",
+      "search": {
+        "samples": 325,
+        "p50_ms": 3.131885,
+        "p95_ms": 1813.43301,
+        "p99_ms": 3892.869228,
+        "max_ms": 4533.0476
+      },
+      "first_fetch": {
+        "samples": 325,
+        "p50_ms": 1.5991950000000001,
+        "p95_ms": 2.2333309999999997,
+        "p99_ms": 2.364962,
+        "max_ms": 2.525134
+      },
+      "strategies": {
+        "arrays": 256,
+        "fts5-trigram": 36,
+        "like-scan": 33
+      },
+      "arrays_hit_rate": 0.7876923076923077,
+      "queue_ms": {
+        "samples": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "max_ms": 0.0
+      },
+      "errors": {}
+    }
+  ],
+  "daemon_threads_max": 28,
+  "browse": {
+    "samples": 1225,
+    "p50_ms": 0.531776,
+    "p95_ms": 0.6789499999999999,
+    "p99_ms": 0.857682,
+    "max_ms": 1.012953
+  },
+  "browse_errors": 0,
+  "final_roots": {
+    "roots": [
+      {
+        "root": 1,
+        "path_b64": "L3RtcC8udG1wdVZHUjEwL2hvbWU=",
+        "display": "/tmp/.tmpuVGR10/home",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 2,
+        "complete": true,
+        "entry_count": 1,
+        "policy_hash": "6ffb614dd1581176",
+        "last_scan_ms": 1791465161009,
+        "last_reconcile_started_ms": 1791465161008,
+        "last_reconcile_finished_ms": 1791465161009,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 24005,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": 125931,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        }
+      },
+      {
+        "root": 2,
+        "path_b64": "L3RtcC8udG1wdVZHUjEwL3F1aWV0",
+        "display": "/tmp/.tmpuVGR10/quiet",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 105,
+        "complete": true,
+        "entry_count": 100001,
+        "policy_hash": "28ed3df1b7e41719",
+        "last_scan_ms": 1791465162106,
+        "last_reconcile_started_ms": 1791465161010,
+        "last_reconcile_finished_ms": 1791465162106,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 24005,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": 125931,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        }
+      },
+      {
+        "root": 3,
+        "path_b64": "L3RtcC8udG1wdVZHUjEwL2J1aWxk",
+        "display": "/tmp/.tmpuVGR10/build",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 105,
+        "complete": true,
+        "entry_count": 25052,
+        "policy_hash": "28ed3df1b7e41719",
+        "last_scan_ms": 1791465162412,
+        "last_reconcile_started_ms": 1791465162200,
+        "last_reconcile_finished_ms": 1791465162412,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 24005,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": 125931,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        }
+      },
+      {
+        "root": 4,
+        "path_b64": "L3RtcC8udG1wdVZHUjEwL2Rvd25sb2Fk",
+        "display": "/tmp/.tmpuVGR10/download",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 105,
+        "complete": true,
+        "entry_count": 4,
+        "policy_hash": "28ed3df1b7e41719",
+        "last_scan_ms": 1791465162431,
+        "last_reconcile_started_ms": 1791465162431,
+        "last_reconcile_finished_ms": 1791465162431,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 24005,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": 125931,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        }
+      }
+    ],
+    "diagnostics": {
+      "schema_version": 7,
+      "generation": 105,
+      "planner": "fts5-trigram",
+      "fts_available": true,
+      "change_seq_floor": 214470,
+      "change_seq_head": 314470,
+      "cursor_count": 0,
+      "availability": {
+        "state": "available",
+        "reason": null,
+        "since_ms": null
+      },
+      "storage": {
+        "main_bytes": 185499648,
+        "wal_bytes": 69487952,
+        "shm_bytes": 163840
+      }
+    },
+    "cache_identity": "50d4e781a3ae58a9438024ef9919f77b"
+  }
+}

@@ -2850,7 +2850,9 @@ async fn load(initial_page: SettingsPage) -> Result<SettingsApp> {
     let _ = backend
         .commands
         .send(Command::Input(crate::input::InputCommand::Refresh));
-    let _ = backend.commands.send(Command::DateTime(crate::datetime::DateTimeCommand::Refresh));
+    let _ = backend
+        .commands
+        .send(Command::DateTime(crate::datetime::DateTimeCommand::Refresh));
     Ok(SettingsApp {
         visual: templar_ui::AppearanceState::new(appearance_for(&appearance, &home)),
         home,
@@ -2913,9 +2915,12 @@ mod tests {
     #[test]
     fn every_tab_key_lands_on_the_windows_page_and_neighbours_stay_put() {
         for key in [
-            "windows.tabs.placement", "windows.tabs.follow-pointer",
-            "windows.tabs.fixed-corner", "windows.tabs.controls",
-            "windows.tabs.title", "windows.tabs.default-corner",
+            "windows.tabs.placement",
+            "windows.tabs.follow-pointer",
+            "windows.tabs.fixed-corner",
+            "windows.tabs.controls",
+            "windows.tabs.title",
+            "windows.tabs.default-corner",
         ] {
             assert_eq!(
                 page_for(key),

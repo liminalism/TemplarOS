@@ -87,7 +87,8 @@ fn main() -> Result<()> {
             });
         },
         move || host::receive(&receiver),
-    ).map_err(|error| anyhow::anyhow!("portal graphical host: {error}"))
+    )
+    .map_err(|error| anyhow::anyhow!("portal graphical host: {error}"))
 }
 
 async fn backend(idle: bool, ui_host: Option<host::Client>) -> Result<()> {
@@ -111,7 +112,9 @@ async fn backend(idle: bool, ui_host: Option<host::Client>) -> Result<()> {
         .context("serving the portal backend interfaces")?;
     // Publish readiness only after every interface is registered. The frontend
     // can call immediately after activation reports name ownership.
-    connection.request_name(BUS_NAME).await
+    connection
+        .request_name(BUS_NAME)
+        .await
         .context("claiming the portal backend name")?;
     tracing::info!(
         name = BUS_NAME,

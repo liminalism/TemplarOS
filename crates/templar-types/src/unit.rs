@@ -13,29 +13,61 @@ pub const UNIT_PREFIX: &str = "app-templaros-";
 pub const WORKLOAD_UNIT_PREFIX: &str = "workload-templaros-";
 
 /// A separate sibling scope, never a child of the terminal's application cgroup.
-pub fn workload_unit_name(parent: Option<InstanceId>, workload: crate::WorkloadId, class: crate::WorkloadClass) -> String {
+pub fn workload_unit_name(
+    parent: Option<InstanceId>,
+    workload: crate::WorkloadId,
+    class: crate::WorkloadClass,
+) -> String {
     match parent {
-        Some(parent) => format!("{WORKLOAD_UNIT_PREFIX}{}-{}-{}.scope", class.as_str(), parent.uuid().simple(), workload.compact()),
-        None => format!("{WORKLOAD_UNIT_PREFIX}{}-unknown-{}.scope", class.as_str(), workload.compact()),
+        Some(parent) => format!(
+            "{WORKLOAD_UNIT_PREFIX}{}-{}-{}.scope",
+            class.as_str(),
+            parent.uuid().simple(),
+            workload.compact()
+        ),
+        None => format!(
+            "{WORKLOAD_UNIT_PREFIX}{}-unknown-{}.scope",
+            class.as_str(),
+            workload.compact()
+        ),
     }
 }
 
-pub fn parse_workload_unit_name(name: &str) -> Option<(Option<InstanceId>, crate::WorkloadId, crate::WorkloadClass)> {
-    let rest = name.strip_prefix(WORKLOAD_UNIT_PREFIX)?.strip_suffix(".scope")?;
+pub fn parse_workload_unit_name(
+    name: &str,
+) -> Option<(Option<InstanceId>, crate::WorkloadId, crate::WorkloadClass)> {
+    let rest = name
+        .strip_prefix(WORKLOAD_UNIT_PREFIX)?
+        .strip_suffix(".scope")?;
     let (rest, class) = if let Some(rest) = rest.strip_prefix("interactive-") {
         (rest, crate::WorkloadClass::Interactive)
-    } else { (rest.strip_prefix("background-compute-")?, crate::WorkloadClass::BackgroundCompute) };
+    } else {
+        (
+            rest.strip_prefix("background-compute-")?,
+            crate::WorkloadClass::BackgroundCompute,
+        )
+    };
     let (parent, workload) = rest.rsplit_once('-')?;
-    if workload.len() != 32 || !workload.bytes().all(|byte| byte.is_ascii_hexdigit()) { return None; }
-    let parent = if parent == "unknown" { None } else {
-        if parent.len() != 32 || !parent.bytes().all(|byte| byte.is_ascii_hexdigit()) { return None; }
+    if workload.len() != 32 || !workload.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let parent = if parent == "unknown" {
+        None
+    } else {
+        if parent.len() != 32 || !parent.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
         Some(InstanceId::parse(parent)?)
     };
     Some((parent, crate::WorkloadId::parse(workload)?, class))
 }
 
-pub fn parse_workload_cgroup_path(path: &Path) -> Option<(Option<InstanceId>, crate::WorkloadId, crate::WorkloadClass)> {
-    path.components().rev().find_map(|component| parse_workload_unit_name(component.as_os_str().to_str()?))
+pub fn parse_workload_cgroup_path(
+    path: &Path,
+) -> Option<(Option<InstanceId>, crate::WorkloadId, crate::WorkloadClass)> {
+    path.components()
+        .rev()
+        .find_map(|component| parse_workload_unit_name(component.as_os_str().to_str()?))
 }
 
 /// The user target that *is* the graphical session: compositor, shell and daemons are all
@@ -119,13 +151,22 @@ mod tests {
         let workload = crate::WorkloadId::parse("22222222222222222222222222222222").unwrap();
         let class = crate::WorkloadClass::BackgroundCompute;
         let scope = workload_unit_name(Some(parent), workload, class);
-        assert_eq!(parse_workload_unit_name(&scope), Some((Some(parent), workload, class)));
+        assert_eq!(
+            parse_workload_unit_name(&scope),
+            Some((Some(parent), workload, class))
+        );
         assert_eq!(parse_unit_name(&scope), None);
         let path = PathBuf::from(format!("/user.slice/background.slice/{scope}/workers"));
-        assert_eq!(parse_workload_cgroup_path(&path), Some((Some(parent), workload, class)));
+        assert_eq!(
+            parse_workload_cgroup_path(&path),
+            Some((Some(parent), workload, class))
+        );
         assert_eq!(parse_cgroup_path(&path), None);
         let unknown = workload_unit_name(None, workload, crate::WorkloadClass::Interactive);
-        assert_eq!(parse_workload_unit_name(&unknown), Some((None, workload, crate::WorkloadClass::Interactive)));
+        assert_eq!(
+            parse_workload_unit_name(&unknown),
+            Some((None, workload, crate::WorkloadClass::Interactive))
+        );
     }
 
     #[test]

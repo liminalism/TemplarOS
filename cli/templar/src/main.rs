@@ -1293,7 +1293,11 @@ fn doctor_command(
     } else {
         let mut abbreviated = false;
         for finding in &findings {
-            let detail = doctor::abbreviate(&finding.detail);
+            let detail = if findings.len() == 1 && finding.id == "file-index" {
+                finding.detail.clone()
+            } else {
+                doctor::abbreviate(&finding.detail)
+            };
             abbreviated |= detail != finding.detail;
             println!(
                 "{:<12} {:<20} {}{}",

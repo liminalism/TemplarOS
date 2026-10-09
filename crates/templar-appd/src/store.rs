@@ -227,21 +227,32 @@ pub fn save_variant_within(
 /// Used to notice a variant's provenance *moving* — the case where a `.desktop` file in the
 /// person's own data directory takes over a desktop id a package used to own, and would otherwise
 /// silently inherit that package's provider declarations and autostart approval.
-pub fn variant_trust_within(connection: &Connection, variant: &AppVariantId) -> Result<Option<templar_types::TrustTier>> {
-    Ok(connection.query_row(
-        "SELECT trust FROM app_variants WHERE variant = ?1",
-        params![variant.as_str()],
-        |row| row.get::<_, String>(0),
-    ).optional()?.map(|value| templar_types::TrustTier::from_str_or_user(&value)))
+pub fn variant_trust_within(
+    connection: &Connection,
+    variant: &AppVariantId,
+) -> Result<Option<templar_types::TrustTier>> {
+    Ok(connection
+        .query_row(
+            "SELECT trust FROM app_variants WHERE variant = ?1",
+            params![variant.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|value| templar_types::TrustTier::from_str_or_user(&value)))
 }
 
 /// When this variant was first recorded, if it has been seen before.
-pub fn variant_first_seen_within(connection: &Connection, variant: &AppVariantId) -> Result<Option<i64>> {
-    Ok(connection.query_row(
-        "SELECT first_seen_ms FROM app_variants WHERE variant = ?1",
-        params![variant.as_str()],
-        |row| row.get::<_, i64>(0),
-    ).optional()?)
+pub fn variant_first_seen_within(
+    connection: &Connection,
+    variant: &AppVariantId,
+) -> Result<Option<i64>> {
+    Ok(connection
+        .query_row(
+            "SELECT first_seen_ms FROM app_variants WHERE variant = ?1",
+            params![variant.as_str()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?)
 }
 
 /// Old variant id -> current one. Read on every lookup of a stored id; stored ids themselves are

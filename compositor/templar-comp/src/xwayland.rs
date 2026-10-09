@@ -305,13 +305,18 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         };
         let x11_id = window.window_id();
         let object_id = surface.id();
-        if let Some(window_id) = self.windows.window_id_for_x11(x11_id)
+        if let Some(window_id) = self
+            .windows
+            .window_id_for_x11(x11_id)
             .or_else(|| self.windows.window_id_for(&object_id))
         {
             // Association can also follow an already-complete map. Do not configure,
             // refocus or create another element for the same mapped surface.
             if self.windows.window_id_for(&object_id) == Some(window_id)
-                && self.window_service.window(window_id).is_some_and(|record| record.mapped)
+                && self
+                    .window_service
+                    .window(window_id)
+                    .is_some_and(|record| record.mapped)
             {
                 self.refresh_x11_transient_parents(x11_id);
                 crate::space_sync::sync_after_change(self);
@@ -326,17 +331,26 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             self.windows.track_element(object_id, element.clone());
             self.space.map_element(element, (client.x, client.y), false);
             self.refresh_x11_transient_parents(x11_id);
-            tracing::info!(?window_id, x11_id, backend = "xwayland", "toplevel remapped");
+            tracing::info!(
+                ?window_id,
+                x11_id,
+                backend = "xwayland",
+                "toplevel remapped"
+            );
             crate::space_sync::sync_after_change(self);
             return;
         }
 
         let geometry = window.geometry();
         let requested = templar_window::Rect::new(
-            geometry.loc.x, geometry.loc.y, geometry.size.w, geometry.size.h,
+            geometry.loc.x,
+            geometry.loc.y,
+            geometry.size.w,
+            geometry.size.h,
         );
         let claims = claims_from_x11(Some(window.class()));
-        let trusted_shell = surface.client()
+        let trusted_shell = surface
+            .client()
             .is_some_and(|client| crate::state::client_is_trusted_shell(&client));
         let window_id = self.window_service.on_toplevel_mapped(
             window.pid().unwrap_or(0),
@@ -364,11 +378,16 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let Some(child) = self.windows.window_id_for_x11(window.window_id()) else {
             return;
         };
-        let parent = window.is_transient_for()
+        let parent = window
+            .is_transient_for()
             .and_then(|x11_id| self.windows.window_id_for_x11(x11_id));
         if !self.window_service.set_transient_parent(child, parent) {
             self.window_service.set_transient_parent(child, None);
-            tracing::warn!(?child, ?parent, "X11 transient parent rejected; dialog remains independent");
+            tracing::warn!(
+                ?child,
+                ?parent,
+                "X11 transient parent rejected; dialog remains independent"
+            );
         }
     }
 
@@ -386,11 +405,16 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             let Some(child) = self.windows.window_id_for_x11(window.window_id()) else {
                 continue;
             };
-            let parent = window.is_transient_for()
+            let parent = window
+                .is_transient_for()
                 .and_then(|x11_id| self.windows.window_id_for_x11(x11_id));
             if !self.window_service.set_transient_parent(child, parent) {
                 self.window_service.set_transient_parent(child, None);
-                tracing::warn!(?child, ?parent, "X11 transient parent rejected; dialog remains independent");
+                tracing::warn!(
+                    ?child,
+                    ?parent,
+                    "X11 transient parent rejected; dialog remains independent"
+                );
             }
         }
     }

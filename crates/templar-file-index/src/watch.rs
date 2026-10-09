@@ -22,8 +22,8 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
     os::unix::fs::MetadataExt as _,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -255,6 +255,7 @@ struct WatchedRoot {
     path: PathBuf,
     policy: RootPolicy,
     dev_id: Option<u64>,
+    mount_id: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -272,6 +273,7 @@ struct PendingMove {
 #[derive(Debug)]
 pub struct WatchOwner<S: EventSource> {
     source: S,
+    volume_provider: std::sync::Arc<dyn crate::volume::VolumeProvider>,
     budget: WatchBudget,
     roots: Vec<WatchedRoot>,
     dirs: HashMap<WatchId, WatchedDir>,
@@ -287,8 +289,14 @@ pub struct WatchOwner<S: EventSource> {
     /// The largest subtree the watcher will enumerate inline when a directory appears. Anything
     /// larger becomes a scheduled repair instead of a stall in the event loop.
     inline_subtree_limit: u64,
+    /// Entries enumerated inline so far this pump. The per-directory cap bounds one subtree; this
+    /// bounds the pump, so a burst of new directories cannot each take the full allowance in one
+    /// turn. Reset at the top of every [`WatchOwner::pump`].
+    pump_absorbed: u64,
     armed: u64,
     refused: u64,
+    refused_dirs: HashMap<PathBuf, RootId>,
+    refusal_overflow: HashSet<RootId>,
     overflow_count: u64,
     last_event_ms: Option<i64>,
     last_overflow_ms: Option<i64>,
@@ -300,6 +308,7 @@ impl<S: EventSource> WatchOwner<S> {
     pub fn new(source: S, budget: WatchBudget) -> Self {
         Self {
             source,
+            volume_provider: std::sync::Arc::new(crate::volume::NativeVolumes),
             budget,
             roots: Vec::new(),
             dirs: HashMap::new(),
@@ -308,8 +317,11 @@ impl<S: EventSource> WatchOwner<S> {
             membership_changed: HashSet::new(),
             move_pairing_ms: 250,
             inline_subtree_limit: 1000,
+            pump_absorbed: 0,
             armed: 0,
             refused: 0,
+            refused_dirs: HashMap::new(),
+            refusal_overflow: HashSet::new(),
             overflow_count: 0,
             last_event_ms: None,
             last_overflow_ms: None,
@@ -318,6 +330,13 @@ impl<S: EventSource> WatchOwner<S> {
     }
 
     /// Register a root. Nothing is armed until [`WatchOwner::arm_tree`] runs.
+    pub fn set_volume_provider(
+        &mut self,
+        provider: std::sync::Arc<dyn crate::volume::VolumeProvider>,
+    ) {
+        self.volume_provider = provider;
+    }
+
     pub fn track_root(&mut self, root: RootId, path: &Path, policy: RootPolicy) {
         guard::assert_fixture_root(path);
         self.roots.retain(|existing| existing.id != root);
@@ -325,12 +344,19 @@ impl<S: EventSource> WatchOwner<S> {
             id: root,
             path: path.to_path_buf(),
             dev_id: path.symlink_metadata().ok().map(|metadata| metadata.dev()),
+            mount_id: self
+                .volume_provider
+                .mount_id(&NativePath::from_path(path))
+                .ok()
+                .flatten(),
             policy,
         });
     }
 
     pub fn forget_root(&mut self, root: RootId) {
         self.roots.retain(|existing| existing.id != root);
+        self.refused_dirs.retain(|_, id| *id != root);
+        self.refusal_overflow.remove(&root);
         let ids: Vec<WatchId> = self
             .dirs
             .iter()
@@ -355,6 +381,15 @@ impl<S: EventSource> WatchOwner<S> {
     #[must_use]
     pub fn tracked_roots(&self) -> Vec<RootId> {
         self.roots.iter().map(|root| root.id).collect()
+    }
+
+    /// The path a tracked root was registered at.
+    #[must_use]
+    pub fn tracked_path(&self, root: RootId) -> Option<std::path::PathBuf> {
+        self.roots
+            .iter()
+            .find(|tracked| tracked.id == root)
+            .map(|tracked| tracked.path.clone())
     }
 
     /// A handle that ends an in-flight blocking [`WatchOwner::pump`].
@@ -393,6 +428,8 @@ impl<S: EventSource> WatchOwner<S> {
         self.by_path.clear();
         self.pending_moves.clear();
         self.armed = 0;
+        self.refused_dirs.clear();
+        self.refusal_overflow.clear();
     }
 
     /// The watcher's own report, for `Index::set_watch_status`.
@@ -401,6 +438,10 @@ impl<S: EventSource> WatchOwner<S> {
         let limits = self.source.limits();
         WatchStatus {
             backend: self.source.backend().to_owned(),
+            watches_required: self
+                .refusal_overflow
+                .is_empty()
+                .then_some(self.armed + self.refused_dirs.len() as u64),
             watches_armed: self.armed,
             watches_refused: self.refused,
             watch_limit: limits.max_user_watches,
@@ -411,6 +452,36 @@ impl<S: EventSource> WatchOwner<S> {
             pending_events,
             last_error: self.last_error.clone(),
         }
+    }
+
+    /// Counts for one root, without presenting other roots' watches as its coverage.
+    pub fn status_for(&self, root: RootId, pending_events: u64) -> WatchStatus {
+        let mut status = self.status(pending_events);
+        status.watches_armed = self.dirs.values().filter(|dir| dir.root == root).count() as u64;
+        status.watches_refused =
+            self.refused_dirs.values().filter(|id| **id == root).count() as u64;
+        status.watches_required = (!self.refusal_overflow.contains(&root))
+            .then_some(status.watches_armed + status.watches_refused);
+        status
+    }
+    fn note_refusal(&mut self, root: RootId, path: &Path) {
+        // Do not spend an unbounded path table merely reporting an exhausted watch budget. If this
+        // bounded diagnostic set fills, required becomes unknown until the root is forgotten or the watcher is disarmed.
+        const REFUSAL_TRACK_LIMIT: usize = 4096;
+        self.refused = self.refused.saturating_add(1);
+        if self.refused_dirs.contains_key(path) {
+            return;
+        }
+        if self.refused_dirs.len() < REFUSAL_TRACK_LIMIT {
+            self.refused_dirs.insert(path.to_path_buf(), root);
+        } else {
+            self.refusal_overflow.insert(root);
+        }
+    }
+
+    fn forget_refusals_under(&mut self, path: &Path) {
+        self.refused_dirs
+            .retain(|refused, _| !refused.starts_with(path));
     }
 
     fn root_of(&self, path: &Path) -> Option<&WatchedRoot> {
@@ -425,23 +496,52 @@ impl<S: EventSource> WatchOwner<S> {
         if let Some(tracked) = self.roots.iter().find(|tracked| tracked.id == root)
             && !tracked.policy.cross_mount
         {
+            if let Some(root_mount) = tracked.mount_id {
+                match self.volume_provider.mount_id(&NativePath::from_path(dir)) {
+                    Ok(Some(mount)) if mount != root_mount => {
+                        self.forget_refusals_under(dir);
+                        return ArmResult::Boundary;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        self.forget_refusals_under(dir);
+                        return ArmResult::Gone;
+                    }
+                    Err(_) | Ok(None) => {
+                        self.note_refusal(root, dir);
+                        return ArmResult::Refused;
+                    }
+                    _ => {}
+                }
+            }
             match dir.symlink_metadata() {
-                Ok(metadata) if !metadata.is_dir()
-                    || tracked.dev_id.is_some_and(|device| device != metadata.dev()) => return ArmResult::Boundary,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return ArmResult::Gone,
+                Ok(metadata)
+                    if !metadata.is_dir()
+                        || tracked
+                            .dev_id
+                            .is_some_and(|device| device != metadata.dev()) =>
+                {
+                    self.forget_refusals_under(dir);
+                    return ArmResult::Boundary;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.forget_refusals_under(dir);
+                    return ArmResult::Gone;
+                }
                 _ => {}
             }
         }
         if self.by_path.contains_key(dir) {
+            self.refused_dirs.remove(dir);
             return ArmResult::AlreadyArmed;
         }
         if self.armed >= self.budget.max_watches {
-            self.refused = self.refused.saturating_add(1);
+            self.note_refusal(root, dir);
             return ArmResult::Refused;
         }
         guard::assert_fixture_root(dir);
         match self.source.add_watch(dir) {
             Ok(id) => {
+                self.refused_dirs.remove(dir);
                 self.dirs.insert(
                     id,
                     WatchedDir {
@@ -453,9 +553,12 @@ impl<S: EventSource> WatchOwner<S> {
                 self.armed = self.armed.saturating_add(1);
                 ArmResult::Armed
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => ArmResult::Gone,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.forget_refusals_under(dir);
+                ArmResult::Gone
+            }
             Err(error) => {
-                self.refused = self.refused.saturating_add(1);
+                self.note_refusal(root, dir);
                 self.last_error = Some(format!("{}: {error}", dir.display()));
                 ArmResult::Refused
             }
@@ -485,9 +588,14 @@ impl<S: EventSource> WatchOwner<S> {
         dir: &Path,
         visit: &mut dyn FnMut(ScannedEntry) -> Result<(), crate::IndexError>,
     ) -> Result<ArmOutcome, crate::IndexError> {
-        let (policy, base) = self.roots.iter().find(|tracked| tracked.id == root)
-            .map_or_else(|| (RootPolicy::default(), NativePath::from_path(dir)),
-                |tracked| (tracked.policy.clone(), NativePath::from_path(&tracked.path)));
+        let (policy, base) = self
+            .roots
+            .iter()
+            .find(|tracked| tracked.id == root)
+            .map_or_else(
+                || (RootPolicy::default(), NativePath::from_path(dir)),
+                |tracked| (tracked.policy.clone(), NativePath::from_path(&tracked.path)),
+            );
         let mut outcome = ArmOutcome::default();
         self.arm_recursive(root, dir, &policy, &base, visit, &mut outcome)?;
         Ok(outcome)
@@ -506,7 +614,11 @@ impl<S: EventSource> WatchOwner<S> {
             ArmResult::Armed | ArmResult::AlreadyArmed => outcome.dirs_armed += 1,
             ArmResult::Boundary => return Ok(()),
             ArmResult::Gone => {
-                if self.roots.iter().any(|tracked| tracked.id == root && tracked.path == dir) {
+                if self
+                    .roots
+                    .iter()
+                    .any(|tracked| tracked.id == root && tracked.path == dir)
+                {
                     outcome.complete = false;
                     outcome.unreadable_dirs += 1;
                 }
@@ -529,7 +641,11 @@ impl<S: EventSource> WatchOwner<S> {
                 return Ok(());
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if self.roots.iter().any(|tracked| tracked.id == root && tracked.path == dir) {
+                if self
+                    .roots
+                    .iter()
+                    .any(|tracked| tracked.id == root && tracked.path == dir)
+                {
                     outcome.complete = false;
                     outcome.unreadable_dirs += 1;
                 }
@@ -551,6 +667,15 @@ impl<S: EventSource> WatchOwner<S> {
                 continue;
             };
             let path = entry.path();
+            // Another tracked root registered here owns this path and everything under it; its
+            // own arm_tree watches it, and a second watch here would route its events twice.
+            if self
+                .roots
+                .iter()
+                .any(|tracked| tracked.id != root && tracked.path == path)
+            {
+                continue;
+            }
             let Ok(metadata) = entry.path().symlink_metadata() else {
                 // Vanished between readdir and stat. The event stream will describe it.
                 continue;
@@ -574,7 +699,10 @@ impl<S: EventSource> WatchOwner<S> {
             } else if metadata.is_dir() && coverage == crate::Coverage::Opaque {
                 match self.arm_dir(root, &path) {
                     ArmResult::Armed | ArmResult::AlreadyArmed => outcome.dirs_armed += 1,
-                    ArmResult::Refused => { outcome.dirs_refused += 1; outcome.complete = false; }
+                    ArmResult::Refused => {
+                        outcome.dirs_refused += 1;
+                        outcome.complete = false;
+                    }
                     ArmResult::Gone | ArmResult::Boundary => {}
                 }
             }
@@ -597,6 +725,7 @@ impl<S: EventSource> WatchOwner<S> {
         timeout: Option<Duration>,
         clock: &dyn crate::coalesce::Clock,
     ) -> Pumped {
+        self.pump_absorbed = 0;
         let mut pumped = Pumped::default();
         let events = match self.source.poll(timeout) {
             Ok(events) => events,
@@ -751,6 +880,8 @@ impl<S: EventSource> WatchOwner<S> {
                 pumped.mutations.push(mutation);
             }
             RawKind::Deleted => {
+                self.refused_dirs
+                    .retain(|refused, _| !refused.starts_with(&path));
                 self.membership_changed.insert(event.watch);
                 if let Some(id) = self.by_path.get(&path).copied() {
                     self.drop_watch(id);
@@ -811,21 +942,43 @@ impl<S: EventSource> WatchOwner<S> {
         policy: &RootPolicy,
         pumped: &mut Pumped,
     ) {
+        // The pump already spent its inline budget on earlier directories: skip the walk outright
+        // and let the repair carry this subtree. Same outcome as tripping the per-directory cap
+        // mid-walk, without paying for a walk whose results would be discarded.
+        if self.pump_absorbed >= PUMP_ABSORB_LIMIT {
+            pumped.repairs.push(RepairRequest {
+                root,
+                scope: ScanScope::Subtree(NativePath::from_path(path)),
+                reason: StaleReason::RenameAmbiguous,
+                mark_root_stale: false,
+            });
+            return;
+        }
         let mut entries = Vec::new();
         let mut outcome = ArmOutcome::default();
         let mut over_budget = false;
         let inline_subtree_limit = self.inline_subtree_limit;
+        let pump_already = self.pump_absorbed;
         let mut visit = |entry: ScannedEntry| -> Result<(), crate::IndexError> {
-            if entries.len() as u64 >= inline_subtree_limit {
+            if entries.len() as u64 >= inline_subtree_limit
+                || pump_already + entries.len() as u64 >= PUMP_ABSORB_LIMIT
+            {
                 over_budget = true;
                 return Err(crate::IndexError::Cancelled);
             }
             entries.push(entry);
             Ok(())
         };
-        let Some(base) = self.roots.iter().find(|tracked| tracked.id == root)
-            .map(|tracked| NativePath::from_path(&tracked.path)) else { return; };
+        let Some(base) = self
+            .roots
+            .iter()
+            .find(|tracked| tracked.id == root)
+            .map(|tracked| NativePath::from_path(&tracked.path))
+        else {
+            return;
+        };
         let armed = self.arm_recursive(root, path, policy, &base, &mut visit, &mut outcome);
+        self.pump_absorbed = self.pump_absorbed.saturating_add(entries.len() as u64);
 
         if over_budget || armed.is_err() || !outcome.complete {
             // Too big to absorb between two events, or partly unreadable. The subtree is real but
@@ -877,6 +1030,22 @@ impl<S: EventSource> WatchOwner<S> {
     /// Rewrite the watch table after a directory rename. The kernel keeps the watches — they
     /// follow the inode — but our idea of where they point is now wrong.
     fn retarget_subtree(&mut self, from: &Path, to: &Path) {
+        let refused: Vec<_> = self
+            .refused_dirs
+            .iter()
+            .filter(|(path, _)| path.starts_with(from))
+            .map(|(path, root)| (path.clone(), *root))
+            .collect();
+        for (old, root) in refused {
+            let relative = old.strip_prefix(from).unwrap();
+            let new = if relative.as_os_str().is_empty() {
+                to.to_path_buf()
+            } else {
+                to.join(relative)
+            };
+            self.refused_dirs.remove(&old);
+            self.refused_dirs.insert(new, root);
+        }
         let moved: Vec<(WatchId, PathBuf)> = self
             .dirs
             .iter()
@@ -906,6 +1075,8 @@ impl<S: EventSource> WatchOwner<S> {
     fn drop_watch(&mut self, id: WatchId) {
         if let Some(dir) = self.dirs.remove(&id) {
             self.by_path.remove(&dir.path);
+            self.refused_dirs
+                .retain(|path, _| !path.starts_with(&dir.path));
             self.armed = self.armed.saturating_sub(1);
         }
         self.source.remove_watch(id);
@@ -1083,6 +1254,11 @@ const EVENT_QUEUE_CAPACITY: usize = 4096;
 /// single turn: `poll` drained until empty, and "empty" is a state a busy tree never reaches. The
 /// remainder is not lost, only deferred — the caller never blocks while the channel has more.
 const MAX_EVENTS_PER_POLL: usize = 1024;
+
+/// Entries the watcher will enumerate inline across one pump. One new directory may take up to
+/// `inline_subtree_limit` of these; the rest of the burst becomes scheduled repairs. Without the
+/// pump-wide cap, a thousand new directories would each enumerate a thousand entries in one turn.
+const PUMP_ABSORB_LIMIT: u64 = 4_000;
 
 /// The reader's `read(2)` buffer. Large enough that an ordinary burst is one syscall.
 const READ_BUFFER_BYTES: usize = 16 * 1024;
@@ -1414,12 +1590,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn watch_diagnostics_are_per_root_and_refusal_retries_do_not_grow_required() {
+        let temp = tempfile::tempdir().unwrap();
+        let a = temp.path().join("a");
+        let b = temp.path().join("b");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let mut owner = WatchOwner::new(FakeSource::new(), WatchBudget { max_watches: 1 });
+        owner.track_root(RootId(1), &a, RootPolicy::default_home());
+        owner.track_root(RootId(2), &b, RootPolicy::default_home());
+        assert_eq!(owner.arm_directory(RootId(1), &a), ArmResult::Armed);
+        assert_eq!(owner.arm_directory(RootId(2), &b), ArmResult::Refused);
+        assert_eq!(owner.arm_directory(RootId(2), &b), ArmResult::Refused);
+        let first = owner.status_for(RootId(1), 0);
+        let second = owner.status_for(RootId(2), 0);
+        assert_eq!(
+            (
+                first.watches_required,
+                first.watches_armed,
+                first.watches_refused
+            ),
+            (Some(1), 1, 0)
+        );
+        assert_eq!(
+            (
+                second.watches_required,
+                second.watches_armed,
+                second.watches_refused
+            ),
+            (Some(1), 0, 1)
+        );
+        owner.forget_root(RootId(1));
+        assert_eq!(owner.arm_directory(RootId(2), &b), ArmResult::Armed);
+        assert_eq!(owner.status_for(RootId(2), 0).watches_refused, 0);
+        owner.forget_root(RootId(2));
+        assert_eq!(owner.status_for(RootId(2), 0).watches_required, Some(0));
+        let mut real = WatchOwner::new(
+            InotifySource::open().unwrap(),
+            WatchBudget { max_watches: 0 },
+        );
+        real.track_root(RootId(2), &b, RootPolicy::default_home());
+        assert_eq!(real.arm_directory(RootId(2), &b), ArmResult::Refused);
+        std::fs::remove_dir(&b).unwrap();
+        assert_eq!(real.arm_directory(RootId(2), &b), ArmResult::Gone);
+        assert_eq!(real.status_for(RootId(2), 0).watches_required, Some(0));
+    }
+
+    #[test]
     fn a_disappearing_directory_is_not_a_permanent_watcher_failure() {
         let temp = tempfile::tempdir().unwrap();
         let tree = temp.path().join("tree");
         std::fs::create_dir_all(&tree).unwrap();
         let root = RootId(1);
-        let mut owner = WatchOwner::new(InotifySource::open().unwrap(), WatchBudget { max_watches: 8 });
+        let mut owner = WatchOwner::new(
+            InotifySource::open().unwrap(),
+            WatchBudget { max_watches: 8 },
+        );
         owner.track_root(root, &tree, RootPolicy::default_home());
         assert_eq!(owner.arm_directory(root, &tree), ArmResult::Armed);
         let gone = tree.join("rustc-temporary");

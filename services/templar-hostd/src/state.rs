@@ -180,7 +180,8 @@ impl HostdState {
     }
 
     fn version_lock_path(&self) -> PathBuf {
-        self.apt_root.join("etc/templaros/hardware/version-lock.toml")
+        self.apt_root
+            .join("etc/templaros/hardware/version-lock.toml")
     }
 
     // -- Hardware -----------------------------------------------------------------------------
@@ -239,22 +240,34 @@ impl HostdState {
         let usage = storage::query(mount_point)?;
         let old_deployments = self.trimmable_deployments();
         let outcome = storage::enforce(
-            mount_point, self.commands.clone(), self.snapshotter.clone(),
-            &old_deployments, usage, self.engine.root_read_only(),
+            mount_point,
+            self.commands.clone(),
+            self.snapshotter.clone(),
+            &old_deployments,
+            usage,
+            self.engine.root_read_only(),
         );
         // Even a partially completed trim must not leave nonexistent account roots
         // in the registry. Filesystem inspection errors are not treated as deletion.
-        let removed: Vec<_> = old_deployments.iter()
+        let removed: Vec<_> = old_deployments
+            .iter()
             .map(|(path, _)| Ok((path, !Path::new(path).try_exists()?)))
             .collect::<std::io::Result<Vec<_>>>()?;
         let mut registry = self.deployments.lock().expect("poisoned");
         let before = registry.deployments.len();
         registry.deployments.retain(|deployment| {
-            self.engine.mounted_deployment(&deployment.subvolume).ok().is_none_or(|path| {
-                !removed.iter().any(|(removed, missing)| *missing && Path::new(removed) == path)
-            })
+            self.engine
+                .mounted_deployment(&deployment.subvolume)
+                .ok()
+                .is_none_or(|path| {
+                    !removed
+                        .iter()
+                        .any(|(removed, missing)| *missing && Path::new(removed) == path)
+                })
         });
-        if registry.deployments.len() != before { self.save_registry(&registry)?; }
+        if registry.deployments.len() != before {
+            self.save_registry(&registry)?;
+        }
         outcome
     }
 
@@ -266,7 +279,10 @@ impl HostdState {
         let booted = self.booted_deployment_id();
         let registry = self.deployments.lock().expect("poisoned");
         let mut protected: Vec<&str> = Vec::new();
-        let candidate = self.engine.candidate_deployment().map(|deployment| deployment.id);
+        let candidate = self
+            .engine
+            .candidate_deployment()
+            .map(|deployment| deployment.id);
         for id in [
             booted.as_deref(),
             registry.known_good.as_deref(),
@@ -444,7 +460,8 @@ impl HostdState {
                 .cloned()
                 .context("no known-good deployment to return to")?
         };
-        self.engine.check_boot_target(&self.engine.mounted_deployment(&known_good.subvolume)?)?;
+        self.engine
+            .check_boot_target(&self.engine.mounted_deployment(&known_good.subvolume)?)?;
         self.boot.rollback(&known_good)?;
         if let Some(txn) = self.engine.current()
             && txn.phase == Phase::Trial
@@ -503,7 +520,8 @@ impl HostdState {
         let _maintenance = self.engine.maintenance_guard();
         let registry = self.deployments.lock().expect("poisoned");
         let candidate = registry.find(id).context("unknown deployment")?;
-        self.engine.check_boot_target(&self.engine.mounted_deployment(&candidate.subvolume)?)?;
+        self.engine
+            .check_boot_target(&self.engine.mounted_deployment(&candidate.subvolume)?)?;
         self.boot.stage_candidate(candidate, tries)?;
         Ok(())
     }
@@ -514,8 +532,14 @@ impl HostdState {
     /// pairing ADR-0003 requires, plus the identities nothing else on the machine remembers.
     pub fn mark_good(&self) -> Result<()> {
         let _maintenance = self.engine.maintenance_guard();
-        if let Some(previous) = self.deployments.lock().expect("poisoned").known_good_deployment() {
-            self.engine.check_boot_target(&self.engine.mounted_deployment(&previous.subvolume)?)?;
+        if let Some(previous) = self
+            .deployments
+            .lock()
+            .expect("poisoned")
+            .known_good_deployment()
+        {
+            self.engine
+                .check_boot_target(&self.engine.mounted_deployment(&previous.subvolume)?)?;
         }
         self.boot.mark_good()?;
         if let Some(txn) = self.engine.current()
@@ -549,7 +573,8 @@ impl HostdState {
             let registry = self.deployments.lock().expect("poisoned");
             registry.find(id).cloned().context("unknown deployment")?
         };
-        self.engine.check_boot_target(&self.engine.mounted_deployment(&previous.subvolume)?)?;
+        self.engine
+            .check_boot_target(&self.engine.mounted_deployment(&previous.subvolume)?)?;
         self.boot.rollback(&previous)?;
         if let Some(txn) = self.engine.current()
             && txn.phase == Phase::Trial
@@ -613,7 +638,10 @@ mod tests {
             caller_identity: Arc::new(crate::session_report::FixedCallerIdentity::allow()),
             journal_dir: dir.join("journal"),
             source_root: dir.join("root"),
-            deployment_layout: crate::layout::DeploymentLayout::fixture(dir.join("deployments"), dir.join("esp")),
+            deployment_layout: crate::layout::DeploymentLayout::fixture(
+                dir.join("deployments"),
+                dir.join("esp"),
+            ),
             deployments_path: dir.join("deployments.json"),
             sys_root: dir.join("sys"),
             apt_root: dir.join("root"),
@@ -824,15 +852,28 @@ mod tests {
 
         write_cmdline(dir, "ro templaros.deployment=base1");
         assert_eq!(state.reconcile_boot(), BootReconciliation::NoCandidate);
-        assert_eq!(state.current_transaction().unwrap().phase, Phase::AwaitingReboot);
+        assert_eq!(
+            state.current_transaction().unwrap().phase,
+            Phase::AwaitingReboot
+        );
         drop(state);
         let state = HostdState::new(config(dir)).unwrap();
         write_cmdline(dir, &format!("ro templaros.deployment={id}"));
-        assert_eq!(state.reconcile_boot(), BootReconciliation::BootedTheCandidate { candidate: id.clone() });
+        assert_eq!(
+            state.reconcile_boot(),
+            BootReconciliation::BootedTheCandidate {
+                candidate: id.clone()
+            }
+        );
         assert_eq!(state.current_transaction().unwrap().phase, Phase::Trial);
         // Restarting hostd on the same boot must not advance the trial twice.
         let state = HostdState::new(config(dir)).unwrap();
-        assert_eq!(state.reconcile_boot(), BootReconciliation::BootedTheCandidate { candidate: id.clone() });
+        assert_eq!(
+            state.reconcile_boot(),
+            BootReconciliation::BootedTheCandidate {
+                candidate: id.clone()
+            }
+        );
         assert_eq!(state.current_transaction().unwrap().phase, Phase::Trial);
         state.mark_good().unwrap();
 
@@ -863,7 +904,12 @@ mod tests {
         let id = state.plan_update(changes()).unwrap();
         state.drive_pipeline();
         write_cmdline(dir, &format!("ro templaros.deployment={id}"));
-        assert_eq!(state.reconcile_boot(), BootReconciliation::BootedTheCandidate { candidate: id.clone() });
+        assert_eq!(
+            state.reconcile_boot(),
+            BootReconciliation::BootedTheCandidate {
+                candidate: id.clone()
+            }
+        );
         {
             let mut registry = state.deployments.lock().unwrap();
             registry.promote(state.engine.candidate_deployment().unwrap());
@@ -888,7 +934,12 @@ mod tests {
         let id = state.plan_update(changes()).unwrap();
         state.drive_pipeline();
         write_cmdline(dir, &format!("ro templaros.deployment={id}"));
-        assert_eq!(state.reconcile_boot(), BootReconciliation::BootedTheCandidate { candidate: id.clone() });
+        assert_eq!(
+            state.reconcile_boot(),
+            BootReconciliation::BootedTheCandidate {
+                candidate: id.clone()
+            }
+        );
 
         // The candidate must exist in the registry to be rolled back to; register it as this
         // deployment's own previous state would have been.
@@ -937,5 +988,4 @@ mod tests {
         state.report_session_healthy().unwrap();
         assert!(dir.join("run/templaros/session-healthy").exists());
     }
-
 }

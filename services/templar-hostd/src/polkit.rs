@@ -53,13 +53,22 @@ impl SystemPolkit {
     async fn check(&self, sender: &str, action_id: &str, flags: u32) -> Result<bool> {
         let mut details = HashMap::new();
         details.insert("name", Value::from(sender));
-        let subject = Subject { kind: "system-bus-name", details };
+        let subject = Subject {
+            kind: "system-bus-name",
+            details,
+        };
         let empty_details: HashMap<&str, &str> = HashMap::new();
-        let reply = self.connection.call_method(
-            Some("org.freedesktop.PolicyKit1"), "/org/freedesktop/PolicyKit1/Authority",
-            Some("org.freedesktop.PolicyKit1.Authority"), "CheckAuthorization",
-            &(subject, action_id, empty_details, flags, ""),
-        ).await.context("calling PolicyKit1.Authority.CheckAuthorization")?;
+        let reply = self
+            .connection
+            .call_method(
+                Some("org.freedesktop.PolicyKit1"),
+                "/org/freedesktop/PolicyKit1/Authority",
+                Some("org.freedesktop.PolicyKit1.Authority"),
+                "CheckAuthorization",
+                &(subject, action_id, empty_details, flags, ""),
+            )
+            .await
+            .context("calling PolicyKit1.Authority.CheckAuthorization")?;
         let result: AuthorizationResult = reply.body().deserialize()?;
         Ok(result.is_authorized)
     }

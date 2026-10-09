@@ -140,6 +140,34 @@ Bulk snapshots use fully sealed memfds published read-only. Native private-bus e
 policy CAS, raw-byte root/file paths, cursor mutation rejection, metadata repair, snapshot decoding,
 URI/Bash round-trips, and cache-deletion identity fencing.
 
+Index calls run on bounded Interactive, Bulk and Maintenance worker lanes. Search and paging
+use Interactive; snapshots use Bulk; large change reads and maintenance have separate admission.
+Caller limits and latest client tags cancel superseded searches; the hard-capped reader pool and
+SQLite interruption bound outstanding work. Snapshot writers stream through a 256 KiB buffer,
+enforce byte/entry/time limits and patch the header before sealing. Readers validate all four
+seals, exact length and manifest identity before borrowing entries from an immutable mmap.
+
+Acquisition gives each path to the most specific registered root. Search acceleration uses
+root-local immutable shards and bounded generation-fenced overlays; declared path/other SQL
+fallbacks remain. Current fixture p95 gains do not qualify the remaining SQL p99 tails.
+`Roots` diagnostics expose availability, main/WAL/SHM sizes, queues, readers, cursors, shards,
+overlays and server-held snapshot descriptors. Commit-triggered checkpoints do not add an idle
+polling timer. Mountinfo presence and measured UUID/fsid confidence fence offline roots;
+different-volume acceptance is an explicit fingerprint-fenced Settings action. A unique
+strong UUID/mount-root match at another mount supplies a native-byte location hint for
+offline roots. Settings offers an explicit new registration with the same policy, followed
+by fenced removal of the old registration and a full scan. Paths are never rewritten by
+discovery. [Injected-provider relocation tests](../measurements/index-volumes-2026-10-08-relocation.md)
+pass; the real mount journey and actual NTFS unplug/return remain unqualified.
+
+The TemplarOS FSearch build consumes this index without a local scanner, watcher or `fsearch.db`.
+Silvaview's optional Linux service mode consumes summary-first snapshots, labels indexed logical
+size and freshness, and expands native subtrees on demand. Missing normal directory aggregates
+remain partial. Service failure or stale frames never silently start a direct scan. The actual
+private FSearch GTK and software nested Silvaview observations are retained in
+[WP14](../measurements/index-fsearch-2026-10-08-wp14.md) and
+[WP15](../measurements/index-silvaview-2026-10-08-wp15.md); installed sharing remains open.
+
 Warm daemon startup publishes the previous committed namespace before its asynchronous downtime
 repair finishes; restarting a consumer never synchronously walks a root. Overflow and downtime
 repair must enumerate membership rather than trust a directory's cached mtime/ctime: watcher
@@ -275,8 +303,12 @@ distribution from outside:
 - **Recents**: not integrated. pcmanfm-qt writes `recently-used.xbel`; `Files.Recents1` keeps its
   own answer in the state store and does not read xbel. Deferred, not planned: the two answer
   different questions ("what did I open" against "where was I last working").
-- **Search**: cannot integrate. pcmanfm-qt's Find is its own, and there is no route by which it
-  could ask `Files.Search1`. Home's search and FSearch remain the indexed answer.
+- **Search**: PCManFM-Qt Find remains its own. The TemplarOS FSearch fork uses `Files.Index1`;
+  its upstream build still has a separate database. The current shell routes ordinary folders
+  to PCManFM and retains the FSearch provider intent; its older native Files search notice is
+  not an ordinary exposed route. On 2026-10-08 the owner deferred the WP14 same-query notice comparison and WP16 fork
+  adoption in favor of a future own integrated Index1 GUI with a large FSearch-style window.
+  The working fork remains a qualified prototype. PCManFM Find is separate.
 
 Native Ubuntu 26.04 observation on 2026-10-06 used actual PCManFM-Qt on an owned X11 display
 and private bus. Its `FileManager1` owner PID matched the launched process; `ShowItems`

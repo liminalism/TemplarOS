@@ -1,0 +1,171 @@
+{
+  "label": "after-wp11",
+  "seconds": 30,
+  "fixture_entries": 5000,
+  "watcher_thread_found": true,
+  "mount_thread_found": true,
+  "psi_thread_found": true,
+  "psi_schedstat_pcount_delta": 0,
+  "psi_voluntary_ctxt_switches_delta": 0,
+  "mount_schedstat_pcount_delta": 0,
+  "mount_voluntary_ctxt_switches_delta": 0,
+  "schedstat_pcount_delta": 0,
+  "voluntary_ctxt_switches_delta": 0,
+  "read_bytes_delta": 0,
+  "syscw_delta": 0,
+  "wchar_delta": 0,
+  "binary": "/home/dk/rust-projects/LegeOS/target/native/ubuntu-26.04/release/templar-filed",
+  "filed_pid": 636086,
+  "bus_pid": 636085,
+  "roots_before": {
+    "roots": [
+      {
+        "root": 1,
+        "path_b64": "L3RtcC8udG1wb1lJZGdpL2hvbWU=",
+        "display": "/tmp/.tmpoYIdgi/home",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 2,
+        "complete": true,
+        "entry_count": 5001,
+        "policy_hash": "6ffb614dd1581176",
+        "last_scan_ms": 1791473612798,
+        "last_reconcile_started_ms": 1791473612757,
+        "last_reconcile_finished_ms": 1791473612798,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 1001,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": null,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        },
+        "volume": {
+          "dev_id": 38,
+          "uuid": null,
+          "label": null,
+          "fs_type": "tmpfs",
+          "fs_uuid": null,
+          "fsid": "Fsid { val: [-421138577, -631586012] }",
+          "mount_point": {
+            "bytes_b64": "L3RtcA==",
+            "display": "/tmp"
+          },
+          "mount_root": {
+            "bytes_b64": "Lw==",
+            "display": "/"
+          },
+          "mount_id": 32,
+          "confidence": "weak"
+        },
+        "offline_reason": null,
+        "offline_since_ms": null,
+        "observed_fingerprint": null,
+        "nested_in": null,
+        "contains": []
+      }
+    ],
+    "diagnostics": {
+      "schema_version": 8,
+      "generation": 2,
+      "planner": "fts5-trigram",
+      "fts_available": true,
+      "change_seq_floor": 0,
+      "change_seq_head": 1,
+      "cursor_count": 0,
+      "availability": {
+        "state": "available",
+        "reason": null,
+        "since_ms": null
+      },
+      "storage": {
+        "main_bytes": 3014656,
+        "wal_bytes": 4494952,
+        "shm_bytes": 32768
+      }
+    },
+    "cache_identity": "da093ce90e48c317e1993b46dcb22e92"
+  },
+  "roots_after": {
+    "roots": [
+      {
+        "root": 1,
+        "path_b64": "L3RtcC8udG1wb1lJZGdpL2hvbWU=",
+        "display": "/tmp/.tmpoYIdgi/home",
+        "state": "current",
+        "reason": null,
+        "metadata": "verified",
+        "generation": 2,
+        "complete": true,
+        "entry_count": 5001,
+        "policy_hash": "6ffb614dd1581176",
+        "last_scan_ms": 1791473612798,
+        "last_reconcile_started_ms": 1791473612757,
+        "last_reconcile_finished_ms": 1791473612798,
+        "last_error": null,
+        "watch": {
+          "backend": "inotify",
+          "watches_armed": 1001,
+          "watches_refused": 0,
+          "watch_limit": 257001,
+          "queue_limit": 16384,
+          "last_event_ms": null,
+          "last_overflow_ms": null,
+          "overflow_count": 0,
+          "pending_events": 0,
+          "last_error": null
+        },
+        "volume": {
+          "dev_id": 38,
+          "uuid": null,
+          "label": null,
+          "fs_type": "tmpfs",
+          "fs_uuid": null,
+          "fsid": "Fsid { val: [-421138577, -631586012] }",
+          "mount_point": {
+            "bytes_b64": "L3RtcA==",
+            "display": "/tmp"
+          },
+          "mount_root": {
+            "bytes_b64": "Lw==",
+            "display": "/"
+          },
+          "mount_id": 32,
+          "confidence": "weak"
+        },
+        "offline_reason": null,
+        "offline_since_ms": null,
+        "observed_fingerprint": null,
+        "nested_in": null,
+        "contains": []
+      }
+    ],
+    "diagnostics": {
+      "schema_version": 8,
+      "generation": 2,
+      "planner": "fts5-trigram",
+      "fts_available": true,
+      "change_seq_floor": 0,
+      "change_seq_head": 1,
+      "cursor_count": 0,
+      "availability": {
+        "state": "available",
+        "reason": null,
+        "since_ms": null
+      },
+      "storage": {
+        "main_bytes": 3014656,
+        "wal_bytes": 4494952,
+        "shm_bytes": 32768
+      }
+    },
+    "cache_identity": "da093ce90e48c317e1993b46dcb22e92"
+  },
+  "owned_children_reaped": true
+}

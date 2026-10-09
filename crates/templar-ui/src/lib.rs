@@ -36,16 +36,32 @@ pub struct AppearanceState {
     revision: u64,
 }
 impl AppearanceState {
-    pub fn new(appearance: Appearance) -> Self { Self { appearance, revision: 0 } }
+    pub fn new(appearance: Appearance) -> Self {
+        Self {
+            appearance,
+            revision: 0,
+        }
+    }
     pub fn update(&mut self, appearance: Appearance) -> bool {
-        if self.appearance == appearance { return false; }
+        if self.appearance == appearance {
+            return false;
+        }
         self.appearance = appearance;
-        self.revision = self.revision.checked_add(1).expect("appearance revision exhausted");
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("appearance revision exhausted");
         true
     }
-    pub fn appearance(&self) -> Appearance { self.appearance }
-    pub fn theme(&self) -> Theme { theme_for(&self.appearance.palette) }
-    pub fn revision(&self) -> u64 { self.revision }
+    pub fn appearance(&self) -> Appearance {
+        self.appearance
+    }
+    pub fn theme(&self) -> Theme {
+        theme_for(&self.appearance.palette)
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
 }
 
 #[cfg(test)]

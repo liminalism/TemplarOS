@@ -19,15 +19,21 @@ fn render_after(label: &str, after: Option<std::time::Duration>) -> String {
     }
 }
 fn lid_action(action: LidAction) -> &'static str {
-    match action { LidAction::Ignore => "ignore", LidAction::Lock => "lock",
-        LidAction::Suspend => "suspend", LidAction::Hibernate => "hibernate" }
+    match action {
+        LidAction::Ignore => "ignore",
+        LidAction::Lock => "lock",
+        LidAction::Suspend => "suspend",
+        LidAction::Hibernate => "hibernate",
+    }
 }
 
 fn panel_policy(policy: PanelPolicy) -> &'static str {
-    match policy { PanelPolicy::Keep => "keep", PanelPolicy::ExternalOnly => "external-only",
-        PanelPolicy::AllowHeadless => "allow-headless" }
+    match policy {
+        PanelPolicy::Keep => "keep",
+        PanelPolicy::ExternalOnly => "external-only",
+        PanelPolicy::AllowHeadless => "allow-headless",
+    }
 }
-
 
 pub fn render_profile(source: &str, profile: &PowerProfile) -> String {
     format!(
@@ -42,4 +48,3 @@ pub fn render_profile(source: &str, profile: &PowerProfile) -> String {
         panel_policy(profile.lid_panel_docked),
     )
 }
-

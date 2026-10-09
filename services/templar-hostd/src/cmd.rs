@@ -54,11 +54,19 @@ impl RealCommandRunner {
             if let Some(status) = child.try_wait().context("polling child status")? {
                 let output = Output {
                     status,
-                    stdout: stdout.join().map_err(|_| anyhow::anyhow!("stdout reader panicked"))??,
-                    stderr: stderr.join().map_err(|_| anyhow::anyhow!("stderr reader panicked"))??,
+                    stdout: stdout
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("stdout reader panicked"))??,
+                    stderr: stderr
+                        .join()
+                        .map_err(|_| anyhow::anyhow!("stderr reader panicked"))??,
                 };
                 if !output.status.success() {
-                    anyhow::bail!("{program} exited {status}: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+                    anyhow::bail!(
+                        "{program} exited {status}: {}{}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
                 }
                 return Ok(output);
             }
@@ -127,7 +135,12 @@ impl FakeCommandRunner {
 
 #[cfg(test)]
 impl CommandRunner for FakeCommandRunner {
-    fn run_with_stdin(&self, program: &str, args: &[&str], _input: std::fs::File) -> Result<Output> {
+    fn run_with_stdin(
+        &self,
+        program: &str,
+        args: &[&str],
+        _input: std::fs::File,
+    ) -> Result<Output> {
         self.run(program, args)
     }
     fn run(&self, program: &str, args: &[&str]) -> Result<Output> {

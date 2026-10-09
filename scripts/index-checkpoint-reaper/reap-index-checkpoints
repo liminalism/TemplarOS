@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""Reap orphaned file-index checkpoints through the existing hostd D-Bus API.
+
+TEMPORARY mitigation for checkpoints filling the disk at /.snapshots/index/.
+templar-filed plants one read-only @home snapshot per downtime catch-up and
+discards it on the way out (services/templar-filed/src/delta_catchup.rs); a
+crash between plant and discard/retire orphans the snapshot, and nothing
+reaps orphans today. This script lists checkpoints over
+org.templaros.Host.IndexCheckpoint1 (unauthenticated read) and discards only
+checkpoints that are provably unreachable garbage. It changes no shipped
+service and needs no rebuild: Discard is polkit-gated by
+org.templaros.host.index-checkpoint with allow_active=yes, so it works
+unattended from the user's own session.
+
+A checkpoint is discarded ONLY if ALL of these hold:
+
+  1. its id matches hostd's is_safe_id grammar (defense in depth; hostd
+     checks again before touching the filesystem);
+  2. its id is NOT named as `checkpoint` by any known filed baseline file
+     (the live-baseline pointer beside the session state db, plus any extra
+     --baseline path);
+  3. its created_ms is known (> 0) AND older than --min-age-min (default 60).
+     filed's only other references to a checkpoint id are in-memory
+     candidates held for seconds during a catch-up; the age grace keeps the
+     reaper from ever racing one.
+
+Fail-closed: a present-but-unreadable baseline file aborts the run, a
+malformed List reply aborts the run, and a Discard failure stops the run.
+Dry-run unless --apply is given. Discarding a checkpoint can never corrupt
+the index: filed treats a missing baseline as "reconcile instead", its
+designed fallback for every delta doubt.
+
+Testing hook: TEMPLAR_REAPER_FAKE_LIST_JSON replaces the bus List reply with
+the given JSON. It is refused together with --apply, so it can only ever
+drive a dry run.
+"""
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+BUS_NAME = "org.templaros.Host"
+BUS_PATH = "/org/templaros/Host"
+BUS_IFACE = "org.templaros.Host.IndexCheckpoint1"
+
+# Mirrors index_checkpoint::is_safe_id: one segment, leading alnum, <= 64 chars.
+SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+
+# Deleting a snapshot that pins tens of GB can take minutes; List pays one
+# `btrfs filesystem du` per checkpoint. Both comfortably below these.
+BUS_TIMEOUT_SECS = "300"
+
+
+def default_baseline_path():
+    """Where filed remembers its live checkpoint id.
+
+    Mirrors templar_state::default_path() plus main.rs's with_file_name:
+    $XDG_STATE_HOME/templaros/delta-checkpoint.json, defaulting to
+    ~/.local/state/templaros/delta-checkpoint.json.
+    """
+    state_home = os.environ.get("XDG_STATE_HOME")
+    if not state_home:
+        home = os.environ.get("HOME", "/var/tmp")
+        state_home = os.path.join(home, ".local", "state")
+    return os.path.join(state_home, "templaros", "delta-checkpoint.json")
+
+
+def load_live_ids(paths):
+    """Checkpoint ids currently referenced as baselines.
+
+    A missing file means "no baseline seeded", which is normal. A present
+    file that cannot be read or parsed aborts the caller: without it we
+    cannot tell a live baseline from an orphan.
+    """
+    live = set()
+    for path in paths:
+        try:
+            with open(path, "rb") as handle:
+                raw = handle.read()
+        except FileNotFoundError:
+            continue
+        try:
+            baselines = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise SystemExit(f"error: cannot parse baseline file {path}: {error}")
+        if not isinstance(baselines, dict):
+            raise SystemExit(
+                f"error: baseline file {path} is not a root->baseline map; aborting"
+            )
+        for root, baseline in baselines.items():
+            if not isinstance(baseline, dict) or not isinstance(
+                baseline.get("checkpoint"), str
+            ):
+                raise SystemExit(
+                    f"error: baseline file {path} has an unexpected shape at "
+                    f"root {root!r}; aborting rather than guessing"
+                )
+            live.add(baseline["checkpoint"])
+    return live
+
+
+def pending_markers_beside(path):
+    """Sibling delta-checkpoint.root-<N>.pending files, if any."""
+    directory = os.path.dirname(path)
+    base = os.path.basename(path)
+    stem = base.split(".")[0] + "."
+    try:
+        names = os.listdir(directory or ".")
+    except OSError:
+        return []
+    return sorted(
+        os.path.join(directory, name)
+        for name in names
+        if name.startswith(stem) and name.endswith(".pending")
+    )
+
+
+def bus_list():
+    """Every retained checkpoint, via the unauthenticated List method."""
+    fake = os.environ.get("TEMPLAR_REAPER_FAKE_LIST_JSON")
+    if fake is not None:
+        outer = {"data": [fake]}
+    else:
+        try:
+            completed = subprocess.run(
+                [
+                    "busctl",
+                    "--json=short",
+                    "--timeout=" + BUS_TIMEOUT_SECS,
+                    "--system",
+                    "call",
+                    BUS_NAME,
+                    BUS_PATH,
+                    BUS_IFACE,
+                    "List",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        except FileNotFoundError:
+            raise SystemExit("error: busctl is not installed")
+        if completed.returncode != 0:
+            raise SystemExit(
+                "error: List call failed: "
+                + completed.stderr.decode("utf-8", "replace").strip()
+            )
+        try:
+            outer = json.loads(completed.stdout.decode("utf-8"))
+        except ValueError as error:
+            raise SystemExit(f"error: cannot parse busctl List reply: {error}")
+    try:
+        checkpoints = json.loads(outer["data"][0])
+    except (KeyError, IndexError, TypeError, ValueError) as error:
+        raise SystemExit(f"error: List reply has an unexpected shape: {error}")
+    if not isinstance(checkpoints, list):
+        raise SystemExit("error: List reply is not a JSON array; aborting")
+    for checkpoint in checkpoints:
+        if not isinstance(checkpoint, dict) or not isinstance(
+            checkpoint.get("id"), str
+        ):
+            raise SystemExit(
+                f"error: List entry {checkpoint!r} has no string id; aborting"
+            )
+    return checkpoints
+
+
+def bus_discard(checkpoint_id):
+    """Discard one checkpoint. Returns True when it is gone (or was already)."""
+    completed = subprocess.run(
+        [
+            "busctl",
+            "--timeout=" + BUS_TIMEOUT_SECS,
+            "--system",
+            "call",
+            BUS_NAME,
+            BUS_PATH,
+            BUS_IFACE,
+            "Discard",
+            "s",
+            checkpoint_id,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode == 0:
+        return True
+    stderr = completed.stderr.decode("utf-8", "replace")
+    if "no checkpoint" in stderr:
+        # Raced filed's own retire, or a previous run: the end state is what
+        # we wanted, so this one is benign.
+        print(f"  {checkpoint_id}: already gone ({stderr.strip()})")
+        return True
+    print(f"  {checkpoint_id}: DISCARD FAILED: {stderr.strip()}", file=sys.stderr)
+    return False
+
+
+def human_bytes(value):
+    if value is None:
+        return "unknown"
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    size = float(value)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{value} B"
+
+
+def take_lock():
+    """Best-effort inter-run lock. Contention skips quietly; failure warns."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    candidates = []
+    if runtime:
+        candidates.append(os.path.join(runtime, "templar-reap-index-checkpoints.lock"))
+    home = os.environ.get("HOME", "")
+    if home:
+        candidates.append(
+            os.path.join(home, ".cache", "templar-reap-index-checkpoints.lock")
+        )
+    for path in candidates:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            handle = open(path, "w")
+        except OSError:
+            continue
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            print("another reaper run holds the lock; skipping")
+            raise SystemExit(0)
+        except OSError:
+            handle.close()
+            continue
+        return handle
+    print("warning: no lock file available; proceeding unlocked", file=sys.stderr)
+    return None
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Discard orphaned file-index checkpoints (temporary mitigation)."
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="actually call Discard; without it, only report what would go",
+    )
+    parser.add_argument(
+        "--min-age-min",
+        type=int,
+        default=60,
+        help="only discard checkpoints at least this old (default: 60)",
+    )
+    parser.add_argument(
+        "--max-discards",
+        type=int,
+        default=16,
+        help="discard at most this many per run, oldest first (default: 16)",
+    )
+    parser.add_argument(
+        "--baseline",
+        action="append",
+        default=[],
+        help="extra filed baseline file to treat as live (repeatable)",
+    )
+    args = parser.parse_args(argv)
+
+    if args.min_age_min < 0 or args.max_discards < 1:
+        raise SystemExit("error: --min-age-min and --max-discards must be positive")
+    if args.apply and os.environ.get("TEMPLAR_REAPER_FAKE_LIST_JSON") is not None:
+        raise SystemExit("error: refusing --apply with a faked List reply")
+
+    baseline_paths = [default_baseline_path()] + args.baseline
+    extra = os.environ.get("TEMPLAR_REAPER_BASELINES", "")
+    baseline_paths.extend(path for path in extra.split(":") if path)
+
+    take_lock()
+    live = load_live_ids(baseline_paths)
+    for path in baseline_paths:
+        for marker in pending_markers_beside(path):
+            print(
+                f"warning: pending catch-up marker {marker} exists; "
+                "live baselines and the age grace still apply"
+            )
+
+    checkpoints = bus_list()
+    now_ms = int(time.time() * 1000)
+    print(f"checkpoints retained: {len(checkpoints)}; live baselines: {len(live)}")
+
+    orphans = []
+    for checkpoint in checkpoints:
+        checkpoint_id = checkpoint["id"]
+        created_ms = checkpoint.get("created_ms") or 0
+        age_min = (now_ms - created_ms) / 60000 if created_ms > 0 else None
+        exclusive = checkpoint.get("exclusive_bytes")
+        if checkpoint_id in live:
+            print(f"  KEEP {checkpoint_id}: live baseline")
+        elif not SAFE_ID.match(checkpoint_id):
+            print(f"  KEEP {checkpoint_id}: fails the safe-id grammar")
+        elif age_min is None:
+            print(f"  KEEP {checkpoint_id}: unknown age (created_ms={created_ms})")
+        elif age_min < args.min_age_min:
+            print(f"  KEEP {checkpoint_id}: age {age_min:.1f} min < {args.min_age_min}")
+        else:
+            print(
+                f"  ORPHAN {checkpoint_id}: age {age_min:.0f} min, "
+                f"exclusive {human_bytes(exclusive)}"
+            )
+            orphans.append(checkpoint)
+    orphans.sort(key=lambda entry: entry.get("created_ms") or 0)
+
+    if not orphans:
+        print("nothing to discard")
+        return 0
+
+    selected = orphans[: args.max_discards]
+    if not args.apply:
+        print(f"would discard {len(selected)} checkpoint(s) (dry-run; pass --apply)")
+        if len(orphans) > len(selected):
+            print(f"{len(orphans) - len(selected)} further orphan(s) beyond --max-discards")
+        return 0
+
+    failures = 0
+    for checkpoint in selected:
+        if bus_discard(checkpoint["id"]):
+            print(f"  {checkpoint['id']}: discarded")
+        else:
+            failures += 1
+            break
+    remaining = len(orphans) - len(selected)
+    if remaining > 0:
+        print(f"{remaining} further orphan(s) remain for the next run")
+    if failures:
+        raise SystemExit("error: a Discard failed; stopping")
+    print(f"discarded {len(selected)} checkpoint(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

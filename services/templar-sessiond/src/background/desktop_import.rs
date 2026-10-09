@@ -86,7 +86,10 @@ fn application_dirs_from(
 }
 
 fn is_desktop_import(manifest: &templar_types::AppManifest) -> bool {
-    manifest.provenance.as_ref().and_then(|provenance| provenance.source_path.as_ref())
+    manifest
+        .provenance
+        .as_ref()
+        .and_then(|provenance| provenance.source_path.as_ref())
         .is_some_and(|path| path.extension() == Some(std::ffi::OsStr::new("desktop")))
 }
 
@@ -122,10 +125,15 @@ pub fn import(
         let read_dir = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error).with_context(|| format!("reading application directory {}", dir.display())),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("reading application directory {}", dir.display()));
+            }
         };
         for entry in read_dir {
-            let entry = entry.with_context(|| format!("reading application directory entry in {}", dir.display()))?;
+            let entry = entry.with_context(|| {
+                format!("reading application directory entry in {}", dir.display())
+            })?;
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) != Some("desktop") {
                 continue;
@@ -150,21 +158,40 @@ pub fn import(
             prepared.push(candidate);
         }
     }
-    let surviving: BTreeSet<_> = prepared.iter().map(|candidate| &candidate.manifest.id).collect();
-    let removed: Vec<_> = installed.iter()
-        .filter(|manifest| is_desktop_import(manifest) && !surviving.contains(&manifest.id)
-            && manifest.provenance.as_ref().and_then(|provenance| provenance.source_path.as_ref())
-                .is_some_and(|path| dirs.iter().any(|root| path.starts_with(root))))
-        .map(|manifest| &manifest.id).collect();
+    let surviving: BTreeSet<_> = prepared
+        .iter()
+        .map(|candidate| &candidate.manifest.id)
+        .collect();
+    let removed: Vec<_> = installed
+        .iter()
+        .filter(|manifest| {
+            is_desktop_import(manifest)
+                && !surviving.contains(&manifest.id)
+                && manifest
+                    .provenance
+                    .as_ref()
+                    .and_then(|provenance| provenance.source_path.as_ref())
+                    .is_some_and(|path| dirs.iter().any(|root| path.starts_with(root)))
+        })
+        .map(|manifest| &manifest.id)
+        .collect();
     drop(surviving);
-    store.transaction(|tx| {
-        for candidate in &mut prepared { persist_import(tx, candidate)?; }
-        for id in &removed { providers::undeclare_within(tx, id)?; }
-        Ok(())
-    }).context("committing desktop-copy reconciliation")?;
+    store
+        .transaction(|tx| {
+            for candidate in &mut prepared {
+                persist_import(tx, candidate)?;
+            }
+            for id in &removed {
+                providers::undeclare_within(tx, id)?;
+            }
+            Ok(())
+        })
+        .context("committing desktop-copy reconciliation")?;
     let changed = prepared.len() + removed.len();
     registry.update_manifests(
-        prepared.into_iter().map(|candidate| (candidate.manifest, candidate.exec, candidate.path)),
+        prepared
+            .into_iter()
+            .map(|candidate| (candidate.manifest, candidate.exec, candidate.path)),
         removed,
     );
     Ok(changed)
@@ -187,19 +214,41 @@ fn prepare_import(
     let metadata = match std::fs::metadata(&source.path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).with_context(|| format!("reading desktop metadata {}", source.path.display())),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("reading desktop metadata {}", source.path.display()));
+        }
     };
-    if !metadata.is_file() { return Ok(None); }
-    let mtime_ms = metadata.modified().ok()
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    let mtime_ms = metadata
+        .modified()
+        .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |duration| duration.as_millis() as i64);
     let text = match std::fs::read_to_string(&source.path) {
         Ok(text) => text,
-        Err(error) if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData) => return Ok(None),
-        Err(error) => return Err(error).with_context(|| format!("reading desktop entry {}", source.path.display())),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData
+            ) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("reading desktop entry {}", source.path.display()));
+        }
     };
-    let Some(entry) = desktop_entry::parse(&text) else { return Ok(None); };
-    let Some(derived) = desktop_entry::derive_manifest(&entry, &desktop_id, &source, resolver) else { return Ok(None); };
+    let Some(entry) = desktop_entry::parse(&text) else {
+        return Ok(None);
+    };
+    let Some(derived) = desktop_entry::derive_manifest(&entry, &desktop_id, &source, resolver)
+    else {
+        return Ok(None);
+    };
     Ok(Some(PreparedImport {
         desktop_id,
         path: source.path,
@@ -211,7 +260,12 @@ fn prepare_import(
 
 fn persist_import(tx: &rusqlite::Transaction<'_>, candidate: &mut PreparedImport) -> Result<()> {
     let manifest = &mut candidate.manifest;
-    let origin = manifest.provenance.as_ref().map_or(templar_types::AppOriginKind::Unknown, |provenance| provenance.origin);
+    let origin = manifest
+        .provenance
+        .as_ref()
+        .map_or(templar_types::AppOriginKind::Unknown, |provenance| {
+            provenance.origin
+        });
     if let Some(first_seen) = appd_store::variant_first_seen_within(tx, &manifest.id)?
         && let Some(provenance) = manifest.provenance.as_mut()
     {
@@ -221,7 +275,12 @@ fn persist_import(tx: &rusqlite::Transaction<'_>, candidate: &mut PreparedImport
     if origin == templar_types::AppOriginKind::Flatpak {
         let previous = desktop_entry::derive_app_id(&candidate.desktop_id);
         if previous != manifest.id {
-            appd_store::save_variant_alias_within(tx, &previous, &manifest.id, "flatpak-export-renamed")?;
+            appd_store::save_variant_alias_within(
+                tx,
+                &previous,
+                &manifest.id,
+                "flatpak-export-renamed",
+            )?;
         }
     }
     if appd_store::variant_trust_within(tx, &manifest.id)? == Some(TrustTier::System)
@@ -230,8 +289,19 @@ fn persist_import(tx: &rusqlite::Transaction<'_>, candidate: &mut PreparedImport
         invalidate_shadowed_grants(tx, &manifest.id, &manifest.display_name)?;
     }
     appd_store::record_desktop_import_within(
-        tx, &candidate.desktop_id, &candidate.path, candidate.mtime_ms, &manifest.id, origin,
-    ).with_context(|| format!("recording desktop_import bookkeeping for {}", candidate.desktop_id))
+        tx,
+        &candidate.desktop_id,
+        &candidate.path,
+        candidate.mtime_ms,
+        &manifest.id,
+        origin,
+    )
+    .with_context(|| {
+        format!(
+            "recording desktop_import bookkeeping for {}",
+            candidate.desktop_id
+        )
+    })
 }
 
 /// Drop the rights a variant earned while the system owned it, now that it does not.
@@ -240,27 +310,31 @@ fn persist_import(tx: &rusqlite::Transaction<'_>, candidate: &mut PreparedImport
 /// the file underneath it being replaced. Trust does not: a copy that used to come from a package
 /// and now comes from a file this account can rewrite is, for these purposes, a different
 /// application wearing the same name.
-fn invalidate_shadowed_grants(tx: &rusqlite::Transaction<'_>, variant: &AppId, display_name: &str) -> Result<()> {
+fn invalidate_shadowed_grants(
+    tx: &rusqlite::Transaction<'_>,
+    variant: &AppId,
+    display_name: &str,
+) -> Result<()> {
     providers::undeclare_within(tx, variant)?;
     autostart::set_approval_within(tx, variant, autostart::Approval::Undecided)?;
     history::append_within(
-            tx,
-            &Event {
-                id: EventId::new(),
-                at_ms: templar_state::now_ms(),
-                kind: EventKind::ProviderChange,
-                app_id: Some(variant.clone()),
-                instance_id: None,
-                message: format!(
-                    "{display_name} is now provided by a file in your own account rather than by \
+        tx,
+        &Event {
+            id: EventId::new(),
+            at_ms: templar_state::now_ms(),
+            kind: EventKind::ProviderChange,
+            app_id: Some(variant.clone()),
+            instance_id: None,
+            message: format!(
+                "{display_name} is now provided by a file in your own account rather than by \
                      an installed package. Its system roles and its permission to start at login \
                      were withdrawn; you can grant them again if you meant to replace it."
-                ),
-                cause: Some("provenance-moved-to-user".into()),
-                actions: Vec::new(),
-                reversible: false,
-            },
-        )
+            ),
+            cause: Some("provenance-moved-to-user".into()),
+            actions: Vec::new(),
+            reversible: false,
+        },
+    )
     .map(|_| ())
 }
 
@@ -306,27 +380,50 @@ mod tests {
         std::fs::create_dir(&apps).unwrap();
         std::fs::create_dir(&autostart).unwrap();
         for (root, name) in [(&apps, "app"), (&autostart, "login")] {
-            write_desktop_file(root, &format!("{name}.desktop"),
-                &format!("[Desktop Entry]\nType=Application\nName={name}\nExec=viewer --{name}\n"));
+            write_desktop_file(
+                root,
+                &format!("{name}.desktop"),
+                &format!("[Desktop Entry]\nType=Application\nName={name}\nExec=viewer --{name}\n"),
+            );
         }
         let store = Store::in_memory().unwrap();
         let registry = Registry::default();
         let resolver = StaticResolver(HashMap::from([("viewer", "/usr/bin/viewer")]));
-        import(&registry, &store, &[apps.clone(), autostart.clone()], &resolver).unwrap();
+        import(
+            &registry,
+            &store,
+            &[apps.clone(), autostart.clone()],
+            &resolver,
+        )
+        .unwrap();
         let app: AppId = "desktop-import.app.desktop".parse().unwrap();
         let login: AppId = "desktop-import.login.desktop".parse().unwrap();
         let role = templar_types::ProviderRole::NetworkStatusUi;
-        store.transaction(|tx| {
-            providers::declare_within(tx, &login, &templar_types::ProviderCapability { role, priority: 30 })?;
-            providers::apply_selection_within(tx, role, Some(&login), "autostart-owner-fixture")?;
-            Ok(())
-        }).unwrap();
+        store
+            .transaction(|tx| {
+                providers::declare_within(
+                    tx,
+                    &login,
+                    &templar_types::ProviderCapability { role, priority: 30 },
+                )?;
+                providers::apply_selection_within(
+                    tx,
+                    role,
+                    Some(&login),
+                    "autostart-owner-fixture",
+                )?;
+                Ok(())
+            })
+            .unwrap();
         let original = registry.launch_template(&login).unwrap();
         std::fs::remove_file(apps.join("app.desktop")).unwrap();
         let unreadable = apps.join("loop.desktop");
         symlink("loop.desktop", &unreadable).unwrap();
         assert!(import(&registry, &store, &[apps.clone()], &resolver).is_err());
-        assert!(registry.manifest(&app).is_some(), "I/O failure must not publish deletion");
+        assert!(
+            registry.manifest(&app).is_some(),
+            "I/O failure must not publish deletion"
+        );
         assert!(registry.launch_template(&app).is_some());
         std::fs::remove_file(unreadable).unwrap();
         import(&registry, &store, &[apps], &resolver).unwrap();
@@ -353,39 +450,76 @@ mod tests {
         import(&registry, &store, &dirs, &resolver).unwrap();
         let selected: AppId = "desktop-import.a.desktop".parse().unwrap();
         let role = templar_types::ProviderRole::NetworkStatusUi;
-        store.transaction(|tx| {
-            providers::declare_within(tx, &selected, &templar_types::ProviderCapability { role, priority: 30 })?;
-            providers::apply_selection_within(tx, role, Some(&selected), "native-catalogue-fixture")?;
-            Ok(())
-        }).unwrap();
-        store.lock().execute_batch(
-            "CREATE TEMP TRIGGER refuse_second_copy BEFORE INSERT ON desktop_import
+        store
+            .transaction(|tx| {
+                providers::declare_within(
+                    tx,
+                    &selected,
+                    &templar_types::ProviderCapability { role, priority: 30 },
+                )?;
+                providers::apply_selection_within(
+                    tx,
+                    role,
+                    Some(&selected),
+                    "native-catalogue-fixture",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        store
+            .lock()
+            .execute_batch(
+                "CREATE TEMP TRIGGER refuse_second_copy BEFORE INSERT ON desktop_import
              WHEN NEW.desktop_id='b.desktop' BEGIN SELECT RAISE(ABORT,'second-copy fault'); END;",
-        ).unwrap();
+            )
+            .unwrap();
         for name in ["a", "b"] {
             std::fs::write(directory.path().join(format!("{name}.desktop")),
                 format!("[Desktop Entry]\nType=Application\nName=After-{name}\nExec=/usr/bin/false --after %u\nMimeType=text/plain;\n")).unwrap();
         }
         assert!(import(&registry, &store, &dirs, &resolver).is_err());
         for name in ["a", "b"] {
-            let manifest = registry.manifest(&format!("desktop-import.{name}.desktop").parse().unwrap()).unwrap();
+            let manifest = registry
+                .manifest(&format!("desktop-import.{name}.desktop").parse().unwrap())
+                .unwrap();
             assert_eq!(manifest.display_name, format!("Before-{name}"));
             assert_eq!(manifest.executable, std::path::Path::new("/usr/bin/true"));
-            assert!(manifest.supports_mime("application/pdf") && !manifest.supports_mime("text/plain"));
+            assert!(
+                manifest.supports_mime("application/pdf") && !manifest.supports_mime("text/plain")
+            );
             let launch = registry.launch_template(&manifest.id).unwrap();
-            assert_eq!(launch.exec, ExecTemplate::parse("/usr/bin/true --before %F"));
-            assert_eq!(launch.desktop_file_path, directory.path().join(format!("{name}.desktop")));
+            assert_eq!(
+                launch.exec,
+                ExecTemplate::parse("/usr/bin/true --before %F")
+            );
+            assert_eq!(
+                launch.desktop_file_path,
+                directory.path().join(format!("{name}.desktop"))
+            );
         }
-        store.lock().execute_batch("DROP TRIGGER refuse_second_copy").unwrap();
+        store
+            .lock()
+            .execute_batch("DROP TRIGGER refuse_second_copy")
+            .unwrap();
         import(&registry, &store, &dirs, &resolver).unwrap();
         for name in ["a", "b"] {
-            let manifest = registry.manifest(&format!("desktop-import.{name}.desktop").parse().unwrap()).unwrap();
+            let manifest = registry
+                .manifest(&format!("desktop-import.{name}.desktop").parse().unwrap())
+                .unwrap();
             assert_eq!(manifest.display_name, format!("After-{name}"));
             assert_eq!(manifest.executable, std::path::Path::new("/usr/bin/false"));
-            assert!(manifest.supports_mime("text/plain") && !manifest.supports_mime("application/pdf"));
+            assert!(
+                manifest.supports_mime("text/plain") && !manifest.supports_mime("application/pdf")
+            );
             let launch = registry.launch_template(&manifest.id).unwrap();
-            assert_eq!(launch.exec, ExecTemplate::parse("/usr/bin/false --after %u"));
-            assert_eq!(launch.desktop_file_path, directory.path().join(format!("{name}.desktop")));
+            assert_eq!(
+                launch.exec,
+                ExecTemplate::parse("/usr/bin/false --after %u")
+            );
+            assert_eq!(
+                launch.desktop_file_path,
+                directory.path().join(format!("{name}.desktop"))
+            );
         }
         std::fs::remove_file(directory.path().join("a.desktop")).unwrap();
         import(&registry, &store, &dirs, &resolver).unwrap();
@@ -405,10 +539,16 @@ mod tests {
         let user_path = user_dir.path().join(desktop_id);
         let system_exec = "viewer --profile \"Work profile\" %F %i %c %k";
         write_desktop_file(
-            system_dir.path(), desktop_id,
-            &format!("[Desktop Entry]\nType=Application\nName=Viewer\nIcon=viewer\nExec={system_exec}\n"),
+            system_dir.path(),
+            desktop_id,
+            &format!(
+                "[Desktop Entry]\nType=Application\nName=Viewer\nIcon=viewer\nExec={system_exec}\n"
+            ),
         );
-        let dirs = [system_dir.path().to_path_buf(), user_dir.path().to_path_buf()];
+        let dirs = [
+            system_dir.path().to_path_buf(),
+            user_dir.path().to_path_buf(),
+        ];
         let resolver = StaticResolver(HashMap::from([("viewer", "/usr/bin/viewer")]));
         let store = Store::in_memory().unwrap();
         let app: AppId = "desktop-import.org.example.Viewer.desktop".parse().unwrap();
@@ -424,11 +564,15 @@ mod tests {
         let restored = restarted.launch_template(&app).unwrap();
         assert_eq!(restored.exec, original.exec);
         assert_eq!(restored.desktop_file_path, original.desktop_file_path);
-        assert_eq!(appd_store::load_desktop_imports(&store).unwrap(), bookkeeping);
+        assert_eq!(
+            appd_store::load_desktop_imports(&store).unwrap(),
+            bookkeeping
+        );
 
         let user_exec = "viewer --private %u %k";
         write_desktop_file(
-            user_dir.path(), desktop_id,
+            user_dir.path(),
+            desktop_id,
             &format!("[Desktop Entry]\nType=Application\nName=Private Viewer\nExec={user_exec}\n"),
         );
         import(&restarted, &store, &dirs, &resolver).unwrap();
@@ -436,13 +580,17 @@ mod tests {
         assert_eq!(shadowed.exec, ExecTemplate::parse(user_exec));
         assert_eq!(shadowed.desktop_file_path, user_path);
         let manifest = restarted.manifest(&app).unwrap();
-        assert_eq!(manifest.provenance.as_ref().unwrap().source_path.as_ref(), Some(&user_path));
+        assert_eq!(
+            manifest.provenance.as_ref().unwrap().source_path.as_ref(),
+            Some(&user_path)
+        );
         let persisted = appd_store::load_desktop_imports(&store).unwrap();
         assert_eq!(persisted[0].path, shadowed.desktop_file_path);
         assert_eq!(persisted[0].app_id, manifest.id);
 
         write_desktop_file(
-            user_dir.path(), desktop_id,
+            user_dir.path(),
+            desktop_id,
             "[Desktop Entry]\nType=Application\nName=Masked\nExec=viewer\nHidden=true\n",
         );
         import(&restarted, &store, &dirs, &resolver).unwrap();
@@ -702,19 +850,19 @@ mod tests {
         let flatpak = registry
             .manifest(&"flatpak.org.mozilla.firefox".parse().unwrap())
             .expect("the Flatpak gets an id of its own");
-        assert_eq!(
-            flatpak.executable,
-            PathBuf::from("/usr/bin/flatpak")
-        );
-        assert!(flatpak.aliases.executable_paths.contains(
-            &PathBuf::from("/var/lib/flatpak/exports/bin/org.mozilla.firefox")
-        ));
+        assert_eq!(flatpak.executable, PathBuf::from("/usr/bin/flatpak"));
+        assert!(flatpak.aliases.executable_paths.contains(&PathBuf::from(
+            "/var/lib/flatpak/exports/bin/org.mozilla.firefox"
+        )));
         let launch = registry.launch_template(&flatpak.id).unwrap();
         assert_eq!(
             launch.exec,
             ExecTemplate::parse("/usr/bin/flatpak run org.mozilla.firefox %u")
         );
-        assert_eq!(launch.desktop_file_path, flatpak_dir.join("firefox.desktop"));
+        assert_eq!(
+            launch.desktop_file_path,
+            flatpak_dir.join("firefox.desktop")
+        );
         assert_eq!(
             flatpak.provenance.as_ref().unwrap().origin,
             templar_types::AppOriginKind::Flatpak
@@ -854,7 +1002,9 @@ mod tests {
             Some(TrustTier::System)
         );
 
-        store.transaction(|tx| invalidate_shadowed_grants(tx, &variant, &mine.display_name)).unwrap();
+        store
+            .transaction(|tx| invalidate_shadowed_grants(tx, &variant, &mine.display_name))
+            .unwrap();
 
         let declarations: i64 = store
             .lock()

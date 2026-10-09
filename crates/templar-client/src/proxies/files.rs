@@ -21,7 +21,10 @@ pub trait FilesBrowse {
 
     /// Native-path immediate listing; lexical path_b64 entries plus resolved watch directory/dev.
     fn list_directory_native_v1(
-        &self, directory_b64: &str, show_hidden: bool, limit: u32,
+        &self,
+        directory_b64: &str,
+        show_hidden: bool,
+        limit: u32,
     ) -> zbus::Result<String>;
 
     /// Add/remove a persistent folder bookmark. Never changes the folder itself.
@@ -196,8 +199,15 @@ pub trait FilesIndex {
     fn observe(&self, observing: bool, observation: u64) -> zbus::Result<()>;
 
     fn root_policy(&self, path_b64: &str, expected_hash: &str) -> zbus::Result<String>;
-    fn configure_root(&self, path_b64: &str, policy_json: &str, expected_hash: &str) -> zbus::Result<i64>;
+    fn configure_root(
+        &self,
+        path_b64: &str,
+        policy_json: &str,
+        expected_hash: &str,
+    ) -> zbus::Result<i64>;
     fn remove_root(&self, path_b64: &str, expected_hash: &str) -> zbus::Result<()>;
+    /// Explicitly adopt the observed replacement volume, forgetting the previous cached rows.
+    fn accept_volume(&self, root_id: i64, observed_fingerprint: &str) -> zbus::Result<()>;
 
     /// One JSON `Query` argument, so filters/sort/field-mask can grow without a signature
     /// change. `(cursor, generation, page_json)`.

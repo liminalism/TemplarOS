@@ -613,16 +613,30 @@ async fn concurrent_snapshots_never_pair_old_rows_with_a_new_cursor() {
     let fixture = Fixture::run().await.unwrap();
     let producer = async {
         for index in 0..100 {
-            fixture.notify("App", 0, &format!("arrival-{index}"), "", &[], HashMap::new(), 0)
-                .await.unwrap();
+            fixture
+                .notify(
+                    "App",
+                    0,
+                    &format!("arrival-{index}"),
+                    "",
+                    &[],
+                    HashMap::new(),
+                    0,
+                )
+                .await
+                .unwrap();
         }
     };
     let reader = async {
         for _ in 0..100 {
             let snapshot = fixture.snapshot().await.unwrap();
             assert_eq!(snapshot.notifications.len() as u64, snapshot.sequence);
-            assert!(snapshot.notifications.iter().all(|row|
-                row.sequence > 0 && row.sequence <= snapshot.sequence));
+            assert!(
+                snapshot
+                    .notifications
+                    .iter()
+                    .all(|row| row.sequence > 0 && row.sequence <= snapshot.sequence)
+            );
         }
     };
     tokio::join!(producer, reader);
@@ -633,16 +647,35 @@ async fn concurrent_snapshots_never_pair_old_rows_with_a_new_cursor() {
 async fn clear_all_publishes_one_change_per_committed_dismissal() {
     let fixture = Fixture::run().await.unwrap();
     for _ in 0..3 {
-        fixture.notify("App", 0, "clear", "", &[], HashMap::new(), 0).await.unwrap();
+        fixture
+            .notify("App", 0, "clear", "", &[], HashMap::new(), 0)
+            .await
+            .unwrap();
     }
     let mut changed = fixture.changed_stream().await;
     let before = fixture.snapshot().await.unwrap();
-    assert_eq!(fixture.call_companion::<u32>("ClearAll", &()).await.unwrap(), 3);
-    for _ in 0..3 { next_body::<()>(&mut changed).await.unwrap(); }
+    assert_eq!(
+        fixture
+            .call_companion::<u32>("ClearAll", &())
+            .await
+            .unwrap(),
+        3
+    );
+    for _ in 0..3 {
+        next_body::<()>(&mut changed).await.unwrap();
+    }
     assert_quiet(&mut changed).await;
-    let batch = fixture.transitions_since(before.sequence, &before.owner_epoch).await.unwrap();
+    let batch = fixture
+        .transitions_since(before.sequence, &before.owner_epoch)
+        .await
+        .unwrap();
     assert_eq!(batch.transitions.len(), 3);
-    assert!(batch.transitions.iter().all(|entry| entry.kind == TransitionKind::Dismissed));
+    assert!(
+        batch
+            .transitions
+            .iter()
+            .all(|entry| entry.kind == TransitionKind::Dismissed)
+    );
     fixture.stop().await.unwrap();
 }
 
@@ -666,7 +699,10 @@ async fn persisted_future_expiry_is_rearmed_without_a_new_notify() {
     assert_eq!(before.notifications[0].sequence, 0);
     next_body::<()>(&mut changed).await.unwrap();
     assert!(fixture.snapshot().await.unwrap().notifications.is_empty());
-    let batch = fixture.transitions_since(before.sequence, &before.owner_epoch).await.unwrap();
+    let batch = fixture
+        .transitions_since(before.sequence, &before.owner_epoch)
+        .await
+        .unwrap();
     assert_eq!(batch.transitions.len(), 1);
     assert_eq!(batch.transitions[0].kind, TransitionKind::Expired);
     fixture.stop().await.unwrap();
@@ -688,8 +724,12 @@ fn journal_generation_index_releases_retired_and_replaced_rows() {
 async fn snapshot_waits_for_the_whole_inflight_mutation() {
     let fixture = Fixture::run().await.unwrap();
     let guard = fixture.journal.0.mutation.lock().await;
-    assert!(tokio::time::timeout(Duration::from_millis(30), fixture.snapshot()).await.is_err(),
-        "Snapshot must not pair partially committed database rows with a journal cursor");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), fixture.snapshot())
+            .await
+            .is_err(),
+        "Snapshot must not pair partially committed database rows with a journal cursor"
+    );
     drop(guard);
     assert_eq!(fixture.snapshot().await.unwrap().sequence, 0);
     fixture.stop().await.unwrap();

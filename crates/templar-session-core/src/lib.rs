@@ -6,19 +6,19 @@
 
 #![forbid(unsafe_code)]
 
-pub mod autostart;
 pub mod appearance;
+pub mod autostart;
 pub mod change_log;
 pub mod file_view;
 pub mod first_run;
 pub mod history;
 pub mod homefield;
 pub mod homegarden;
-pub mod session_catalogue;
 pub mod location;
 pub mod notifications;
 pub mod pcmanfm;
 pub mod power;
 pub mod projects;
 pub mod providers;
+pub mod session_catalogue;
 pub mod settings;

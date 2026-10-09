@@ -78,7 +78,12 @@ fn a_consumer_synchronizes_a_snapshot_and_a_change_stream_without_a_gap() {
     //    between the two lands in neither the frame nor the stream.
     let mut frame = Vec::new();
     let manifest = index
-        .write_snapshot(&mut frame, &SnapshotRequest::default())
+        .write_snapshot(
+            &mut std::io::Cursor::new(&mut frame),
+            &SnapshotRequest::default(),
+            &templar_file_index::snapshot::SnapshotLimits::default(),
+            &templar_file_index::CallContext::internal(),
+        )
         .expect("writing the snapshot");
     let position = manifest.snapshot_seq;
 
@@ -109,7 +114,9 @@ fn a_consumer_synchronizes_a_snapshot_and_a_change_stream_without_a_gap() {
 
     // 3. Catch up from the noted position. Exactly the two changes that happened since, in order,
     //    and nothing that was already in the frame.
-    let batch = index.changes_since(position, 100).expect("catching up");
+    let batch = index
+        .changes_since(position, 100, &templar_file_index::CallContext::internal())
+        .expect("catching up");
     assert_eq!(
         batch.changes.len(),
         2,
@@ -131,7 +138,11 @@ fn a_consumer_synchronizes_a_snapshot_and_a_change_stream_without_a_gap() {
 
     // 4. And asking again from the new position yields nothing: the stream does not repeat.
     let empty = index
-        .changes_since(batch.next_seq, 100)
+        .changes_since(
+            batch.next_seq,
+            100,
+            &templar_file_index::CallContext::internal(),
+        )
         .expect("asking again");
     assert!(
         empty.changes.is_empty(),
@@ -161,7 +172,12 @@ fn a_consumer_that_fell_behind_the_retained_log_is_told_to_resnapshot() {
         ))
         .expect("the first change");
     let position = index
-        .write_snapshot(&mut Vec::new(), &SnapshotRequest::default())
+        .write_snapshot(
+            &mut std::io::Cursor::new(&mut Vec::new()),
+            &SnapshotRequest::default(),
+            &templar_file_index::snapshot::SnapshotLimits::default(),
+            &templar_file_index::CallContext::internal(),
+        )
         .expect("the consumer's first snapshot")
         .snapshot_seq;
 
@@ -175,7 +191,7 @@ fn a_consumer_that_fell_behind_the_retained_log_is_told_to_resnapshot() {
             .expect("a change that pushes the floor up");
     }
 
-    match index.changes_since(position, 100) {
+    match index.changes_since(position, 100, &templar_file_index::CallContext::internal()) {
         Err(IndexError::SnapshotRequired { .. }) => {}
         Err(other) => panic!("expected SnapshotRequired, got {other}"),
         Ok(batch) => panic!(
@@ -189,11 +205,18 @@ fn a_consumer_that_fell_behind_the_retained_log_is_told_to_resnapshot() {
     // one the log still retains.
     let mut fresh = Vec::new();
     let recovered = index
-        .write_snapshot(&mut fresh, &SnapshotRequest::default())
+        .write_snapshot(
+            &mut std::io::Cursor::new(&mut fresh),
+            &SnapshotRequest::default(),
+            &templar_file_index::snapshot::SnapshotLimits::default(),
+            &templar_file_index::CallContext::internal(),
+        )
         .expect("resnapshotting")
         .snapshot_seq;
     assert!(
-        index.changes_since(recovered, 100).is_ok(),
+        index
+            .changes_since(recovered, 100, &templar_file_index::CallContext::internal())
+            .is_ok(),
         "the position a fresh snapshot hands back is itself already below the retained floor, so \
          resnapshotting is not a route back at all"
     );
@@ -263,7 +286,12 @@ fn a_snapshot_frame_is_one_view_while_a_writer_commits() {
         .expect("the bulk state");
 
     let base = index
-        .write_snapshot(&mut Vec::new(), &SnapshotRequest::default())
+        .write_snapshot(
+            &mut std::io::Cursor::new(&mut Vec::new()),
+            &SnapshotRequest::default(),
+            &templar_file_index::snapshot::SnapshotLimits::default(),
+            &templar_file_index::CallContext::internal(),
+        )
         .expect("the quiet snapshot");
 
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -299,7 +327,12 @@ fn a_snapshot_frame_is_one_view_while_a_writer_commits() {
 
     for _ in 0..40 {
         let frame = index
-            .write_snapshot(&mut Vec::new(), &SnapshotRequest::default())
+            .write_snapshot(
+                &mut std::io::Cursor::new(&mut Vec::new()),
+                &SnapshotRequest::default(),
+                &templar_file_index::snapshot::SnapshotLimits::default(),
+                &templar_file_index::CallContext::internal(),
+            )
             .expect("a snapshot taken under a writer");
         let entries = frame
             .entry_count

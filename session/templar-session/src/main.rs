@@ -7,7 +7,11 @@
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use std::{os::unix::fs::FileTypeExt, path::{Component, Path, PathBuf}, process::{Child, Command}};
+use std::{
+    os::unix::fs::FileTypeExt,
+    path::{Component, Path, PathBuf},
+    process::{Child, Command},
+};
 
 const TARGET: &str = "templaros-session.target";
 const COMPOSITOR_UNIT: &str = "templar-comp.service";
@@ -49,8 +53,14 @@ const START_STEPS: &[Step] = &[
     // these remain activation-driven, not eagerly started here.
     Step {
         program: "systemctl",
-        args: &["--user", "stop", "xdg-desktop-portal.service", "xdg-desktop-portal-gtk.service",
-            "xdg-desktop-portal-lxqt.service", "xdg-desktop-portal-templar.service"],
+        args: &[
+            "--user",
+            "stop",
+            "xdg-desktop-portal.service",
+            "xdg-desktop-portal-gtk.service",
+            "xdg-desktop-portal-lxqt.service",
+            "xdg-desktop-portal-templar.service",
+        ],
     },
     // Autostart is arbitrated by sessiond (one provider per role); mask the generic runner.
     Step {
@@ -89,7 +99,12 @@ const CLEANUP_STEPS: &[Step] = &[
     },
     Step {
         program: "systemctl",
-        args: &["--user", "unset-environment", "WAYLAND_DISPLAY", "QT_QPA_PLATFORMTHEME"],
+        args: &[
+            "--user",
+            "unset-environment",
+            "WAYLAND_DISPLAY",
+            "QT_QPA_PLATFORMTHEME",
+        ],
     },
 ];
 
@@ -126,7 +141,8 @@ fn main() -> Result<()> {
     let mut helpers = Vec::new();
     let result = (|| {
         let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from).context("XDG_RUNTIME_DIR is required for compositor readiness")?;
+            .map(PathBuf::from)
+            .context("XDG_RUNTIME_DIR is required for compositor readiness")?;
         let ready_path = runtime.join("templaros/compositor-display.json");
         match std::fs::remove_file(&ready_path) {
             Ok(()) => {}
@@ -148,7 +164,9 @@ fn main() -> Result<()> {
                 .spawn()
             {
                 Ok(child) => helpers.push(child),
-                Err(error) => tracing::error!(%error, program = step.program, "desktop helper could not start"),
+                Err(error) => {
+                    tracing::error!(%error, program = step.program, "desktop helper could not start")
+                }
             }
         }
         run_step(WAIT_STEP)
@@ -176,14 +194,19 @@ fn ready_display(runtime: &Path) -> Result<String> {
     let ready: DisplayReady = serde_json::from_slice(
         &std::fs::read(runtime.join("templaros/compositor-display.json"))
             .context("reading actual ready compositor display")?,
-    ).context("decoding compositor display readiness")?;
+    )
+    .context("decoding compositor display readiness")?;
     validate_ready_name(ready.schema, ready.compositor_pid, &ready.socket)?;
     let process = PathBuf::from(format!("/proc/{}/comm", ready.compositor_pid));
-    let name = std::fs::read_to_string(process).context("ready compositor process no longer exists")?;
+    let name =
+        std::fs::read_to_string(process).context("ready compositor process no longer exists")?;
     if name.trim() != "templar-comp" {
         bail!("display readiness PID is not a templar compositor");
     }
-    if !std::fs::symlink_metadata(runtime.join(&ready.socket))?.file_type().is_socket() {
+    if !std::fs::symlink_metadata(runtime.join(&ready.socket))?
+        .file_type()
+        .is_socket()
+    {
         bail!("ready compositor display is not a Unix socket");
     }
     Ok(ready.socket)
@@ -191,13 +214,15 @@ fn ready_display(runtime: &Path) -> Result<String> {
 
 fn validate_ready_name(schema: u32, pid: u32, socket: &str) -> Result<()> {
     let mut components = Path::new(socket).components();
-    if schema != 1 || pid == 0 || !matches!(components.next(), Some(Component::Normal(_)))
-        || components.next().is_some() {
+    if schema != 1
+        || pid == 0
+        || !matches!(components.next(), Some(Component::Normal(_)))
+        || components.next().is_some()
+    {
         bail!("invalid compositor display readiness schema, PID or socket basename");
     }
     Ok(())
 }
-
 
 fn desktop_helpers() -> [Step; 2] {
     let arguments: &'static [&'static str] =
@@ -266,7 +291,13 @@ mod activation_tests {
     #[test]
     fn readiness_uses_one_actual_socket_basename() {
         assert!(validate_ready_name(1, 42, "wayland-7").is_ok());
-        for socket in ["", "/run/user/1000/wayland-0", "../wayland-0", ".", "nested/wayland-0"] {
+        for socket in [
+            "",
+            "/run/user/1000/wayland-0",
+            "../wayland-0",
+            ".",
+            "nested/wayland-0",
+        ] {
             assert!(validate_ready_name(1, 42, socket).is_err());
         }
         assert!(validate_ready_name(2, 42, "wayland-7").is_err());

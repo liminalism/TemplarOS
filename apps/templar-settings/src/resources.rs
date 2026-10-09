@@ -261,4 +261,3 @@ pub(crate) async fn render(connection: &zbus::Connection, trace_limit: u32) -> S
         Err(error) => format!("service unavailable: could not reach Resources1 ({error})"),
     }
 }
-

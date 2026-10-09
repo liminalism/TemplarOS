@@ -31,8 +31,8 @@
 
 #![forbid(unsafe_code)]
 
-pub mod drag;
 pub mod desktop_dock;
+pub mod drag;
 pub mod field;
 pub mod focus;
 pub mod garden;
@@ -45,8 +45,8 @@ pub mod selection;
 pub mod text;
 pub mod tile;
 
-pub use drag::{Drag, DragConfig, DragSample};
 pub use desktop_dock::ensure_desktop_dock;
+pub use drag::{Drag, DragConfig, DragSample};
 pub use field::{
     Cell, Container, FieldDocument, Landing, Located, PixelRect, Placement, Tray, cell_at,
     cell_rect, tile_rect,

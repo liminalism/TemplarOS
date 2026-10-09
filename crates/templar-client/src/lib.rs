@@ -7,11 +7,11 @@
 
 #![deny(unsafe_code)]
 
-pub mod compositor_control;
 pub mod appearance;
+pub mod compositor_control;
 pub mod devices;
-pub mod files;
 pub mod file_index;
+pub mod files;
 pub mod proxies;
 pub mod sdk;
 pub mod secret_fd;

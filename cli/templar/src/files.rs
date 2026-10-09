@@ -182,10 +182,14 @@ impl IndexClient for templar_client::proxies::FilesIndexProxy<'_> {
             .context("Files.Index1.Reconcile")
     }
     async fn fetch_page(&self, cursor: &str, offset: u32, count: u32) -> Result<String> {
-        self.fetch_page(cursor, offset, count).await.context("Files.Index1.FetchPage")
+        self.fetch_page(cursor, offset, count)
+            .await
+            .context("Files.Index1.FetchPage")
     }
     async fn close_cursor(&self, cursor: &str) -> Result<()> {
-        self.close_cursor(cursor).await.context("Files.Index1.CloseCursor")
+        self.close_cursor(cursor)
+            .await
+            .context("Files.Index1.CloseCursor")
     }
 }
 
@@ -443,9 +447,6 @@ pub fn parse_index_roots(roots_json: &str) -> Result<IndexRoots> {
 }
 
 pub fn render_index_roots(response: &IndexRoots) -> String {
-    if response.roots.is_empty() {
-        return "no indexed roots".to_owned();
-    }
     let mut lines: Vec<String> = response
         .roots
         .iter()
@@ -461,9 +462,38 @@ pub fn render_index_roots(response: &IndexRoots) -> String {
             if let Some(reason) = &root.reason {
                 let _ = write!(line, "  — {reason}");
             }
+            let _ = write!(
+                line,
+                "  metadata={} identity={:?} nested_in={:?} contains={:?}",
+                root.metadata, root.volume.confidence, root.nested_in, root.contains
+            );
+            if let Some(watch) = &root.watch {
+                let _ = write!(
+                    line,
+                    "  watches required={} armed={} refused={}",
+                    watch.required_display(),
+                    watch.watches_armed,
+                    watch.refused_display()
+                );
+            }
             line
         })
         .collect();
+    if response.roots.is_empty() {
+        lines.push("no indexed roots".into());
+    }
+    let diagnostics = &response.diagnostics;
+    lines.push(format!(
+        "availability: {} reason={:?}",
+        diagnostics.availability.state, diagnostics.availability.reason
+    ));
+    lines.push(format!(
+        "storage: main={} WAL={} SHM={} total={} bytes",
+        diagnostics.storage.main_bytes,
+        diagnostics.storage.wal_bytes,
+        diagnostics.storage.shm_bytes,
+        diagnostics.storage.total()
+    ));
     lines.push(format!(
         "index: schema v{} generation {} — {} cursor(s) open, change log {}..{}",
         response.diagnostics.schema_version,
@@ -472,9 +502,17 @@ pub fn render_index_roots(response: &IndexRoots) -> String {
         response.diagnostics.change_seq_floor,
         response.diagnostics.change_seq_head,
     ));
+    lines.extend(templar_file_index::diagnostics::runtime_lines(
+        response.diagnostics.runtime.as_ref(),
+    ));
+    for warning in templar_file_index::diagnostics::health_warnings(
+        response.diagnostics.storage,
+        response.diagnostics.runtime.as_ref(),
+    ) {
+        lines.push(format!("warning: {warning}"));
+    }
     lines.join("\n")
 }
-
 
 pub fn parse_index_search(page_json: &str) -> Result<IndexSearch> {
     serde_json::from_str(page_json).context("parsing Files.Index1.Search page JSON")
@@ -493,15 +531,38 @@ pub fn render_index_hits(result: &IndexSearch) -> String {
             )
         })
         .collect();
-    if lines.is_empty() { lines.push("no matches".to_owned()); }
-    let freshness = result.roots.iter().map(|root| format!(
-        "{}: {}{}; metadata {}{}", root.display, root.state,
-        root.reason.as_ref().map(|reason| format!(" ({reason})")).unwrap_or_default(),
-        root.metadata, if root.complete { "" } else { "; incomplete" },
-    )).collect::<Vec<_>>();
-    lines.push(format!("generation {} — {}", result.generation,
-        if freshness.is_empty() { "no indexed coverage".to_owned() } else { freshness.join(", ") }));
-    if result.truncated { lines.push("cursor truncated; narrow the query for remaining matches".to_owned()); }
+    if lines.is_empty() {
+        lines.push("no matches".to_owned());
+    }
+    let freshness = result
+        .roots
+        .iter()
+        .map(|root| {
+            format!(
+                "{}: {}{}; metadata {}{}",
+                root.display,
+                root.state,
+                root.reason
+                    .as_ref()
+                    .map(|reason| format!(" ({reason})"))
+                    .unwrap_or_default(),
+                root.metadata,
+                if root.complete { "" } else { "; incomplete" },
+            )
+        })
+        .collect::<Vec<_>>();
+    lines.push(format!(
+        "generation {} — {}",
+        result.generation,
+        if freshness.is_empty() {
+            "no indexed coverage".to_owned()
+        } else {
+            freshness.join(", ")
+        }
+    ));
+    if result.truncated {
+        lines.push("cursor truncated; narrow the query for remaining matches".to_owned());
+    }
     if let Some(total) = result.total
         && total > result.hits.len() as u64
     {
@@ -520,7 +581,6 @@ pub fn print0_index_hits(result: &IndexSearch, out: &mut impl std::io::Write) ->
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -611,6 +671,38 @@ mod tests {
         assert!(!rendered.contains("4.0 kB"), "{rendered}");
         // The volume trash is in the same listing as the home trash.
         assert!(rendered.contains("/media/stick/.Trash-1000/files/old project"));
+    }
+
+    #[test]
+    fn empty_unavailable_index_still_renders_storage_and_every_runtime_domain() {
+        let response: IndexRoots = serde_json::from_value(serde_json::json!({
+            "cache_identity":"", "roots":[], "diagnostics":{"schema_version":8,"generation":0,
+                "planner":"fts5-trigram","fts_available":true,"change_seq_floor":0,"change_seq_head":0,"cursor_count":0,
+                "availability":{"state":"unavailable","reason":"permission-denied","since_ms":1},
+                "storage":{"main_bytes":10,"wal_bytes":20,"shm_bytes":30},
+                "runtime":{"lanes":[{"lane":"interactive","workers":2}],"arrays":{"hits":1,"misses":{"dirty":1}},
+                    "snapshots":{"scope":"server-held-descriptors","accounting_available":true},"cursors":{},"readers":{},"wal":{}}}
+        })).unwrap();
+        let text = render_index_roots(&response);
+        for expected in [
+            "no indexed roots",
+            "unavailable",
+            "permission-denied",
+            "main=10 WAL=20 SHM=30 total=60",
+            "lane interactive",
+            "wait_p95_ms",
+            "arrays:",
+            "hit_rate=50.00%",
+            "snapshots:",
+            "server-held-descriptors",
+            "cursors:",
+            "oldest_pinned_generation",
+            "readers:",
+            "wal:",
+            "checkpointed",
+        ] {
+            assert!(text.contains(expected), "missing {expected}: {text}");
+        }
     }
 
     #[test]

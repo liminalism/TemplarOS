@@ -58,12 +58,19 @@ impl FileFilter {
     }
 }
 
-type GlobChars<'a> = std::iter::Peekable<std::iter::FlatMap<
-    std::str::Chars<'a>, std::char::ToLowercase, fn(char) -> std::char::ToLowercase,
->>;
+type GlobChars<'a> = std::iter::Peekable<
+    std::iter::FlatMap<
+        std::str::Chars<'a>,
+        std::char::ToLowercase,
+        fn(char) -> std::char::ToLowercase,
+    >,
+>;
 
 fn glob_chars(value: &str) -> GlobChars<'_> {
-    value.chars().flat_map(char::to_lowercase as fn(char) -> std::char::ToLowercase).peekable()
+    value
+        .chars()
+        .flat_map(char::to_lowercase as fn(char) -> std::char::ToLowercase)
+        .peekable()
 }
 
 /// Match one folded glob atom, including the bracket classes browsers use for
@@ -75,7 +82,9 @@ fn glob_atom(pattern: &mut GlobChars<'_>, value: char) -> bool {
         Some('[') => {
             let mut class = pattern.clone();
             let negated = matches!(class.peek(), Some('!' | '^'));
-            if negated { class.next(); }
+            if negated {
+                class.next();
+            }
             let mut first = true;
             let mut matched = false;
             while let Some(mut character) = class.next() {
@@ -128,8 +137,12 @@ fn glob_matches(pattern: &str, name: &str) -> bool {
             name.next();
             continue;
         }
-        let Some((after_star, remainder)) = star.as_mut() else { return false };
-        if remainder.next().is_none() { return false; }
+        let Some((after_star, remainder)) = star.as_mut() else {
+            return false;
+        };
+        if remainder.next().is_none() {
+            return false;
+        }
         pattern = after_star.clone();
         name = remainder.clone();
     }
@@ -213,10 +226,21 @@ impl Browser {
             Some(_) => {}
             None => self.current_filter = None,
         }
-        if !matches!(self.kind, ChooserKind::Open { directory: true, .. }) {
-            let filter = self.current_filter.and_then(|index| self.filters.get(index));
-            self.selected.retain(|path| path.file_name().is_some_and(|name|
-                filter.is_none_or(|filter| filter.accepts(&name.to_string_lossy()))));
+        if !matches!(
+            self.kind,
+            ChooserKind::Open {
+                directory: true,
+                ..
+            }
+        ) {
+            let filter = self
+                .current_filter
+                .and_then(|index| self.filters.get(index));
+            self.selected.retain(|path| {
+                path.file_name().is_some_and(|name| {
+                    filter.is_none_or(|filter| filter.accepts(&name.to_string_lossy()))
+                })
+            });
         }
     }
 
@@ -264,7 +288,14 @@ impl Browser {
         self.entries
             .iter()
             .filter(|entry| {
-                (entry.is_dir() || !matches!(self.kind, ChooserKind::Open { directory: true, .. }))
+                (entry.is_dir()
+                    || !matches!(
+                        self.kind,
+                        ChooserKind::Open {
+                            directory: true,
+                            ..
+                        }
+                    ))
                     && (entry.is_dir() || filter.is_none_or(|filter| filter.accepts(&entry.name)))
             })
             .collect()
@@ -273,7 +304,13 @@ impl Browser {
     /// Move to `directory`, dropping a selection that no longer makes sense there.
     pub fn enter(&mut self, directory: PathBuf) {
         self.directory = directory;
-        if !matches!(self.kind, ChooserKind::Open { multiple: true, directory: true }) {
+        if !matches!(
+            self.kind,
+            ChooserKind::Open {
+                multiple: true,
+                directory: true
+            }
+        ) {
             self.selected.clear();
         }
     }
@@ -319,7 +356,8 @@ impl Browser {
     pub fn choose(&self, save_name: &str) -> Result<Vec<PathBuf>, &'static str> {
         match &self.kind {
             ChooserKind::Open {
-                multiple, directory: true,
+                multiple,
+                directory: true,
             } => Ok(if *multiple && !self.selected.is_empty() {
                 self.selected.clone()
             } else {
@@ -514,12 +552,23 @@ mod tests {
     #[test]
     fn changing_filter_drops_files_no_longer_visible_in_multi_selection() {
         let mut browser = Browser::new(
-            ChooserKind::Open { multiple: true, directory: false },
+            ChooserKind::Open {
+                multiple: true,
+                directory: false,
+            },
             PathBuf::from("/home/u"),
             vec![
-                FileFilter { name: "Text".into(), patterns: vec![FilterPattern::Glob("*.txt".into())] },
-                FileFilter { name: "Images".into(), patterns: vec![FilterPattern::Glob("*.png".into())] },
-            ], None);
+                FileFilter {
+                    name: "Text".into(),
+                    patterns: vec![FilterPattern::Glob("*.txt".into())],
+                },
+                FileFilter {
+                    name: "Images".into(),
+                    patterns: vec![FilterPattern::Glob("*.png".into())],
+                },
+            ],
+            None,
+        );
         browser.set_listing(vec![file("a.txt"), file("b.png")], false);
         browser.activate(0);
         browser.activate(1);
@@ -531,22 +580,35 @@ mod tests {
     #[test]
     fn directory_multi_selection_is_not_replaced_by_navigation() {
         let mut browser = Browser::new(
-            ChooserKind::Open { multiple: true, directory: true },
-            PathBuf::from("/home/u"), Vec::new(), None);
-        browser.set_listing(vec![
-            entry("one", EntryKind::Directory),
-            file("not-a-directory.txt"),
-            entry("two", EntryKind::Directory),
-        ], false);
+            ChooserKind::Open {
+                multiple: true,
+                directory: true,
+            },
+            PathBuf::from("/home/u"),
+            Vec::new(),
+            None,
+        );
+        browser.set_listing(
+            vec![
+                entry("one", EntryKind::Directory),
+                file("not-a-directory.txt"),
+                entry("two", EntryKind::Directory),
+            ],
+            false,
+        );
         assert_eq!(browser.visible().len(), 2);
         assert_eq!(browser.choose(""), Ok(vec![PathBuf::from("/home/u")]));
         browser.pick(PathBuf::from("/home/u/one"));
         browser.pick(PathBuf::from("/home/u/two"));
         browser.activate(0);
         assert_eq!(browser.directory(), Path::new("/home/u/one"));
-        assert_eq!(browser.choose(""), Ok(vec![
-            PathBuf::from("/home/u/one"), PathBuf::from("/home/u/two"),
-        ]));
+        assert_eq!(
+            browser.choose(""),
+            Ok(vec![
+                PathBuf::from("/home/u/one"),
+                PathBuf::from("/home/u/two"),
+            ])
+        );
         browser.pick(PathBuf::from("/home/u/one"));
         assert_eq!(browser.choose(""), Ok(vec![PathBuf::from("/home/u/two")]));
     }
@@ -554,8 +616,14 @@ mod tests {
     #[test]
     fn single_directory_choose_returns_the_navigated_folder() {
         let mut browser = Browser::new(
-            ChooserKind::Open { multiple: false, directory: true },
-            PathBuf::from("/home/u"), Vec::new(), None);
+            ChooserKind::Open {
+                multiple: false,
+                directory: true,
+            },
+            PathBuf::from("/home/u"),
+            Vec::new(),
+            None,
+        );
         browser.set_listing(vec![entry("one", EntryKind::Directory)], false);
         browser.activate(0);
         assert_eq!(browser.choose(""), Ok(vec![PathBuf::from("/home/u/one")]));
@@ -563,9 +631,15 @@ mod tests {
 
     #[test]
     fn save_preserves_nonempty_filename_whitespace() {
-        let browser = Browser::new(ChooserKind::Save { current_name: None },
-            PathBuf::from("/home/u"), Vec::new(), None);
-        assert_eq!(browser.choose(" report.txt "),
-            Ok(vec![PathBuf::from("/home/u/ report.txt ")]));
+        let browser = Browser::new(
+            ChooserKind::Save { current_name: None },
+            PathBuf::from("/home/u"),
+            Vec::new(),
+            None,
+        );
+        assert_eq!(
+            browser.choose(" report.txt "),
+            Ok(vec![PathBuf::from("/home/u/ report.txt ")])
+        );
     }
 }

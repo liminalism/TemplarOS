@@ -13,15 +13,19 @@ pub mod response {
 pub type Reply = (u32, HashMap<String, OwnedValue>);
 pub fn failed(message: String) -> Reply {
     tracing::error!(%message, "portal infrastructure failure");
-    (response::OTHER, HashMap::from([("error".to_owned(), owned_value(message))]))
+    (
+        response::OTHER,
+        HashMap::from([("error".to_owned(), owned_value(message))]),
+    )
 }
-
 
 #[derive(Debug)]
 pub struct RequestObject(watch::Sender<bool>);
 #[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
 impl RequestObject {
-    async fn close(&self) { self.0.send_replace(true); }
+    async fn close(&self) {
+        self.0.send_replace(true);
+    }
 }
 
 pub async fn with_request<F, Fut>(
@@ -35,10 +39,15 @@ where
     Fut: Future<Output = Reply>,
 {
     let (close, mut closed) = watch::channel(false);
-    let registered = connection.object_server().at(handle.clone(), RequestObject(close)).await
+    let registered = connection
+        .object_server()
+        .at(handle.clone(), RequestObject(close))
+        .await
         .map_err(|error| zbus::fdo::Error::Failed(format!("exporting Request: {error}")))?;
     if !registered {
-        return Err(zbus::fdo::Error::InvalidArgs("request handle is already in use".into()));
+        return Err(zbus::fdo::Error::InvalidArgs(
+            "request handle is already in use".into(),
+        ));
     }
     // Subscribe before checking ownership so a disconnect cannot fall between
     // the snapshot and the watch. No unmanaged/background task per request.
@@ -72,13 +81,18 @@ where
         }
     }.await;
     // Dropping the selected-out UI future wakes and closes exactly its window.
-    connection.object_server().remove::<RequestObject, _>(handle.clone()).await
+    connection
+        .object_server()
+        .remove::<RequestObject, _>(handle.clone())
+        .await
         .map_err(|error| zbus::fdo::Error::Failed(format!("retiring Request: {error}")))?;
     result
 }
 
 pub fn owned_value<'v>(value: impl Into<zbus::zvariant::Value<'v>>) -> OwnedValue {
-    value.into().try_to_owned()
+    value
+        .into()
+        .try_to_owned()
         .expect("converting a primitive/string/collection value to OwnedValue never fails")
 }
 
@@ -89,6 +103,9 @@ mod tests {
     fn infrastructure_failure_is_not_cancellation() {
         let (code, results) = failed("display disconnected".into());
         assert_eq!(code, response::OTHER);
-        assert_eq!(String::try_from(results["error"].clone()).unwrap(), "display disconnected");
+        assert_eq!(
+            String::try_from(results["error"].clone()).unwrap(),
+            "display disconnected"
+        );
     }
 }

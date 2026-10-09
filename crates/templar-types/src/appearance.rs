@@ -148,13 +148,23 @@ pub struct Appearance {
     pub reduced_motion: bool,
 }
 impl Default for Appearance {
-    fn default() -> Self { Self { palette: LIGHT, reduced_motion: false } }
+    fn default() -> Self {
+        Self {
+            palette: LIGHT,
+            reduced_motion: false,
+        }
+    }
 }
 impl Appearance {
     pub fn from_settings(theme: &str, accent: &str, reduced_motion: bool) -> Self {
         let palette = if theme == "dark" { DARK } else { LIGHT };
-        let accent = ACCENTS.iter().find_map(|(name, colour)| (*name == accent).then_some(*colour));
-        Self { palette: accent.map_or(palette, |accent| with_accent(palette, accent)), reduced_motion }
+        let accent = ACCENTS
+            .iter()
+            .find_map(|(name, colour)| (*name == accent).then_some(*colour));
+        Self {
+            palette: accent.map_or(palette, |accent| with_accent(palette, accent)),
+            reduced_motion,
+        }
     }
     pub fn motion_duration_ms(self, duration: u64) -> u64 {
         if self.reduced_motion { 0 } else { duration }

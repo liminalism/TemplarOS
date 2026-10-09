@@ -12,11 +12,11 @@
 mod associations;
 mod background;
 mod bluetooth;
-mod displays;
 mod datetime;
+mod displays;
+mod files;
 mod garden;
 mod hardware;
-mod files;
 mod history;
 mod input;
 mod names;
@@ -25,8 +25,8 @@ mod notifications;
 mod power;
 mod providers;
 mod resources;
-mod surface;
 mod sound;
+mod surface;
 mod system;
 mod wallpaper;
 
@@ -70,7 +70,6 @@ struct Cli {
     undo: Option<String>,
 }
 
-
 fn main() {
     use std::io::IsTerminal as _;
     // No ANSI under the journal: journald stores coloured MESSAGE fields as byte arrays.
@@ -105,23 +104,33 @@ async fn print_page(cli: Cli) {
         SettingsPage::Sound => sound::render().await,
         SettingsPage::DateTime => datetime::print().await,
         SettingsPage::Files => {
-            if let Err(error) = files::print().await { println!("Index unavailable — {error:#}"); }
+            if let Err(error) = files::print().await {
+                println!("Index unavailable — {error:#}");
+            }
             return;
         }
         SettingsPage::Network => {
-            if let Err(error) = network::print().await { println!("Network unavailable — {error:#}"); }
+            if let Err(error) = network::print().await {
+                println!("Network unavailable — {error:#}");
+            }
             return;
         }
         SettingsPage::Bluetooth => {
-            if let Err(error) = bluetooth::print().await { println!("Bluetooth unavailable — {error:#}"); }
+            if let Err(error) = bluetooth::print().await {
+                println!("Bluetooth unavailable — {error:#}");
+            }
             return;
         }
         SettingsPage::Displays => {
-            if let Err(error) = displays::print().await { println!("Displays unavailable — {error:#}"); }
+            if let Err(error) = displays::print().await {
+                println!("Displays unavailable — {error:#}");
+            }
             return;
         }
         SettingsPage::Input => {
-            if let Err(error) = input::print().await { println!("Input unavailable — {error:#}"); }
+            if let Err(error) = input::print().await {
+                println!("Input unavailable — {error:#}");
+            }
             return;
         }
         SettingsPage::Appearance
@@ -144,21 +153,29 @@ async fn print_page(cli: Cli) {
                 _ => unreachable!(),
             };
             match zbus::Connection::session().await {
-                Ok(connection) => match templar_client::proxies::SettingsProxy::new(&connection).await {
-                    Ok(proxy) => match proxy.list().await {
-                        Ok(values) => values.into_iter()
-                            .filter(|(key, _)| key.starts_with(prefix))
-                            .map(|(key, value)| format!("{key} = {value}"))
-                            .collect::<Vec<_>>().join("\n"),
+                Ok(connection) => {
+                    match templar_client::proxies::SettingsProxy::new(&connection).await {
+                        Ok(proxy) => match proxy.list().await {
+                            Ok(values) => values
+                                .into_iter()
+                                .filter(|(key, _)| key.starts_with(prefix))
+                                .map(|(key, value)| format!("{key} = {value}"))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            Err(error) => format!("Settings unavailable: {error}"),
+                        },
                         Err(error) => format!("Settings unavailable: {error}"),
-                    },
-                    Err(error) => format!("Settings unavailable: {error}"),
-                },
+                    }
+                }
                 Err(error) => format!("Session bus unavailable: {error}"),
             }
         }
-        SettingsPage::System | SettingsPage::Providers | SettingsPage::Associations |
-        SettingsPage::Background | SettingsPage::Resources | SettingsPage::History => {
+        SettingsPage::System
+        | SettingsPage::Providers
+        | SettingsPage::Associations
+        | SettingsPage::Background
+        | SettingsPage::Resources
+        | SettingsPage::History => {
             let connection = match zbus::Connection::session().await {
                 Ok(connection) => connection,
                 Err(error) => {
@@ -169,7 +186,9 @@ async fn print_page(cli: Cli) {
             match page {
                 SettingsPage::System => {
                     println!("{}", system::render(&connection).await);
-                    if let Err(error) = power::print().await { println!("Power policy unavailable — {error:#}"); }
+                    if let Err(error) = power::print().await {
+                        println!("Power policy unavailable — {error:#}");
+                    }
                     if let Err(error) = notifications::print().await {
                         println!("Notifications policy unavailable — {error:#}");
                     }

@@ -37,10 +37,16 @@ impl FilesApp {
     }
 
     fn drain_updates(&mut self) {
-        if let Some(update) = self.appearance.as_mut().and_then(|observer| observer.take_update()) {
+        if let Some(update) = self
+            .appearance
+            .as_mut()
+            .and_then(|observer| observer.take_update())
+        {
             match update {
                 Ok(appearance) => self.surface.update_appearance(appearance),
-                Err(error) => self.model.operation_failed(format!("Appearance observation unavailable: {error}")),
+                Err(error) => self
+                    .model
+                    .operation_failed(format!("Appearance observation unavailable: {error}")),
             }
         }
         while let Some(update) = self.backend.try_update() {
@@ -73,19 +79,24 @@ impl FilesApp {
                 }
                 Update::RenderedPath { path, result } => {
                     let result = result.and_then(|text| {
-                        self.surface.input.clipboard()
+                        self.surface
+                            .input
+                            .clipboard()
                             .ok_or_else(|| "System clipboard is not attached".to_owned())?
-                            .copy(text).map_err(|error| error.0)
+                            .copy(text)
+                            .map_err(|error| error.0)
                     });
                     match result {
                         Ok(task) => {
                             self.model.error = None;
                             self.path_copy = Some((path, task));
                         }
-                        Err(error) => self.model.operation_failed(
-                            format!("Could not copy {}: {error}", path.display())),
+                        Err(error) => self.model.operation_failed(format!(
+                            "Could not copy {}: {error}",
+                            path.display()
+                        )),
                     }
-                },
+                }
                 Update::Opened { path, result } => match result {
                     Ok(opened) => {
                         self.model.error = None;
@@ -128,15 +139,20 @@ impl FilesApp {
                 },
             }
         }
-        if let Some(result) = self.path_copy.as_ref().and_then(|(_, task)| task.try_result()) {
+        if let Some(result) = self
+            .path_copy
+            .as_ref()
+            .and_then(|(_, task)| task.try_result())
+        {
             let (path, _) = self.path_copy.take().expect("completed path copy");
             match result {
                 Ok(_) => {
                     self.model.error = None;
                     self.model.status = Some(format!("Copied path: {}", path.display()));
                 }
-                Err(error) => self.model.operation_failed(
-                    format!("Could not copy {}: {error}", path.display())),
+                Err(error) => self
+                    .model
+                    .operation_failed(format!("Could not copy {}: {error}", path.display())),
             }
         }
     }
@@ -376,7 +392,9 @@ impl FilesApp {
     }
 
     fn handle_command(&mut self, command: Command) {
-        if !matches!(command, Command::ThumbnailsVisible(_)) { self.surface.invalidate_semantics(); }
+        if !matches!(command, Command::ThumbnailsVisible(_)) {
+            self.surface.invalidate_semantics();
+        }
         match command {
             Command::Action(action, modifiers) => self.handle_action(action, modifiers),
             Command::Navigate(path) => {
@@ -443,9 +461,15 @@ impl PixelApp for FilesApp {
 
     fn attach(&mut self, waker: Waker) {
         let clipboard_waker = waker.clone();
-        self.surface.input.attach_clipboard(pixelkit_shell::clipboard::ClipboardWorker::new(move || clipboard_waker.wake()));
+        self.surface
+            .input
+            .attach_clipboard(pixelkit_shell::clipboard::ClipboardWorker::new(move || {
+                clipboard_waker.wake()
+            }));
         let appearance_waker = waker.clone();
-        self.appearance = Some(templar_client::appearance::AppearanceObserver::new(move || appearance_waker.wake()));
+        self.appearance = Some(templar_client::appearance::AppearanceObserver::new(
+            move || appearance_waker.wake(),
+        ));
         self.backend.attach(waker);
         self.backend.roots();
         // Started with the window, not with the trash view: the signal is what tells this window
@@ -459,37 +483,66 @@ impl PixelApp for FilesApp {
     }
 
     fn on_key(&mut self, key: &KeyInput) {
-        if !matches!(key, KeyInput::Character(_)) { self.surface.input.key(key.clone()); }
+        if !matches!(key, KeyInput::Character(_)) {
+            self.surface.input.key(key.clone());
+        }
     }
     fn on_key_event(&mut self, event: &pixelkit_windowing::KeyEvent) {
         if event.pressed && matches!(event.key, KeyInput::Character(_)) {
-            if event.modifiers.control || event.modifiers.logo { self.surface.input.key(event.key.clone()); }
-            else { for character in event.text.chars() { self.surface.input.key(KeyInput::Character(character)); } }
+            if event.modifiers.control || event.modifiers.logo {
+                self.surface.input.key(event.key.clone());
+            } else {
+                for character in event.text.chars() {
+                    self.surface.input.key(KeyInput::Character(character));
+                }
+            }
         }
     }
     fn on_ime(&mut self, event: &pixelkit_windowing::ImeEvent) {
         match event {
-            pixelkit_windowing::ImeEvent::Preedit(text, _) => self.surface.input.set_composition(text),
+            pixelkit_windowing::ImeEvent::Preedit(text, _) => {
+                self.surface.input.set_composition(text)
+            }
             pixelkit_windowing::ImeEvent::Commit(text) => {
                 self.surface.input.set_composition("");
-                for character in text.chars() { self.surface.input.key(KeyInput::Character(character)); }
+                for character in text.chars() {
+                    self.surface.input.key(KeyInput::Character(character));
+                }
             }
             pixelkit_windowing::ImeEvent::Disabled => self.surface.input.set_composition(""),
             pixelkit_windowing::ImeEvent::Enabled => {}
         }
     }
     fn on_focus_changed(&mut self, focused: bool) {
-        if !focused { self.surface.input.blur(); self.surface.invalidate_semantics(); }
+        if !focused {
+            self.surface.input.blur();
+            self.surface.invalidate_semantics();
+        }
     }
-    fn ime_allowed(&self) -> bool { self.surface.ime_caret().is_some() }
+    fn ime_allowed(&self) -> bool {
+        self.surface.ime_caret().is_some()
+    }
     fn ime_cursor_area(&self) -> Option<pixelkit_windowing::ImeCursorArea> {
         let area = self.surface.ime_caret()?;
-        Some(pixelkit_windowing::ImeCursorArea { x: area.x as f64, y: area.y as f64, width: area.w as f64, height: area.h as f64 })
+        Some(pixelkit_windowing::ImeCursorArea {
+            x: area.x as f64,
+            y: area.y as f64,
+            width: area.w as f64,
+            height: area.h as f64,
+        })
     }
-    fn on_layout_changed(&mut self) { self.surface.invalidate_semantics(); }
-    fn accessibility_tree(&mut self) -> Option<pixelkit_ui::semantics::TreeUpdate> { Some(self.surface.accessibility_tree()) }
-    fn on_accessibility_action(&mut self, request: pixelkit_ui::semantics::ActionRequest) { self.surface.accessibility_action(request); }
-    fn on_accessibility_deactivated(&mut self) { self.surface.accessibility_deactivated(); }
+    fn on_layout_changed(&mut self) {
+        self.surface.invalidate_semantics();
+    }
+    fn accessibility_tree(&mut self) -> Option<pixelkit_ui::semantics::TreeUpdate> {
+        Some(self.surface.accessibility_tree())
+    }
+    fn on_accessibility_action(&mut self, request: pixelkit_ui::semantics::ActionRequest) {
+        self.surface.accessibility_action(request);
+    }
+    fn on_accessibility_deactivated(&mut self) {
+        self.surface.accessibility_deactivated();
+    }
 
     fn on_modifiers(&mut self, modifiers: Modifiers) {
         self.surface.input.modifiers_changed(modifiers);

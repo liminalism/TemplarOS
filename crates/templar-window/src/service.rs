@@ -509,7 +509,10 @@ impl<I: IdentityCache> WindowService<I> {
                 if id == child {
                     return false;
                 }
-                ancestor = self.windows.get(&id).and_then(|window| window.transient_parent);
+                ancestor = self
+                    .windows
+                    .get(&id)
+                    .and_then(|window| window.transient_parent);
             }
         }
         self.windows.get_mut(&child).unwrap().transient_parent = parent;
@@ -1317,13 +1320,19 @@ impl<I: IdentityCache> WindowService<I> {
     }
 
     fn raise_transient_ancestors(&mut self, window_id: WindowId) {
-        let mut ancestor = self.windows.get(&window_id).and_then(|window| window.transient_parent);
+        let mut ancestor = self
+            .windows
+            .get(&window_id)
+            .and_then(|window| window.transient_parent);
         while let Some(id) = ancestor {
             if !matches!(self.layer_of(id), Some(Layer::Normal | Layer::AppOnTop)) {
                 break;
             }
             self.layers.raise(id);
-            ancestor = self.windows.get(&id).and_then(|window| window.transient_parent);
+            ancestor = self
+                .windows
+                .get(&id)
+                .and_then(|window| window.transient_parent);
         }
     }
 
@@ -1343,12 +1352,12 @@ impl<I: IdentityCache> WindowService<I> {
     /// all read it.
     pub fn stacking_order(&self) -> Vec<WindowId> {
         let mut order = self.layers.order();
-        if !order
-            .iter()
-            .any(|id| self.outranks_overlay(*id)
-                || self.windows.get(id).is_some_and(|window| window.stacking != WindowStacking::Normal
-                    || window.transient_parent.is_some()))
-        {
+        if !order.iter().any(|id| {
+            self.outranks_overlay(*id)
+                || self.windows.get(id).is_some_and(|window| {
+                    window.stacking != WindowStacking::Normal || window.transient_parent.is_some()
+                })
+        }) {
             return order;
         }
         // A stable second pass applies user stacking and transient-family presentation.
@@ -1369,7 +1378,9 @@ impl<I: IdentityCache> WindowService<I> {
             i32::from(Layer::ShellOverlay.depth()) * 2 - 1
         } else if self.is_always_on_top(window_id) {
             i32::from(position.layer.depth().min(Layer::AppOnTop.depth())) * 2
-        } else if self.windows.get(&window_id)
+        } else if self
+            .windows
+            .get(&window_id)
             .is_some_and(|window| window.stacking == WindowStacking::AlwaysOnBottom)
             && matches!(position.layer, Layer::Normal | Layer::AppOnTop)
         {
@@ -1380,7 +1391,10 @@ impl<I: IdentityCache> WindowService<I> {
         };
         // Negated because `Layer`'s discriminants count *down* the screen: `SecureLock` is 0.
         let mut key = (-layer, position.rank, 0, position.rank);
-        if let Some(parent) = self.windows.get(&window_id).and_then(|window| window.transient_parent)
+        if let Some(parent) = self
+            .windows
+            .get(&window_id)
+            .and_then(|window| window.transient_parent)
             && self.is_visible(parent)
             && matches!(position.layer, Layer::Normal | Layer::AppOnTop)
             && matches!(self.layer_of(parent), Some(Layer::Normal | Layer::AppOnTop))
@@ -1404,7 +1418,9 @@ impl<I: IdentityCache> WindowService<I> {
         let Some(window) = self.windows.get(&window_id) else {
             return false;
         };
-        if !window.fullscreen || window.shelved || !self.is_client_window(window_id)
+        if !window.fullscreen
+            || window.shelved
+            || !self.is_client_window(window_id)
             || window.stacking == WindowStacking::AlwaysOnBottom
         {
             return false;
@@ -1426,7 +1442,6 @@ impl<I: IdentityCache> WindowService<I> {
         self.outputs.is_empty()
             || choose_target_output(geometry, &self.outputs).name.as_str() == peeked
     }
-
 
     // ---- Corner-following window tabs --------------------------------------------------
     //
@@ -1593,9 +1608,9 @@ impl<I: IdentityCache> WindowService<I> {
             return;
         }
         let pending = self.tab_pending.entry(window_id).or_default();
-        pending.reveal_at.get_or_insert(
-            now_ns.saturating_add(crate::geometry::TAB_REVEAL_GRACE_MS * 1_000_000),
-        );
+        pending
+            .reveal_at
+            .get_or_insert(now_ns.saturating_add(crate::geometry::TAB_REVEAL_GRACE_MS * 1_000_000));
         pending.exit_at = None;
     }
 
@@ -1607,9 +1622,9 @@ impl<I: IdentityCache> WindowService<I> {
         }
         let pending = self.tab_pending.entry(window_id).or_default();
         pending.reveal_at = None;
-        pending.exit_at.get_or_insert(
-            now_ns.saturating_add(crate::geometry::TAB_EXIT_GRACE_MS * 1_000_000),
-        );
+        pending
+            .exit_at
+            .get_or_insert(now_ns.saturating_add(crate::geometry::TAB_EXIT_GRACE_MS * 1_000_000));
     }
 
     /// Fire every tab grace deadline reached by monotonic `now_ns`, oldest first, applying
@@ -1651,13 +1666,14 @@ impl<I: IdentityCache> WindowService<I> {
         fired
     }
 
-
     /// The earliest pending tab deadline, if any — what the shared wakeup waits for.
     pub fn next_tab_deadline(&self) -> Option<u64> {
         self.tab_pending
             .iter()
             .filter_map(|(id, pending)| {
-                pending.reveal_at.into_iter()
+                pending
+                    .reveal_at
+                    .into_iter()
                     .chain(pending.exit_at.filter(|_| !self.tab_latched.contains(id)))
                     .min()
             })
@@ -1674,9 +1690,13 @@ impl<I: IdentityCache> WindowService<I> {
     /// Whether `window_id` is pinned above the other client windows.
     #[must_use]
     pub fn is_always_on_top(&self, window_id: WindowId) -> bool {
-        matches!(self.layer_of(window_id), Some(Layer::Normal | Layer::AppOnTop))
-            && self.windows.get(&window_id)
-                .is_some_and(|window| window.stacking == WindowStacking::AlwaysOnTop)
+        matches!(
+            self.layer_of(window_id),
+            Some(Layer::Normal | Layer::AppOnTop)
+        ) && self
+            .windows
+            .get(&window_id)
+            .is_some_and(|window| window.stacking == WindowStacking::AlwaysOnTop)
     }
 
     /// Pin or unpin `window_id`, returning its new state. Client windows only — a shell surface
@@ -1688,19 +1708,23 @@ impl<I: IdentityCache> WindowService<I> {
         } else {
             WindowStacking::AlwaysOnTop
         };
-        self.set_window_stacking(window_id, stacking)
-            && stacking == WindowStacking::AlwaysOnTop
+        self.set_window_stacking(window_id, stacking) && stacking == WindowStacking::AlwaysOnTop
     }
 
     /// Set mutually-exclusive user stacking without raising, activating, or granting authority.
     /// Protected scene roles/layers cannot be moved by an application title menu.
     pub fn set_window_stacking(&mut self, window_id: WindowId, stacking: WindowStacking) -> bool {
         if !self.is_client_window(window_id)
-            || !matches!(self.layer_of(window_id), Some(Layer::Normal | Layer::AppOnTop))
+            || !matches!(
+                self.layer_of(window_id),
+                Some(Layer::Normal | Layer::AppOnTop)
+            )
         {
             return false;
         }
-        let Some(window) = self.windows.get_mut(&window_id) else { return false; };
+        let Some(window) = self.windows.get_mut(&window_id) else {
+            return false;
+        };
         window.stacking = stacking;
         true
     }
@@ -2656,41 +2680,75 @@ mod tests {
         );
     }
 
-
     #[test]
     fn transient_children_follow_fullscreen_without_authority_or_focus() {
         let (mut service, parent) = one_window(Rect::new(100, 100, 400, 300));
-        let child = service.on_toplevel_mapped(2, ClientKind::Application,
-            WindowClaims::default(), "chooser".into(), Rect::new(120, 120, 200, 100));
-        let sibling = service.on_toplevel_mapped(3, ClientKind::Application,
-            WindowClaims::default(), "other chooser".into(), Rect::new(140, 140, 200, 100));
+        let child = service.on_toplevel_mapped(
+            2,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "chooser".into(),
+            Rect::new(120, 120, 200, 100),
+        );
+        let sibling = service.on_toplevel_mapped(
+            3,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "other chooser".into(),
+            Rect::new(140, 140, 200, 100),
+        );
         let identity = service.window(child).unwrap().identity.clone();
         service.set_fullscreen(parent, true);
         service.activate(parent);
         assert!(service.set_transient_parent(child, Some(parent)));
         assert!(service.set_transient_parent(sibling, Some(parent)));
         let order = service.stacking_order();
-        assert!(order.iter().position(|id| *id == child) < order.iter().position(|id| *id == parent));
-        assert!(order.iter().position(|id| *id == sibling) < order.iter().position(|id| *id == parent));
+        assert!(
+            order.iter().position(|id| *id == child) < order.iter().position(|id| *id == parent)
+        );
+        assert!(
+            order.iter().position(|id| *id == sibling) < order.iter().position(|id| *id == parent)
+        );
         assert_eq!(service.layer_of(child), Some(Layer::Normal));
         assert_eq!(service.window(child).unwrap().identity, identity);
         assert!(!service.window(child).unwrap().activated);
         assert!(!service.set_transient_parent(parent, Some(child)), "cycle");
         assert!(!service.set_transient_parent(child, Some(child)), "self");
-        assert!(!service.set_transient_parent(child, Some(WindowId(u64::MAX))), "dead");
+        assert!(
+            !service.set_transient_parent(child, Some(WindowId(u64::MAX))),
+            "dead"
+        );
         let protected = shell_surface(&mut service, Layer::SystemModal, Rect::new(0, 0, 100, 100));
         assert!(!service.set_transient_parent(child, Some(protected)));
         assert!(!service.set_transient_parent(protected, Some(parent)));
         service.set_role(protected, WindowRole::Application);
-        assert!(!service.set_transient_parent(child, Some(protected)), "protected layer despite ordinary role");
+        assert!(
+            !service.set_transient_parent(child, Some(protected)),
+            "protected layer despite ordinary role"
+        );
         assert!(!service.set_transient_parent(protected, Some(parent)));
-        assert!(service.set_transient_parent(child, Some(sibling)), "parent replacement");
-        assert_eq!(service.window(child).unwrap().transient_parent, Some(sibling));
-        assert_eq!(service.window(sibling).unwrap().transient_parent, Some(parent));
-        assert!(service.set_transient_parent(child, None), "property deletion");
+        assert!(
+            service.set_transient_parent(child, Some(sibling)),
+            "parent replacement"
+        );
+        assert_eq!(
+            service.window(child).unwrap().transient_parent,
+            Some(sibling)
+        );
+        assert_eq!(
+            service.window(sibling).unwrap().transient_parent,
+            Some(parent)
+        );
+        assert!(
+            service.set_transient_parent(child, None),
+            "property deletion"
+        );
         assert_eq!(service.window(child).unwrap().transient_parent, None);
-        assert_eq!(service.window(sibling).unwrap().transient_parent, Some(parent),
-            "detaching one child must preserve unrelated siblings");
+        assert_eq!(
+            service.window(sibling).unwrap().transient_parent,
+            Some(parent),
+            "detaching one child must preserve unrelated siblings"
+        );
         assert_eq!(service.window(child).unwrap().identity, identity);
         assert!(!service.window(child).unwrap().activated);
         service.on_toplevel_destroyed(parent);
@@ -2735,9 +2793,18 @@ mod tests {
     #[test]
     fn user_stacking_is_exclusive_persistent_and_keeps_bottom_above_home() {
         let (mut service, first) = one_window(Rect::new(100, 100, 400, 300));
-        let second = service.on_toplevel_mapped(2, ClientKind::Application,
-            WindowClaims::default(), String::new(), Rect::new(200, 200, 400, 300));
-        let home = shell_surface(&mut service, Layer::HomeSurface, Rect::new(0, 0, 1920, 1080));
+        let second = service.on_toplevel_mapped(
+            2,
+            ClientKind::Application,
+            WindowClaims::default(),
+            String::new(),
+            Rect::new(200, 200, 400, 300),
+        );
+        let home = shell_surface(
+            &mut service,
+            Layer::HomeSurface,
+            Rect::new(0, 0, 1920, 1080),
+        );
         let identity = service.window(first).unwrap().identity.clone();
         service.activate(second);
         let mru = service.switch_order();
@@ -2746,7 +2813,10 @@ mod tests {
             service.raise(second);
             let order = service.stacking_order();
             let rank = |id| order.iter().position(|candidate| *candidate == id).unwrap();
-            assert_eq!(rank(first) < rank(second), preference == WindowStacking::AlwaysOnTop);
+            assert_eq!(
+                rank(first) < rank(second),
+                preference == WindowStacking::AlwaysOnTop
+            );
             assert!(rank(first) < rank(home));
             assert!(service.is_visible(first));
             assert_eq!(service.layer_of(first), Some(Layer::Normal));
@@ -2758,12 +2828,21 @@ mod tests {
         }
         service.set_window_stacking(first, WindowStacking::AlwaysOnBottom);
         service.activate(first);
-        assert_eq!(service.stacking_order().first().copied(), Some(second),
-            "activation and raises do not erase the bottom preference");
+        assert_eq!(
+            service.stacking_order().first().copied(),
+            Some(second),
+            "activation and raises do not erase the bottom preference"
+        );
         assert!(service.toggle_always_on_top(first));
-        assert_eq!(service.window(first).unwrap().stacking, WindowStacking::AlwaysOnTop);
+        assert_eq!(
+            service.window(first).unwrap().stacking,
+            WindowStacking::AlwaysOnTop
+        );
         assert!(!service.toggle_always_on_top(first));
-        assert_eq!(service.window(first).unwrap().stacking, WindowStacking::Normal);
+        assert_eq!(
+            service.window(first).unwrap().stacking,
+            WindowStacking::Normal
+        );
         assert!(!service.set_window_stacking(home, WindowStacking::AlwaysOnTop));
         let protected = shell_surface(&mut service, Layer::SystemModal, Rect::new(0, 0, 100, 100));
         service.set_role(protected, WindowRole::Application);
@@ -2774,11 +2853,25 @@ mod tests {
     #[test]
     fn transient_family_follows_user_stacking_without_focus_or_identity_changes() {
         let (mut service, parent) = one_window(Rect::new(100, 100, 400, 300));
-        let child = service.on_toplevel_mapped(2, ClientKind::Application,
-            WindowClaims::default(), "dialog".into(), Rect::new(200, 200, 200, 100));
-        let other = service.on_toplevel_mapped(3, ClientKind::Application,
-            WindowClaims::default(), "other".into(), Rect::new(200, 200, 400, 300));
-        let home = shell_surface(&mut service, Layer::HomeSurface, Rect::new(0, 0, 1920, 1080));
+        let child = service.on_toplevel_mapped(
+            2,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "dialog".into(),
+            Rect::new(200, 200, 200, 100),
+        );
+        let other = service.on_toplevel_mapped(
+            3,
+            ClientKind::Application,
+            WindowClaims::default(),
+            "other".into(),
+            Rect::new(200, 200, 400, 300),
+        );
+        let home = shell_surface(
+            &mut service,
+            Layer::HomeSurface,
+            Rect::new(0, 0, 1920, 1080),
+        );
         assert!(service.set_transient_parent(child, Some(parent)));
         let identity = service.window(child).unwrap().identity.clone();
         service.activate(other);
@@ -2787,19 +2880,31 @@ mod tests {
             service.raise(other);
             let order = service.stacking_order();
             let rank = |id| order.iter().position(|candidate| *candidate == id).unwrap();
-            assert!(rank(child) < rank(parent), "dialogs stay usable above their parent");
-            assert_eq!(rank(child) < rank(other), preference == WindowStacking::AlwaysOnTop);
+            assert!(
+                rank(child) < rank(parent),
+                "dialogs stay usable above their parent"
+            );
+            assert_eq!(
+                rank(child) < rank(other),
+                preference == WindowStacking::AlwaysOnTop
+            );
             assert!(rank(parent) < rank(home));
             assert!(!service.window(child).unwrap().activated);
             assert_eq!(service.window(child).unwrap().identity, identity);
             assert_eq!(service.layer_of(child), Some(Layer::Normal));
         }
         service.set_fullscreen(parent, true);
-        assert_eq!(service.stacking_order().first().copied(), Some(other),
-            "explicit bottom overrides fullscreen promotion, not visibility");
+        assert_eq!(
+            service.stacking_order().first().copied(),
+            Some(other),
+            "explicit bottom overrides fullscreen promotion, not visibility"
+        );
         service.set_window_stacking(parent, WindowStacking::Normal);
-        assert_eq!(service.stacking_order().first().copied(), Some(child),
-            "Normal restores fullscreen's family presentation precedence");
+        assert_eq!(
+            service.stacking_order().first().copied(),
+            Some(child),
+            "Normal restores fullscreen's family presentation precedence"
+        );
         service.on_toplevel_destroyed(parent);
         assert_eq!(service.window(child).unwrap().transient_parent, None);
         assert!(service.is_visible(child));
@@ -4150,7 +4255,11 @@ mod tests {
         service.set_fullscreen(app, true);
         let before = service.window(app).unwrap().geometry;
         let work_before = service.shell_toplevels();
-        let toast = shell_surface(&mut service, Layer::Notification, Rect::new(1500, 800, 380, 80));
+        let toast = shell_surface(
+            &mut service,
+            Layer::Notification,
+            Rect::new(1500, 800, 380, 80),
+        );
         let order = service.stacking_order();
         assert!(order.iter().position(|id| *id == toast) < order.iter().position(|id| *id == app));
         assert!(!service.should_activate_on_map(toast));
@@ -4541,14 +4650,20 @@ mod tests {
         service.note_tab_approach(id, 0);
         service.note_tab_approach(id, reveal - 1);
         assert_eq!(service.next_tab_deadline(), Some(reveal));
-        assert_eq!(service.fire_tab_deadlines(reveal), vec![TabDeadlineFired::Reveal(id)]);
+        assert_eq!(
+            service.fire_tab_deadlines(reveal),
+            vec![TabDeadlineFired::Reveal(id)]
+        );
         service.note_tab_approach(id, reveal + 1);
         assert_eq!(service.next_tab_deadline(), None);
         service.note_tab_leave(id, reveal);
         let exit = reveal + crate::TAB_EXIT_GRACE_MS * 1_000_000;
         service.note_tab_leave(id, exit - 1);
         assert_eq!(service.next_tab_deadline(), Some(exit));
-        assert_eq!(service.fire_tab_deadlines(exit), vec![TabDeadlineFired::Exit(id)]);
+        assert_eq!(
+            service.fire_tab_deadlines(exit),
+            vec![TabDeadlineFired::Exit(id)]
+        );
     }
 
     #[test]
@@ -4556,17 +4671,33 @@ mod tests {
         let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
         service.note_tab_approach(id, 0);
         service.note_tab_leave(id, 1);
-        assert_eq!(service.next_tab_deadline(), None, "an unrevealed leave needs no timer");
+        assert_eq!(
+            service.next_tab_deadline(),
+            None,
+            "an unrevealed leave needs no timer"
+        );
         for transition in 0..5 {
             service.note_tab_approach(id, 0);
             service.set_controls_revealed(id, true);
             service.set_tab_latched(id, true);
             match transition {
                 0 => service.clear_tab_interaction(),
-                1 => { service.shelve(id); },
-                2 => { service.set_mapped(id, false); },
-                3 => { service.set_home_revealed(true); },
-                _ => { service.on_outputs_changed(vec![Output::new("other", Rect::new(0, 0, 800, 600), 1000)]); },
+                1 => {
+                    service.shelve(id);
+                }
+                2 => {
+                    service.set_mapped(id, false);
+                }
+                3 => {
+                    service.set_home_revealed(true);
+                }
+                _ => {
+                    service.on_outputs_changed(vec![Output::new(
+                        "other",
+                        Rect::new(0, 0, 800, 600),
+                        1000,
+                    )]);
+                }
             }
             assert!(service.fire_tab_deadlines(u64::MAX).is_empty());
             assert!(!service.is_tab_latched(id));

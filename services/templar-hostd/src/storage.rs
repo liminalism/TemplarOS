@@ -207,7 +207,9 @@ impl TrimAction for DeleteFilesUnder {
             match fs::remove_file(&path) {
                 Ok(()) => freed += bytes,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error).with_context(|| format!("deleting {}", path.display())),
+                Err(error) => {
+                    return Err(error).with_context(|| format!("deleting {}", path.display()));
+                }
             }
         }
         Ok(freed)
@@ -218,7 +220,9 @@ fn walk_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        if !fs::symlink_metadata(&d).is_ok_and(|metadata| metadata.is_dir()) { continue; }
+        if !fs::symlink_metadata(&d).is_ok_and(|metadata| metadata.is_dir()) {
+            continue;
+        }
         let Ok(entries) = fs::read_dir(&d) else {
             continue;
         };
@@ -333,7 +337,9 @@ pub fn enforce(
         if usage.status() == ReserveStatus::Ok {
             break;
         }
-        if root_read_only && action.target() == TrimTarget::AptCache { continue; }
+        if root_read_only && action.target() == TrimTarget::AptCache {
+            continue;
+        }
         let freed = action
             .trim(root)
             .with_context(|| format!("{:?}", action.target()))?;

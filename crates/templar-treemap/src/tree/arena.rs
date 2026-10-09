@@ -43,6 +43,8 @@ pub struct FileTree {
     extension_ids: HashMap<String, u16>,
     /// Bytes per category under each node (a directory's composition).
     pub category_weights: Vec<[u64; CATEGORY_COUNT]>,
+    /// Cached bytes represented by directories themselves (opaque or depth-bounded views).
+    pub(crate) directory_bytes: Vec<u64>,
 }
 
 impl FileTree {
@@ -65,6 +67,7 @@ impl FileTree {
             extensions: vec![String::new()],
             extension_ids: HashMap::from([(String::new(), 0)]),
             category_weights: vec![[0; CATEGORY_COUNT]],
+            directory_bytes: vec![0],
         }
     }
 
@@ -84,6 +87,7 @@ impl FileTree {
             weights[category_index(category)] = size;
         }
         self.category_weights.push(weights);
+        self.directory_bytes.push(0);
         id
     }
 
