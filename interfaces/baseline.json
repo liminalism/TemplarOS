@@ -527,6 +527,7 @@
         "NotifyIdle": "(b)->()",
         "NotifyLocked": "()->()",
         "NotifyUnlocked": "()->()",
+        "OpenLauncherV1": "(sss)->()",
         "PowerOff": "()->()",
         "Reboot": "()->()",
         "Suspend": "()->()"
@@ -550,7 +551,8 @@
         "Reset": "(ss)->()",
         "Schema": "()->(a(sssb))",
         "SchemaDetails": "()->(as)",
-        "Set": "(sss)->()"
+        "Set": "(sss)->()",
+        "UpdateLauncherV1": "(ss)->(s)"
       },
       "signals": {
         "Changed": "(s)"

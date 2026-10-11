@@ -21,6 +21,20 @@ pub(crate) struct AppNames {
 }
 
 impl AppNames {
+    pub(crate) fn choices(&self) -> Vec<(String, String)> {
+        let mut rows: Vec<_> = self
+            .names
+            .iter()
+            .map(|(id, name)| (id.clone(), name.clone()))
+            .collect();
+        rows.sort_by(|left, right| {
+            left.1
+                .to_lowercase()
+                .cmp(&right.1.to_lowercase())
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        rows
+    }
     /// Build from `AppIdentity1.ListApplications` rows.
     ///
     /// A blank display name is treated as absent: an imported `.desktop` file with no `Name=`

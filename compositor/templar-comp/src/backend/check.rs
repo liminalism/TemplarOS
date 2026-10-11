@@ -430,6 +430,20 @@ mod tests {
     #[derive(Default)]
     struct FocusClient {
         compositor: Option<wayland_client::protocol::wl_compositor::WlCompositor>,
+        keyboard: Option<wayland_client::protocol::wl_keyboard::WlKeyboard>,
+        events: Vec<FocusEvent>,
+    }
+
+    #[derive(Debug)]
+    enum FocusEvent {
+        Enter(u32),
+        Modifiers(u32),
+        Key(u32, bool),
+    }
+
+    enum FocusCommand {
+        Inspect,
+        Release,
     }
 
     impl Dispatch<wl_registry::WlRegistry, ()> for FocusClient {
@@ -446,19 +460,59 @@ mod tests {
                 interface,
                 version,
             } = event
-                && interface == "wl_compositor"
             {
-                state.compositor = Some(registry.bind(name, version.min(4), qh, ()));
+                if interface == "wl_compositor" {
+                    state.compositor = Some(registry.bind(name, version.min(4), qh, ()));
+                } else if interface == "wl_seat" {
+                    let seat: wayland_client::protocol::wl_seat::WlSeat =
+                        registry.bind(name, version.min(7), qh, ());
+                    state.keyboard = Some(seat.get_keyboard(qh, ()));
+                }
+            }
+        }
+    }
+    impl Dispatch<wayland_client::protocol::wl_keyboard::WlKeyboard, ()> for FocusClient {
+        fn event(
+            state: &mut Self,
+            _: &wayland_client::protocol::wl_keyboard::WlKeyboard,
+            event: wayland_client::protocol::wl_keyboard::Event,
+            (): &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            use wayland_client::{Proxy, WEnum, protocol::wl_keyboard};
+            match event {
+                wl_keyboard::Event::Enter { surface, .. } => {
+                    state
+                        .events
+                        .push(FocusEvent::Enter(surface.id().protocol_id()));
+                }
+                wl_keyboard::Event::Modifiers { mods_depressed, .. } => {
+                    state.events.push(FocusEvent::Modifiers(mods_depressed));
+                }
+                wl_keyboard::Event::Key {
+                    key,
+                    state: key_state,
+                    ..
+                } => {
+                    state.events.push(FocusEvent::Key(
+                        key,
+                        key_state == WEnum::Value(wl_keyboard::KeyState::Pressed),
+                    ));
+                }
+                _ => {}
             }
         }
     }
     wayland_client::delegate_noop!(FocusClient: ignore wayland_client::protocol::wl_compositor::WlCompositor);
     wayland_client::delegate_noop!(FocusClient: ignore wayland_client::protocol::wl_surface::WlSurface);
+    wayland_client::delegate_noop!(FocusClient: ignore wayland_client::protocol::wl_seat::WlSeat);
 
     struct FocusSurfaces {
         owner: smithay::reexports::wayland_server::Client,
         surfaces: [smithay::reexports::wayland_server::protocol::wl_surface::WlSurface; 3],
-        release: mpsc::Sender<()>,
+        release: mpsc::Sender<FocusCommand>,
+        events: mpsc::Receiver<Vec<FocusEvent>>,
         client: std::thread::JoinHandle<()>,
     }
 
@@ -477,6 +531,7 @@ mod tests {
             .unwrap();
         let (ready_tx, ready_rx) = mpsc::channel();
         let (release, release_rx) = mpsc::channel();
+        let (events_tx, events) = mpsc::channel();
         let client = std::thread::spawn(move || {
             use wayland_client::Proxy;
             let connection = Connection::from_socket(peer).unwrap();
@@ -495,7 +550,15 @@ mod tests {
                         .map(|surface| surface.id().protocol_id()),
                 )
                 .unwrap();
-            release_rx.recv().unwrap();
+            while let Ok(command) = release_rx.recv() {
+                match command {
+                    FocusCommand::Inspect => {
+                        queue.roundtrip(&mut globals).unwrap();
+                        events_tx.send(std::mem::take(&mut globals.events)).unwrap();
+                    }
+                    FocusCommand::Release => break,
+                }
+            }
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let ids = loop {
@@ -516,11 +579,36 @@ mod tests {
             owner,
             surfaces,
             release,
+            events,
             client,
         }
     }
 
+    fn focus_events(
+        event_loop: &mut EventLoop<State>,
+        state: &mut State,
+        commands: &mpsc::Sender<FocusCommand>,
+        events: &mpsc::Receiver<Vec<FocusEvent>>,
+    ) -> Vec<FocusEvent> {
+        commands.send(FocusCommand::Inspect).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Ok(events) = events.try_recv() {
+                return events;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "keyboard observer roundtrip timed out"
+            );
+            event_loop
+                .dispatch(Some(std::time::Duration::from_millis(20)), state)
+                .unwrap();
+            state.display_handle.flush_clients().unwrap();
+        }
+    }
+
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn popup_focus_preserves_home_and_mru_and_cannot_steal_focus_on_release() {
         use templar_window::{ClientKind, Layer, Rect, WindowClaims};
 
@@ -534,6 +622,7 @@ mod tests {
             owner: shell,
             surfaces,
             release,
+            events,
             client,
         } = focus_surfaces(&mut event_loop, &mut state);
         let mut surfaces = surfaces.into_iter();
@@ -561,13 +650,147 @@ mod tests {
             state.windows.mark_mapped(surface.clone(), id);
             (surface, id)
         };
-        let (home, _) = make_surface(Layer::HomeSurface);
+        let (home, home_id) = make_surface(Layer::HomeSurface);
         let (popup, popup_id) = make_surface(Layer::ShellOverlay);
         let (client_surface, client_id) = make_surface(Layer::Normal);
         let keyboard = state.seat.get_keyboard().unwrap();
         let request = |state: &mut State, surface| {
             crate::protocols_shell::focus_shell_surface(state, &shell, surface);
         };
+        keyboard.set_focus(
+            &mut state,
+            Some(client_surface.clone()),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
+        let key = |code: u32, key_state| crate::launcher_input::QueuedKey {
+            code: smithay::input::keyboard::Keycode::new(code + 8),
+            key_state,
+            serial: smithay::utils::SERIAL_COUNTER.next_serial(),
+            time: 1,
+        };
+        use smithay::backend::input::KeyState::{Pressed, Released};
+        // The raw mapping queue preserves a complete modifier chord before the
+        // popup exists and drains it through production keyboard routing after focus.
+        state.begin_launcher_input(&shell);
+        for event in [
+            key(42, Pressed),
+            key(30, Pressed),
+            key(30, Released),
+            key(42, Released),
+        ] {
+            assert!(state.buffer_launcher_key(event));
+        }
+        assert!(!keyboard.modifier_state().shift);
+        request(&mut state, Some(popup.clone()));
+        assert_eq!(keyboard.current_focus(), Some(popup.clone()));
+        assert!(!keyboard.modifier_state().shift);
+        assert!(keyboard.pressed_keys().is_empty());
+        // Reproduce Super+Space's physical ordering: focus enters while Logo is
+        // held, then the intercepted release must reach the client's modifiers
+        // before the first queued character. Checking XKB alone misses this bug.
+        keyboard.set_focus(
+            &mut state,
+            Some(client_surface.clone()),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
+        state.on_keyboard_key(key(125, Pressed));
+        state.on_keyboard_key(key(57, Pressed));
+        assert!(keyboard.modifier_state().logo);
+        let _ = focus_events(&mut event_loop, &mut state, &release, &events);
+        state.begin_launcher_input(&shell);
+        for event in [
+            key(57, Released),
+            key(125, Released),
+            key(38, Pressed),
+            key(38, Released),
+            key(15, Pressed),
+            key(15, Released),
+        ] {
+            assert!(state.buffer_launcher_key(event));
+        }
+        request(&mut state, Some(popup.clone()));
+        let observed = focus_events(&mut event_loop, &mut state, &release, &events);
+        use smithay::reexports::wayland_server::Resource;
+        let popup_enter = observed
+            .iter()
+            .position(|event| {
+                matches!(event,
+            FocusEvent::Enter(id) if *id == popup.id().protocol_id())
+            })
+            .unwrap();
+        let first_text = observed
+            .iter()
+            .position(|event| matches!(event, FocusEvent::Key(38, true)))
+            .expect("queued text must reach the actual keyboard client");
+        let modifiers: Vec<_> = observed[popup_enter..first_text]
+            .iter()
+            .filter_map(|event| {
+                if let FocusEvent::Modifiers(mask) = event {
+                    Some(*mask)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            modifiers.first().is_some_and(|mask| *mask != 0),
+            "focus must enter with Logo held: {observed:?}"
+        );
+        assert_eq!(
+            modifiers.last(),
+            Some(&0),
+            "Logo release must be advertised before text: {observed:?}"
+        );
+        assert!(
+            !observed
+                .iter()
+                .any(|event| matches!(event, FocusEvent::Key(125, _))),
+            "reserved Super must not send an orphan key release: {observed:?}"
+        );
+        assert!(
+            observed
+                .iter()
+                .any(|event| matches!(event, FocusEvent::Key(15, true))),
+            "Tab follows the queued text: {observed:?}"
+        );
+        assert!(!keyboard.modifier_state().logo);
+        assert!(keyboard.pressed_keys().is_empty());
+        // An absent shell ends the wait on its own timer and never leaves XKB held.
+        keyboard.set_focus(
+            &mut state,
+            Some(client_surface.clone()),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
+        state.begin_launcher_input(&shell);
+        assert!(state.buffer_launcher_key(key(29, Pressed)));
+        assert!(state.buffer_launcher_key(key(29, Released)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while state.launcher_focus_waiting() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "launcher wait timer did not fire"
+            );
+            event_loop
+                .dispatch(Some(std::time::Duration::from_millis(20)), &mut state)
+                .unwrap();
+        }
+        assert!(
+            !state.buffer_launcher_key(key(30, Pressed)),
+            "focus wait must expire"
+        );
+        assert!(!keyboard.modifier_state().ctrl);
+        assert!(keyboard.pressed_keys().is_empty());
+        assert_eq!(keyboard.current_focus(), Some(client_surface.clone()));
+        state.window_service.activate(client_id);
+        state.window_service.set_maximized(client_id, true);
+        let launcher_before = state.window_service.shell_toplevels();
+        state.run_recovery_action(crate::keybindings::RecoveryAction::RevealLauncher);
+        assert!(
+            !state.window_service.home_revealed(),
+            "launcher requests keep active work visible"
+        );
+        assert_eq!(state.window_service.shell_toplevels(), launcher_before);
+        state.window_service.set_maximized(client_id, false);
         state.window_service.activate(client_id);
         state.window_service.set_home_revealed(true);
         keyboard.set_focus(
@@ -593,7 +816,7 @@ mod tests {
         assert!(state.window_service.home_revealed());
         assert_eq!(state.window_service.shell_toplevels(), before);
         request(&mut state, None);
-        assert_eq!(keyboard.current_focus(), Some(home));
+        assert_eq!(keyboard.current_focus(), Some(home.clone()));
         assert_eq!(state.window_service.shell_toplevels(), before);
 
         // An outside click won focus already: a delayed popup-close request must not take it back.
@@ -605,6 +828,48 @@ mod tests {
         );
         request(&mut state, None);
         assert_eq!(keyboard.current_focus(), Some(client_surface.clone()));
+        // Exercise the production outside-press path, including Home and empty desktop.
+        state
+            .window_service
+            .set_geometry(home_id, Rect::new(0, 0, 800, 600));
+        state
+            .window_service
+            .set_geometry(client_id, Rect::new(10, 10, 300, 200));
+        state
+            .window_service
+            .set_geometry(popup_id, Rect::new(500, 10, 300, 200));
+        request(&mut state, Some(popup.clone()));
+        state.handle_press_for_focus_or_drag(
+            (50.0, 50.0).into(),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+            0x110,
+        );
+        assert_eq!(keyboard.current_focus(), Some(client_surface.clone()));
+        request(&mut state, None);
+        assert_eq!(keyboard.current_focus(), Some(client_surface.clone()));
+        request(&mut state, Some(popup.clone()));
+        state.handle_press_for_focus_or_drag(
+            (400.0, 400.0).into(),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+            0x110,
+        );
+        assert_eq!(keyboard.current_focus(), Some(home.clone()));
+        request(&mut state, None);
+        assert_eq!(keyboard.current_focus(), Some(home.clone()));
+        request(&mut state, Some(popup.clone()));
+        state.handle_press_for_focus_or_drag(
+            (900.0, 700.0).into(),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+            0x110,
+        );
+        assert_eq!(keyboard.current_focus(), None);
+        request(&mut state, None);
+        assert_eq!(keyboard.current_focus(), None);
+        keyboard.set_focus(
+            &mut state,
+            Some(client_surface.clone()),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
         // Hidden surfaces and the lock screen cannot be bypassed by a shell popup request.
         state.window_service.set_mapped(popup_id, false);
         request(&mut state, Some(popup.clone()));
@@ -613,7 +878,7 @@ mod tests {
         state.session_lock.locked = true;
         request(&mut state, Some(popup));
         assert_eq!(keyboard.current_focus(), Some(client_surface));
-        release.send(()).unwrap();
+        release.send(FocusCommand::Release).unwrap();
         client.join().unwrap();
     }
 
@@ -641,6 +906,7 @@ mod tests {
             owner: shell,
             surfaces: [home_surface, popup_surface, _],
             release,
+            events: _,
             client,
         } = focus_surfaces(&mut event_loop, &mut state);
         let shell_window = |state: &mut State, surface: &WlSurface, layer, role| {
@@ -761,7 +1027,7 @@ mod tests {
             "a card dies with the Home surface it was on"
         );
 
-        release.send(()).unwrap();
+        release.send(FocusCommand::Release).unwrap();
         client.join().unwrap();
     }
 }

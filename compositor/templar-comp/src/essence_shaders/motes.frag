@@ -1,0 +1,36 @@
+uniform sampler2D e_window_tex;
+varying vec2 v_local;
+varying vec2 v_uv;
+varying vec2 v_px;
+varying vec4 v_life;
+varying vec2 v_size;
+void main() {
+    float progress=v_life.x;
+    float roundness=smoothstep(0.0,0.35,progress);
+    float base=mix(max(abs(v_local.x),abs(v_local.y)),length(v_local)*1.12,roundness);
+    if(base-0.15*roundness>=0.5) discard;
+    vec4 field=texture2D(e_field_tex,field_uv(v_px));
+    if(any(lessThan(v_uv,vec2(0.0))) || any(greaterThan(v_uv,vec2(1.0))) || covered(v_px,field.a))discard;
+    vec4 piece=texture2D(e_window_tex,v_uv);
+    vec4 cloud=texture2D(e_noise_tex,v_px/(e_timing.y*3.0));
+    float d=base+(cloud.w-0.5)*0.3*roundness;
+    float shape=1.0-smoothstep(0.5-mix(0.015,0.4,roundness),0.5,d);
+    float crumble=smoothstep(0.0,0.1,progress);
+    float grain=e_dust.x;float spacing=grain*2.2;
+    vec2 q=v_local*v_size;float lane=floor(q.y/spacing);
+    float pace=hash12(vec2(lane,v_life.z))-0.5;
+    vec2 drift=vec2(q.x+pace*v_size.x*0.6*crumble,q.y);
+    vec2 site=floor(drift/spacing);vec4 h=hash42(site+v_life.zw);
+    vec2 center=(site+0.3+0.4*h.xy)*spacing;
+    float r=grain*0.5*(0.7+0.6*h.z);float rr=max(r,0.5);
+    float cover=(1.0-smoothstep(rr-0.5,rr+0.5,distance(drift,center)))*min(1.0,(r*r)/(rr*rr));
+    float dust=h.w<e_dust.y?cover:0.0;
+    float solid=mix(1.0,dust,crumble);
+    float sparkle=mix(1.0,0.45+0.75*fract(h.x+h.y),crumble);
+    float g=e_jitter.z*smoothstep(0.0,0.25,progress);
+    vec3 straight=piece.rgb/max(piece.a,0.001);
+    vec3 essence=e_glow.rgb*(0.6+0.4*dot(straight,vec3(0.2126,0.7152,0.0722)));
+    vec3 rgb=mix(piece.rgb,essence*piece.a,g);
+    float k=shape*solid*v_life.y;
+    gl_FragColor=vec4(rgb*k*(1.0+e_glow.w*g*0.35)*sparkle,piece.a*k*(1.0-0.75*g));
+}

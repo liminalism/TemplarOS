@@ -160,7 +160,7 @@ by fenced removal of the old registration and a full scan. Paths are never rewri
 discovery. [Injected-provider relocation tests](../measurements/index-volumes-2026-10-08-relocation.md)
 pass; the real mount journey and actual NTFS unplug/return remain unqualified.
 
-The TemplarOS FSearch build consumes this index without a local scanner, watcher or `fsearch.db`.
+The first-party Apps/Files launcher consumes this index directly. The retired FSearch prototype previously consumed it without a local scanner, watcher or `fsearch.db`.
 Silvaview's optional Linux service mode consumes summary-first snapshots, labels indexed logical
 size and freshness, and expands native subtrees on demand. Missing normal directory aggregates
 remain partial. Service failure or stale frames never silently start a direct scan. The actual
@@ -303,12 +303,14 @@ distribution from outside:
 - **Recents**: not integrated. pcmanfm-qt writes `recently-used.xbel`; `Files.Recents1` keeps its
   own answer in the state store and does not read xbel. Deferred, not planned: the two answer
   different questions ("what did I open" against "where was I last working").
-- **Search**: PCManFM-Qt Find remains its own. The TemplarOS FSearch fork uses `Files.Index1`;
-  its upstream build still has a separate database. The current shell routes ordinary folders
-  to PCManFM and retains the FSearch provider intent; its older native Files search notice is
-  not an ordinary exposed route. On 2026-10-08 the owner deferred the WP14 same-query notice comparison and WP16 fork
-  adoption in favor of a future own integrated Index1 GUI with a large FSearch-style window.
-  The working fork remains a qualified prototype. PCManFM Find is separate.
+- **Search** (owner direction, 2026-10-09): one PixelKit launcher switches between Apps and Files
+  while retaining typed text. The ordinary Files mode searches everywhere through `Files.Index1`;
+  the shipped PCManFM **Search here…** custom action invokes `templar files search-here <directory>`
+  to open that same popup with explicit directory scope. PCManFM's own Find remains available.
+  FSearch provider routing and package adoption are retired; WP14 measurements remain historical
+  prototype evidence, not a current shipping dependency. Native path bytes remain target identity;
+  search hiding/aliases/favorites are reversible Settings1 metadata, not filesystem operations.
+
 
 Native Ubuntu 26.04 observation on 2026-10-06 used actual PCManFM-Qt on an owned X11 display
 and private bus. Its `FileManager1` owner PID matched the launched process; `ShowItems`

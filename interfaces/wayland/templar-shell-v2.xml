@@ -6,7 +6,7 @@
 <protocol name="templar_shell_v2">
   <copyright>Copyright 2026 TemplarOS contributors. AGPL-3.0-only.</copyright>
 
-  <interface name="templar_shell_manager_v2" version="14">
+  <interface name="templar_shell_manager_v2" version="15">
     <description summary="shell control entry point">
       Bound only by the client the compositor itself launched as the shell.
       The v2 manager removes legacy global input and idle-policy writers. Its distinct interface
@@ -492,6 +492,26 @@
         <description summary="only with the hovered controls (windows.tabs.title=hover)"/>
       </entry>
     </enum>
+    <enum name="window_transition" since="15">
+      <entry name="off" value="0"/>
+      <entry name="simple" value="1"/>
+      <entry name="essence" value="2"/>
+    </enum>
+    <enum name="launcher_mode" since="15">
+      <entry name="apps" value="0"/>
+      <entry name="files" value="1"/>
+    </enum>
+    <request name="set_window_transition" since="15">
+      <description summary="select the compositor park and restore transition">Reduced motion overrides this choice. Grain updates affect drawing only; unsupported GPU effects fall back to simple motion.</description>
+      <arg name="kind" type="uint" enum="window_transition"/>
+      <arg name="particle_size" type="uint" summary="grain diameter in logical pixels, clamped to 1 through 24"/>
+    </request>
+    <event name="launcher_request" since="15">
+      <description summary="open the common launcher without revealing Home">Empty scope_uri means everywhere; otherwise it is an absolute local directory file URI. Query is initial literal search text.</description>
+      <arg name="mode" type="uint" enum="launcher_mode"/>
+      <arg name="scope_uri" type="string"/>
+      <arg name="query" type="string"/>
+    </event>
   </interface>
 
   <!-- Keep this version at least as high as templar_shell_toplevel_v1: objects are created at
@@ -500,13 +520,13 @@
        toplevel it creates) inherits the *manager's* bound version: a toplevel request or event
        added here takes the manager version that introduced it as its `since`, and all three
        interfaces move together. -->
-  <interface name="templar_shell_toplevel_list_v1" version="14">
+  <interface name="templar_shell_toplevel_list_v1" version="15">
     <event name="toplevel">
       <arg name="id" type="new_id" interface="templar_shell_toplevel_v1"/>
     </event>
   </interface>
 
-  <interface name="templar_shell_toplevel_v1" version="14">
+  <interface name="templar_shell_toplevel_v1" version="15">
     <!-- The same opaque string `ext_foreign_toplevel_handle_v1.identifier` carries for this
          window, sent once, before the first `identity`. It is what lets the shell pair a window
          preview obtained through the standard capture protocols with the window's entry here. -->

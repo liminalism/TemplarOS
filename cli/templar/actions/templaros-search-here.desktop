@@ -1,0 +1,13 @@
+# DES-EMA uses argument-vector expansion; no shell interprets the selected native directory.
+[Desktop Entry]
+Type=Action
+Name=Search here…
+Tooltip=Open the TemplarOS launcher in Files mode for this directory
+Icon=system-search
+Profiles=folder
+
+[X-Action-Profile folder]
+Name=Search here…
+MimeTypes=inode/directory;
+SelectionCount=1
+Exec=templar files search-here %f

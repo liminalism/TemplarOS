@@ -1,7 +1,8 @@
-//! `org.templaros.Session.Lifecycle1`: ending, suspending and locking the session.
+//! `org.templaros.Session.Lifecycle1`: session navigation, ending, suspending and locking.
 //!
-//! Every method forwards to `org.freedesktop.login1`, which already authorises these for the
-//! active seat. sessiond adds no privilege of its own and needs no polkit action — see the
+//! Power methods forward to `org.freedesktop.login1`, which already authorises these for the
+//! active seat. Launcher navigation forwards to the existing authenticated compositor control
+//! channel without granting access to files or processes. sessiond adds no privilege and needs no polkit action — see the
 //! interface XML for why this is here and not in `templar-hostd`.
 //!
 //! logind lives behind [`Logind`] so the whole interface is testable without a system bus, a
@@ -276,6 +277,7 @@ pub struct LifecycleApi {
     session: Arc<dyn SessionEnd>,
     caller: Arc<dyn CallerUnit>,
     edges: SessionEdges,
+    launcher_control_fixture: Option<templar_client::compositor_control::CompositorControl>,
 }
 
 impl LifecycleApi {
@@ -290,8 +292,63 @@ impl LifecycleApi {
             session,
             caller,
             edges,
+            launcher_control_fixture: None,
         }
     }
+
+    /// Explicit isolated transport fixture; production retains the authenticated runtime path.
+    #[must_use]
+    pub fn with_launcher_control_fixture(
+        mut self,
+        control: templar_client::compositor_control::CompositorControl,
+    ) -> Self {
+        self.launcher_control_fixture = Some(control);
+        self
+    }
+}
+
+fn launcher_request(
+    mode: &str,
+    scope_uri: &str,
+    query: &str,
+) -> fdo::Result<templar_types::compositor_control::ControlRequest> {
+    use std::os::unix::ffi::OsStrExt;
+    use templar_types::{compositor_control::ControlRequest, launcher::LauncherMode};
+    let mode = match mode {
+        "apps" => LauncherMode::Apps,
+        "files" => LauncherMode::Files,
+        _ => {
+            return Err(fdo::Error::InvalidArgs(
+                "Launcher mode must be apps or files".into(),
+            ));
+        }
+    };
+    if query.len() > 4096 || query.contains('\0') {
+        return Err(fdo::Error::InvalidArgs(
+            "Launcher query must be bounded literal text".into(),
+        ));
+    }
+    let scope_uri = if scope_uri.is_empty() {
+        None
+    } else {
+        if scope_uri.len() > 65536 {
+            return Err(fdo::Error::InvalidArgs("Launcher scope is too long".into()));
+        }
+        let path = templar_types::uri_list::decode_uri(scope_uri).ok_or_else(|| {
+            fdo::Error::InvalidArgs("Launcher scope must be a local file URI".into())
+        })?;
+        if !path.is_absolute() || path.as_os_str().as_bytes().contains(&0) {
+            return Err(fdo::Error::InvalidArgs(
+                "Launcher scope must be a bounded absolute local file URI".into(),
+            ));
+        }
+        Some(scope_uri.to_owned())
+    };
+    Ok(ControlRequest::OpenLauncher {
+        mode,
+        scope_uri,
+        query: query.to_owned(),
+    })
 }
 
 /// Own the sole logind stream and retain its actual registration/lifetime witness.
@@ -471,6 +528,17 @@ impl LifecycleApi {
             .map_err(|error| fdo::Error::Failed(format!("emitting LockRequested: {error}")))
     }
 
+    /// Open the single shell launcher without changing application activation or revealing Home.
+    async fn open_launcher_v1(&self, mode: &str, scope_uri: &str, query: &str) -> fdo::Result<()> {
+        let request = launcher_request(mode, scope_uri, query)?;
+        let control = match &self.launcher_control_fixture {
+            Some(control) => control.clone(),
+            None => templar_client::compositor_control::CompositorControl::from_runtime()
+                .map_err(failed)?,
+        };
+        control.request(request).await.map(|_| ()).map_err(failed)
+    }
+
     /// Only the trusted lock client can observe ext-session-lock-v1's presented-frame barrier.
     async fn notify_locked(
         &self,
@@ -585,6 +653,42 @@ impl LifecycleApi {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn launcher_navigation_keeps_native_scope_and_rejects_invalid_requests() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
+        use templar_types::{compositor_control::ControlRequest, launcher::LauncherMode};
+        let path = PathBuf::from(OsString::from_vec(b"/work/native-\xff".to_vec()));
+        let uri = templar_types::uri_list::encode_path(&path);
+        assert_eq!(
+            launcher_request("files", &uri, "literal $(query)").unwrap(),
+            ControlRequest::OpenLauncher {
+                mode: LauncherMode::Files,
+                scope_uri: Some(uri),
+                query: "literal $(query)".into(),
+            }
+        );
+        assert_eq!(
+            launcher_request("apps", "", "").unwrap(),
+            ControlRequest::OpenLauncher {
+                mode: LauncherMode::Apps,
+                scope_uri: None,
+                query: String::new(),
+            }
+        );
+        for (mode, scope, query) in [
+            ("unknown", "", ""),
+            ("files", "https://example.com/", ""),
+            ("files", "file:///work%00bad", ""),
+            ("files", "", "query\0bad"),
+        ] {
+            assert!(matches!(
+                launcher_request(mode, scope, query),
+                Err(fdo::Error::InvalidArgs(_))
+            ));
+        }
+        assert!(launcher_request("apps", "", &"x".repeat(4097)).is_err());
+    }
 
     #[derive(Debug, Default)]
     struct FakeLogind {

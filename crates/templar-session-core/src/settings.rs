@@ -82,6 +82,16 @@ impl SettingsSchema {
                 reason: format!("{error:#}"),
             })?;
         }
+        if key == templar_types::launcher::PREFERENCES_KEY
+            && let SettingValue::Str(json) = value
+        {
+            parse_launcher_preferences(json).map_err(|reason| {
+                SettingError::InvalidConfiguration {
+                    key: key.to_owned(),
+                    reason,
+                }
+            })?;
+        }
         match (&spec.default, value) {
             (SettingValue::Bool(_), SettingValue::Bool(_))
             | (SettingValue::Float(_), SettingValue::Float(_))
@@ -182,8 +192,17 @@ pub fn baseline_schema() -> SettingsSchema {
     add_notification_specs(&mut schema);
     add_window_tab_specs(&mut schema);
     schema.add(SettingSpec {
+        key: templar_types::launcher::PREFERENCES_KEY.into(),
+        description: "Saved launcher targets, display aliases and hidden search identities".into(),
+        default: SettingValue::Str("{}".into()),
+        choices: vec![],
+        min: None,
+        max: None,
+        privileged: false,
+    });
+    schema.add(SettingSpec {
         key: "shell.launcher.recent-apps".into(),
-        description: "Recently launched applications, newest first, shown under Home's search"
+        description: "Recently used applications, newest first, shown in the global launcher"
             .into(),
         default: SettingValue::StrList(Vec::new()),
         choices: vec![],
@@ -232,6 +251,24 @@ pub fn baseline_schema() -> SettingsSchema {
 
 /// Shared appearance keys, observed live by owned surfaces.
 fn add_appearance_specs(schema: &mut SettingsSchema) {
+    schema.add(SettingSpec {
+        key: "shell.appearance.window-transition".into(),
+        description: "Window minimize and restore effect".into(),
+        default: SettingValue::Choice("essence".into()),
+        choices: vec!["off".into(), "simple".into(), "essence".into()],
+        min: None,
+        max: None,
+        privileged: false,
+    });
+    schema.add(SettingSpec {
+        key: "shell.appearance.particle-size".into(),
+        description: "Essence particle diameter in logical pixels".into(),
+        default: SettingValue::Int(6),
+        choices: vec![],
+        min: Some(1),
+        max: Some(24),
+        privileged: false,
+    });
     schema.add(SettingSpec {
         key: "shell.appearance.theme".into(),
         description: "Light or dark colours. Owned surfaces update live without changing focus, \
@@ -815,6 +852,29 @@ pub fn revert_within(
 pub const WALLPAPER_ENABLED_KEY: &str = "shell.wallpaper.enabled";
 pub const WALLPAPER_CONFIG_KEY: &str = "shell.wallpaper.config";
 
+pub fn parse_launcher_preferences(
+    json: &str,
+) -> std::result::Result<templar_types::launcher::LauncherPreferences, String> {
+    if json.len() > 2 * 1024 * 1024 {
+        return Err("Launcher preferences exceed their size limit".into());
+    }
+    let preferences: templar_types::launcher::LauncherPreferences =
+        serde_json::from_str(json).map_err(|error| error.to_string())?;
+    preferences.validate()?;
+    Ok(preferences)
+}
+
+/// Legacy stored keys remain readable, but do not advertise an unimplemented runtime choice.
+pub fn setting_capability(key: &str, privileged: bool) -> templar_types::settings::Capability {
+    if matches!(key, "shell.dock.grouping" | "resources.mode") {
+        templar_types::settings::Capability::Unsupported { reason: "Deprecated: this key has no runtime consumer; its saved value is retained for compatibility".into() }
+    } else {
+        templar_types::settings::Capability::Available {
+            requires_restart: privileged,
+        }
+    }
+}
+
 /// Committed keys of the corner-following window tab policy (planning doc §3).
 pub const WINDOW_TABS_PLACEMENT_KEY: &str = "windows.tabs.placement";
 pub const WINDOW_TABS_FOLLOW_POINTER_KEY: &str = "windows.tabs.follow-pointer";
@@ -850,6 +910,45 @@ pub fn wallpaper_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launcher_configuration_and_motion_schema_reject_invalid_values() {
+        let schema = baseline_schema();
+        let key = templar_types::launcher::PREFERENCES_KEY;
+        assert_eq!(
+            schema.validate(key, &SettingValue::Str("{}".into())),
+            Ok(())
+        );
+        assert!(
+            schema
+                .validate(
+                    key,
+                    &SettingValue::Str(
+                        r#"{"visibility":{"hidden_paths_b64":["cmVsYXRpdmU="]}}"#.into()
+                    )
+                )
+                .is_err()
+        );
+        assert!(
+            schema
+                .validate("shell.appearance.particle-size", &SettingValue::Int(25))
+                .is_err()
+        );
+        assert!(
+            schema
+                .validate(
+                    "shell.appearance.window-transition",
+                    &SettingValue::Choice("material".into())
+                )
+                .is_err()
+        );
+        for key in ["shell.dock.grouping", "resources.mode"] {
+            assert!(matches!(
+                setting_capability(key, false),
+                templar_types::settings::Capability::Unsupported { .. }
+            ));
+        }
+    }
 
     #[test]
     fn schema_validates_types_ranges_and_choices() {

@@ -290,6 +290,66 @@ impl ActionDecl {
 /// cheat sheet and the consistency checks; wiring it up in a surface is a separate step, and
 /// `xtask check-actions` is what notices when only one of the two happened.
 pub const MANIFEST: &[ActionDecl] = &[
+    ActionDecl {
+        id: "launcher.pin-rail",
+        label: "Pin to applications rail",
+        control: None,
+        category: ActionCategory::Navigation,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "launcher.add-home",
+        label: "Add shortcut to Home",
+        control: None,
+        category: ActionCategory::Navigation,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "launcher.rename-alias",
+        label: "Rename shortcut",
+        control: None,
+        category: ActionCategory::Navigation,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "launcher.info",
+        label: "Get info",
+        control: None,
+        category: ActionCategory::Navigation,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "launcher.hide",
+        label: "Hide from search",
+        control: None,
+        category: ActionCategory::Navigation,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
+    ActionDecl {
+        id: "launcher.restore",
+        label: "Restore to search",
+        control: None,
+        category: ActionCategory::Navigation,
+        chords: &[],
+        cli_verb: None,
+        confirm: false,
+        requires: Requires::Always,
+    },
     // ---- Navigation -------------------------------------------------------------------
     ActionDecl {
         id: "field.help",
@@ -796,7 +856,7 @@ pub const MANIFEST: &[ActionDecl] = &[
     },
     ActionDecl {
         id: "launcher.show-all",
-        label: "Show all applications",
+        label: "Open launcher",
         control: None,
         category: ActionCategory::System,
         chords: &[Chord::new(Modifiers::LOGO, Key::Space)],
@@ -1138,9 +1198,7 @@ pub const MANIFEST: &[ActionDecl] = &[
         confirm: false,
         requires: Requires::Always,
     },
-    // The way out of the folder you are in and into the search that covers the machine. Like
-    // "Open terminal here" it needs an application the person chose, so it is not offered when
-    // no file-search provider is installed.
+    // The same first-party launcher in Files mode, explicitly scoped to this directory.
     ActionDecl {
         id: "files.search-here",
         label: "Search here…",
@@ -1149,7 +1207,7 @@ pub const MANIFEST: &[ActionDecl] = &[
         chords: &[],
         cli_verb: None,
         confirm: false,
-        requires: Requires::Provider(ProviderRole::FileSearch),
+        requires: Requires::TrustedShell,
     },
     ActionDecl {
         id: "files.copy",

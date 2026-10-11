@@ -1,10 +1,5 @@
-//! System page — the battery, the output volume and the display brightness, over `Battery1`,
-//! `Audio1` and `Backlight1`.
-//!
-//! The Home Field's Settings widget reports these three and offers one step at a time; this is
-//! where the same three become something a person can set outright. That is the whole division:
-//! a widget is a glance and a nudge, a window is where a figure gets typed in and where the
-//! reason a control does not work has room to be a sentence.
+//! System overview — battery, output volume and display brightness readings, over `Battery1`,
+//! `Audio1` and `Backlight1`. Sound owns volume controls; Displays owns brightness controls.
 //!
 //! Battery remains read-only. Stored power drafts and the native policy owner's capabilities,
 //! readback and errors belong to `crate::power`; this module only owns the three hardware readings.
@@ -28,12 +23,8 @@ pub(crate) trait SystemSource {
     async fn backlight(&self) -> Result<String>;
 }
 
-/// The bus operations this page writes. Separate from [`SystemSource`] because a test of what the
-/// page *says* has no business being able to change the machine's volume.
+/// Brightness operations shared with Displays. Volume mutation belongs to `crate::sound`.
 pub(crate) trait SystemControl {
-    async fn set_volume(&self, percent: u32) -> Result<()>;
-    async fn adjust_volume(&self, delta: i32) -> Result<()>;
-    async fn toggle_muted(&self) -> Result<()>;
     async fn set_brightness(&self, percent: u32) -> Result<()>;
     async fn adjust_brightness(&self, delta: i32) -> Result<()>;
 }
@@ -74,26 +65,6 @@ impl SystemSource for Bus<'_> {
 }
 
 impl SystemControl for Bus<'_> {
-    async fn set_volume(&self, percent: u32) -> Result<()> {
-        self.audio
-            .set_volume(percent)
-            .await
-            .context("Audio1.SetVolume")
-    }
-    async fn adjust_volume(&self, delta: i32) -> Result<()> {
-        self.audio
-            .adjust_volume(delta)
-            .await
-            .map(|_| ())
-            .context("Audio1.AdjustVolume")
-    }
-    async fn toggle_muted(&self) -> Result<()> {
-        self.audio
-            .toggle_muted()
-            .await
-            .map(|_| ())
-            .context("Audio1.ToggleMuted")
-    }
     async fn set_brightness(&self, percent: u32) -> Result<()> {
         self.backlight
             .set_brightness(percent)
@@ -167,9 +138,7 @@ pub(crate) fn volume_line(state: Option<&AudioState>) -> String {
         // A reading over full scale is something else's doing, not this page's, and a person who
         // sees 126% next to a full track deserves to be told which of the two is lying.
         Some(state) if state.boosted() => {
-            "Boosted past full scale by something else; the steppers bring it back down, and \
-             cannot push it higher"
-                .to_owned()
+            "Boosted past full scale; adjust the output in Sound".to_owned()
         }
         Some(_) => "Default output".to_owned(),
     }
@@ -185,12 +154,6 @@ pub(crate) fn brightness_line(state: Option<&BacklightState>) -> String {
         }
         Some(state) => state.device.clone(),
     }
-}
-
-/// Whether the volume controls would do anything. A page that draws live controls over a service
-/// that cannot act is a promise it cannot keep.
-pub(crate) fn volume_settable(state: &SystemState) -> bool {
-    state.audio.as_ref().is_some_and(|audio| audio.present)
 }
 
 pub(crate) fn brightness_settable(state: &SystemState) -> bool {

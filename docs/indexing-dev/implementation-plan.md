@@ -10,6 +10,14 @@ build.
 This plan replaces the detailed Phases B–F of `docs/planning/integrated-indexing.md` §2 where
 they overlap. Phase D (FSearch) and Phase E (Silvaview) are refined here as WP14 and WP15.
 
+## Owner amendment — 2026-10-09
+
+The first-party PixelKit Apps/Files launcher is the selected discovery surface. Files mode uses
+Index1 directly; Search Here scopes that same popup explicitly. FSearch routing, inferred provider
+default and fork/package adoption are retired. The WP14 prototype and its retained measurements
+remain historical; the old FSearch shipping requirements below are superseded by the unified
+launcher work. Index1 compatibility, native paths, paging and consumer freshness remain required.
+
 ## Owner amendment — 2026-10-08
 
 The owner deferred WP14's same-query generation comparison with the shell's

@@ -172,13 +172,6 @@ const CHORD_WITHOUT_POINTER_ROUTE: &[(&str, &str)] = &[
         "window.within-unit-backward",
         "compositor chord; the island's fan is the pointer route, not yet built",
     ),
-    // 2026-09-10, the task system (§9). Super+Space reveals Home with the Apps field focused and
-    // empty; the compositor sends `launcher_focus` and the shell performs this action. The pointer
-    // route is a click in that field, which focuses it directly rather than through an action id.
-    (
-        "launcher.show-all",
-        "compositor chord; a click in Home's Apps field is the pointer route, not action-routed",
-    ),
     // 2026-09-03, the drop-down terminal (§4.6). The compositor reserves Super+grave; the pointer
     // route is the shell's — the terminal provider's own launcher row, which arrives with the
     // Providers1 `terminal` role.

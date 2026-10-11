@@ -1959,6 +1959,7 @@ fn render(state: &mut State, node: DrmNode, crtc: crtc::Handle) {
         let scene = crate::scene::collect(
             &mut state.chrome,
             &mut state.wallpaper,
+            &mut state.essence_renderer,
             &state.windows,
             &crate::chrome::ChromeInputs {
                 space: &state.space,

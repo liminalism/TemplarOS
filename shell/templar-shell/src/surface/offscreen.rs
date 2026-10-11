@@ -66,13 +66,12 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         None => templar_field::FieldDocument::new("primary", cols, rows),
     };
     let (notifications_widget, _notification_rows) = notifications_widget;
-    let apps_available = apps.is_some();
     let apps = apps.unwrap_or_default();
     // No compositor here, so no windows: the field is whatever the persisted document plus the
     // drawers and widgets amount to.
     let live = LiveState {
-        toplevels: &[],
         projects: &projects,
+        toplevels: &[],
     };
     field_model::merge(&mut field, &live);
 
@@ -144,15 +143,9 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
         connected: false,
         home_revealed: false,
         apps: &apps,
-        apps_available,
         widgets: &widgets,
         variants: &HashMap::new(),
-        projects: &projects,
         garden: &garden,
-        actions: templar_types::action::MANIFEST,
-        file_search: None,
-        recents: &[],
-        recent_ids: &[],
         reduced_motion: true,
         now_ms: 0,
     };
@@ -229,7 +222,10 @@ pub(super) fn bar_frame(
         BarData, BarScreen, HINT_OPEN_MS, HOVER_OPEN_MS, Presence, wanted_size,
     };
 
-    let entries = crate::taskbar::entries(&fixture_toplevels());
+    let entries: Vec<crate::rail_model::RailEntry> = crate::taskbar::entries(&fixture_toplevels())
+        .into_iter()
+        .map(Into::into)
+        .collect();
     let logical = wanted_size(
         presence,
         open_fan.then(|| entries[0].visible()),
@@ -385,6 +381,101 @@ pub fn render_switcher(prefix: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Bus-free fixtures rendered with the same screen and PixelKit painter as the popup.
+pub fn render_launcher(prefix: &Path) -> Result<Vec<PathBuf>> {
+    use super::launcher_screen::{LauncherData, LauncherScreen};
+    use crate::launcher_model::{LauncherMode, LauncherRow, LauncherTarget};
+    let mut outputs = Vec::new();
+    for (layout, width, scale) in [
+        ("desktop", 720, 1.0),
+        ("narrow", 360, 1.0),
+        ("hidpi", 720, 2.0),
+    ] {
+        for mode in [LauncherMode::Apps, LauncherMode::Files] {
+            let scale = Scale::new(scale);
+            let mut buffer = WindowBuffer::new(scale.px(width) as u32, scale.px(480) as u32);
+            let mut text = pixelkit_text::TextCache::new(fonts::set());
+            let mut input = Input::new();
+            let mut kernel = RasterKernel::new();
+            let mut screen = LauncherScreen::default();
+            screen.show(mode, None, String::new());
+            let rows = match mode {
+                LauncherMode::Apps => vec![
+                    Some(LauncherRow {
+                        target: LauncherTarget::Favorite("development".into()),
+                        label: "Development terminal".into(),
+                        detail: "Opens in ~/Projects".into(),
+                        icon_id: Some("desktop-import.kitty.desktop".into()),
+                        running: false,
+                        section: Some("FAVORITES"),
+                        size_bytes: None,
+                        mtime_ms: None,
+                    }),
+                    Some(LauncherRow {
+                        target: LauncherTarget::App("org.templaros.Files".parse()?),
+                        label: "Files".into(),
+                        detail: "File manager".into(),
+                        icon_id: None,
+                        running: false,
+                        section: Some("FAVORITES"),
+                        size_bytes: None,
+                        mtime_ms: None,
+                    }),
+                    Some(LauncherRow {
+                        target: LauncherTarget::App("org.mozilla.firefox".parse()?),
+                        label: "Firefox".into(),
+                        detail: "Activate existing window".into(),
+                        icon_id: None,
+                        running: true,
+                        section: Some("RECENT APPLICATIONS"),
+                        size_bytes: None,
+                        mtime_ms: None,
+                    }),
+                ],
+                LauncherMode::Files => vec![Some(LauncherRow {
+                    target: LauncherTarget::Directory(PathBuf::from("/home/example/Projects")),
+                    label: "Projects".into(),
+                    detail: "/home/example/Projects".into(),
+                    icon_id: None,
+                    running: false,
+                    section: Some("RECENT FOLDERS"),
+                    size_bytes: None,
+                    mtime_ms: None,
+                })],
+            };
+            let icons = fixture_icons();
+            let area = Rect::new(0, 0, buffer.width as i32, buffer.height as i32);
+            let mut ui = Ui::new(
+                Painter::new(&mut buffer),
+                &mut text,
+                &mut input,
+                design::theme(),
+                scale,
+                &mut kernel,
+            );
+            screen.draw(
+                &mut ui,
+                area,
+                &LauncherData {
+                    rows: &rows,
+                    icons: &icons,
+                    notice: None,
+                    loading: false,
+                    now_ms: 0,
+                },
+            );
+            let name = match mode {
+                LauncherMode::Apps => "apps",
+                LauncherMode::Files => "files",
+            };
+            let path = PathBuf::from(format!("{}-{layout}-{name}.png", prefix.display()));
+            write_png(&path, &buffer)?;
+            outputs.push(path);
+        }
+    }
+    Ok(outputs)
+}
+
 fn switcher_frame(
     scale: f64,
     icons: &HashMap<String, pixelkit_raster::Bitmap>,
@@ -465,7 +556,10 @@ pub fn render_rails(path: &Path) -> Result<Vec<std::path::PathBuf>> {
 
     let width = RAIL_OUTPUT_WIDTH;
     let origin = width / 2;
-    let entries = crate::taskbar::entries(&fixture_toplevels());
+    let entries: Vec<crate::rail_model::RailEntry> = crate::taskbar::entries(&fixture_toplevels())
+        .into_iter()
+        .map(Into::into)
+        .collect();
     let icons = fixture_icons();
     let machine = crate::data::MachineReadings::default();
     let mut text = pixelkit_text::TextCache::new(fonts::set());
@@ -861,8 +955,8 @@ pub fn render_home_work(path: &Path) -> Result<Vec<std::path::PathBuf>> {
             field_model::merge(
                 &mut fixture.field,
                 &LiveState {
-                    toplevels: &fixture.windows,
                     projects: &[],
+                    toplevels: &fixture.windows,
                 },
             );
         }
@@ -995,8 +1089,8 @@ pub fn render_home_work(path: &Path) -> Result<Vec<std::path::PathBuf>> {
         field_model::merge(
             &mut fixture.field,
             &LiveState {
-                toplevels: &fixture.windows,
                 projects: &[],
+                toplevels: &fixture.windows,
             },
         );
         fixture.frame();
@@ -1074,8 +1168,8 @@ fn render_project_work_bodies(path: &Path) -> Result<Vec<std::path::PathBuf>> {
             field_model::merge(
                 &mut fixture.field,
                 &LiveState {
-                    toplevels: &[],
                     projects: &[],
+                    toplevels: &[],
                 },
             );
         }
@@ -1282,8 +1376,8 @@ impl HomeWorkFixture {
         field_model::merge(
             &mut field,
             &LiveState {
-                toplevels: &windows,
                 projects: &[],
+                toplevels: &windows,
             },
         );
         let mut recent = crate::drawers::DrawerFeed::new(
@@ -1490,13 +1584,7 @@ impl HomeWorkFixture {
             home_revealed: self.home_revealed,
             apps: &self.apps,
             variants: &HashMap::new(),
-            projects: &[],
             garden: &self.garden,
-            actions: templar_types::action::MANIFEST,
-            file_search: None,
-            apps_available: true,
-            recents: &[],
-            recent_ids: &[],
             widgets: &widgets,
             reduced_motion: true,
             now_ms: 0,
@@ -1977,15 +2065,9 @@ fn garden_tile_frame(
         connected: true,
         home_revealed: true,
         apps: &[],
-        apps_available: true,
         widgets: &widgets,
         variants: &variants,
-        projects: &[],
         garden: &garden,
-        actions: templar_types::action::MANIFEST,
-        file_search: None,
-        recents: &[],
-        recent_ids: &[],
         reduced_motion: true,
         now_ms: 0,
     };

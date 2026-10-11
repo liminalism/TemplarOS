@@ -72,10 +72,11 @@ use pixelkit_ui::Ui;
 
 use templar_window::WindowId;
 
+use crate::rail_model::{RailEntry as Entry, RailSlot};
 use crate::surface::design::{self, Elevation};
 use crate::surface::field_screen::FieldAction;
 use crate::surface::rail::{self, RAIL_GAP, RailSide, RailView};
-use crate::taskbar::{Entry, EntryWindow, Rows};
+use crate::taskbar::{EntryWindow, Rows};
 
 /// The bar's thickness. It reserves nothing: the exclusive zone is 0.
 pub const BAR_HEIGHT: i32 = templar_window::geometry::SHELL_BAR_HEIGHT;
@@ -148,6 +149,8 @@ pub const HOVER_CLOSE_MS: u64 = 200;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BarAction {
+    OpenLauncher,
+    OpenFavorite(templar_types::launcher::FavoriteId),
     Activate(WindowId),
     /// A declared window action (`window.close`, `window.park`) on this window.
     Window {
@@ -452,9 +455,9 @@ pub fn island_width(entries: usize) -> i32 {
 /// the member whose icon it borrows, and the group's own name is what its letter stands for.
 fn chip_initial(entry: &Entry) -> String {
     let name = entry
-        .app_id
+        .icon_id
         .as_deref()
-        .filter(|_| !matches!(entry.unit.key, templar_window::task::TaskKey::Group(_)))
+        .filter(|_| !entry.is_group())
         .and_then(|id| id.parse::<templar_types::AppId>().ok())
         .map(|id| crate::field_model::short_name(&id));
     name.as_deref()
@@ -477,11 +480,14 @@ fn first_letter(text: &str) -> Option<char> {
 /// terminal's windows, and a row that left it out left the chip with one window to offer and no
 /// row at all; its card wears the parked mark and choosing it brings the window back.
 fn fan_of(entry: &Entry) -> Vec<&EntryWindow> {
-    let on_screen = entry.unit.visible_windows();
-    let parked = entry.unit.shelved.iter().copied();
+    let Some(task) = &entry.task else {
+        return Vec::new();
+    };
+    let on_screen = task.unit.visible_windows();
+    let parked = task.unit.shelved.iter().copied();
     on_screen
         .chain(parked)
-        .filter_map(|id| entry.windows.iter().find(|window| window.id == id))
+        .filter_map(|id| entry.windows().iter().find(|window| window.id == id))
         .take(templar_window::task::FAN_MAX)
         .collect()
 }
@@ -489,7 +495,7 @@ fn fan_of(entry: &Entry) -> Vec<&EntryWindow> {
 /// Whether hovering this chip opens a row at all — two or more windows, no more than
 /// [`templar_window::task::FAN_MAX`] of them on screen.
 fn fannable(entry: &Entry) -> bool {
-    templar_window::task::chip_action(&entry.unit) == templar_window::task::ChipAction::Fan
+    entry.chip_action() == Some(templar_window::task::ChipAction::Fan)
 }
 
 /// One chip's ground: the compositor's tag, rounded the way every other small shell object is.
@@ -944,14 +950,14 @@ impl BarScreen {
         let bitmap = window
             .app_id
             .as_ref()
-            .or(entry.app_id.as_ref())
+            .or(entry.icon_id.as_ref())
             .and_then(|id| data.icons.get(id));
         if let Some(bitmap) = bitmap {
             ui.painter.blit(bitmap, icon, ScaleFilter::Bilinear);
         } else if let Some(glyph) = window
             .app_id
             .as_deref()
-            .or(entry.app_id.as_deref())
+            .or(entry.icon_id.as_deref())
             .and_then(super::glyphs::glyph_for_app)
         {
             super::glyphs::draw(&mut ui.painter, ui.kernel, icon, glyph, design::TAG_INK);
@@ -1088,7 +1094,7 @@ impl BarScreen {
         for (index, (cell, entry)) in layout.cells.iter().zip(data.entries).enumerate() {
             let live = layout.live(*cell);
             let hovered = (live && ui.input.hovering(*cell)) || self.open_fan == Some(index);
-            let fill = match (entry.active, hovered) {
+            let fill = match (entry.active(), hovered) {
                 (true, _) => design::accent_soft(),
                 (false, true) => design::accent(),
                 (false, false) => design::TAG_FILL,
@@ -1096,7 +1102,7 @@ impl BarScreen {
             chip(ui, *cell, fill);
             // Active is an underline rather than a box around the whole chip: the box read as a
             // second chip, and this is the same two pixels the window's own tag wears.
-            if entry.active {
+            if entry.active() {
                 let thick = ui.px(2).max(1);
                 ui.painter.fill_rect(
                     Rect::new(
@@ -1116,11 +1122,13 @@ impl BarScreen {
                 icon_side,
                 icon_side,
             );
-            if matches!(entry.unit.key, templar_window::task::TaskKey::Group(_)) {
-                let count = entry.windows.len().min(3);
+            if entry.slot == RailSlot::Launcher {
+                ui.label(icon, "⌕", design::TAG_INK, Align::Centre);
+            } else if entry.is_group() {
+                let count = entry.windows().len().min(3);
                 let side = (icon_side * 3 / 4).max(1);
                 let step = (icon_side - side) / count.saturating_sub(1).max(1) as i32;
-                for (index, member) in entry.windows.iter().take(count).enumerate().rev() {
+                for (index, member) in entry.windows().iter().take(count).enumerate().rev() {
                     let member_icon = Rect::new(
                         icon.x + index as i32 * step,
                         icon.y + index as i32 * step,
@@ -1135,14 +1143,14 @@ impl BarScreen {
                     );
                 }
             } else {
-                super::window_visual::icon(ui, icon, entry.app_id.as_deref(), data.icons);
+                super::window_visual::icon(ui, icon, entry.icon_id.as_deref(), data.icons);
             }
             super::window_visual::marks(
                 ui,
                 *cell,
                 entry.all_parked(),
-                entry.active,
-                entry.windows.iter().all(|window| window.verified),
+                entry.active(),
+                entry.windows().iter().all(|window| window.verified),
             );
             // How many windows are behind this chip, groups included. One chip per unit is
             // deliberate (@templaros.decision.one-persistent-bottom-bar-tags-not-bands) and the
@@ -1155,7 +1163,10 @@ impl BarScreen {
                 let badge = Rect::new(icon.right() - side / 2, icon.y, side.min(cell.w), side);
                 // Muted while some of the unit is parked: a chip reading 2 with three windows
                 // behind it is telling the truth about the screen, and the colour says so.
-                let some_parked = !entry.unit.shelved.is_empty();
+                let some_parked = entry
+                    .task
+                    .as_ref()
+                    .is_some_and(|task| !task.unit.shelved.is_empty());
                 ui.painter.fill_rounded_rect(
                     badge,
                     ui.px(design::CHIP_RADIUS),
@@ -1186,11 +1197,19 @@ impl BarScreen {
                 );
             }
             if live && ui.input.take_click(*cell) {
-                match templar_window::task::chip_action(&entry.unit) {
+                if let RailSlot::Favorite(id) = &entry.slot {
+                    actions.push(BarAction::OpenFavorite(id.clone()));
+                    continue;
+                }
+                if entry.slot == RailSlot::Launcher {
+                    actions.push(BarAction::OpenLauncher);
+                    continue;
+                }
+                match entry.chip_action() {
                     // Nothing to choose between. A chip whose windows are all parked is this case
                     // too: the click brings the most recent of them back, which is the only thing
                     // "go to it" can mean when none of it is on screen.
-                    templar_window::task::ChipAction::Direct => {
+                    Some(templar_window::task::ChipAction::Direct) => {
                         if let Some(window) = entry.most_recent() {
                             if entry.is_parked(window) {
                                 actions.push(BarAction::Field(FieldAction::Restore(window)));
@@ -1198,7 +1217,7 @@ impl BarScreen {
                             actions.push(BarAction::Activate(window));
                         }
                     }
-                    templar_window::task::ChipAction::Fan => {
+                    Some(templar_window::task::ChipAction::Fan) => {
                         self.open_fan = if self.open_fan == Some(index) {
                             None
                         } else {
@@ -1208,11 +1227,14 @@ impl BarScreen {
                     }
                     // More than a fan can hold. The chip does not grow a menu: the compositor's
                     // overview shows them at the size they actually are.
-                    templar_window::task::ChipAction::Taskfield => {
-                        actions.push(BarAction::Taskfield(entry.unit.key.clone()));
+                    Some(templar_window::task::ChipAction::Taskfield) => {
+                        if let Some(task) = &entry.task {
+                            actions.push(BarAction::Taskfield(task.unit.key.clone()));
+                        }
                         self.open_fan = None;
                         self.left_at = None;
                     }
+                    None => {}
                 }
             }
         }
@@ -1245,8 +1267,7 @@ impl BarScreen {
         {
             // A chip with more windows than a fan can hold says how many, and says what clicking
             // it will do — the one chip on the bar whose click goes somewhere else entirely.
-            let named = if templar_window::task::chip_action(&entry.unit)
-                == templar_window::task::ChipAction::Taskfield
+            let named = if entry.chip_action() == Some(templar_window::task::ChipAction::Taskfield)
             {
                 format!(
                     "{} \u{b7} {} windows \u{2014} show all",
@@ -1374,6 +1395,7 @@ mod tests {
         /// The activity lane mode. `Off` unless a test is about lanes, so the order every other
         /// test reads is the plain one.
         lanes: taskbar::LaneMode,
+        favorites: Option<templar_types::launcher::LauncherPreferences>,
     }
 
     impl Harness {
@@ -1388,13 +1410,25 @@ mod tests {
 
         /// The entries and two-row shape exactly as `app.rs` computes them for this frame.
         fn shape(&self) -> (Vec<Entry>, Option<Rows>) {
-            let entries = taskbar::entries_in(&self.toplevels, self.lanes, &Self::terminals());
+            let tasks = taskbar::entries_in(&self.toplevels, self.lanes, &Self::terminals());
+            let entries: Vec<Entry> = self.favorites.as_ref().map_or_else(
+                || tasks.clone().into_iter().map(Into::into).collect(),
+                |preferences| {
+                    crate::rail_model::reconcile(
+                        tasks.clone(),
+                        preferences,
+                        &[],
+                        &HashMap::new(),
+                        &HashMap::new(),
+                    )
+                },
+            );
             let capacity = if self.rail.is_some() {
                 rail_row_capacity(W)
             } else {
                 island_row_capacity(W)
             };
-            let rows = taskbar::rows_of(&entries, self.lanes, capacity);
+            let rows = crate::rail_model::rows_of(&entries, self.lanes, capacity);
             (entries, rows)
         }
 
@@ -1414,6 +1448,7 @@ mod tests {
                 height: BAR_HEIGHT,
                 rail: None,
                 lanes: taskbar::LaneMode::Off,
+                favorites: None,
             }
         }
 
@@ -1590,6 +1625,36 @@ mod tests {
     }
 
     #[test]
+    fn saved_target_and_launcher_each_dispatch_on_their_first_click() {
+        use templar_types::launcher::{Favorite, FavoriteTarget, LauncherPreferences};
+        let mut h = Harness::new(vec![window(1, "org.example.Editor", "notes", true, false)]);
+        h.favorites = Some(LauncherPreferences {
+            favorites: vec![Favorite {
+                id: "editor".into(),
+                label: "Editor".into(),
+                target: FavoriteTarget::App {
+                    app_id: "org.example.Editor".into(),
+                },
+            }],
+            ..LauncherPreferences::default()
+        });
+        h.frame();
+        let cells = h.cells();
+        assert_eq!(
+            cells.len(),
+            2,
+            "running favorite has one chip alongside the launcher"
+        );
+        let (x, y) = Harness::centre(cells[0]);
+        assert_eq!(
+            h.click(x, y),
+            vec![BarAction::OpenFavorite("editor".into())]
+        );
+        let (x, y) = Harness::centre(cells[1]);
+        assert_eq!(h.click(x, y), vec![BarAction::OpenLauncher]);
+    }
+
+    #[test]
     fn a_one_window_entry_activates_on_click_and_a_two_window_entry_opens_its_fan() {
         let mut h = Harness::new(vec![
             window(1, "org.example.Editor", "notes", false, false),
@@ -1662,7 +1727,10 @@ mod tests {
             .cursor_moved((cell.x + 10) as f32, (cell.y + 10) as f32);
         h.frame();
         assert_eq!(h.screen.open_fan, None);
-        let entries = taskbar::entries(&h.toplevels);
+        let entries: Vec<Entry> = taskbar::entries(&h.toplevels)
+            .into_iter()
+            .map(Into::into)
+            .collect();
         // The name comes first: a chip says what it is a quarter of a second before it offers
         // its windows.
         assert_eq!(
@@ -1921,7 +1989,10 @@ mod tests {
             Presence::Hint,
             "the dwell has not elapsed"
         );
-        let entries = taskbar::entries(&h.toplevels);
+        let entries: Vec<Entry> = taskbar::entries(&h.toplevels)
+            .into_iter()
+            .map(Into::into)
+            .collect();
         assert_eq!(
             h.screen.next_deadline_ms(&entries, true, h.now),
             Some(HINT_OPEN_MS),
@@ -2097,7 +2168,10 @@ mod tests {
             Presence::Revealed,
             "the grace period has not elapsed"
         );
-        let entries = taskbar::entries(&h.toplevels);
+        let entries: Vec<Entry> = taskbar::entries(&h.toplevels)
+            .into_iter()
+            .map(Into::into)
+            .collect();
         assert_eq!(
             h.screen.next_deadline_ms(&entries, true, h.now),
             Some(HINT_OPEN_MS + HINT_CLOSE_MS)
@@ -2181,10 +2255,13 @@ mod tests {
                 .collect();
             let mut h = Harness::new(toplevels);
             h.frame();
-            let entries = taskbar::entries(&h.toplevels);
+            let entries: Vec<Entry> = taskbar::entries(&h.toplevels)
+                .into_iter()
+                .map(Into::into)
+                .collect();
             let over_four = count as usize > FAN_MAX;
             assert_eq!(
-                chip_action(&entries[0].unit) == ChipAction::Taskfield,
+                chip_action(&entries[0].task.as_ref().unwrap().unit) == ChipAction::Taskfield,
                 over_four,
                 "{count} windows"
             );
@@ -2196,7 +2273,9 @@ mod tests {
                 // No fan at all: the click is the handover, and the surface never grew.
                 assert_eq!(
                     actions,
-                    vec![BarAction::Taskfield(entries[0].unit.key.clone())],
+                    vec![BarAction::Taskfield(
+                        entries[0].task.as_ref().unwrap().unit.key.clone()
+                    )],
                     "{count} windows"
                 );
                 assert_eq!(h.screen.open_fan, None);
@@ -2239,14 +2318,11 @@ mod tests {
         h.toplevels[2].activated = true;
         h.toplevels[2].mru_rank = 0;
         h.frame();
-        let entries = taskbar::entries(&h.toplevels);
-        assert_eq!(
-            entries
-                .iter()
-                .map(crate::taskbar::Entry::key)
-                .collect::<Vec<_>>(),
-            before
-        );
+        let entries: Vec<Entry> = taskbar::entries(&h.toplevels)
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        assert_eq!(entries.iter().map(Entry::key).collect::<Vec<_>>(), before);
         assert_eq!(h.cells(), cells, "a chip moved");
         // Inside the chip, though, recency moved: the fan offers the newest window first.
         assert_eq!(
@@ -2555,11 +2631,12 @@ mod tests {
 #[cfg(test)]
 mod initial_tests {
     use super::{chip_initial, first_letter};
-    use crate::taskbar::{Entry, EntryWindow};
+    use crate::rail_model::RailEntry as Entry;
+    use crate::taskbar::{self, EntryWindow};
     use templar_window::WindowId;
 
     fn entry(app_id: Option<&str>, label: &str) -> Entry {
-        Entry {
+        taskbar::Entry {
             unit: templar_window::task::TaskUnit {
                 key: templar_window::task::TaskKey::Unknown(WindowId(1)),
                 label: label.to_owned(),
@@ -2578,6 +2655,7 @@ mod initial_tests {
             active: false,
             lane: crate::taskbar::Lane::Latent,
         }
+        .into()
     }
 
     /// A terminal's title is a path, and a path starts with a slash. The chip must never wear one.
@@ -2610,7 +2688,8 @@ mod initial_tests {
     #[test]
     fn a_group_chip_without_a_picture_takes_its_letter_from_the_group() {
         let mut group = entry(Some("desktop-import.kitty.desktop"), "Writing");
-        group.unit.key = templar_window::task::TaskKey::Group(templar_window::GroupId(7));
+        group.task.as_mut().unwrap().unit.key =
+            templar_window::task::TaskKey::Group(templar_window::GroupId(7));
         assert_eq!(chip_initial(&group), "W");
     }
 }

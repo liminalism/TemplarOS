@@ -17,7 +17,11 @@
 //! so a motion needs no timer of its own — each frame draws it at the next `rect_at`, and a
 //! finished one simply stops being drawn.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+use templar_effects::essence::{Plan, Planner, Request, Run, Sink, Style, Timing};
 use templar_window::{Rect, WindowId};
 
 /// How long a park or an unpark takes.
@@ -159,7 +163,7 @@ pub fn transition(before: Seen, after: Seen) -> Option<MotionKind> {
 }
 
 /// The park/unpark bookkeeping the compositor keeps beside `WindowService`.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MotionState {
     /// Keyed by the client window the card stands for.
     targets: HashMap<WindowId, MinimizeTarget>,
@@ -167,13 +171,113 @@ pub struct MotionState {
     /// Every window's [`Seen`] at the last resync.
     seen: HashMap<WindowId, Seen>,
     reduced_motion: bool,
+    transition_kind: u32,
+    particle_size: u32,
+    planner: Planner,
+    essence: HashMap<WindowId, EssenceMotion>,
+}
+
+/// One reversible run retaining its planned paths and GPU cache identity.
+#[derive(Clone, Debug)]
+pub struct EssenceMotion {
+    pub plan: Arc<Plan>,
+    pub run: Run,
+    pub updated_ns: u64,
+}
+impl EssenceMotion {
+    pub fn at(&self, now_ns: u64) -> Run {
+        let mut run = self.run;
+        run.advance(now_ns.saturating_sub(self.updated_ns) as f32 / 1_000_000.0);
+        run
+    }
+}
+impl Default for MotionState {
+    fn default() -> Self {
+        Self {
+            targets: HashMap::new(),
+            motions: HashMap::new(),
+            seen: HashMap::new(),
+            reduced_motion: false,
+            transition_kind: 2,
+            particle_size: 6,
+            planner: Planner::new(),
+            essence: HashMap::new(),
+        }
+    }
 }
 
 impl MotionState {
+    pub fn configure(&mut self, kind: u32, particle_size: u32) {
+        self.transition_kind = kind.min(2);
+        self.particle_size = particle_size.clamp(1, 24);
+        if kind != 2 {
+            self.essence.clear();
+        }
+        if kind == 0 {
+            self.motions.clear();
+        }
+    }
+    pub fn style(&self) -> Style {
+        Style {
+            grain_px: self.particle_size as f32,
+            ..Style::DEFAULT
+        }
+    }
+    pub fn essence(&self, window: WindowId, now_ns: u64) -> Option<&EssenceMotion> {
+        self.essence
+            .get(&window)
+            .filter(|motion| !motion.at(now_ns).finished())
+    }
+    /// Called at the same shelf transition funnel as simple fallback motion.
+    pub fn start_essence(
+        &mut self,
+        window: WindowId,
+        kind: MotionKind,
+        own: Rect,
+        card: Rect,
+        screen: Rect,
+        obstacles: &[Rect],
+        now_ns: u64,
+    ) {
+        if self.reduced_motion || self.transition_kind != 2 {
+            return;
+        }
+        if let Some(motion) = self.essence.get_mut(&window) {
+            let mut run = motion.at(now_ns);
+            if !run.finished() {
+                run.reverse();
+                motion.run = run;
+                motion.updated_ns = now_ns;
+                return;
+            }
+        }
+        let rect = |r: Rect| templar_effects::geometry::Rect::new(r.x, r.y, r.width, r.height);
+        let obstacles: Vec<_> = obstacles.iter().copied().map(rect).collect();
+        let plan = Arc::new(self.planner.plan(&Request {
+            screen: rect(screen),
+            window: rect(own),
+            obstacles: &obstacles,
+            sink: Sink::Card(rect(card)),
+            timing: Timing::DEFAULT,
+        }));
+        let run = match kind {
+            MotionKind::Park => Run::depart(plan.timing),
+            MotionKind::Unpark => Run::arrive(plan.timing),
+        };
+        self.essence.insert(
+            window,
+            EssenceMotion {
+                plan,
+                run,
+                updated_ns: now_ns,
+            },
+        );
+    }
     pub fn set_reduced_motion(&mut self, enabled: bool) {
         self.reduced_motion = enabled;
         if enabled {
             self.motions.clear();
+            self.essence.clear();
         }
     }
 
@@ -198,7 +302,7 @@ impl MotionState {
     /// window is replaced, and the new one starts from wherever that one had got to, so a park
     /// reversed half-way grows back from the half-shrunk rectangle instead of jumping.
     pub fn start(&mut self, window: WindowId, kind: MotionKind, from: Rect, to: Rect, now_ns: u64) {
-        if self.reduced_motion {
+        if self.reduced_motion || self.transition_kind == 0 {
             self.motions.remove(&window);
             return;
         }
@@ -223,6 +327,11 @@ impl MotionState {
     /// Stop drawing `window`'s motion, if it has one.
     pub fn cancel(&mut self, window: WindowId) {
         self.motions.remove(&window);
+        self.essence.remove(&window);
+    }
+    pub fn cancel_all(&mut self) {
+        self.motions.clear();
+        self.essence.clear();
     }
 
     /// `window`'s motion, if one is still running at `now_ns`.
@@ -230,12 +339,15 @@ impl MotionState {
     pub fn active(&self, window: WindowId, now_ns: u64) -> Option<&WindowMotion> {
         self.motions
             .get(&window)
-            .filter(|motion| !motion.done(now_ns))
+            .filter(|motion| !motion.done(now_ns) || self.essence(window, now_ns).is_some())
     }
 
     /// Drop every motion finished by `now_ns`. Returns whether any is still running.
     pub fn prune(&mut self, now_ns: u64) -> bool {
-        self.motions.retain(|_, motion| !motion.done(now_ns));
+        self.essence
+            .retain(|_, motion| !motion.at(now_ns).finished());
+        self.motions
+            .retain(|id, motion| !motion.done(now_ns) || self.essence.contains_key(id));
         !self.motions.is_empty()
     }
 
@@ -247,10 +359,19 @@ impl MotionState {
     /// Forget everything about `window`: its card, its motion, its last [`Seen`], and every card
     /// that lives on it (when `window` is the shell's Home surface).
     pub fn forget_window(&mut self, window: WindowId) {
+        let orphaned: Vec<_> = self
+            .targets
+            .iter()
+            .filter_map(|(id, target)| (target.surface_window == window).then_some(*id))
+            .collect();
+        for id in orphaned {
+            self.cancel(id);
+        }
         self.targets.remove(&window);
         self.targets
             .retain(|_, target| target.surface_window != window);
         self.motions.remove(&window);
+        self.essence.remove(&window);
         self.seen.remove(&window);
     }
 
@@ -260,6 +381,7 @@ impl MotionState {
             live.contains(window) && live.contains(&target.surface_window)
         });
         self.motions.retain(|window, _| live.contains(window));
+        self.essence.retain(|window, _| live.contains(window));
         self.seen.retain(|window, _| live.contains(window));
     }
 }
@@ -267,6 +389,37 @@ impl MotionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn essence_reversal_reuses_paths_and_grain_changes_only_style() {
+        let mut state = MotionState::default();
+        let window = WindowId(9);
+        let own = Rect::new(10, 10, 80, 80);
+        let card = Rect::new(160, 160, 30, 30);
+        let screen = Rect::new(0, 0, 200, 200);
+        state.start(window, MotionKind::Park, own, card, 0);
+        state.start_essence(window, MotionKind::Park, own, card, screen, &[], 0);
+        let plan = state.essence(window, 0).unwrap().plan.clone();
+        let now = 90_000_000;
+        let reached = state.essence(window, now).unwrap().at(now).u;
+        state.configure(2, 12);
+        assert!(Arc::ptr_eq(
+            &plan,
+            &state.essence(window, now).unwrap().plan
+        ));
+        assert_eq!(state.style().grain_px, 12.0);
+        state.start(window, MotionKind::Unpark, card, own, now);
+        state.start_essence(window, MotionKind::Unpark, own, card, screen, &[], now);
+        let reversed = state.essence(window, now).unwrap();
+        assert!(Arc::ptr_eq(&plan, &reversed.plan));
+        assert_eq!(reversed.at(now).u, reached);
+        assert!(reversed.at(now + 1_000_000).u < reached);
+        state.configure(0, 6);
+        assert!(state.essence(window, now).is_none());
+        assert!(state.active(window, now).is_none());
+        state.start(window, MotionKind::Park, own, card, now);
+        assert!(state.active(window, now).is_none());
+    }
 
     #[test]
     fn reduced_motion_cancels_in_flight_and_refuses_new_motion() {

@@ -1,12 +1,13 @@
 # templar-effects
 
 The TemplarOS effect library: WGSL shaders and the pure planning behind them. No dependencies,
-no GPU state — a host (today `tools/effects-sandbox`, later the compositor) owns devices and
+no GPU state — a host (`tools/effects-sandbox` or the compositor) owns devices and
 pipelines; this crate decides what to draw and packs the bytes it is drawn with.
 
 ## The essence transition
 
-Minimize, restore and the desktop button. A window deconstructs into essence that flows,
+The planner supports minimize, restore and the desktop button. A window deconstructs into
+essence that flows,
 through the gaps between the windows that stay, into its Home card (`Sink::Card`) or into the
 Homegarden wherever it shows (`Sink::Garden`), and comes back the same way.
 
@@ -21,10 +22,11 @@ Homegarden wherever it shows (`Sink::Garden`), and comes back the same way.
 - **Into a card, each piece lands where it sits in the thumbnail**: the window reassembles
   small instead of collapsing to a point.
 - **Essence is dust.** Each piece crumbles as it leaves into grains of `Style::grain_px`
-  (1.5 logical px by default; 0.5 is visible air, 24 a chunk) that spread into a cloud and
+  (library default 1.5 logical px; supported library range 0.5–24) that spread into a cloud and
   stream along its path, and the window's dissolving edge is grained at the same size. The
-  grain is drawn, not planned: changing it replans nothing. It is not a user setting; tune it
-  in the sandbox (slider, `,` `.`, `--grain`).
+  grain is drawn, not planned: changing it replans nothing. The compositor defaults to
+  6 logical px and exposes a 1–24 size setting under Appearance & Motion. The sandbox also
+  offers a slider, `,` `.`, and `--grain`.
 - **Arriving is the same plan run backwards**, and `Run::reverse` turns a run around mid-flight
   from exactly where it is, so rapid minimize/restore never replans or jumps.
 
@@ -48,7 +50,7 @@ laptop under load):
 A cached plan (same window, obstacles, sink and timing) costs nothing: the sandbox reuses the
 plan *and* its GPU buffers for restore-after-minimize.
 
-### Every frame (GPU)
+### Every frame in the sandbox (GPU)
 
 One uniform write and two draws, sharing one bind group (`shaders/essence.wgsl`):
 `vs_body/fs_body` (the window's own quad: one window sample, one field sample, one noise
@@ -58,7 +60,7 @@ from a float hash on a jittered lattice, so dust costs no instances, and a fragm
 cloud's empty corner or under another window is discarded before any sample). Nothing is drawn once a run ends.
 `Plan::bounds` is the damage rectangle for the whole run.
 
-Per-pass GPU time, median µs (timestamp queries; the window drawn plainly for comparison):
+Sandbox per-pass GPU time, median µs (timestamp queries; the window drawn plainly for comparison):
 
 | | plain window | essence body | essence motes (peak) |
 |---|---|---|---|
@@ -75,6 +77,9 @@ is the lever; the grain size itself costs nothing.
 
 ## Surfaces
 
+These material shaders remain sandbox features; the window-transition integration does not
+apply them to the shipped interface.
+
 `Material`: glass, etched glass, stained glass, stone, glassy stone, metal sheen, rough wood
 (`shaders/surface.wgsl`, one uniform block, a material switch). Each is a rounded panel with an
 analytic AA edge and a bevel the light reads. The glass family reads a backdrop the host has
@@ -83,6 +88,8 @@ blurred into a mip chain; the rest read only the noise tile. Surfaces are meant 
 metal's sheen).
 
 ## Bar plates
+
+These shader experiments remain separate from the shell's existing gesture-rail motion.
 
 `Gesture` is one chip on a bottom bar. The host says whether the pointer is over it and whether
 the button is down; `Gesture::advance` eases hover and press and starts a pulse on the press
@@ -109,20 +116,28 @@ recomputation, hence a small repeating tile).
 every module with naga 30 and translates every entry point to GLSL ES 3.0 and SPIR-V. Run it
 after any WGSL edit; `just check` covers only the Rust.
 
-## Toward the compositor
+## Compositor integration
 
-`essence` is meant to replace the 200 ms shrink-and-fade in `templar-comp/src/motion.rs`
-(`MotionKind::Park/Unpark`, targets from `set_minimize_target`), and to animate `RevealHome`.
-The geometry it needs is already there: `WindowService::stacking_order` for obstacles (windows
-below the leaving one, `is_visible`), the card rectangle for `Sink::Card`. Open items:
+`compositor/templar-comp/src/motion.rs` selects Essence, Simple or Off for park/restore,
+using the same `set_minimize_target` geometry as the existing simple transition. It builds
+one planner result from the window, Home target and visible application obstacles, retains
+that plan in an `Arc`, and uses `Run::reverse` for rapid reversals. The effect occupies the
+window's original scene slot; it does not become an overlay above unrelated windows.
 
-- **Shader language.** Smithay's custom shaders are GLSL ES 1.00 (`compile_custom_*` prepend
-  `#version 100`), which naga cannot emit. Either draw through `GlesFrame::with_context` with
-  naga's GLSL ES 3.00 output (Smithay asks EGL for a GLES 2 context; drivers normally return a
-  backward-compatible 3.x one — verify `GL_VERSION` on both GPUs), or hand-port the two
-  fragment stages to 1.00.
-- **Where planning runs.** 1–3 ms once per trigger is acceptable on the main loop; a worker
-  thread (the planner is pure) would take it off entirely, at the price of starting one frame
-  later.
-- **Reduced motion** (`desktop-polish-a7`): skip motes and run the body alone with
-  `Timing { duration_ms: 120.0, .. }`.
+The production renderer in `compositor/templar-comp/src/essence_renderer.rs` uses hand-ported
+GLSL ES 1.00 body and batched-mote shaders in the existing GLES context. Per-transition window
+snapshots stay on the GPU. Texture dimensions are bounded by `GL_MAX_TEXTURE_SIZE`, and
+snapshot storage is capped at 128 MiB per GLES context. No CPU readback or second wgpu device
+is introduced. Shader initialization, texture support or snapshot-readiness failures fall
+back to the existing 200 ms simple motion.
+
+The shell propagates `shell.appearance.window-transition` (`essence`, `simple`, `off`) and
+`shell.appearance.particle-size` through the shell/compositor protocol. Particle size updates
+each frame's style uniform without recomputing the plan. The existing
+`shell.home-field.reduced-motion` overrides transition choices; enabling it or choosing Off
+cancels an active visual transition while preserving the already-committed window state.
+Material and bar WGSL shaders are not part of this production path.
+
+The tables above measure the sandbox's WGSL renderer, not compositor performance. Production
+shader/rendering fixtures qualify the GLES path; installed-session feel and integrated-GPU
+performance still require observation on the target machine.

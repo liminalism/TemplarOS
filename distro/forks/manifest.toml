@@ -41,14 +41,3 @@ source = "../liminalview"
 purpose = "native image viewer selected by the owner-supplied image defaults"
 package = "liminalview"
 note = "Local builds use a SHA256-addressed complete source archive; no release upstream/fork/branch/pin has been supplied."
-
-# The downstream delta is a Debian quilt overlay over this real upstream pin.
-# No published TemplarOS fork/branch is claimed before one exists.
-[fsearch]
-upstream = "https://github.com/cboxdoerfer/fsearch"
-fork = "https://github.com/cboxdoerfer/fsearch"
-branch = "master"
-pin = "05ed650ab101ee3d61795fa5eeeb5c32e1e366c3"
-purpose = "qualified prototype of file search using the shared generation-aware Index1 service"
-package = "templaros-fsearch"
-note = "GPL-2.0-or-later upstream source; distro/forks/fsearch/debian/patches carries the complete index-mode delta. Package a clean source at this exact upstream pin; local development builds are not a published patch branch. Owner 2026-10-08 defers WP14 generation comparison and WP16 fork adoption in favor of a future own integrated Index1 search GUI."

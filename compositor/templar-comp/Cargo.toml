@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 templar-build = { workspace = true }
 templar-window = { workspace = true }
+templar-effects = { workspace = true }
 templar-comp-integration = { workspace = true }
 templar-types = { workspace = true }
 templar-client = { workspace = true }

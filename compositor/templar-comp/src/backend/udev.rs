@@ -1806,6 +1806,7 @@ fn render_and_queue(state: &mut State, node: DrmNode, crtc: crtc::Handle, output
     let scene_elements = crate::scene::collect(
         &mut state.chrome,
         &mut state.wallpaper,
+        &mut state.essence_renderer,
         &state.windows,
         &crate::chrome::ChromeInputs {
             space: &state.space,

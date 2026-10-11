@@ -4,14 +4,17 @@
 shell, file layer, application identity system, resource governor, driver/update transaction system and
 installation image. Start from scratch in *policy and user interaction*, not in plumbing that already works.
 
-Status: **M1 — the services are real.** The session daemon persists every domain in one state store and
-launches applications through systemd `StartTransientUnit`; the governor serves its interface, applies
-protection and contains through a staged ladder that defaults to observing; the file service runs
-operations as resumable journalled transactions; the compositor core enforces typed layers, one scene and
-recovery that works without the shell; the host daemon promotes or rolls back a kernel and its driver as a
-pair. The clients (CLI, portal, shell, Settings) are landing; the compositor and any graphical surface are
-M2, so **you cannot log into this yet**. See `docs/generated/ROADMAP.md` for what is accepted and on
-what evidence, `docs/planning/` for the founding analysis, and `docs/adr/` for every decision.
+Status: the native session includes the compositor, PixelKit shell, Homegarden, Settings and
+first-party file services. The session daemon persists state and launches applications through
+systemd `StartTransientUnit`; the compositor owns windows, recovery and typed overlay layers.
+Homegarden represents current work, the bottom rail returns to tasks and saved targets, and one
+[Apps/Files launcher](docs/launcher.md) discovers and opens them. The governor, file transaction
+service and kernel/driver update service retain their separate ownership.
+
+Acceptance and remaining hardware qualification are tracked in the AKR ledger and
+`docs/generated/ROADMAP.md`. Source tests and owned fixtures establish specific behavior;
+installed-session and physical monitor/GPU observations have their own gates. See
+`docs/planning/` for the founding analysis and `docs/adr/` for decisions.
 
 ## The five things the first release must prove
 

@@ -12,14 +12,14 @@ use crate::state::{Backend, TemplarCompState};
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Device, DeviceCapability, Event,
-        InputBackend, InputEvent, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
         PointerMotionEvent,
     },
     desktop::{WindowSurfaceType, find_popup_root_surface},
     input::{
         Seat, SeatHandler, SeatState,
         dnd::{DnDGrab, DndTarget, GrabType, Source},
-        keyboard::FilterResult,
+        keyboard::{FilterResult, Keycode},
         pointer::{
             AxisFrame, ButtonEvent, CursorIcon, CursorImageStatus, Focus, GestureHoldBeginEvent,
             GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
@@ -74,6 +74,14 @@ impl<B: Backend + 'static> SeatHandler for TemplarCompState<B> {
         let dh = &self.display_handle;
         let client = focused.and_then(|surface| dh.get_client(surface.id()).ok());
         set_data_device_focus(dh, seat, client);
+        let popup = focused.and_then(|surface| self.windows.window_id_for(&surface.id()));
+        if self.window_service.set_focused_popup(popup) {
+            // SeatHandler is called under Smithay's keyboard lock. Defer mirror refresh,
+            // which can inspect focus or pointer state, until the callback has returned.
+            self.loop_handle
+                .insert_idle(|state| crate::space_sync::sync_after_change(state));
+            B::request_redraw(self);
+        }
     }
 }
 
@@ -1047,10 +1055,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
 
     /// The pressure overlay's modal keyboard capture. `true` when the overlay took the key and
     /// nothing else should look at it.
-    fn overlay_took_key<I: InputBackend>(
+    fn overlay_took_key(
         &mut self,
         keyboard: &smithay::input::keyboard::KeyboardHandle<Self>,
-        event: &I::KeyboardKeyEvent,
+        code: Keycode,
+        key_state: KeyState,
         serial: Serial,
         time: u32,
     ) -> bool {
@@ -1063,11 +1072,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         if self.session_lock.locked || self.recovery_protocol.pressure_overlay.is_none() {
             return false;
         }
-        let pressed = event.state() == smithay::backend::input::KeyState::Pressed;
+        let pressed = key_state == smithay::backend::input::KeyState::Pressed;
         let action = keyboard.input::<Option<crate::keybindings::OverlayAction>, _>(
             self,
-            event.key_code(),
-            event.state(),
+            code,
+            key_state,
             serial,
             time,
             |state, modifiers, handle| {
@@ -1106,11 +1115,30 @@ impl<B: Backend + 'static> TemplarCompState<B> {
     fn on_keyboard<I: InputBackend>(&mut self, event: &I::KeyboardKeyEvent) {
         let serial = SERIAL_COUNTER.next_serial();
         let time = Event::time_msec(event);
+        let queued = crate::launcher_input::QueuedKey {
+            code: event.key_code(),
+            key_state: event.state(),
+            serial,
+            time,
+        };
+        if self.buffer_launcher_key(queued) {
+            return;
+        }
+        self.on_keyboard_key(queued);
+    }
+
+    pub(crate) fn on_keyboard_key(&mut self, queued: crate::launcher_input::QueuedKey) {
+        let crate::launcher_input::QueuedKey {
+            code,
+            key_state,
+            serial,
+            time,
+        } = queued;
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
 
-        if self.overlay_took_key::<I>(&keyboard, event, serial, time) {
+        if self.overlay_took_key(&keyboard, code, key_state, serial, time) {
             // The overlay took this key, so a walk in progress is over: it chooses nothing, since
             // activating a window behind a modal overlay would be a change nobody saw happen.
             self.cancel_switch_walk();
@@ -1138,17 +1166,18 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         // A modifier going down mid-walk — Shift, to walk backwards — is part of the chord, not
         // "some other key", and must not cancel it.
         let mut modifier_pressed = false;
+        let previous_modifiers = keyboard.modifier_state();
         let action = keyboard.input::<Option<crate::keybindings::RecoveryAction>, _>(
             self,
-            event.key_code(),
-            event.state(),
+            code,
+            key_state,
             serial,
             time,
             |state, modifiers, handle| {
                 let keysym = handle.modified_sym();
-                escape_pressed = event.state() == smithay::backend::input::KeyState::Pressed
+                escape_pressed = key_state == smithay::backend::input::KeyState::Pressed
                     && keysym.raw() == smithay::input::keyboard::keysyms::KEY_Escape;
-                modifier_pressed = event.state() == smithay::backend::input::KeyState::Pressed
+                modifier_pressed = key_state == smithay::backend::input::KeyState::Pressed
                     && keysym.is_modifier_key();
                 if state.name_tab_menu.open.is_some()
                     && keysym.raw() == smithay::input::keyboard::keysyms::KEY_Escape
@@ -1162,7 +1191,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 state.chord_held = modifiers.alt || modifiers.logo;
                 match state
                     .super_tap
-                    .update(event.state(), keysym, time, home_revealed)
+                    .update(key_state, keysym, time, home_revealed)
                 {
                     crate::keybindings::SuperTapDecision::Intercept => {
                         return FilterResult::Intercept(None);
@@ -1188,7 +1217,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                     }
                     crate::keybindings::SuperTapDecision::Forward => {}
                 }
-                if event.state() != smithay::backend::input::KeyState::Pressed {
+                if key_state != smithay::backend::input::KeyState::Pressed {
                     // A release of a key whose press was swallowed must be swallowed too, or the
                     // client behind a card sees half a keystroke it never got the start of.
                     if in_taskfield {
@@ -1213,6 +1242,14 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 }
             },
         );
+
+        if action.is_some() && keyboard.modifier_state() != previous_modifiers {
+            // Smithay updates XKB for intercepted keys but sends no modifiers event.
+            // A popup may have entered with Super held while waiting for its first
+            // frame. Its swallowed Super release must clear that advertised state
+            // before the queued text arrives, without forwarding an orphan release.
+            keyboard.advertise_modifier_state(self);
+        }
 
         if self.name_tab_menu.open.is_some()
             && (escape_pressed
@@ -1243,7 +1280,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         // A *release* must not: clearing on every forwarded key is what used to kill the HUD one
         // keystroke after it appeared, on the release of the very Tab that opened it.
         let ends_walk =
-            event.state() == smithay::backend::input::KeyState::Pressed && !modifier_pressed;
+            key_state == smithay::backend::input::KeyState::Pressed && !modifier_pressed;
         self.finish_key(action.flatten(), ends_walk);
     }
 
@@ -1391,6 +1428,11 @@ impl<B: Backend + 'static> TemplarCompState<B> {
         let serial = SERIAL_COUNTER.next_serial();
         let button = event.button_code();
         let button_state = event.state();
+        if button_state == ButtonState::Pressed {
+            // A pointer choice supersedes a still-mapping launcher. Balance queued
+            // releases without typing its query into the window being clicked.
+            self.finish_launcher_input(false);
+        }
 
         // A press on anything that is not the shell's ends an open rail — the person has moved on
         // to something else. A press on the rail itself (or any shell surface) is the rail's to
@@ -2319,7 +2361,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
 
     /// Returns whether the press was the compositor's own — one of the affordances on a window's
     /// tag strip — and must therefore not also be delivered to a client.
-    fn handle_press_for_focus_or_drag(
+    pub(crate) fn handle_press_for_focus_or_drag(
         &mut self,
         location: Point<f64, Logical>,
         serial: Serial,

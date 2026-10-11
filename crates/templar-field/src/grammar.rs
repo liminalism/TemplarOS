@@ -222,7 +222,9 @@ pub fn operation_for(
                 | TileKind::WindowGroup { .. }
                 | TileKind::AppGroup { .. }
                 | TileKind::DesktopDock { .. } => return None,
-                TileKind::App { .. } => Operation::PinTool { project: *id },
+                TileKind::App { .. } | TileKind::LaunchProfile { .. } => {
+                    Operation::PinTool { project: *id }
+                }
                 TileKind::ParkedSession { .. } => Operation::ParkSession { project: *id },
                 TileKind::Widget { .. } => Operation::ScopeWidget { project: *id },
                 TileKind::File { .. }
@@ -251,12 +253,14 @@ pub fn operation_for(
                 // Two applications put together are favourites kept together — an app group,
                 // not a project: a project is a place work lives, with a directory behind it,
                 // and nobody dropping one shortcut on another asked for a directory.
-                (TileKind::App { .. }, TileKind::App { .. }) => {
-                    Some(Operation::GroupIntoAppGroup { with: *id })
-                }
-                (TileKind::App { .. }, TileKind::AppGroup { .. }) => {
-                    Some(Operation::AddToAppGroup { group: *id })
-                }
+                (
+                    TileKind::App { .. } | TileKind::LaunchProfile { .. },
+                    TileKind::App { .. } | TileKind::LaunchProfile { .. },
+                ) => Some(Operation::GroupIntoAppGroup { with: *id }),
+                (
+                    TileKind::App { .. } | TileKind::LaunchProfile { .. },
+                    TileKind::AppGroup { .. },
+                ) => Some(Operation::AddToAppGroup { group: *id }),
                 (TileKind::File { .. }, TileKind::App { .. }) if *accepts_open => {
                     Some(Operation::OpenWith { app: *id })
                 }

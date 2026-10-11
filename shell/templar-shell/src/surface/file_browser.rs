@@ -51,8 +51,7 @@ pub enum FileVerb {
     NewFolder,
     Properties,
     CopyPath,
-    /// Hand the question to the `file-search` provider — the application that searches every
-    /// file on the machine, rather than the folder being looked at.
+    /// Open the common launcher in Files mode within this directory.
     SearchHere,
     /// Start the selected `terminal` provider in this folder — the row's own directory, or the
     /// folder holding the file. Where exactly is `Files.Actions1.TerminalDirectory`'s answer,

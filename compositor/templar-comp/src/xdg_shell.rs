@@ -461,6 +461,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             .map_element(window.clone(), (client.x, client.y), false);
         tracing::info!(?window_id, backend = "wayland", "toplevel remapped");
         self.apply_pending_activation(surface, window_id);
+        crate::protocols_shell::apply_pending_popup_focus(self, surface);
         crate::space_sync::sync_after_change(self);
         true
     }
@@ -582,6 +583,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             crate::input::activate_window(self, window_id);
         }
         self.apply_pending_activation(surface, window_id);
+        crate::protocols_shell::apply_pending_popup_focus(self, surface);
         tracing::info!(
             ?window_id,
             requested = ?requested,

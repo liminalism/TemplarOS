@@ -85,7 +85,7 @@ record legeos.constraint.identity-and-launch-safety/2 : constraint {
 
 record legeos.constraint.native-lubuntu-is-the-development-environment/1 : constraint {
     title "LegeOS development and validation run in the native Lubuntu installation, not WSL"
-    state active
+    state superseded
     scope [ all ]
     topic development-environment
     statement """
@@ -94,6 +94,21 @@ record legeos.constraint.native-lubuntu-is-the-development-environment/1 : const
     rationale """
         The working LegeOS toolchain, system dependencies, live-session boundary and reference-hardware context belong to the Lubuntu partition. Treating an incidental Windows/WSL request environment as the project host creates false setup work and invalid evidence.
         """
+    author "GitHub Uploader"
+}
+
+record legeos.constraint.native-lubuntu-is-the-development-environment/2 : constraint {
+    title "Native TemplarOS development; Lubuntu recovery only"
+    state active
+    scope [ all ]
+    topic development-environment
+    statement """
+        Owner correction on 2026-10-09: this machine is running TemplarOS and is the current native development and validation environment. Lubuntu is available as recovery if TemplarOS breaks. Windows/WSL may provide agent helpers but is not project build, validation, hardware or deployment evidence. Preserve the person's live desktop session: use native cargo tests, headless checks and isolated owned runtime fixtures; deployments and logouts remain the person's actions.
+        """
+    rationale """
+        The working LegeOS toolchain, system dependencies, live-session boundary and reference-hardware context belong to the Lubuntu partition. Treating an incidental Windows/WSL request environment as the project host creates false setup work and invalid evidence.
+        """
+    supersedes [ @legeos.constraint.native-lubuntu-is-the-development-environment/1 ]
     author "GitHub Uploader"
 }
 

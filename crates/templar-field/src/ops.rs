@@ -97,6 +97,8 @@ pub enum FieldError {
     /// A panel with that id already exists.
     DuplicatePanel,
     UnknownPanel,
+    /// A persistent launch target has an invalid native path, identity or arguments.
+    InvalidLaunchProfile,
 }
 
 impl fmt::Display for FieldError {
@@ -117,6 +119,7 @@ impl fmt::Display for FieldError {
             Self::VersionMismatch => "the document is from another version of the field",
             Self::DuplicatePanel => "a panel with that id already exists",
             Self::UnknownPanel => "no such panel",
+            Self::InvalidLaunchProfile => "invalid saved launch profile",
         };
         f.write_str(message)
     }
@@ -308,6 +311,12 @@ fn desktop_dock_order(
 }
 
 fn apply_in_place(doc: &mut FieldDocument, op: &FieldOp) -> Result<FieldOp, FieldError> {
+    if let FieldOp::Place { tile, .. } | FieldOp::AddTile { tile, .. } = op
+        && let crate::TileKind::LaunchProfile { profile } = &tile.kind
+        && profile.validate().is_err()
+    {
+        return Err(FieldError::InvalidLaunchProfile);
+    }
     match op {
         FieldOp::Place { tile, landing } => place(doc, tile, *landing),
         FieldOp::AddTile {

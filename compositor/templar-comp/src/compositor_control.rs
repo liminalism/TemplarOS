@@ -908,6 +908,44 @@ fn dispatch<B: Backend + 'static>(
     let active = state.backend_data.session_active();
     let locked = state.session_lock.locked;
     match request {
+        ControlRequest::OpenLauncher {
+            mode,
+            scope_uri,
+            query,
+        } => {
+            if !active || locked {
+                return Err(error(
+                    "session_unavailable",
+                    "Launcher requires an active unlocked session",
+                ));
+            }
+            if query.len() > 4096 || query.contains('\0') {
+                return Err(error(
+                    "invalid_query",
+                    "Launcher query must be bounded literal text",
+                ));
+            }
+            if let Some(uri) = &scope_uri {
+                if uri.len() > 65536 || !valid_launcher_scope(uri) {
+                    return Err(error(
+                        "invalid_scope",
+                        "Launcher scope must be an absolute local directory file URI",
+                    ));
+                }
+            }
+            if !crate::protocols_shell::send_launcher_request(
+                state,
+                mode,
+                scope_uri.as_deref().unwrap_or(""),
+                &query,
+            ) {
+                return Err(error(
+                    "shell_unavailable",
+                    "No launcher-capable trusted shell is connected",
+                ));
+            }
+            Ok(Some(ControlResponse::Activity(observation(state))))
+        }
         ControlRequest::SubscribeTabWindows => {
             crate::tab_metadata::subscribe(
                 state,
@@ -1496,4 +1534,10 @@ mod descriptor_tests {
             assert_closed(peer);
         }
     }
+}
+
+fn valid_launcher_scope(uri: &str) -> bool {
+    templar_types::uri_list::decode_uri(uri).is_some_and(|path| {
+        path.is_absolute() && !std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()).contains(&0)
+    })
 }

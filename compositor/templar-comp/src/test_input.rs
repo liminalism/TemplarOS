@@ -350,12 +350,26 @@ fn execute<B: Backend + 'static>(
                     Some(serde_json::json!({"x": surface.geometry.x + target.rect.x, "y": surface.geometry.y + target.rect.y, "width": target.rect.width, "height": target.rect.height}))
                 });
                 serde_json::json!({"id": window.id.0, "title": window.title, "active": window.activated, "parked": window.shelved, "card": card,
-                    "transient_parent": window.transient_parent.map(|id| id.0), "fullscreen": window.fullscreen,
+                    "transient_parent": window.transient_parent.map(|id| id.0), "fullscreen": window.fullscreen, "maximized": window.maximized,
                     "geometry": window.geometry, "peer_pid": window.peer_pid, "identity_verified": window.identity.verified,
                     "layer": format!("{:?}", state.window_service.layer_of(window.id)),
                     "stacking_preference": format!("{:?}", window.stacking),
                     "tab": tab_snapshot(&state.window_service, window.id)})
             }).collect();
+            let overlays: Vec<_> = state.window_service.windows().filter(|window| {
+                window.mapped && state.window_service.layer_of(window.id) == Some(templar_window::Layer::ShellOverlay)
+            }).map(|window| serde_json::json!({"id": window.id.0, "title": window.title, "geometry": window.geometry})).collect();
+            let keyboard = state
+                .seat
+                .get_keyboard()
+                .and_then(|keyboard| keyboard.current_focus())
+                .and_then(|surface| state.windows.window_id_for(&surface.id()))
+                .and_then(|id| {
+                    state
+                        .window_service
+                        .window(id)
+                        .map(|window| serde_json::json!({"id": id.0, "title": window.title}))
+                });
             let pointer = state.seat.get_pointer().map(|pointer| {
                 let position = pointer.current_location();
                 serde_json::json!({"x": position.x, "y": position.y,
@@ -372,13 +386,21 @@ fn execute<B: Backend + 'static>(
                         .is_some_and(|element| state.space.element_location(element).is_some())
             });
             return Ok(
-                serde_json::json!({"windows": windows, "pointer": pointer, "stacking": state.window_service.stacking_order().iter().map(|id| id.0).collect::<Vec<_>>(), "home": state.window_service.home_revealed(), "selected": state.switcher.as_ref().map(|switcher| switcher.selected.0), "presentation_in_space": presentation_in_space,
+                serde_json::json!({"windows": windows, "overlays": overlays, "keyboard": keyboard, "launcher_focus_waiting": state.launcher_focus_waiting(), "pointer": pointer, "stacking": state.window_service.stacking_order().iter().map(|id| id.0).collect::<Vec<_>>(), "home": state.window_service.home_revealed(), "selected": state.switcher.as_ref().map(|switcher| switcher.selected.0), "presentation_in_space": presentation_in_space,
                 "name_tab_menu": state.name_tab_menu.open.map(|menu| serde_json::json!({
                     "window": menu.window_id.0, "panel": menu.panel,
                     "rows": crate::chrome::NameTabMenuTarget::ROWS.iter().enumerate().map(|(index, (choice, label))|
                         serde_json::json!({"choice": format!("{choice:?}"), "label": label, "rect": menu.row(index)})).collect::<Vec<_>>()
                 }))}),
             );
+        }
+        [Some("maximize"), Some(id), None, None] => {
+            let id = templar_window::WindowId(id.parse()?);
+            anyhow::ensure!(
+                state.window_service.is_client_window(id),
+                "maximize requires a real client"
+            );
+            crate::xdg_shell::apply_maximized(state, id, true);
         }
         [
             Some(kind @ ("key" | "button")),

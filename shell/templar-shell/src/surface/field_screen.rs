@@ -1,5 +1,5 @@
-//! The Home Field screen: the document from `crate::field_model` drawn as tiles, with a search
-//! field above it, the drawers' full bodies a click away, and every action reachable by pointer
+//! The Home Field screen: the document from `crate::field_model` drawn as working objects,
+//! with the global launcher reached through an explicit action, and every action reachable by pointer
 //! *and* by keyboard. Like every screen in this crate, a pure `draw(ui, area, data) -> actions`
 //! over a `WindowBuffer`: no D-Bus, no Wayland, so it is tested with a synthetic `Input`.
 //!
@@ -64,13 +64,19 @@ pub struct FileDrop {
 /// comes out here; nothing in this module performs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldAction {
-    /// Ask the file service this question, for this scope. The host debounces it — this is the
-    /// question, not the round trip.
+    /// Open the one global launcher without changing or creating Home objects.
+    ShowLauncher {
+        mode: crate::launcher_model::LauncherMode,
+        scope: Option<PathBuf>,
+        query: String,
+    },
     RunSearch {
         scope: crate::omnibox::Scope,
         query: String,
     },
     Launch(AppId),
+    /// Activate a saved configuration; its cwd and argv are part of the target identity.
+    LaunchProfile(templar_types::launcher::Favorite),
     /// Keep this application on Home for good, as a tile of its own. The one route to an
     /// application tile: Home no longer grows one per running window.
     PinApp(AppId),
@@ -274,32 +280,13 @@ pub struct FieldData<'a> {
     pub notifications: &'a [crate::surface::widgets::notifications::NotificationRow],
     pub connected: bool,
     pub home_revealed: bool,
-    /// Every installed application (`AppIdentity1.ListApplications`): one of the omnibox's
-    /// sources. Empty is ambiguous on its own, hence `apps_available`.
+    /// Installed identities used for semantic work-card roles and pinned tile labels.
     pub apps: &'a [crate::app_search::AppEntry],
     /// The copies of each logical application that has more than one, keyed by logical id. Empty
     /// for the overwhelming majority: one application, one copy, no choice to offer.
     pub variants: &'a HashMap<String, Vec<(String, String, String)>>,
-    /// Every project `Projects1` knows, and every declared action — the omnibox's other two
-    /// in-memory sources.
-    pub projects: &'a [field_model::ProjectInfo],
     /// Homegarden's places by root: the roles row and branch body a grown folder draws.
     pub garden: &'a HashMap<PathBuf, crate::garden::GardenPlace>,
-    pub actions: &'static [templar_types::action::ActionDecl],
-    /// The last file search that completed, with the query it answered. The omnibox compares
-    /// that query against the one on screen and withholds a stale answer rather than showing it.
-    pub file_search: Option<crate::omnibox::FileResults<'a>>,
-    /// Whether the application registry answered. A launcher that cannot reach it says so rather
-    /// than showing an empty list, which reads as "nothing is installed".
-    pub apps_available: bool,
-    /// Recently launched applications, newest first, already resolved against `apps`. Empty on a
-    /// cold session; the strip under search is then simply not drawn.
-    pub recents: &'a [&'a crate::app_search::AppEntry],
-    /// The same list as ids, newest first, straight from [`crate::recents::RecentApps::ids`] —
-    /// what the launcher ranks with. Separate from `recents` because that one is resolved against
-    /// the registry and this one is not: an application that was uninstalled still says something
-    /// about the order you reach for the ones that are left.
-    pub recent_ids: &'a [String],
     /// Each widget's current content, keyed by `TileKind::System`'s probe. Absent means the
     /// first fetch has not landed; see `crate::surface::widgets` for why a widget that cannot
     /// reach its service reports that rather than showing a zero.
@@ -338,13 +325,6 @@ pub struct FieldScreen {
     work_release: Option<(Release, bool)>,
     /// After Escape, the held pointer must be released before another gesture can start.
     pointer_cancelled: bool,
-    /// The tile a drag out of the search results would create — an application, or a folder for
-    /// a typed path. Held here and nowhere else until the drop: nothing is placed until release,
-    /// so a cancelled drag has nothing to undo.
-    pending: Option<Tile>,
-    /// The result row pressed and not yet released. A row's click is delivered on release, not on
-    /// the press `pixelkit_shell::Input` registers it at, so that a press can become a drag.
-    result_press: Option<usize>,
     pub focus: Option<TileId>,
     /// Tiles affected by the next bulk operation. Focus remains a separate keyboard cursor.
     pub selection: Selection<TileId>,
@@ -376,22 +356,10 @@ pub struct FieldScreen {
     /// desktop (`@templaros.decision.home-field-stable-bounded-semantic-grammar`).
     pub zoomed: Option<TileId>,
     pub files_view: FilesBrowseView,
-    pub search: TextFieldState,
     ime_caret: Option<Rect>,
-    pub search_focused: bool,
     pub controls_focused: bool,
     /// The host supplied the shared control traversal for this frame.
     pub shared_focus: bool,
-    /// The omnibox dropdown's cursor, and what this frame's search bar decided it should show.
-    /// The rows are computed with the bar and painted after the tiles, so the list sits over the
-    /// field rather than under it.
-    pub omnibox: crate::surface::omnibox_screen::OmniboxState,
-    omnibox_rows: Vec<crate::omnibox::Row>,
-    omnibox_anchor: Rect,
-    omnibox_files: crate::omnibox::FileState,
-    omnibox_committed: Option<(usize, crate::surface::omnibox_screen::Intent)>,
-    /// The query the file service was last asked for, so a redraw does not ask again.
-    asked_for: String,
     /// Manifest-driven Home help. F1 and the visible top-row affordance both toggle it.
     pub help_open: bool,
     help_scroll: pixelkit_ui::ScrollState,
@@ -489,8 +457,6 @@ impl Default for FieldScreen {
             drag_cfg: DragConfig::default(),
             work_release: None,
             pointer_cancelled: false,
-            pending: None,
-            result_press: None,
             focus: None,
             selection: Selection::default(),
             marquee: None,
@@ -504,17 +470,9 @@ impl Default for FieldScreen {
             files: crate::files_surface::FilesSurfaceState::default(),
             zoomed: None,
             files_view: FilesBrowseView::default(),
-            search: TextFieldState::new(),
             ime_caret: None,
-            search_focused: false,
             controls_focused: false,
             shared_focus: false,
-            omnibox: crate::surface::omnibox_screen::OmniboxState::default(),
-            omnibox_rows: Vec::new(),
-            omnibox_anchor: Rect::new(0, 0, 0, 0),
-            omnibox_files: crate::omnibox::FileState::Idle,
-            omnibox_committed: None,
-            asked_for: String::new(),
             help_open: false,
             help_scroll: pixelkit_ui::ScrollState::default(),
             bounds: Rect::new(0, 0, 0, 0),
@@ -668,8 +626,6 @@ impl FieldScreen {
         self.work_release = None;
         self.resize = None;
         self.marquee = None;
-        self.pending = None;
-        self.result_press = None;
         self.pointer_cancelled = false;
     }
 
@@ -1737,7 +1693,10 @@ impl FieldScreen {
         doc.tile(id).is_some_and(|tile| {
             matches!(
                 tile.kind,
-                TileKind::File { .. } | TileKind::Tray { .. } | TileKind::App { .. }
+                TileKind::File { .. }
+                    | TileKind::Tray { .. }
+                    | TileKind::App { .. }
+                    | TileKind::LaunchProfile { .. }
             )
         })
     }
@@ -1898,15 +1857,6 @@ impl FieldScreen {
         data: &FieldData<'_>,
     ) -> Vec<FieldAction> {
         self.ime_caret = None;
-        if self
-            .omnibox_area(ui)
-            .is_some_and(|rect| ui.input.focus_requested(rect))
-        {
-            self.search_focused = true;
-        }
-        if self.rename_group.is_some() || self.files_view.rename_open() || self.menu.is_open() {
-            self.search_focused = false;
-        }
         // The whole buffer, not just `area`. Home's buffer is never cleared between frames
         // (`HostedWindow::prepare` keeps it, and the window's size does not change), and `area`
         // is the output *minus* the bar's strip — but only once the bar exists. The shell draws
@@ -1934,26 +1884,11 @@ impl FieldScreen {
         self.expire_notice(data.now_ms);
 
         let inset = area.inset(ui.px(design::FIELD_INSET));
-        let recents_visible = self.recents_visible(data);
-        let chrome_h = ui.px(design::TOP_BAR_HEIGHT)
-            + if recents_visible {
-                ui.px(design::TOP_BAR_GAP) + ui.px(design::RECENTS_HEIGHT)
-            } else {
-                0
-            };
-        let (chrome, below_bar) = inset.split_top(chrome_h.min(inset.h));
-        self.draw_search_bar(ui, chrome, recents_visible, data, &mut actions);
         if self.help_open {
             self.draw_help_overlay(ui, area);
             return actions;
         }
-        let gap = ui.px(design::TOP_BAR_GAP).min(below_bar.h);
-        let rest = Rect::new(
-            below_bar.x,
-            below_bar.y + gap,
-            below_bar.w,
-            (below_bar.h - gap).max(0),
-        );
+        let rest = inset;
         if !self.modal_open() {
             self.handle_notice_input(ui, rest, &mut actions);
         }
@@ -2028,7 +1963,6 @@ impl FieldScreen {
             }
             self.draw_expanded(ui, window, data, &mut actions);
             self.draw_notice(ui, rest);
-            self.draw_omnibox(ui, data, &mut actions);
             return actions;
         }
 
@@ -2074,7 +2008,6 @@ impl FieldScreen {
                     || ui.input.focus_requested(rect)
                 {
                     self.focus = Some(id);
-                    self.search_focused = false;
                     // A tile keeps its existing arrows/activation/move/resize handlers.
                     // Descendant controls retain their own shared-focus keyboard ownership.
                     self.controls_focused = false;
@@ -2194,7 +2127,6 @@ impl FieldScreen {
         if rects.is_empty() && self.work_overflow.is_none() {
             self.draw_empty_state(ui, rest, data.connected);
         }
-        self.draw_omnibox(ui, data, &mut actions);
         actions
     }
 
@@ -2455,28 +2387,6 @@ impl FieldScreen {
             }
         }
 
-        let pending = self.pending.clone();
-        if let (Some(tile), Some((x, y))) = (pending, self.drag.tile_position())
-            && self.drag.is_lifted()
-        {
-            let cell = from_pixel(templar_field::cell_rect(
-                cols,
-                rows,
-                to_pixel(self.bounds),
-                Cell::new(0, 0),
-                tile.spans.preferred,
-                ui.px(GAP),
-            ));
-            let raised = Rect::new(x as i32, y as i32, cell.w, cell.h);
-            let visual = TileVisual {
-                hovered: false,
-                focused: false,
-                selected: false,
-                lifted: true,
-                displaced: None,
-            };
-            self.paint_tile(ui, raised, &tile, visual, data, actions);
-        }
         if let (Some(id), Some((x, y))) = (lifted, self.drag.tile_position())
             && let (Some(tile), Some(rect)) = (doc.tile(id), self.tile_rect(doc, id, ui))
         {
@@ -2496,272 +2406,6 @@ impl FieldScreen {
             };
             self.paint_tile(ui, raised, tile, visual, data, actions);
         }
-    }
-
-    fn recents_visible(&self, data: &FieldData<'_>) -> bool {
-        self.search.text().trim().is_empty() && !self.files_expanded && !data.recents.is_empty()
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn draw_search_bar(
-        &mut self,
-        ui: &mut Ui<'_>,
-        chrome: Rect,
-        recents_visible: bool,
-        data: &FieldData<'_>,
-        actions: &mut Vec<FieldAction>,
-    ) {
-        let gap = ui.px(design::TOP_BAR_GAP);
-        let bar = if recents_visible {
-            chrome.split_top(ui.px(design::TOP_BAR_HEIGHT)).0
-        } else {
-            chrome
-        };
-        // No Home plate and no Help button. A plate labelled "Home" *on* Home said the word for
-        // the surface it was already standing on, and the route it offered — reveal the field
-        // from under the windows — is the bar's Home chip, which is visible from everywhere and
-        // not only from the place it takes you to. Help is a secondary-click row and F1
-        // (`context_menu.rs`, `MenuScope::Field`); a permanent button in the corner of every
-        // session is furniture for something a person reaches for twice.
-        // Search stays centred above the field; active work has its own contiguous presentation.
-        let search_w = ui.px(design::SEARCH_WIDTH).min(bar.w);
-        let search_area = Rect::new(bar.x + (bar.w - search_w) / 2, bar.y, search_w, bar.h);
-        let modal = self.modal_open();
-        if !modal && (ui.input.take_click(search_area) || ui.input.focus_requested(search_area)) {
-            self.search_focused = true;
-        }
-        // Escape leaves the search and empties it, so the next letter typed starts a new question
-        // rather than continuing one asked minutes ago. Read *here*: the focused `text_field`
-        // below consumes every key of the frame, so `handle_keys` never sees one while the search
-        // has focus — which is why Escape used to do nothing at all.
-        if !modal && self.search_focused && ui.input.keys().contains(&KeyInput::Escape) {
-            self.search_focused = false;
-            self.search.set_text("");
-        }
-        // Scope is derived from where the surface is, never chosen. There is no mode to be in,
-        // so there is no mode to get stuck in: on bare Home the field is the application
-        // launcher, and inside the expanded Files object it searches that location.
-        let scope = self.scope();
-        let query = self.search.text().to_owned();
-        // The one task model, so the launcher counts what the island counts.
-        let running = templar_window::task::units(data.toplevels);
-        let rows = crate::omnibox::federate(
-            crate::omnibox::Sources {
-                apps: data.apps,
-                recents: data.recent_ids,
-                files: data.file_search,
-                home: data.browser.home,
-                running: &running,
-            },
-            &query,
-            &scope,
-            crate::omnibox::TOTAL_CAP,
-        );
-        // Read before `text_field` consumes the frame's keys: a focused field takes every key,
-        // including the ones the dropdown's cursor lives on.
-        let committed = (self.search_focused && !modal)
-            .then(|| self.omnibox.handle_keys(ui, &query, rows.len()))
-            .flatten();
-        let placeholder = match &scope {
-            crate::omnibox::Scope::Location(location) => format!("Search {}", location.label()),
-            // It says what to do, because there is now something to do without touching the
-            // pointer at all: any letter typed on Home lands here.
-            crate::omnibox::Scope::Applications => "Type to open an application".to_owned(),
-        };
-        let previous_theme = ui.theme;
-        ui.theme.background = design::shell_fill();
-        ui.theme.padding = 14;
-        // The menu owns input until it closes; painting the launcher must not drain
-        // its arrows/Enter/Escape through the focused text field first.
-        let focused = if modal {
-            false
-        } else {
-            let (_, focused) =
-                ui.text_field_input(&mut self.search, search_area, self.search_focused, false);
-            self.search_focused = focused;
-            focused
-        };
-        ui.paint_text_field(&mut self.search, search_area, &placeholder, focused, false);
-        ui.theme = previous_theme;
-        self.ime_caret = self.search.caret_area();
-
-        if recents_visible && !modal {
-            let recents_row = Rect::new(
-                search_area.x,
-                chrome.y + ui.px(design::TOP_BAR_HEIGHT) + gap,
-                search_area.w,
-                ui.px(design::RECENTS_HEIGHT).min(
-                    (chrome.bottom() - (chrome.y + ui.px(design::TOP_BAR_HEIGHT) + gap)).max(0),
-                ),
-            );
-            Self::draw_recents(ui, recents_row, data, actions);
-        }
-
-        // Inside a location, whatever is typed goes to the file service once the typing has
-        // stopped. The debounce itself lives in the host, which has the clock; this only says
-        // what to ask. The launcher on bare Home has its answer in hand and asks nothing.
-        if query.trim() != self.asked_for.trim() {
-            self.asked_for.clone_from(&query);
-            if matches!(scope, crate::omnibox::Scope::Location(_)) {
-                actions.push(FieldAction::RunSearch {
-                    scope: scope.clone(),
-                    query: query.clone(),
-                });
-            }
-        }
-
-        self.omnibox_rows = rows;
-        self.omnibox_anchor = search_area;
-        // Only a location has files to be searching for. The launcher had its whole answer in
-        // hand and still printed "still searching files…" under it, which is the general search
-        // this control is explicitly not.
-        self.omnibox_files = match scope {
-            crate::omnibox::Scope::Applications => crate::omnibox::FileState::Idle,
-            crate::omnibox::Scope::Location(_) => {
-                crate::omnibox::file_state(data.file_search, &query)
-            }
-        };
-        self.omnibox_committed = committed;
-    }
-
-    /// Recently launched applications, as a row of chips under the search field. The COSMIC
-    /// app-library recent list, drawn where the empty search actually is.
-    fn draw_recents(
-        ui: &mut Ui<'_>,
-        area: Rect,
-        data: &FieldData<'_>,
-        actions: &mut Vec<FieldAction>,
-    ) {
-        let chip_w = ui.px(design::RECENT_CHIP_WIDTH);
-        if chip_w <= 0 || area.h <= 0 {
-            return;
-        }
-        let max = usize::try_from((area.w / chip_w).max(0)).unwrap_or(0);
-        let shown: Vec<&crate::app_search::AppEntry> =
-            data.recents.iter().copied().take(max).collect();
-        if shown.is_empty() {
-            return;
-        }
-        let total = chip_w * i32::try_from(shown.len()).unwrap_or(0);
-        let start_x = area.x + (area.w - total) / 2;
-        let icon_size = ui
-            .px(36)
-            .min(chip_w - ui.px(12))
-            .min(area.h - ui.px(22))
-            .max(8);
-        for (index, app) in shown.iter().enumerate() {
-            let chip = Rect::new(
-                start_x + chip_w * i32::try_from(index).unwrap_or(0),
-                area.y,
-                chip_w,
-                area.h,
-            );
-            let hovered = ui.input.hovering(chip);
-            if hovered {
-                ui.painter.fill_rounded_rect(
-                    chip.inset(ui.px(2)),
-                    ui.px(design::CHIP_RADIUS),
-                    design::accent_soft(),
-                );
-            }
-            let icon = Rect::new(
-                chip.x + (chip.w - icon_size) / 2,
-                chip.y + ui.px(6),
-                icon_size,
-                icon_size,
-            );
-            if let Some(bitmap) = data.icons.get(&app.id.to_string()) {
-                ui.painter.blit(bitmap, icon, ScaleFilter::Bilinear);
-            } else {
-                ui.painter.fill_rounded_rect_aa(
-                    ui.kernel,
-                    icon,
-                    ui.px(design::CHIP_RADIUS) as f32,
-                    design::accent_soft(),
-                    255,
-                );
-                let initial = app
-                    .label()
-                    .chars()
-                    .next()
-                    .unwrap_or('?')
-                    .to_uppercase()
-                    .to_string();
-                ui.label(icon, &initial, design::accent(), Align::Centre);
-            }
-            let name = Rect::new(
-                chip.x + ui.px(4),
-                icon.bottom() + ui.px(2),
-                (chip.w - ui.px(8)).max(0),
-                ui.px(16).min((chip.bottom() - icon.bottom()).max(0)),
-            );
-            if name.h > 0 {
-                ui.label_styled(
-                    name,
-                    app.label(),
-                    design::state_style(ui),
-                    if hovered {
-                        design::accent()
-                    } else {
-                        design::text()
-                    },
-                    Align::Centre,
-                );
-            }
-            if ui.input.take_click(chip) {
-                actions.push(FieldAction::Launch(app.id.clone()));
-            }
-        }
-    }
-
-    /// The dropdown, painted after the field so it is over the tiles rather than under them, and
-    /// hit-tested before them — [`Self::omnibox_area`] is what keeps a tile from stealing a click
-    /// aimed at a row. The same two-step the context menu uses.
-    fn draw_omnibox(
-        &mut self,
-        ui: &mut Ui<'_>,
-        data: &FieldData<'_>,
-        actions: &mut Vec<FieldAction>,
-    ) {
-        if !self.search_focused {
-            return;
-        }
-        let rows = std::mem::take(&mut self.omnibox_rows);
-        let outcome = crate::surface::omnibox_screen::draw(
-            ui,
-            self.omnibox_anchor,
-            self.bounds,
-            &rows,
-            &mut self.omnibox,
-            data.icons,
-            self.omnibox_files,
-        );
-        // A pointer click is always "go to it"; the keyboard is where the other two answers are.
-        let chosen = match outcome {
-            crate::surface::omnibox_screen::OmniboxOutcome::None => self
-                .omnibox_committed
-                .and_then(|(index, intent)| Some((rows.get(index)?.hit.clone(), intent))),
-            crate::surface::omnibox_screen::OmniboxOutcome::Chose(hit) => {
-                Some((hit, crate::surface::omnibox_screen::Intent::Open))
-            }
-        };
-        if let Some((hit, intent)) = chosen {
-            self.choose(hit, intent, data, actions);
-        }
-    }
-
-    /// The rectangle the dropdown occupies right now, if it is open.
-    fn omnibox_area(&self, ui: &Ui<'_>) -> Option<Rect> {
-        if !self.search_focused {
-            return None;
-        }
-        crate::surface::omnibox_screen::area(
-            ui,
-            self.omnibox_anchor,
-            self.bounds,
-            &self.omnibox_rows,
-            self.omnibox_files,
-        )
     }
 
     /// Where a collapsing object is heading: the Files tile's rectangle *now*.
@@ -2865,76 +2509,6 @@ impl FieldScreen {
 
     pub fn ime_caret(&self) -> Option<Rect> {
         self.ime_caret
-    }
-
-    /// Put the caret in the Apps bar, empty, ready to be typed into.
-    ///
-    /// `Super+Space` is not a second launcher: the Apps bar on Home is the one launcher object
-    /// (`@templaros.decision.the-home-field-is-a-launcher-not-a-search`), and this is one more
-    /// route into it. The compositor has already revealed Home by the time it says so.
-    pub fn focus_search(&mut self) {
-        self.search_focused = true;
-        self.search.set_text("");
-    }
-
-    /// Where the question is being asked from. Derived, never chosen.
-    fn scope(&self) -> crate::omnibox::Scope {
-        if self.files_expanded {
-            crate::omnibox::Scope::Location(self.files.location().clone())
-        } else {
-            crate::omnibox::Scope::Applications
-        }
-    }
-
-    /// Act on one omnibox row.
-    ///
-    /// An application row has three answers rather than one, because a result for something
-    /// already running is not a request to start a second copy of it: Enter goes to its most
-    /// recently used window, Ctrl+Enter asks for a new one outright, and the arrow hands the
-    /// question — *which* window — to the overview. An application with nothing running answers
-    /// all three the same way, by launching, which is the only thing any of them can mean.
-    fn choose(
-        &mut self,
-        hit: crate::omnibox::Hit,
-        intent: crate::surface::omnibox_screen::Intent,
-        data: &FieldData<'_>,
-        actions: &mut Vec<FieldAction>,
-    ) {
-        use crate::omnibox::Hit;
-        use crate::surface::omnibox_screen::Intent;
-        self.search_focused = false;
-        match hit {
-            Hit::App { id } => {
-                let unit = templar_window::task::units(data.toplevels)
-                    .into_iter()
-                    .find(|unit| unit.key == templar_window::task::TaskKey::App(id.clone()))
-                    .filter(|unit| unit.visible() > 0);
-                match (intent, unit) {
-                    (Intent::LaunchNew, _) | (_, None) => actions.push(FieldAction::Launch(id)),
-                    (Intent::Open, Some(unit)) => {
-                        if let Some(window) = unit.visible_windows().next() {
-                            actions.push(FieldAction::Activate(window));
-                        }
-                    }
-                    (Intent::ShowAll, Some(unit)) => {
-                        actions.push(FieldAction::Taskfield(unit.key));
-                    }
-                }
-                self.search.set_text("");
-            }
-            Hit::File { path } => actions.push(FieldAction::OpenFile(path)),
-            // Inside the Files object a folder is somewhere to go; on bare Home it is the file
-            // manager opening there, exactly as a Folder tile is. Same row, same hit — the scope
-            // decides, exactly as it does for the query itself, so there is still no mode to be in.
-            Hit::Directory { path } => {
-                if self.files_expanded {
-                    self.files
-                        .go_to(crate::files_surface::FilesLocation::Directory(path));
-                } else {
-                    actions.push(FieldAction::OpenInFiles(path));
-                }
-            }
-        }
     }
 
     /// Toggle/dismiss Help and, while it is open, claim the entire surface for it.
@@ -3184,8 +2758,7 @@ impl FieldScreen {
     ///
     /// One nesting level, where there used to be three — a breadcrumb band, then a surface with
     /// its own rail and its own second search field, then a browser with its own places sidebar
-    /// and its own toolbar breadcrumb. The rail is the pinned list inside the body now, and the
-    /// second search field is the one at the top of the screen.
+    /// and its own toolbar breadcrumb. File discovery opens the same global launcher.
     fn draw_expanded(
         &mut self,
         ui: &mut Ui<'_>,
@@ -3228,8 +2801,7 @@ impl FieldScreen {
             None,
         );
         if !self.files_view.rename_open()
-            && (ui.input.take_click(close)
-                || (!self.search_focused && ui.input.keys().contains(&KeyInput::Escape)))
+            && (ui.input.take_click(close) || ui.input.keys().contains(&KeyInput::Escape))
         {
             self.collapse_files(data.now_ms);
             return;
@@ -3239,7 +2811,7 @@ impl FieldScreen {
             body,
             &mut self.files,
             data.browser,
-            !self.search_focused && !self.controls_focused,
+            !self.controls_focused,
         ) {
             Some(crate::surface::file_browser::FileBrowserAction::Load {
                 location,
@@ -3276,15 +2848,38 @@ impl FieldScreen {
         if self.controls_focused {
             return;
         }
-        // A focused search owns the keyboard, and `draw_search_bar` has already had this frame's
-        // keys (Escape included) before the field consumed them.
-        if self.search_focused {
-            return;
-        }
         let keys: Vec<KeyInput> = ui.input.keys().to_vec();
         let modifiers = ui.input.modifiers();
         let (cols, rows) = self.grid_dims(doc);
         let rects = self.current_rects(doc, ui);
+        // Home forwards the whole frame's printable text to the one global popup. It
+        // owns no query, recent-app strip, or result state of its own.
+        if !modifiers.control
+            && !modifiers.alt
+            && !modifiers.logo
+            && self.focus.is_none()
+            && self.selection.is_empty()
+            && self.confirming.is_none()
+            && self.zoomed.is_none()
+            && self.keyboard_move.is_none()
+            && self.keyboard_resize.is_none()
+        {
+            let query: String = keys
+                .iter()
+                .filter_map(|key| match key {
+                    KeyInput::Character(character) if !character.is_control() => Some(*character),
+                    _ => None,
+                })
+                .collect();
+            if !query.trim().is_empty() {
+                actions.push(FieldAction::ShowLauncher {
+                    mode: crate::launcher_model::LauncherMode::Apps,
+                    scope: None,
+                    query,
+                });
+                return;
+            }
+        }
         for key in keys {
             if let Some((tile, cell)) = self.keyboard_move {
                 self.handle_move_key(&key, tile, cell, cols, rows, actions);
@@ -3292,27 +2887,6 @@ impl FieldScreen {
             }
             if let Some((tile, span)) = self.keyboard_resize {
                 self.handle_resize_key(&key, doc, tile, span, actions);
-                continue;
-            }
-            // Type to search. A letter on bare Home is somebody starting to name an application:
-            // it opens the search and goes into it, rather than falling on the floor while the
-            // field waits to be clicked. Only when the keyboard is not already driving the field
-            // — a focused or selected tile keeps `r` (resize), space (move) and Enter — and only
-            // for unmodified printable keys. Renames and menus are handled by the caller, which
-            // does not reach here while either is open.
-            if let KeyInput::Character(character) = key
-                && !character.is_control()
-                && !character.is_whitespace()
-                && !modifiers.control
-                && !modifiers.alt
-                && self.focus.is_none()
-                && self.selection.is_empty()
-                && self.confirming.is_none()
-                && self.zoomed.is_none()
-            {
-                self.search_focused = true;
-                self.search
-                    .set_text(format!("{}{character}", self.search.text()));
                 continue;
             }
             match key {
@@ -3567,22 +3141,11 @@ impl FieldScreen {
             self.drag = Drag::Idle;
             self.resize = None;
             self.marquee = None;
-            self.pending = None;
-            self.result_press = None;
             self.pointer_cancelled = held;
             return;
         }
         if self.pointer_cancelled {
             self.pointer_cancelled = held;
-            return;
-        }
-        // The dropdown is painted after the tiles but claims its clicks before them: a press
-        // inside it is the list's, not whatever tile happens to be underneath.
-        if let Some(area) = self.omnibox_area(ui)
-            && let Some((x, y)) = ui.input.cursor()
-            && area.contains(x, y)
-        {
-            self.press_on_result(ui, doc, data, actions, area, held, x, y);
             return;
         }
         let Some((cx, cy)) = ui.input.cursor() else {
@@ -3703,167 +3266,15 @@ impl FieldScreen {
             }
             (Drag::Idle, false) => {}
             (_, true) => {
-                if self.drag.sample(sample, &self.drag_cfg)
-                    == templar_field::drag::DragEvent::Lifted
-                    && self.search_focused
-                {
-                    // A lift with the results open is a drag out of them: the list gives way so
-                    // the field it is being carried to is visible.
-                    self.search_focused = false;
-                    self.search.set_text("");
-                    self.result_press = None;
-                }
+                let _ = self.drag.sample(sample, &self.drag_cfg);
             }
             (_, false) => self.finish_drag(ui, doc, data, actions),
         }
     }
 
-    /// A press on a result row, which may become a drag onto the field or stay a click. The
-    /// press claims the click (`pixelkit_shell::Input` registers one at the press) and arms a drag
-    /// with the tile the row stands for; a release still inside the list is the click, delivered
-    /// then. The lift itself happens in the ordinary drag arm once the pointer has left the list —
-    /// which is the gesture. A press and release within one frame reaches `draw_omnibox` unchanged.
-    #[allow(clippy::too_many_arguments)]
-    fn press_on_result(
-        &mut self,
-        ui: &mut Ui<'_>,
-        doc: &FieldDocument,
-        data: &FieldData<'_>,
-        actions: &mut Vec<FieldAction>,
-        area: Rect,
-        held: bool,
-        x: i32,
-        y: i32,
-    ) {
-        if !held {
-            if let Some(index) = self.result_press.take() {
-                self.drag = Drag::Idle;
-                self.pending = None;
-                if let Some(row) = self.omnibox_rows.get(index) {
-                    let hit = row.hit.clone();
-                    self.choose(
-                        hit,
-                        crate::surface::omnibox_screen::Intent::Open,
-                        data,
-                        actions,
-                    );
-                }
-            }
-            return;
-        }
-        if self.result_press.is_some() || self.drag != Drag::Idle {
-            return;
-        }
-        let Some(index) = crate::surface::omnibox_screen::row_at(
-            ui,
-            self.omnibox_anchor,
-            self.bounds,
-            &self.omnibox_rows,
-            self.omnibox_files,
-            x,
-            y,
-        ) else {
-            return;
-        };
-        let _ = ui.input.take_click(area);
-        self.result_press = Some(index);
-        let Some((tile, exists)) = self
-            .omnibox_rows
-            .get(index)
-            .and_then(|row| Self::pending_tile(doc, &row.hit))
-        else {
-            return;
-        };
-        // Grabbed by its middle: `landing_cell` adds half a cell to the tile's corner, so
-        // the cell under the pointer is the one it lands on.
-        let (cols, rows) = self.grid_dims(doc);
-        let cell = from_pixel(templar_field::cell_rect(
-            cols,
-            rows,
-            to_pixel(self.bounds),
-            Cell::new(0, 0),
-            Span::new(1, 1),
-            ui.px(GAP),
-        ));
-        let id = tile.id;
-        self.pending = (!exists).then_some(tile);
-        self.drag.press(
-            id,
-            GrabOffset {
-                dx: (cell.w / 2) as f32,
-                dy: (cell.h / 2) as f32,
-            },
-            DragSample {
-                x: x as f32,
-                y: y as f32,
-                t_ms: data.now_ms,
-            },
-        );
-    }
-
-    /// The tile a result row stands for, and whether the field already has it — in which case the
-    /// drag moves the tile that is there rather than making a second one.
-    fn pending_tile(doc: &FieldDocument, hit: &crate::omnibox::Hit) -> Option<(Tile, bool)> {
-        use crate::omnibox::Hit;
-        let tile = match hit {
-            Hit::App { id } => field_model::app_tile(id),
-            Hit::Directory { path } => templar_field::folder_tile(
-                field_model::folder_tile_id(path),
-                path,
-                doc.cols,
-                doc.rows,
-            ),
-            // A loose file is never a Home tile (the placeable-objects decision).
-            Hit::File { .. } => return None,
-        };
-        let exists = doc.tile(tile.id).is_some();
-        Some((tile, exists))
-    }
-
-    /// What kind of thing `id` is: the pending tile's kind when the drag is carrying one that is
-    /// not in the document yet, the document's answer otherwise.
+    /// Existing tile kind; launcher activation never supplies a pending new tile.
     fn source_kind<'a>(&'a self, doc: &'a FieldDocument, id: TileId) -> Option<&'a TileKind> {
-        match &self.pending {
-            Some(tile) if tile.id == id => Some(&tile.kind),
-            _ => doc.kind_of(id),
-        }
-    }
-
-    /// A drop of a tile that is not in the document yet places it rather than moving it. `Move`
-    /// becomes `Place` at the same landing (a container landing included); grouping it with the
-    /// tile it was dropped on places it first and groups in the same batch, so the field never
-    /// shows the interim state.
-    fn as_new_tile(&self, op: FieldOp) -> FieldOp {
-        let Some(tile) = &self.pending else {
-            return op;
-        };
-        match op {
-            FieldOp::Move { id, landing } if id == tile.id => FieldOp::Place {
-                tile: tile.clone(),
-                landing,
-            },
-            FieldOp::CreateProject {
-                project,
-                landing,
-                absorb,
-            } if absorb.contains(&tile.id) => FieldOp::Batch {
-                ops: vec![
-                    FieldOp::Place {
-                        tile: tile.clone(),
-                        landing: Landing {
-                            container: None,
-                            cell: Cell::new(0, 0),
-                        },
-                    },
-                    FieldOp::CreateProject {
-                        project,
-                        landing,
-                        absorb,
-                    },
-                ],
-            },
-            other => other,
-        }
+        doc.kind_of(id)
     }
 
     /// Where the "name this group" panel goes, and the three rectangles inside it that take
@@ -4202,6 +3613,11 @@ impl FieldScreen {
                 }
             }
             "home.reveal" => actions.push(FieldAction::RevealHome),
+            "launcher.show-all" => actions.push(FieldAction::ShowLauncher {
+                mode: crate::launcher_model::LauncherMode::Apps,
+                scope: None,
+                query: String::new(),
+            }),
             id @ ("project.enter"
             | "project.restore"
             | "project.open-terminal"
@@ -4272,7 +3688,6 @@ impl FieldScreen {
                         focused: true,
                         control: 0,
                     });
-                    self.search_focused = false;
                 }
             }
             "window.escape-fullscreen"
@@ -4323,8 +3738,6 @@ impl FieldScreen {
         actions: &mut Vec<FieldAction>,
     ) {
         self.release_drag(ui, doc, data, actions);
-        // Placed, or let go: either way the drag is no longer carrying it.
-        self.pending = None;
     }
 
     fn release_drag(
@@ -4357,9 +3770,7 @@ impl FieldScreen {
             Some(Release::Click { tile }) => {
                 // A click on the band selects. The click itself is left for the band's own
                 // controls (a session's "park" button) to claim when the tile is painted.
-                if self.pending.is_none() {
-                    self.focus = Some(tile);
-                }
+                self.focus = Some(tile);
             }
             Some(Release::Drop {
                 tile,
@@ -4899,7 +4310,7 @@ impl FieldScreen {
                 cell,
             },
         });
-        Some(self.as_new_tile(op))
+        Some(op)
     }
 
     /// The ghost for the current lift (pointer or keyboard): a dry run of the drop.
@@ -4950,15 +4361,13 @@ impl FieldScreen {
                 .map(|rect| Rect::new(rect.x, rect.y, rect.w, ui.px(26).min(rect.h))),
             _ => None,
         };
-        let op = self.as_new_tile(
-            Self::op_for(doc, tile, &operation).unwrap_or(FieldOp::Move {
-                id: tile,
-                landing: Landing {
-                    container: self.zoomed,
-                    cell,
-                },
-            }),
-        );
+        let op = Self::op_for(doc, tile, &operation).unwrap_or(FieldOp::Move {
+            id: tile,
+            landing: Landing {
+                container: self.zoomed,
+                cell,
+            },
+        });
         let (next, _) = apply(doc, &op).ok()?;
         let created = Self::created_container(&op);
         let placement = match created {
@@ -5003,6 +4412,9 @@ impl FieldScreen {
     ) {
         match &tile.kind {
             TileKind::App { app_id } => actions.push(FieldAction::Launch(app_id.clone())),
+            TileKind::LaunchProfile { profile } => {
+                actions.push(FieldAction::LaunchProfile(profile.clone()))
+            }
             TileKind::ParkedSession { .. } => {
                 if let Some(window) =
                     field_model::window_for_tile(data.field, tile.id, data.toplevels)
@@ -6052,6 +5464,7 @@ impl FieldScreen {
                 (design::tray_shell(), design::tray_edge())
             }
             TileKind::App { .. }
+            | TileKind::LaunchProfile { .. }
             | TileKind::AppGroup { .. }
             | TileKind::Widget { .. }
             | TileKind::File { .. } => (design::shell_fill(), design::edge()),
@@ -6275,6 +5688,40 @@ impl FieldScreen {
                 );
                 paint_app_icon(ui, icon, app_id, &tile.title, data.icons);
             }
+            TileKind::LaunchProfile { profile } => {
+                let (details, body) = content.split_bottom(ui.px(20).min(content.h / 3));
+                let size = ui
+                    .px(72)
+                    .min(body.w - ui.px(16))
+                    .min(body.h - ui.px(8))
+                    .max(8);
+                let icon = Rect::new(
+                    body.x + (body.w - size) / 2,
+                    body.y + (body.h - size) / 2,
+                    size,
+                    size,
+                );
+                if let Ok(app_id) = profile.target.app_id().parse() {
+                    paint_app_icon(ui, icon, &app_id, &tile.title, data.icons);
+                }
+                let detail = match &profile.target {
+                    templar_types::launcher::FavoriteTarget::App { .. } => {
+                        "Saved application".to_owned()
+                    }
+                    templar_types::launcher::FavoriteTarget::Terminal { cwd_b64, .. } => {
+                        templar_types::launcher::decode_path(cwd_b64)
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .unwrap_or_else(|_| "Unavailable directory".into())
+                    }
+                };
+                ui.label_styled(
+                    details,
+                    &detail,
+                    design::state_style(ui),
+                    design::text_dim(),
+                    Align::Left,
+                );
+            }
             TileKind::AppGroup { .. } => {
                 // The favourites it holds as a grid of icons, each one a launch, laid out in
                 // reading order of the interior rather than at their interior cells — four apps
@@ -6282,13 +5729,19 @@ impl FieldScreen {
                 // icon is claimed here, before the body's own click below, so an icon launches
                 // and the ground between them opens the group.
                 let inner = content.inset(ui.px(8));
-                let children: Vec<(AppId, String)> = data
+                let children: Vec<(&Tile, AppId)> = data
                     .field
                     .placements_in(Some(tile.id))
                     .into_iter()
                     .filter_map(|(child, _)| data.field.tile(child))
                     .filter_map(|child| match &child.kind {
-                        TileKind::App { app_id } => Some((app_id.clone(), child.title.clone())),
+                        TileKind::App { app_id } => Some((child, app_id.clone())),
+                        TileKind::LaunchProfile { profile } => profile
+                            .target
+                            .app_id()
+                            .parse()
+                            .ok()
+                            .map(|app_id| (child, app_id)),
                         _ => None,
                     })
                     .collect();
@@ -6305,7 +5758,7 @@ impl FieldScreen {
                 let per_row = f64::from(count).sqrt().ceil().max(1.0) as i32;
                 let lines = (count + per_row - 1) / per_row;
                 let cell = (inner.w / per_row).min(inner.h / lines).max(8);
-                for (index, (app_id, title)) in children.iter().enumerate() {
+                for (index, (child, app_id)) in children.iter().enumerate() {
                     let index = index as i32;
                     let slot = Rect::new(
                         inner.x + (index % per_row) * cell,
@@ -6321,9 +5774,9 @@ impl FieldScreen {
                             design::accent_soft(),
                         );
                     }
-                    paint_app_icon(ui, icon, app_id, title, data.icons);
+                    paint_app_icon(ui, icon, app_id, &child.title, data.icons);
                     if !visual.lifted && ui.input.take_click(slot) {
-                        actions.push(FieldAction::Launch(app_id.clone()));
+                        self.primary_action(child, data, actions);
                     }
                 }
             }
@@ -7435,17 +6888,14 @@ mod tests {
     }
 
     #[test]
-    fn desktop_transfer_menu_owns_keys_while_launcher_is_focused() {
+    fn desktop_transfer_menu_owns_keys() {
         let mut h = Harness::new();
-        h.screen.search_focused = true;
-        h.screen.search.set_text("unchanged");
         let source = PathBuf::from("/home/u/Desktop/file.txt");
         let destination = PathBuf::from("/work/project");
         h.screen
             .offer_project_transfer(vec![source.clone()], destination.clone(), true, true);
         assert!(h.key(KeyInput::Down).is_empty());
         assert_eq!(h.screen.dock_menu_focus, 1);
-        assert_eq!(h.screen.search.text(), "unchanged");
         assert!(
             h.key(KeyInput::Enter)
                 .contains(&FieldAction::TransferFiles {
@@ -7464,7 +6914,6 @@ mod tests {
             h.key(KeyInput::Escape)
                 .contains(&FieldAction::CancelNativeDrop)
         );
-        assert_eq!(h.screen.search.text(), "unchanged");
     }
 
     #[test]
@@ -7685,8 +7134,6 @@ mod tests {
         doc: FieldDocument,
         toplevels: Vec<ShellToplevel>,
         apps: Vec<crate::app_search::AppEntry>,
-        recents: Vec<crate::app_search::AppEntry>,
-        recent_ids: Vec<String>,
         variants: HashMap<String, Vec<(String, String, String)>>,
         providers: std::collections::BTreeMap<templar_types::provider::ProviderRole, AppId>,
         garden: HashMap<PathBuf, crate::garden::GardenPlace>,
@@ -7738,8 +7185,6 @@ mod tests {
                         "GNU Image Manipulation Program",
                     ),
                 ],
-                recents: Vec::new(),
-                recent_ids: Vec::new(),
                 variants: HashMap::new(),
                 providers: std::collections::BTreeMap::new(),
                 garden: HashMap::new(),
@@ -7845,7 +7290,6 @@ mod tests {
                 icons: &HashMap::new(),
                 home: None,
             };
-            let recents: Vec<&crate::app_search::AppEntry> = self.recents.iter().collect();
             let data = FieldData {
                 notifications: &[],
                 field: &self.doc,
@@ -7860,15 +7304,9 @@ mod tests {
                 connected: true,
                 home_revealed: self.home_revealed,
                 apps: &self.apps,
-                apps_available: true,
                 widgets: &widgets,
                 variants: &self.variants,
-                projects: &[],
                 garden: &self.garden,
-                actions: templar_types::action::MANIFEST,
-                file_search: None,
-                recents: &recents,
-                recent_ids: &self.recent_ids,
                 reduced_motion: false,
                 now_ms: self.now,
             };
@@ -7927,6 +7365,113 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn typing_on_bare_home_opens_one_global_launcher_without_creating_tiles() {
+        let mut h = Harness::new();
+        h.frame();
+        let tiles = h.doc.tiles.clone();
+        let positions = h.doc.located.clone();
+        for character in "fire fox".chars() {
+            h.input.key(KeyInput::Character(character));
+        }
+        assert_eq!(
+            h.frame(),
+            vec![FieldAction::ShowLauncher {
+                mode: crate::launcher_model::LauncherMode::Apps,
+                scope: None,
+                query: "fire fox".into(),
+            }]
+        );
+        assert_eq!(h.doc.tiles, tiles);
+        assert_eq!(h.doc.located, positions);
+        assert!(
+            h.frame().is_empty(),
+            "Home retains no independent search query"
+        );
+    }
+
+    #[test]
+    fn home_shortcut_modifiers_and_selected_tile_keys_do_not_open_the_launcher() {
+        let mut h = Harness::new();
+        h.input.modifiers_changed(Modifiers {
+            logo: true,
+            ..Default::default()
+        });
+        assert!(
+            !h.key(KeyInput::Character('x'))
+                .iter()
+                .any(|action| matches!(action, FieldAction::ShowLauncher { .. }))
+        );
+        h.input.modifiers_changed(Modifiers::default());
+        h.screen.focus = Some(tile_id_for("app:org.templaros.Files"));
+        let actions = h.key(KeyInput::Character(' '));
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, FieldAction::ShowLauncher { .. }))
+        );
+        assert!(
+            h.screen.keyboard_move.is_some(),
+            "selected-tile manipulation survives"
+        );
+    }
+
+    #[test]
+    fn home_menu_launcher_action_is_navigation_without_a_field_operation() {
+        let mut h = Harness::new();
+        h.frame();
+        let bounds = h.screen.bounds;
+        h.secondary_click(bounds.right() - 4, bounds.bottom() - 4);
+        let index = h
+            .screen
+            .menu
+            .target()
+            .unwrap()
+            .rows()
+            .iter()
+            .position(|row| row.action == "launcher.show-all")
+            .unwrap();
+        let row = h.menu_row(index);
+        let actions = h.click(row.x + row.w / 2, row.y + row.h / 2);
+        assert_eq!(
+            actions,
+            vec![FieldAction::ShowLauncher {
+                mode: crate::launcher_model::LauncherMode::Apps,
+                scope: None,
+                query: String::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn an_explicit_terminal_shortcut_keeps_native_directory_and_literal_arguments() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        let path = PathBuf::from(OsString::from_vec(b"/home/a/work-\xff".to_vec()));
+        let profile = templar_types::launcher::Favorite {
+            id: "development".into(),
+            label: "Development".into(),
+            target: templar_types::launcher::FavoriteTarget::Terminal {
+                app_id: "org.example.Terminal".into(),
+                cwd_b64: templar_types::launcher::encode_path(&path),
+                arguments: vec!["literal $(no-command)".into()],
+            },
+        };
+        let id = tile_id_for("profile:development");
+        let mut h = Harness::new();
+        h.with_only(vec![(
+            id,
+            TileKind::LaunchProfile {
+                profile: profile.clone(),
+            },
+            Cell::new(0, 0),
+        )]);
+        let rect = h.rect_of(id);
+        assert_eq!(
+            h.click(rect.x + rect.w / 2, rect.bottom() - 8),
+            vec![FieldAction::LaunchProfile(profile)]
+        );
     }
 
     #[test]
@@ -8675,7 +8220,6 @@ mod tests {
             ],
         );
         h.drawer_feeds.insert(Drawer::Recent, feed.clone());
-        h.recents.push(app_entry("org.example.Editor", "Editor"));
         let pin = tile_id_for("app:org.templaros.Files");
         let folder = field_model::folder_tile_id(&root);
         let pinned_pixels = h.rect_of(pin);
@@ -8704,7 +8248,6 @@ mod tests {
         assert_eq!(h.rect_of(folder), place_pixels);
         assert_eq!(h.drawer_feeds.get(&Drawer::Recent), Some(&feed));
         assert!(h.garden[&root].kept);
-        assert_eq!(h.recents.len(), 1);
 
         // The first new window also leaves both saved objects at the exact same pixels.
         h.toplevels.push(toplevel(10, "org.other.New", false));
@@ -8853,40 +8396,7 @@ mod tests {
         );
     }
 
-    /// The `y` of the omnibox dropdown's `index`-th row, from the same constants the painter
-    /// uses: the top bar, the 4px gap under it, the panel's own 4px inset, and half a row.
-    fn omnibox_row_y(index: i32) -> i32 {
-        design::FIELD_INSET
-            + design::TOP_BAR_HEIGHT
-            + 4
-            + 4
-            + crate::surface::omnibox_screen::ROW_HEIGHT * index
-            + crate::surface::omnibox_screen::ROW_HEIGHT / 2
-    }
-
-    /// Recents sit under the centred search field. An empty query is not a dropdown of every
-    /// application — that is what typing is for — and a chip launches the application it names.
-    #[test]
-    fn a_recent_chip_under_search_launches_that_application() {
-        let mut h = Harness::new();
-        h.recents = vec![app_entry("org.templaros.Files", "Files")];
-        h.frame();
-        let search = h.screen.omnibox_anchor;
-        let chip_w = design::RECENT_CHIP_WIDTH;
-        let chip_x = search.x + (search.w - chip_w) / 2;
-        let recents_y = search.bottom() + design::TOP_BAR_GAP + design::RECENTS_HEIGHT / 2;
-        let actions = h.click(chip_x + chip_w / 2, recents_y);
-        assert_eq!(
-            actions,
-            vec![FieldAction::Launch("org.templaros.Files".parse().unwrap())],
-        );
-    }
-
-    /// One route to the file manager. A Folder tile and a path typed into the search are the two
-    /// presses that used to take different ways out of Home — a tile went straight to
-    /// `OpenInFiles`, a typed path went through an `OpenFolderWindow` that did nothing but
-    /// forward there, and the Place menu's row resolved the role a second time in `app.rs`. All
-    /// three are `OpenInFiles(path)` now, which is what `open_in_file_manager` answers.
+    /// Explicit Folder tiles retain their single provider-backed file manager route.
     #[test]
     fn every_folder_press_on_home_opens_the_file_manager_on_that_folder() {
         let mut h = Harness::new();
@@ -8901,16 +8411,6 @@ mod tests {
         assert!(
             pressed.contains(&FieldAction::OpenInFiles(path.clone())),
             "the Folder tile: {pressed:?}"
-        );
-
-        let mut h = Harness::new();
-        h.screen.search_focused = true;
-        h.screen.search.set_text("/etc");
-        h.frame();
-        let typed = h.key(KeyInput::Enter);
-        assert!(
-            typed.contains(&FieldAction::OpenInFiles("/etc".into())),
-            "a typed path: {typed:?}"
         );
     }
 
@@ -8962,205 +8462,6 @@ mod tests {
                 visited: true,
             }],
         );
-    }
-
-    /// Typing on bare Home is how the search opens. A letter is somebody starting to name an
-    /// application, and it used to fall on the floor until the bar was clicked with the pointer.
-    #[test]
-    fn a_letter_typed_on_bare_home_opens_the_search_with_that_letter_in_it() {
-        let mut h = Harness::new();
-        assert!(!h.screen.search_focused);
-        h.key(KeyInput::Character('p'));
-        assert!(
-            h.screen.search_focused,
-            "the letter did not open the search"
-        );
-        assert_eq!(h.screen.search.text(), "p");
-        // And the field itself takes the next one, so a word arrives whole.
-        h.key(KeyInput::Character('c'));
-        assert_eq!(h.screen.search.text(), "pc");
-    }
-
-    /// A chord is not typing. Home's own keys keep working with a modifier held.
-    #[test]
-    fn a_modified_letter_is_a_chord_and_never_opens_the_search() {
-        let mut h = Harness::new();
-        h.input.modifiers_changed(pixelkit_shell::Modifiers {
-            control: true,
-            ..pixelkit_shell::Modifiers::default()
-        });
-        h.key(KeyInput::Character('c'));
-        assert!(!h.screen.search_focused);
-        assert_eq!(h.screen.search.text(), "");
-    }
-
-    /// Escape leaves the search and empties it: the next letter typed starts a new question
-    /// rather than continuing one asked minutes ago.
-    #[test]
-    fn escape_clears_the_query_as_well_as_unfocusing_it() {
-        let mut h = Harness::new();
-        h.screen.search_focused = true;
-        h.screen.search.set_text("image");
-        h.frame();
-        h.key(KeyInput::Escape);
-        assert!(!h.screen.search_focused);
-        assert_eq!(h.screen.search.text(), "");
-    }
-
-    /// One highlight, wherever it came from. The pointer moves the same cursor the arrow keys
-    /// move, so Enter always opens the row that looks chosen.
-    #[test]
-    fn hovering_a_row_moves_the_one_highlight_and_enter_opens_that_row() {
-        let mut h = Harness::new();
-        h.screen.search_focused = true;
-        // Both of the harness's applications match: "GNU **I**mage…" by a word, "F**i**les" by a
-        // substring, in that order.
-        h.screen.search.set_text("i");
-        h.frame();
-        assert_eq!(
-            h.screen.omnibox.highlighted, 0,
-            "the best match starts chosen"
-        );
-
-        h.input
-            .cursor_moved((W / 2) as f32, omnibox_row_y(1) as f32);
-        h.frame();
-        assert_eq!(
-            h.screen.omnibox.highlighted, 1,
-            "the pointer did not move the highlight"
-        );
-        // The harness has a Files window open, so Enter on that row is "go to it": a launcher
-        // result for something already running is not a request for a second copy.
-        let actions = h.key(KeyInput::Enter);
-        assert_eq!(
-            actions,
-            vec![FieldAction::Activate(WindowId(1))],
-            "Enter opened a row other than the one that looked chosen"
-        );
-    }
-
-    /// One launcher object, three answers. Enter goes to the window that is already open,
-    /// Ctrl+Enter asks for another one outright, and the arrow hands "which window?" to the
-    /// overview. An application with nothing running answers all three by launching.
-    #[test]
-    fn a_running_result_answers_enter_control_enter_and_the_arrow_differently() {
-        let files: templar_types::AppId = "org.templaros.Files".parse().unwrap();
-        let focus = |h: &mut Harness| {
-            h.screen.search_focused = true;
-            h.screen.search.set_text("files");
-            h.frame();
-        };
-
-        let mut h = Harness::new();
-        focus(&mut h);
-        h.input.modifiers_changed(Modifiers {
-            control: true,
-            ..Modifiers::default()
-        });
-        let actions = h.key(KeyInput::Enter);
-        h.input.modifiers_changed(Modifiers::default());
-        assert_eq!(actions, vec![FieldAction::Launch(files.clone())]);
-
-        let mut h = Harness::new();
-        focus(&mut h);
-        assert_eq!(
-            h.key(KeyInput::Right),
-            vec![FieldAction::Taskfield(templar_window::task::TaskKey::App(
-                files.clone()
-            ))]
-        );
-
-        // Nothing of it running: every answer is the same one, because it is the only one that
-        // means anything.
-        let mut h = Harness::new();
-        h.toplevels.clear();
-        focus(&mut h);
-        assert_eq!(h.key(KeyInput::Enter), vec![FieldAction::Launch(files)]);
-    }
-
-    /// Typing narrows the same list, and Enter commits the highlighted row — which with a fresh
-    /// query is the best match.
-    #[test]
-    fn typing_narrows_the_omnibox_and_enter_commits_the_best_match() {
-        let mut h = Harness::new();
-        h.screen.search_focused = true;
-        h.screen.search.set_text("image");
-        h.frame();
-
-        let gimp: AppId = "desktop-import.gimp.desktop".parse().unwrap();
-        let actions = h.click(W / 2, omnibox_row_y(0));
-        assert_eq!(actions, vec![FieldAction::Launch(gimp.clone())]);
-
-        h.screen.search.set_text("image");
-        h.screen.search_focused = true;
-        let actions = h.key(KeyInput::Enter);
-        assert!(
-            actions.contains(&FieldAction::Launch(gimp)),
-            "Enter did not commit the best match: {actions:?}"
-        );
-        assert!(
-            h.screen.search.text().is_empty(),
-            "a launched query is cleared, so the next keystroke starts a new search"
-        );
-    }
-
-    /// A query nothing matches launches nothing. It still *asks* — the file service has not
-    /// answered yet and may well have something — but it commits to nothing on its own.
-    #[test]
-    fn enter_with_a_query_that_matches_nothing_launches_nothing() {
-        let mut h = Harness::new();
-        h.screen.search_focused = true;
-        h.screen.search.set_text("no such application");
-        let actions = h.key(KeyInput::Enter);
-        assert!(
-            !actions
-                .iter()
-                .any(|action| matches!(action, FieldAction::Launch(_))),
-            "{actions:?}"
-        );
-        assert_eq!(h.screen.search.text(), "no such application");
-    }
-
-    /// Every keystroke is not a search. The question is asked once per change of query, and the
-    /// host is what waits for the typing to stop.
-    #[test]
-    fn the_omnibox_asks_the_file_service_once_per_query_not_once_per_frame() {
-        let mut h = Harness::new();
-        h.screen.files_expanded = true;
-        h.screen.search_focused = true;
-        h.screen.search.set_text("report");
-        let first = h.frame();
-        assert!(
-            first.iter().any(|action| matches!(
-                action,
-                FieldAction::RunSearch { query, .. } if query == "report"
-            )),
-            "{first:?}"
-        );
-        let again = h.frame();
-        assert!(
-            !again
-                .iter()
-                .any(|action| matches!(action, FieldAction::RunSearch { .. })),
-            "the same question was asked twice: {again:?}"
-        );
-    }
-
-    /// The field on bare Home is the application launcher: typing there never asks the file
-    /// service, so a browser's name cannot come back as a list of unrelated files.
-    #[test]
-    fn typing_on_bare_home_never_asks_the_file_service() {
-        let mut h = Harness::new();
-        h.screen.search_focused = true;
-        h.screen.search.set_text("firefox");
-        let actions = h.frame();
-        assert!(
-            !actions
-                .iter()
-                .any(|action| matches!(action, FieldAction::RunSearch { .. })),
-            "{actions:?}"
-        );
-        assert_eq!(h.screen.scope(), crate::omnibox::Scope::Applications);
     }
 
     #[test]
@@ -11086,136 +10387,6 @@ mod tests {
             h.doc
                 .location(editor)
                 .is_some_and(|l| l.container.is_none())
-        );
-    }
-
-    // ---- dragging out of the results --------------------------------------------------------
-
-    impl Harness {
-        /// Press on the first result row and carry it to `(x, y)` without releasing.
-        fn carry_first_result_to(&mut self, x: i32, y: i32) {
-            let (sx, sy) = (W / 2, omnibox_row_y(0));
-            self.input.cursor_moved(sx as f32, sy as f32);
-            self.input.mouse(MouseButton::Left, true);
-            self.frame();
-            for step in 1..=10 {
-                let t = step as f32 / 10.0;
-                self.input.cursor_moved(
-                    sx as f32 + (x - sx) as f32 * t,
-                    sy as f32 + (y - sy) as f32 * t,
-                );
-                self.now += 100;
-                self.frame();
-            }
-        }
-    }
-
-    #[test]
-    fn dragging_an_application_out_of_the_results_places_it_where_it_is_dropped() {
-        let mut h = Harness::new();
-        h.with_only(Vec::new());
-        h.screen.search_focused = true;
-        h.screen.search.set_text("image");
-        h.frame();
-        let gimp: AppId = "desktop-import.gimp.desktop".parse().unwrap();
-        let (x, y) = (h.screen.bounds.right() - 80, h.screen.bounds.bottom() - 80);
-        h.carry_first_result_to(x, y);
-        assert!(
-            h.screen.pending.is_some(),
-            "the row's tile is being carried"
-        );
-        assert!(!h.screen.search_focused, "the list gave way to the field");
-        h.input.mouse(MouseButton::Left, false);
-        let actions = h.frame();
-        let placed = actions.iter().find_map(|a| match a {
-            FieldAction::Apply(FieldOp::Place { tile, .. }) => Some(tile.clone()),
-            _ => None,
-        });
-        assert_eq!(
-            placed.map(|tile| tile.kind),
-            Some(TileKind::App {
-                app_id: gimp.clone()
-            }),
-            "{actions:?}"
-        );
-        assert!(!actions.iter().any(|a| matches!(a, FieldAction::Launch(_))));
-        assert!(h.screen.pending.is_none());
-        h.apply(&actions);
-        let rect = h.rect_of(field_model::app_tile_id(&gimp));
-        assert!(
-            rect.contains(x, y),
-            "{rect:?} is not under the drop at {x},{y}"
-        );
-    }
-
-    #[test]
-    fn a_press_and_release_on_a_result_row_still_launches_it() {
-        let mut h = Harness::new();
-        h.screen.search_focused = true;
-        h.screen.search.set_text("image");
-        h.frame();
-        h.input
-            .cursor_moved((W / 2) as f32, omnibox_row_y(0) as f32);
-        h.input.mouse(MouseButton::Left, true);
-        h.frame();
-        assert!(h.screen.pending.is_some());
-        h.input.mouse(MouseButton::Left, false);
-        let actions = h.frame();
-        let gimp: AppId = "desktop-import.gimp.desktop".parse().unwrap();
-        assert_eq!(actions, vec![FieldAction::Launch(gimp)]);
-        assert!(h.screen.pending.is_none());
-        assert_eq!(h.screen.drag, Drag::Idle);
-    }
-
-    #[test]
-    fn a_cancelled_drag_out_of_the_results_leaves_no_tile() {
-        let mut h = Harness::new();
-        h.with_only(Vec::new());
-        h.screen.search_focused = true;
-        h.screen.search.set_text("image");
-        h.frame();
-        h.carry_first_result_to(h.screen.bounds.right() - 80, h.screen.bounds.bottom() - 80);
-        let actions = h.key(KeyInput::Escape);
-        assert!(actions.is_empty(), "{actions:?}");
-        assert!(h.screen.pending.is_none());
-        h.input.mouse(MouseButton::Left, false);
-        let actions = h.frame();
-        assert!(actions.is_empty(), "{actions:?}");
-        assert!(h.doc.tiles.is_empty());
-    }
-
-    #[test]
-    fn dragging_an_already_pinned_application_moves_the_tile_that_is_there() {
-        let mut h = Harness::new();
-        let files_app: AppId = "org.templaros.Files".parse().unwrap();
-        h.with_only(vec![(
-            tile_id_for("app:org.templaros.Files"),
-            TileKind::App { app_id: files_app },
-            Cell::new(0, 0),
-        )]);
-        h.screen.search_focused = true;
-        h.screen.search.set_text("Files");
-        h.frame();
-        let files = tile_id_for("app:org.templaros.Files");
-        h.carry_first_result_to(h.screen.bounds.right() - 80, h.screen.bounds.bottom() - 80);
-        assert!(
-            h.screen.pending.is_none(),
-            "the pinned tile itself is carried"
-        );
-        assert_eq!(h.screen.drag.tile(), Some(files));
-        h.input.mouse(MouseButton::Left, false);
-        let actions = h.frame();
-        assert!(
-            actions
-                .iter()
-                .any(|a| matches!(a, FieldAction::Apply(FieldOp::Move { id, .. }) if *id == files)),
-            "{actions:?}"
-        );
-        assert!(
-            !actions
-                .iter()
-                .any(|a| matches!(a, FieldAction::Apply(FieldOp::Place { .. }))),
-            "{actions:?}"
         );
     }
 

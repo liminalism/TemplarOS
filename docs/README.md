@@ -1,5 +1,6 @@
 # docs/
 
+* [launcher.md](launcher.md) — Apps/Files popup, saved targets, shortcut actions and motion controls.
 * `planning/` — the two founding documents (moved from the repo root) and `ADOPTION.md` (what was adopted,
   what was adjusted, why).
 * `architecture/` — one page per subsystem.

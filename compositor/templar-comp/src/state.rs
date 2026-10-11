@@ -276,6 +276,7 @@ pub struct TemplarCompState<B: Backend + 'static> {
     /// and the compositor-drawn recovery UI they and the fixed keybindings
     /// (`src/keybindings.rs`) share.
     pub shell_protocol: crate::protocols_shell::ShellProtocolState,
+    pub launcher_input: crate::launcher_input::LauncherInput,
     pub recovery_protocol: crate::protocols_recovery::RecoveryProtocolState,
     pub session_lock: crate::session_lock::SessionLockState,
     pub foreign_toplevels: crate::foreign_toplevel::ForeignToplevelState,
@@ -324,6 +325,7 @@ pub struct TemplarCompState<B: Backend + 'static> {
     /// Where each window's card is on Home, and the park/unpark motions in flight
     /// (`src/motion.rs`). A drawing hint only: nothing here moves, stacks or hit-tests a window.
     pub motion: crate::motion::MotionState,
+    pub essence_renderer: crate::essence_renderer::EssenceRenderer,
     /// What the pointer is currently resting at the bottom of the screen *for*, and since when
     /// (`input::update_dwell`). Not the outcome — Home's reveal is `WindowService`'s
     /// `home_revealed` and the peek is its `peek_output`; this is only what a pending timer is
@@ -517,6 +519,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             shell_broadcaster,
 
             shell_protocol: crate::protocols_shell::ShellProtocolState::default(),
+            launcher_input: crate::launcher_input::LauncherInput::default(),
             recovery_protocol: crate::protocols_recovery::RecoveryProtocolState::default(),
             session_lock: crate::session_lock::SessionLockState::default(),
             foreign_toplevels: crate::foreign_toplevel::ForeignToplevelState::default(),
@@ -530,6 +533,7 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             previous_focus: None,
             home_mapped: None,
             motion: crate::motion::MotionState::default(),
+            essence_renderer: crate::essence_renderer::EssenceRenderer::default(),
             dwell: None,
             dwell_timer_pending: false,
             gesture_gate: crate::gesture_gate::GestureGate::default(),
@@ -605,6 +609,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             return;
         }
         if self.idle.expire() {
+            self.motion.cancel_all();
+            self.essence_renderer.clear();
             tracing::info!(
                 timeout_s = self.idle.timeout().map_or(0, |d| d.as_secs()),
                 "outputs blanked after idle timeout"

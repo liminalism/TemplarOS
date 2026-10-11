@@ -1176,8 +1176,8 @@ mod tests {
                 r#"{"kind":"selected","app_id":"desktop-import.kitty.desktop"}"#.to_owned(),
             ),
             (
-                "file-search".to_owned(),
-                r#"{"kind":"defaulted-by-priority","app_id":"desktop-import.fsearch.desktop","competitors":[]}"#
+                "file-manager".to_owned(),
+                r#"{"kind":"defaulted-by-priority","app_id":"desktop-import.pcmanfm.desktop","competitors":[]}"#
                     .to_owned(),
             ),
             (
@@ -1191,8 +1191,8 @@ mod tests {
             Some("desktop-import.kitty.desktop")
         );
         assert_eq!(
-            resolution_for(&report, "file-search").as_deref(),
-            Some("desktop-import.fsearch.desktop")
+            resolution_for(&report, "file-manager").as_deref(),
+            Some("desktop-import.pcmanfm.desktop")
         );
         assert_eq!(resolution_for(&report, "greeter"), None);
         assert_eq!(resolution_for(&report, "lock-screen"), None);

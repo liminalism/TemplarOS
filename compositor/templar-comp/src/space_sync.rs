@@ -521,6 +521,42 @@ fn start_shelf_motions<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
             crate::motion::MotionKind::Unpark => (card, own),
         };
         state.motion.start(window_id, kind, from, to, now);
+        let effect_own = state.windows.element_of(window_id).map_or(own, |window| {
+            let geometry = window.geometry();
+            let tree = window.bbox_with_popups();
+            Rect::new(
+                own.x + tree.loc.x - geometry.loc.x,
+                own.y + tree.loc.y - geometry.loc.y,
+                tree.size.w,
+                tree.size.h,
+            )
+        });
+        if let Some(output) = state
+            .window_service
+            .outputs()
+            .iter()
+            .find(|output| own.intersection(output.logical).is_some())
+        {
+            let obstacles: Vec<_> = state
+                .window_service
+                .windows()
+                .filter(|record| {
+                    record.id != window_id
+                        && record.role == templar_window::WindowRole::Application
+                        && state.window_service.is_visible(record.id)
+                })
+                .map(|record| client_area(state, record.id))
+                .collect();
+            state.motion.start_essence(
+                window_id,
+                kind,
+                effect_own,
+                card,
+                output.logical,
+                &obstacles,
+                now,
+            );
+        }
     }
 }
 

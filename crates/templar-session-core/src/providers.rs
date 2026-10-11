@@ -159,11 +159,6 @@ impl ProviderRegistry {
 /// role has to be read off what the entry already says about itself.
 const TERMINAL_CATEGORY: &str = "TerminalEmulator";
 
-/// The file-search application TemplarOS integrates, by executable name. Its desktop id is
-/// `io.github.cboxdoerfer.FSearch.desktop` and its `Exec=` is plain `fsearch`; the executable is
-/// the more stable of the two, since a repackaging can change the id and not the program.
-const DEFAULT_FILE_SEARCH: &str = "fsearch";
-
 /// The terminal TemplarOS ships with, by executable name. It wins by priority when it is installed,
 /// exactly as a distribution default is supposed to: installing a second terminal does not
 /// silently take the role, and choosing one in Settings still overrules both.
@@ -220,12 +215,6 @@ pub fn derived_capabilities(manifest: &AppManifest) -> Vec<ProviderCapability> {
             } else {
                 50
             },
-        });
-    }
-    if executable_is(manifest, DEFAULT_FILE_SEARCH) {
-        derived.push(ProviderCapability {
-            role: ProviderRole::FileSearch,
-            priority: 100,
         });
     }
     derived
@@ -612,21 +601,14 @@ mod tests {
     }
 
     #[test]
-    fn fsearch_declares_the_file_search_role() {
-        let fsearch = app(
+    fn file_search_programs_do_not_become_an_external_default() {
+        let legacy = app(
             "desktop-import.io.github.cboxdoerfer.FSearch",
             "fsearch",
-            &["GTK", "Utility", "Core"],
+            &["Utility"],
             true,
         );
-        assert_eq!(
-            derived_capabilities(&fsearch),
-            vec![cap(ProviderRole::FileSearch, 100)]
-        );
-        // Anything else has to say so itself, with `X-TemplarOS-Provides=file-search`: there is no
-        // category that means "searches files", so there is nothing to read it off.
-        let other = app("desktop-import.grep-gui", "grep-gui", &["Utility"], true);
-        assert!(derived_capabilities(&other).is_empty());
+        assert!(derived_capabilities(&legacy).is_empty());
     }
 
     #[test]

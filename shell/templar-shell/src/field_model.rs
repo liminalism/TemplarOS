@@ -547,6 +547,48 @@ pub fn pin_app(doc: &mut FieldDocument, app_id: &AppId) -> Vec<FieldOp> {
     applied
 }
 
+/// A saved profile is a launch target, not a persistent window id or generic application tile.
+pub fn profile_tile_id(id: &str) -> TileId {
+    tile_id_for(&format!("launch-profile:{id}"))
+}
+
+pub fn pin_launch_profile(
+    doc: &mut FieldDocument,
+    profile: &templar_types::launcher::Favorite,
+) -> Vec<FieldOp> {
+    let mut applied = Vec::new();
+    let id = profile_tile_id(&profile.id);
+    if profile.validate().is_err() || doc.tile(id).is_some() {
+        return applied;
+    }
+    let kind = TileKind::LaunchProfile {
+        profile: profile.clone(),
+    };
+    let tile = Tile {
+        id,
+        spans: SpanRange::for_kind(&kind, doc.cols, doc.rows),
+        kind,
+        title: if profile.label.is_empty() {
+            profile.target.app_id().to_owned()
+        } else {
+            profile.label.clone()
+        },
+        accent: None,
+    };
+    try_apply(
+        doc,
+        FieldOp::Place {
+            tile,
+            landing: Landing {
+                container: None,
+                cell: Cell::new(0, 0),
+            },
+        },
+        &mut applied,
+    );
+    applied
+}
+
 /// The title a group's tile carries: the name the group was given, or how many windows it holds
 /// until somebody names it. Never empty — a tile with no title is a tile that says nothing.
 pub(crate) fn group_title(name: &str, members: usize) -> String {
@@ -1719,5 +1761,38 @@ mod reconcile_tests {
         .unwrap()
         .0;
         assert!(reconcile_remote(&local, &base).is_empty());
+    }
+
+    #[test]
+    fn an_explicit_home_profile_retains_native_target_and_survives_favorite_removal() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        use templar_types::launcher::{Favorite, FavoriteTarget, encode_path};
+        let cwd = std::path::PathBuf::from(OsString::from_vec(b"/work/profile-\xff".to_vec()));
+        let profile = Favorite {
+            id: "development".into(),
+            label: "Development".into(),
+            target: FavoriteTarget::Terminal {
+                app_id: "org.example.Terminal".into(),
+                cwd_b64: encode_path(&cwd),
+                arguments: vec!["literal $(no-shell)".into()],
+            },
+        };
+        let mut doc = FieldDocument::new("DP-1", 12, 8);
+        let ops = pin_launch_profile(&mut doc, &profile);
+        assert_eq!(ops.len(), 1);
+        assert!(pin_launch_profile(&mut doc, &profile).is_empty());
+        merge(&mut doc, &LiveState::default());
+        let saved: FieldDocument =
+            serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(
+            saved.tile(profile_tile_id(&profile.id)).unwrap().kind,
+            TileKind::LaunchProfile { profile }
+        );
+        assert!(
+            !saved
+                .tiles
+                .iter()
+                .any(|tile| matches!(tile.kind, TileKind::App { .. }))
+        );
     }
 }

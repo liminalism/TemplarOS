@@ -208,7 +208,10 @@ pub(crate) async fn role_choices_with<S: ProvidersSource>(
     };
     let report = parse_report(&pairs);
     let mut choices = Vec::with_capacity(ProviderRole::ALL.len());
-    for role in ProviderRole::ALL {
+    for role in ProviderRole::ALL
+        .into_iter()
+        .filter(|role| *role != ProviderRole::FileSearch)
+    {
         let resolution = report
             .iter()
             .find(|(reported, _)| *reported == role)
@@ -539,7 +542,12 @@ mod tests {
         ))
         .await
         .unwrap();
-        assert_eq!(choices.len(), ProviderRole::ALL.len());
+        assert_eq!(choices.len(), ProviderRole::ALL.len() - 1);
+        assert!(
+            choices
+                .iter()
+                .all(|choice| choice.role != ProviderRole::FileSearch)
+        );
         assert!(choices.iter().all(|choice| !choice.options.is_empty()));
     }
 

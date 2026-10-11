@@ -1,0 +1,28 @@
+akr 0.1
+project legeos
+
+record legeos.requirement.unified-launcher-homegarden-20261009/1 : requirement {
+    title "Owner-directed global launcher, rail favorites, Settings and Essence integration"
+    state active
+    scope [
+        path "apps/templar-settings/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-effects/**",
+        path "crates/templar-session-core/**",
+        path "crates/templar-types/**",
+        path "distro/**",
+        path "shell/templar-shell/**"
+    ]
+    statement """
+        Owner explicitly requests implementation of the complete 2026-10-09 launcher/Homegarden/gesture rail/Files/favorites/Settings/Essence entry, after preserving all existing uncommitted work in a clean baseline, scoping with exploration agents and obtaining a planning agent's mid-level plan. One global first-party Apps/Files popup replaces Home-only search and FSearch. Explicit shortcuts and launcher metadata preserve filesystem and garden-place ownership; running-task identity/groups remain authoritative. Native TemplarOS is the current environment, with Lubuntu available for recovery; no live-session deployment/restart/logout.
+        """
+    author "dk"
+    source {
+        kind external
+        role origin
+        document "templaros-unified-launcher-homegarden-20261009"
+        use """
+            Complete owner input, including four implementation passes, interaction semantics, settings cleanup and compositor integration acceptance.
+            """
+    }
+}

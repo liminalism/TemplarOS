@@ -77,6 +77,16 @@ pub enum MenuScope {
 /// which copy is the row's own payload, not a second action id.
 pub const LAUNCH_VARIANT: &str = "app.launch-variant";
 
+/// The global launcher only organizes targets after an explicit context action.
+/// The view freezes the native target; the menu remains the shared declaration-driven widget.
+pub const LAUNCHER_MENU: &[MenuItem] = &[
+    MenuItem::new("launcher.pin-rail", MenuScope::Field),
+    MenuItem::new("launcher.add-home", MenuScope::Field),
+    MenuItem::new("launcher.rename-alias", MenuScope::Field),
+    MenuItem::new("launcher.info", MenuScope::Field),
+    MenuItem::new("launcher.hide", MenuScope::Field),
+];
+
 /// One menu row: an action id and what has to be under the pointer for it to appear.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MenuItem {
@@ -103,6 +113,7 @@ impl MenuItem {
 /// forty years; nothing above it can be reached by overshooting.
 pub const MENU: &[MenuItem] = &[
     MenuItem::new("field.help", MenuScope::Field),
+    MenuItem::new("launcher.show-all", MenuScope::Field),
     MenuItem::new("window.park", MenuScope::Window),
     MenuItem::new("windows.arrange.focus", MenuScope::Field),
     MenuItem::new("windows.arrange.halves", MenuScope::Field),

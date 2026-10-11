@@ -620,6 +620,10 @@ mod tests {
         use std::io::Write as _;
         use std::os::unix::fs::PermissionsExt as _;
 
+        mod bash_fixture {
+            include!("bash_hook_fixture.rs");
+        }
+
         const BASH_HOOK: &str = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../session/profile.d/61-templaros-completion.sh"
@@ -677,14 +681,9 @@ mod tests {
             extra_env: &[(&str, &str)],
             script: &str,
         ) -> String {
-            let mut child = std::process::Command::new("bash")
-                .args(["--rcfile", rcfile, "-i"])
+            let mut child = bash_fixture::command(directory, std::path::Path::new(rcfile), desktop)
+                .arg("-i")
                 .env("TRACE_FILE", directory.join("trace"))
-                .env("XDG_CURRENT_DESKTOP", desktop)
-                .env(
-                    "PATH",
-                    format!("{}:{}", directory.display(), std::env::var("PATH").unwrap()),
-                )
                 .envs(extra_env.iter().copied())
                 .current_dir(directory)
                 .stdin(std::process::Stdio::piped())
@@ -777,8 +776,7 @@ mod tests {
             // preserves it, so a bare `false` script would fail run_bash's guard.
             run_bash(tmp.path(), BASH_HOOK, "TemplarOS", &[], "false\ntrue\n");
             let lines = trace_lines(&tmp.path().join("trace"));
-            // The prefilter read policy once and never spawned the route. Garden lines
-            // from the host's own /etc hook are filtered, not asserted.
+            // The prefilter read policy once and never spawned the completion route.
             assert!(lines.contains(&"notify policy-sh".to_owned()), "{lines:?}");
             assert!(
                 completions(&tmp.path().join("trace")).is_empty(),
@@ -863,33 +861,21 @@ mod tests {
         fn bash_loads_only_for_interactive_templaros_shells() {
             let tmp = tempfile::tempdir().unwrap();
             stub_with_policy(tmp.path(), None);
-            let probe = [
-                "--rcfile",
-                BASH_HOOK,
-                "-i",
-                "-c",
-                "declare -F __templaros_completion_precmd",
-            ];
             // Not a TemplarOS session: the hook returns before defining anything.
-            let status = std::process::Command::new("bash")
-                .args(probe)
-                .env("XDG_CURRENT_DESKTOP", "GNOME")
-                .stderr(std::process::Stdio::null())
-                .status()
-                .unwrap();
+            let status =
+                bash_fixture::command(tmp.path(), std::path::Path::new(BASH_HOOK), "GNOME")
+                    .args(["-i", "-c", "declare -F __templaros_completion_precmd"])
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .unwrap();
             assert!(!status.success());
             // A non-interactive shell never arms: the guard holds even if sourced.
-            let status = std::process::Command::new("bash")
-                .args([
-                    "--rcfile",
-                    BASH_HOOK,
-                    "-c",
-                    "declare -F __templaros_completion_precmd",
-                ])
-                .env("XDG_CURRENT_DESKTOP", "TemplarOS")
-                .stderr(std::process::Stdio::null())
-                .status()
-                .unwrap();
+            let status =
+                bash_fixture::command(tmp.path(), std::path::Path::new(BASH_HOOK), "TemplarOS")
+                    .args(["-c", "declare -F __templaros_completion_precmd"])
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .unwrap();
             assert!(!status.success());
             assert!(!tmp.path().join("trace").exists());
         }

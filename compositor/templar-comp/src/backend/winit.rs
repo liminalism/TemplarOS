@@ -214,11 +214,13 @@ pub fn run(
                             let now_ns = crate::window_bridge::now_monotonic_ns(&state.clock);
                             state.motion.prune(now_ns);
                             let elements = if state.idle.blanked() {
+                                state.essence_renderer.retire(renderer, |_| false);
                                 Vec::new()
                             } else {
                                 crate::scene::collect(
                                     &mut state.chrome,
                                     &mut state.wallpaper,
+                                    &mut state.essence_renderer,
                                     &state.windows,
                                     &crate::chrome::ChromeInputs {
                                         space: &state.space,

@@ -564,20 +564,22 @@ async fn serve_lifecycle_interface(
     connection: &zbus::Connection,
     system_connection: Option<zbus::Connection>,
     services: &Services,
+    launcher_control: Option<templar_client::compositor_control::CompositorControl>,
 ) -> Result<()> {
+    let mut lifecycle = apis::lifecycle::LifecycleApi::new(
+        Arc::new(apis::lifecycle::SystemLogind::new(system_connection)),
+        // Logout goes through the *session* bus manager, which is this connection: ending
+        // the session target is what lets the display manager see a clean exit.
+        Arc::new(apis::lifecycle::UserManagerSession::new(connection.clone())),
+        Arc::new(apis::lifecycle::PeerCgroupUnit::new(connection.clone())),
+        services.session_edges.clone(),
+    );
+    if let Some(control) = launcher_control {
+        lifecycle = lifecycle.with_launcher_control_fixture(control);
+    }
     connection
         .object_server()
-        .at(
-            names::LIFECYCLE_PATH,
-            apis::lifecycle::LifecycleApi::new(
-                Arc::new(apis::lifecycle::SystemLogind::new(system_connection)),
-                // Logout goes through the *session* bus manager, which is this connection: ending
-                // the session target is what lets the display manager see a clean exit.
-                Arc::new(apis::lifecycle::UserManagerSession::new(connection.clone())),
-                Arc::new(apis::lifecycle::PeerCgroupUnit::new(connection.clone())),
-                services.session_edges.clone(),
-            ),
-        )
+        .at(names::LIFECYCLE_PATH, lifecycle)
         .await
         .context("serving Session.Lifecycle1")?;
     Ok(())
@@ -605,7 +607,7 @@ async fn serve_policy_interfaces(
         services.store.clone(),
         services.schema.clone(),
         services.settings_values.clone(),
-        wallpaper_control,
+        wallpaper_control.clone(),
         services.wallpaper_spool_directory.clone(),
     );
     object_server
@@ -739,7 +741,13 @@ async fn serve_policy_interfaces(
         )
         .await
         .context("serving Notifications1")?;
-    serve_lifecycle_interface(connection, system_connection.clone(), services).await?;
+    serve_lifecycle_interface(
+        connection,
+        system_connection.clone(),
+        services,
+        wallpaper_control,
+    )
+    .await?;
     object_server
         .at(
             names::LOCATION_PATH,

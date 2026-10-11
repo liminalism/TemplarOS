@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased — unified launcher and window transitions, 2026-10-11
+
+- Add one focused PixelKit launcher above applications. Super+Space, the bottom
+  rail and Homegarden open the same popup without revealing Home or rearranging
+  windows. Tab switches Apps/Files while retaining the query; click or Enter
+  activates immediately, Ctrl+Enter requests another instance, and Escape or
+  clicking outside dismisses.
+- Move app search, favorites and recent applications out of Home's permanent
+  search strip. Ordinary activation creates no Home tile; shortcuts require an
+  explicit context action. Existing Home project, window-card and tile gestures
+  retain their roles.
+- Search Files.Index1 directly with bounded pages, cancellation and generation
+  fencing. Preserve native paths and open files through Associations1 and
+  Launcher1; Search Here opens the same popup with an explicit directory scope.
+- Persist application favorites, named terminal directory/argument profiles,
+  display aliases and reversible hidden results through Settings1. Saved apps
+  share one rail chip with their running task; distinct terminal profiles remain
+  separate. Explicit Home profile shortcuts retain their copied launch target.
+- Organize Settings into ten navigation groups. Add favorite/profile editing and
+  hidden-result restoration; move algorithm and rail tuning into Advanced, and
+  remove obsolete search-provider controls and unenforced ordinary choices.
+- Render Essence park/restore transitions in the compositor's GLES scene, with
+  reusable reversible plans and bounded GPU snapshots. Add Essence/Simple/Off
+  and particle size (default 6 logical px, range 1–24); retain simple motion on
+  shader/capability failure and the existing reduced-motion override. Material
+  and bar shader experiments remain in the sandbox.
+- Retire FSearch provider routing, fallback rows and distro fork packaging in
+  favor of the first-party launcher. Keep Files.Index1 and its compatibility
+  clients. Earlier FSearch plans and measurements remain historical evidence.
+
+See [launcher behavior and configuration](docs/launcher.md). Headless interaction,
+private-session and GPU fixtures qualify specific source paths; they do not
+replace installed-session feel or integrated-GPU performance observation.
+
 ## Unreleased — shared file index continuation, 2026-10-08
 
 - Bound file-index execution with interactive, bulk and maintenance lanes,

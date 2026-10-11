@@ -52,6 +52,10 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     render_bar: Option<PathBuf>,
 
+    /// Draw Apps and Files launcher fixtures at desktop, narrow and high DPI sizes.
+    #[arg(long, value_name = "PREFIX")]
+    render_launcher: Option<PathBuf>,
+
     /// Draw both gesture rails, half and fully revealed, to PNGs with the mask as alpha and exit:
     /// `PATH-apps-half.png`, `PATH-apps-full.png`, `PATH-system-half.png`,
     /// `PATH-system-full.png`, on a 1920-pixel output at scale 1.
@@ -107,6 +111,9 @@ struct Cli {
 async fn main() -> Result<()> {
     use std::io::IsTerminal as _;
     tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .with_ansi(std::io::stdout().is_terminal())
         .init();
     let cli = Cli::parse();
@@ -146,6 +153,12 @@ async fn main() -> Result<()> {
             templar_shell::settings::load_appearance().await,
         );
         for written in templar_shell::surface::offscreen::render_rails(path)? {
+            println!("{}", written.display());
+        }
+        return Ok(());
+    }
+    if let Some(path) = &cli.render_launcher {
+        for written in templar_shell::surface::offscreen::render_launcher(path)? {
             println!("{}", written.display());
         }
         return Ok(());

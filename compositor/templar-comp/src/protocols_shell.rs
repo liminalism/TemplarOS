@@ -34,7 +34,7 @@ use templar_window::{
 /// Both peers ship from this repository, so a version bump is a pair of edits, not a
 /// compatibility matrix — but every `since="2"` event below is still guarded on the bound
 /// object's version rather than assumed.
-pub const SHELL_PROTOCOL_VERSION: u32 = 14;
+pub const SHELL_PROTOCOL_VERSION: u32 = 15;
 
 /// The value of `templar_shell_manager_v2.group_cycle_binding` this compositor sends: 0 is
 /// `Super+Tab`, the only binding there is (planning doc §2.1 — one chord, always the same, no
@@ -76,6 +76,8 @@ pub struct ShellProtocolState {
     /// Compared as a string against `CachedIdentity`'s resolved id — the compositor never
     /// interprets an application id, it only recognises one.
     pub terminal_app_id: Option<String>,
+    /// A popup focus claim made between first commit and mapped registration.
+    pub pending_focus: Option<WlSurface>,
 }
 
 /// Identifier delivery belongs to this protocol object, not its semantic window:
@@ -174,6 +176,15 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV2, TemplarCompState<B>>
         }
         let ctx = trusted_ctx(state);
         match request {
+            templar_shell_manager_v2::Request::SetWindowTransition {
+                kind,
+                particle_size,
+            } => {
+                if let WEnum::Value(kind) = kind {
+                    state.motion.configure(kind as u32, particle_size);
+                    B::request_redraw(state);
+                }
+            }
             templar_shell_manager_v2::Request::SetReducedMotion { enabled } => {
                 state.motion.set_reduced_motion(enabled != 0);
                 B::request_redraw(state);
@@ -381,9 +392,10 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV2, TemplarCompState<B>>
     fn destroyed(
         &self,
         state: &mut TemplarCompState<B>,
-        _client: ClientId,
+        client: ClientId,
         resource: &TemplarShellManagerV2,
     ) {
+        state.cancel_launcher_input_for(&client);
         if state.shell_protocol.preview_manager.as_ref() == Some(&resource.id()) {
             state.shell_protocol.preview_manager = None;
             state.screencopy.retire_all_previews();
@@ -394,6 +406,8 @@ impl<B: Backend + 'static> Dispatch2<TemplarShellManagerV2, TemplarCompState<B>>
             .managers
             .retain(|manager| manager != resource);
         if state.shell_protocol.managers.is_empty() {
+            state.shell_protocol.pending_focus = None;
+            state.window_service.set_focused_popup(None);
             if state.window_service.home_revealed() {
                 state.reveal_home(RevealHome::Hide);
             }
@@ -425,9 +439,21 @@ pub(crate) fn focus_shell_surface<B: Backend + 'static>(
         return;
     };
     if let Some(surface) = surface {
+        if state.display_handle.get_client(surface.id()).ok().as_ref() != Some(client) {
+            return;
+        }
         let Some(window_id) = state.windows.window_id_for(&surface.id()) else {
+            if state
+                .shell_protocol
+                .layer_surfaces
+                .get(&surface.id())
+                .is_some_and(|(_, layer)| matches!(layer, Layer::ShellOverlay | Layer::SystemModal))
+            {
+                state.shell_protocol.pending_focus = Some(surface);
+            }
             return;
         };
+        state.shell_protocol.pending_focus = None;
         if state.display_handle.get_client(surface.id()).ok().as_ref() != Some(client)
             || !matches!(
                 state.window_service.layer_of(window_id),
@@ -442,32 +468,59 @@ pub(crate) fn focus_shell_surface<B: Backend + 'static>(
             Some(surface),
             smithay::utils::SERIAL_COUNTER.next_serial(),
         );
-    } else if keyboard.current_focus().is_some_and(|focused| {
-        state.display_handle.get_client(focused.id()).ok().as_ref() == Some(client)
-            && state
-                .windows
-                .window_id_for(&focused.id())
-                .is_some_and(|id| {
-                    matches!(
-                        state.window_service.layer_of(id),
-                        Some(Layer::ShellOverlay | Layer::SystemModal)
-                    )
-                })
-    }) {
-        let target = state
-            .window_service
-            .switch_order()
-            .into_iter()
-            .find(|id| state.window_service.is_visible(*id))
-            .or_else(|| {
-                state.window_service.windows().find_map(|window| {
-                    (state.window_service.layer_of(window.id) == Some(Layer::HomeSurface)
-                        && state.window_service.is_visible(window.id))
-                    .then_some(window.id)
-                })
-            });
-        let surface = target.and_then(|id| state.windows.surface_for(id).cloned());
-        keyboard.set_focus(state, surface, smithay::utils::SERIAL_COUNTER.next_serial());
+        state.complete_launcher_input(client);
+    } else {
+        if state
+            .shell_protocol
+            .pending_focus
+            .as_ref()
+            .is_some_and(|surface| {
+                state.display_handle.get_client(surface.id()).ok().as_ref() == Some(client)
+            })
+        {
+            state.shell_protocol.pending_focus = None;
+        }
+        if keyboard.current_focus().is_some_and(|focused| {
+            state.display_handle.get_client(focused.id()).ok().as_ref() == Some(client)
+                && state
+                    .windows
+                    .window_id_for(&focused.id())
+                    .is_some_and(|id| {
+                        matches!(
+                            state.window_service.layer_of(id),
+                            Some(Layer::ShellOverlay | Layer::SystemModal)
+                        )
+                    })
+        }) {
+            let target = state
+                .window_service
+                .switch_order()
+                .into_iter()
+                .find(|id| state.window_service.is_visible(*id))
+                .or_else(|| {
+                    state.window_service.windows().find_map(|window| {
+                        (state.window_service.layer_of(window.id) == Some(Layer::HomeSurface)
+                            && state.window_service.is_visible(window.id))
+                        .then_some(window.id)
+                    })
+                });
+            let surface = target.and_then(|id| state.windows.surface_for(id).cloned());
+            keyboard.set_focus(state, surface, smithay::utils::SERIAL_COUNTER.next_serial());
+        }
+    }
+}
+
+/// Complete a narrowly owned early popup focus request after mapped registration.
+pub fn apply_pending_popup_focus<B: Backend + 'static>(
+    state: &mut TemplarCompState<B>,
+    surface: &WlSurface,
+) {
+    if state.shell_protocol.pending_focus.as_ref() != Some(surface) {
+        return;
+    }
+    state.shell_protocol.pending_focus = None;
+    if let Some(client) = surface.client() {
+        focus_shell_surface(state, &client, Some(surface.clone()));
     }
 }
 
@@ -923,6 +976,14 @@ pub fn on_shell_surface_destroyed<B: Backend + 'static>(
     state: &mut TemplarCompState<B>,
     surface: &ObjectId,
 ) {
+    if state
+        .shell_protocol
+        .pending_focus
+        .as_ref()
+        .is_some_and(|pending| pending.id() == *surface)
+    {
+        state.shell_protocol.pending_focus = None;
+    }
     state.shell_protocol.layer_surfaces.remove(surface);
     state.shell_protocol.edge_alignments.remove(surface);
     if state
@@ -1387,13 +1448,28 @@ pub fn send_taskfield_state<B: Backend + 'static>(state: &mut TemplarCompState<B
     }
 }
 
-/// `Super+Space`: Home is already revealed; arm its Apps bar. One launcher object, one more route
-/// into it (`templar-shell-v2.xml`'s `launcher_focus`).
+/// `Super+Space` requests the common launcher without changing Home or client activation.
 pub fn send_launcher_focus<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
-    for manager in &state.shell_protocol.managers {
-        if manager.version() >= 8 {
-            manager.launcher_focus();
-        }
+    let manager = state
+        .shell_protocol
+        .managers
+        .iter()
+        .find(|manager| {
+            manager.version() >= 8
+                && state
+                    .shell_protocol
+                    .layer_surfaces
+                    .values()
+                    .any(|(surface, layer)| {
+                        *layer == Layer::HomeSurface && surface.client() == manager.client()
+                    })
+        })
+        .cloned();
+    if let Some(manager) = manager
+        && let Some(client) = manager.client()
+    {
+        state.begin_launcher_input(&client);
+        manager.launcher_focus();
     }
 }
 
@@ -1495,6 +1571,34 @@ pub fn send_switcher_state<B: Backend + 'static>(state: &TemplarCompState<B>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launcher_protocol_appends_opcodes_without_changing_v14_messages() {
+        let xml = include_str!("../../../interfaces/wayland/templar-shell-v2.xml");
+        let manager = xml.split("</interface>").next().unwrap();
+        let names = |kind| {
+            let prefix = format!("<{kind} name=\"");
+            manager
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix(&prefix))
+                .map(|tail| tail.split('"').next().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let requests = names("request");
+        assert_eq!(
+            &requests[14..],
+            &[
+                "set_reduced_motion",
+                "set_preview_demand",
+                "set_tab_policy",
+                "set_window_transition"
+            ]
+        );
+        let events = names("event");
+        assert_eq!(events[5], "launcher_focus");
+        assert_eq!(events[8], "switcher_state");
+        assert_eq!(events[9], "launcher_request");
+    }
     use templar_types::WindowClaims;
     use templar_window::{ClientKind, Output, WindowService};
 
@@ -1643,5 +1747,46 @@ mod tests {
                 "restored geometry must stay reachable after the topology change: {rect:?}"
             );
         }
+    }
+}
+
+/// Forward an authenticated local request to a capable trusted-shell manager.
+pub fn send_launcher_request<B: Backend + 'static>(
+    state: &mut TemplarCompState<B>,
+    mode: templar_types::launcher::LauncherMode,
+    scope_uri: &str,
+    query: &str,
+) -> bool {
+    let manager = state
+        .shell_protocol
+        .managers
+        .iter()
+        .find(|manager| {
+            manager.version() >= 15
+                && state
+                    .shell_protocol
+                    .layer_surfaces
+                    .values()
+                    .any(|(surface, layer)| {
+                        *layer == Layer::HomeSurface && surface.client() == manager.client()
+                    })
+        })
+        .cloned();
+    if let Some(manager) = manager
+        && let Some(client) = manager.client()
+    {
+        state.begin_launcher_input(&client);
+        let mode = match mode {
+            templar_types::launcher::LauncherMode::Apps => {
+                templar_shell_manager_v2::LauncherMode::Apps
+            }
+            templar_types::launcher::LauncherMode::Files => {
+                templar_shell_manager_v2::LauncherMode::Files
+            }
+        };
+        manager.launcher_request(mode, scope_uri.to_owned(), query.to_owned());
+        true
+    } else {
+        false
     }
 }

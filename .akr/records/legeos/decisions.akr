@@ -1831,28 +1831,29 @@ record legeos.decision.task-system-four-scales-one-model/1 : decision {
 }
 
 record legeos.decision.the-home-field-is-a-launcher-not-a-search/1 : decision {
-    title "The Home search is an application launcher over AppIdentity1: applications only, ranked like a launcher; file search belongs to the Files object and to FSearch"
-    state proposed
+    title "One global Apps/Files launcher; Homegarden represents work and shortcuts are explicit"
+    state active
     scope [
+        path "apps/templar-settings/**",
+        path "compositor/templar-comp/**",
         path "crates/templar-session-core/**",
         path "crates/templar-types/src/action.rs",
+        path "distro/**",
         path "services/templar-sessiond/**",
         path "shell/templar-shell/**"
     ]
     topic home-search
     decision """
-        The field at the top of bare Home is the application launcher and answers with applications only; it never asks the file service and never says it is searching files. Its one registry is AppIdentity1 — the same inventory that launches, groups variants and carries updates and shortcuts — so an application originates in exactly one place, and a launcher is a view over that inventory rather than a second scanner of .desktop files. It ranks like a launcher: exact name, then name prefix, then a later word of the name, then a substring, then the name as an abbreviation (the query's letters in order, starting a word, gap-penalised), then keywords, then categories, then the identifier as a last resort; within a tier the application launched most recently comes first, from the shell's own recents list, and a boost never lifts a row across a tier. A row's second line is the .desktop name it is installed under, never the shell's internal id. Typing a letter on bare Home opens the search and goes into it; Enter opens the one highlighted row and Escape empties the field. A path typed into it (/etc, ~/src) is an instruction rather than a result and opens that folder in the file manager. A file search belongs to the Files object, scoped to the location it shows (folders before files, capped per source). Projects are tiles and actions have the context menu and cheat sheet, so neither is a search result. Deep search over everything indexed is the job of a real search tool: fsearch is the default candidate of the exclusive ProviderRole::FileSearch, launched with --search <query> from the Files object's last row and a context-menu verb; templar-filed keeps its index for the scoped in-place search.
-
-        Added 2026-09-09 by @legeos.decision.task-system-four-scales-one-model, without adding a second launcher: Super+Space reveals Home with this field focused and armed (launcher_focus over templar_shell_v1 v8), so the keyboard route from a fullscreen window to starting something is Super+Space, type, Enter, and the fullscreen window is not disturbed. A result that is already running shows its count ('Firefox · 8 running', from templar_window::task::units); Enter on it activates the application's most recent window (launcher.activate-recent), Ctrl+Enter launches another instance (launcher.launch-new), and the right arrow or Tab opens Taskfield filtered to that application. The launcher still never switches windows as a list: activating is the one exception, and the list of windows is Taskfield's.
+        Owner direction 2026-10-09 supersedes the Home-only Apps search and external FSearch routing assumptions. One independently focused PixelKit ShellOverlay popup is the shell's application and file launcher. Super+Space and explicit rail/Home actions open it over applications without revealing Home or changing application activation. Homegarden has no permanent search field or recent-app strip, and opening a result never prepares or creates a Home tile. Apps reuses AppIdentity1 catalogue, existing matcher and shared activity/favorite identities; normal click/Enter activates a running canonical application or launches it, Ctrl+Enter launches a new instance. Tab preserves text while switching Apps/Files; Right opens app windows; Escape/outside focus dismiss. Files uses existing Index1 SearchSession with all roots by default and explicit Search Here scope, native paths and Associations1 brokered open; no parallel scanner/opener/FSearch route. Shortcuts, aliases, info and hidden identities are explicit metadata actions shared with Settings, separate from garden-place hide and filesystem mutation. Persistent app/terminal-directory favorites reconcile with authoritative running TaskKeys in both bar and gesture rail; groups and stable task ordering remain. Existing Homegarden spatial work and Files/provider browsing ownership continue.
         """
     context """
-        The user asked for 'an app search, like the cosmic-launcher app search, or that code can be used wholesale in fact if our app search is limited somehow', while keeping the convention of unifying application origination for updates and shortcuts. Both were read at 2026-09-08. cosmic-launcher is a libcosmic/iced application — a second toolkit and a second window system inside a pixelkit shell. pop-launcher, the ranking behind it, is a JSON-over-stdio daemon with its own desktop-entry plugin: adopting it would put a second application registry beside AppIdentity1. The part worth having is about 45 lines of scoring; the shell's own MatchKind ladder was already finer on everything pop-launcher scores 1.0 and was missing only a typo-tolerant tail and the recency boost.
+        Full proposal: immutable source templaros-unified-launcher-homegarden-20261009. Source exploration found existing search sessions, pure app matching, real overlay borrowing focus, and brokered launch infrastructure. Their lifecycles are reused rather than replaced.
         """
     consequences """
-        Neither cosmic-launcher nor pop-launcher is vendored, forked or run: the ranking is written in shell/templar-shell/src/app_search.rs with no new dependency. The recency boost reads shell/templar-shell/src/recents.rs and nothing else. AppIdentity1 stays the single place an application is known. The running count and the three keys read the same task::units the island reads, so the launcher and the island cannot disagree about what is running.
+        FSearch provider defaults and adoption/package path are retired after the first-party replacement. Old historical prototype evidence remains intact. The current launcher-specific directive governs any older live work mentioning Home search, drag-to-create or FSearch; unrelated Files browsing, task/group, terminal and identity acceptance remains required. No live desktop deployment/restart/logout is authorized.
         """
     contradicts [ @legeos.work.adaptive-files-and-omnibox ]
-    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    implements [ @legeos.requirement.unified-launcher-homegarden-20261009 ]
     acknowledged true
 }
 

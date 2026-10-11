@@ -267,7 +267,7 @@ record legeos.work.adaptive-files-and-omnibox/2 : work {
 
 record legeos.work.adaptive-files-and-omnibox/3 : work {
     title "WS2 — adaptive Files surface with persistent state, and the federated omnibox"
-    state active
+    state superseded
     scope [ path "shell/templar-shell/**" ]
     intent """
         Shell phases 3-4. Phase 3: delete surface/home_screen.rs entirely (the embedded rail and second search field); new pure files_surface.rs with FilesLocation (Directory, Recent, Drives, Trash, Operations, Search; Projects/Network/WindowShelf die as locations) and FilesSurfaceState (location, back/forward stacks, selection, focus, anchor, sort, view, show_hidden, query, scroll) consumed by every rung — navigation and selection semantics ported from apps/lege-files BrowserModel (accepted duplication, papercut it); FileBrowserScreen becomes FilesBrowseView holding no per-screen state, its places sidebar drawn at Full only; draw_expanded becomes breadcrumb band plus files_screen at Representation::Full — one nesting level instead of three; app.rs browse/search state re-keys from Drawer to FilesLocation. Phase 4: new pure omnibox.rs federating apps, projects, files (last completed Files.Search1 result with its query; mismatch renders as still-searching) and declared actions; app_search::MatchKind as the universal strength, source order Project > App > Directory > File > Action, per-source caps before merge, 180ms debounce, stale results dropped, visible rows never reorder on late arrival; scope derived from context (Everything on bare Home, current location inside Files with a permanent Search-everything escape row); delete the launcher widget and its system tile via migrate_launcher_tile (no successor object); launcher.* chords keep working.
@@ -301,6 +301,45 @@ record legeos.work.adaptive-files-and-omnibox/3 : work {
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
     supersedes [ @legeos.work.adaptive-files-and-omnibox/2 ]
+    author "dk"
+}
+
+record legeos.work.adaptive-files-and-omnibox/4 : work {
+    title "WS2 — adaptive Files surface with persistent state, and the federated omnibox"
+    state superseded
+    scope [ path "shell/templar-shell/**" ]
+    intent """
+        Shell phases 3-4. Phase 3: delete surface/home_screen.rs entirely (the embedded rail and second search field); new pure files_surface.rs with FilesLocation (Directory, Recent, Drives, Trash, Operations, Search; Projects/Network/WindowShelf die as locations) and FilesSurfaceState (location, back/forward stacks, selection, focus, anchor, sort, view, show_hidden, query, scroll) consumed by every rung — navigation and selection semantics ported from apps/lege-files BrowserModel (accepted duplication, papercut it); FileBrowserScreen becomes FilesBrowseView holding no per-screen state, its places sidebar drawn at Full only; draw_expanded becomes breadcrumb band plus files_screen at Representation::Full — one nesting level instead of three; app.rs browse/search state re-keys from Drawer to FilesLocation. Phase 4: new pure omnibox.rs federating apps, projects, files (last completed Files.Search1 result with its query; mismatch renders as still-searching) and declared actions; app_search::MatchKind as the universal strength, source order Project > App > Directory > File > Action, per-source caps before merge, 180ms debounce, stale results dropped, visible rows never reorder on late arrival; scope derived from context (Everything on bare Home, current location inside Files with a permanent Search-everything escape row); delete the launcher widget and its system tile via migrate_launcher_tile (no successor object); launcher.* chords keep working.
+        """
+    note "Verify Tab as the scope-escape key against pixelkit_ui focus traversal before committing; Ctrl-Space is the fallback. Until WS4 lands, the omnibox's project source is Projects1.List; switch to ListDetailed when available.\nThe supported legacy scope migration changed the sealed planning head; after committing it, AKR R022 correctly no longer accepts the older completion evidence. Historical results are retained, but this head is active for fresh acceptance observations; this is provenance revalidation, not a newly observed code regression."
+    acceptance {
+        check omnibox-unit-tests {
+            statement """
+                federate() unit tests pass: cross-source ordering at equal strength, per-source caps before merge, staleness gate, escape row present exactly once under Files scope, empty query lists all offerable apps.
+                """
+            method command
+            command "cargo test -p lege-shell omnibox"
+            verified_by [ @legeos.evidence.ws2-omnibox-unit-tests-20260901/1 ]
+        }
+        check one-search-control {
+            statement """
+                Exactly one search field exists in every Home state; typing on bare Home yields federated app, project and file results in deterministic order; late file results never reorder visible rows.
+                """
+            method manual
+            verified_by [ @legeos.evidence.ws2-one-search-control-20260901/1 ]
+        }
+        check state-continuity {
+            statement """
+                Expanding Files, navigating three directories deep, selecting entries, collapsing and re-expanding lands in the same directory with the same selection and scroll.
+                """
+            method manual
+            verified_by [ @legeos.evidence.ws2-state-continuity-20260901/1 ]
+        }
+    }
+    depends_on [ @legeos.work.home-presentation-subtraction ]
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+    supersedes [ @legeos.work.adaptive-files-and-omnibox/3 ]
     author "dk"
 }
 
@@ -3225,7 +3264,7 @@ record legeos.work.design-consolidation-roadmap/3 : work {
             verified_by [ @legeos.evidence.native-lubuntu-validation-20260907/1 ]
         }
     }
-    depends_on [ @legeos.constraint.native-lubuntu-is-the-development-environment/1 ]
+    depends_on [ @legeos.constraint.native-lubuntu-is-the-development-environment/2 ]
     derived_from [ @legeos.assessment.hotfixability-current-state-20260831 ]
     implements [
         @legeos.decision.event-driven-service-authorities,
@@ -4974,7 +5013,7 @@ record legeos.work.event-driven-service-audit/2 : work {
             verified_by [ @legeos.evidence.service-inventory-and-pressure-wakeups-20260907 ]
         }
     }
-    depends_on [ @legeos.constraint.native-lubuntu-is-the-development-environment/1 ]
+    depends_on [ @legeos.constraint.native-lubuntu-is-the-development-environment/2 ]
     implements [ @legeos.decision.event-driven-service-authorities ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
     supersedes [ @legeos.work.event-driven-service-audit/1 ]
@@ -11922,7 +11961,7 @@ record legeos.work.index-hdd-maintenance-pacing-20261009/1 : work {
 
 record legeos.work.index-integrated-search-gui-20261008/1 : work {
     title "Future integrated Index1 search GUI with a large FSearch-style window"
-    state proposed
+    state superseded
     scope [
         path "apps/**",
         path "crates/templar-session-core/src/providers.rs",
@@ -12923,7 +12962,7 @@ record legeos.work.index-wp14-fsearch-20261008/3 : work {
 
 record legeos.work.index-wp14-fsearch-20261008/4 : work {
     title "WP14 FSearch remote shared-index fork and native package"
-    state active
+    state superseded
     scope [
         path "distro/forks/fsearch/**",
         path "distro/forks/manifest.toml",
@@ -12964,6 +13003,52 @@ record legeos.work.index-wp14-fsearch-20261008/4 : work {
     ]
     part_of [ @legeos.work.shared-index-completion-20261008/1 ]
     supersedes [ @legeos.work.index-wp14-fsearch-20261008/3 ]
+    author "dk"
+}
+
+record legeos.work.index-wp14-fsearch-20261008/5 : work {
+    title "WP14 FSearch remote shared-index fork and native package"
+    state superseded
+    scope [
+        path "distro/forks/fsearch/**",
+        path "distro/forks/manifest.toml",
+        path "docs/indexing-dev/continuation-2026-10-08.md",
+        path "docs/measurements/**"
+    ]
+    intent """
+        Implement WP14 at the exact upstream FSearch pin05ed650ab101ee3d61795fa5eeeb5c32e1e366c3, preserving GPL-2.0-or-later provenance and reproducible downstream packaging patches. Index-mode builds replace every local database/scanner/watch source with a worker-backed Index1 implementation of the existing database API. Support typed query translation, bounded remote pages and native-byte actions, stable entry-ID selection, generation refresh and typed error handling, honest unsupported modes and roots/preferences owned by Settings. Build the actual DEB and observe owned private GTK integration with5000entries/nonUTF8names/no private database/watches/tree enumeration, retain the resulting fork as a qualified prototype. On 2026-10-08 the owner deferred the same-generation nested shell/FSearch check and selected a future own integrated Index1 GUI with a large FSearch-style window. The prototype is not final provider acceptance; no default switch is authorized by these results. Physical/install/HDMI gates stay explicit.
+        """
+    note "Owner instruction 2026-10-08: defer the original nested-generation comparison; neither the retired native Files search notice nor PCManFM Find is the final consumer route. Preserve the actual working FSearch Index1 fork/package evidence as a prototype. A future integrated Index1 search GUI is separate work; WP16 shipping/default adoption remains deferred pending that consumer decision."
+    acceptance {
+        check nested-generation {
+            statement """
+                DEFERRED BY OWNER 2026-10-08: actual owned nested session displays FSearch info and native shell notice at the same generation for the same query, with retained screenshots and native actions.
+                """
+            method manual
+        }
+        check private-shared-index {
+            statement """
+                Owned private filed+GTK/Xvfb5000entry/nonUTF8 fixture exercises query/sort/pages/native paths/selection/freshness and typed errors; FSearch holds zero inotify/fanotify FDs, creates no fsearch.db and performs no recursive fixture enumeration (GTK theme/icon allowlist retained).
+                """
+            method command
+            command "distro/forks/fsearch/tests/remote-index.sh"
+            verified_by [ @legeos.evidence.index-wp14-private-20261008/1 ]
+        }
+        check query-and-build {
+            statement """
+                Pinned GPL source with reproducible index-mode patch and Meson pure query translation tests builds the actual TemplarOS FSearch Debian package through scripts/build-fork-deb.sh; scanner/database-file/watch implementations are absent from the index-mode object graph.
+                """
+            method command
+            command "scripts/build-fork-deb.sh fsearch"
+            verified_by [ @legeos.evidence.index-wp14-package-20261008/1 ]
+        }
+    }
+    depends_on [
+        @legeos.work.index-wp13-diagnostics-20261008/4,
+        @legeos.work.index-wp7-wp8-20261008/1
+    ]
+    part_of [ @legeos.work.shared-index-completion-20261008/1 ]
+    supersedes [ @legeos.work.index-wp14-fsearch-20261008/4 ]
     author "dk"
 }
 
@@ -13096,7 +13181,7 @@ record legeos.work.index-wp15-silvaview-20261008/3 : work {
 
 record legeos.work.index-wp16-provider-adoption-20261008/1 : work {
     title "WP16 provider adoption"
-    state proposed
+    state superseded
     scope [
         path "crates/templar-client/**",
         path "crates/templar-file-index/**",
@@ -16499,7 +16584,7 @@ record legeos.work.provisioning-storage-plan-and-reuse/2 : work {
         }
     }
     depends_on [
-        @legeos.constraint.native-lubuntu-is-the-development-environment/1,
+        @legeos.constraint.native-lubuntu-is-the-development-environment/2,
         @legeos.work.reference-machine-provisioning/2
     ]
     implements [ @legeos.decision.independent-storage-roles ]
@@ -16816,7 +16901,7 @@ record legeos.work.representation-chrome-and-continuity/1 : work {
 
 record legeos.work.representation-chrome-and-continuity/2 : work {
     title "WS3 — Home representation controls and spatially continuous expansion"
-    state active
+    state superseded
     scope [ path "crates/templar-field/**", path "shell/templar-shell/**" ]
     intent """
         Complete manipulation controls for current Home representations without reviving the retired title band or visible compositor resize grip. Micro and Small tiles keep identity in the body and reveal compact Home manipulation controls on hover or keyboard focus; Wide and larger representations may use a persistent heading when their content contract requires it. Expansion animates from the tile's current rect and collapse recomputes that target each frame, with the representation ladder supplying the content transition and reduced-motion removing intermediate frames.
@@ -16858,6 +16943,66 @@ record legeos.work.representation-chrome-and-continuity/2 : work {
     implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
     part_of [ @legeos.work.design-consolidation-roadmap ]
     supersedes [ @legeos.work.representation-chrome-and-continuity/1 ]
+    author "dk"
+    source {
+        kind external
+        role origin
+        document "legacy-homefield-design"
+        start_byte 14150
+        end_byte 23844
+        start_line 238
+        end_line 435
+        excerpt_hash "sha256:05c597d610ae9e563573244e46865228691b239269a1de137f191fbdc893b099"
+        use """
+            Retains representation ladders, stable bounded geometry, local reflow and restrained visual identity.
+            """
+    }
+}
+
+record legeos.work.representation-chrome-and-continuity/3 : work {
+    title "WS3 — Home representation controls and spatially continuous expansion"
+    state active
+    scope [ path "crates/templar-field/**", path "shell/templar-shell/**" ]
+    intent """
+        Complete manipulation controls for current Home representations without reviving the retired title band or visible compositor resize grip. Micro and Small tiles keep identity in the body and reveal compact Home manipulation controls on hover or keyboard focus; Wide and larger representations may use a persistent heading when their content contract requires it. Expansion animates from the tile's current rect and collapse recomputes that target each frame, with the representation ladder supplying the content transition and reduced-motion removing intermediate frames.
+        """
+    note """
+        This is shell-tile chrome inside Home. The persistent compositor bottom tags and exterior resize perimeter are governed separately. Re-baseline headless renders only after a coherent representation phase.
+
+        2026-09-07. The gap was as recorded: Expansion and the per-frame collapse target already existed, and the reveal-strip geometry was inline inside paint_tile. It is now FieldScreen::control_rects next to grab_strip, returning the reveal strip, the controls, the title and what is left for the body.
+
+        Extracting it surfaced a real defect the inline version hid: the title line spanned the tile's full width while the revealed controls sat over its right-hand end, so a long name was drawn under the buttons. control_rects now shortens the title to stop where the controls start. Identity is never hidden — a revealed tile shows a shorter name, not a name with three buttons on top of it. Confirmed pixel-neutral for the default field: the offscreen baseline hash was unchanged by this commit (its render has nothing hovered or focused).
+
+        The collapse target became FieldScreen::collapse_target for the same reason — `it follows a moved tile` was previously only observable by looking at pixels.
+        """
+    acceptance {
+        check expansion-interpolation {
+            statement """
+                Expansion interpolation is monotone, terminates, equals the current tile rect at t=0 and the full area at t=1, collapse follows reflowed tile position, and reduced_motion yields no intermediate frames.
+                """
+            method command
+            command "cargo test -p lege-shell expansion_is_endpoint_exact_monotone_and_terminates reduced_motion_expansion_has_no_intermediate_frames collapse_target_follows_a_moved_tile"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
+        }
+        check hands-on-chrome {
+            statement """
+                In a nested session, compact Home tiles reveal usable manipulation controls, larger representations remain calm, and expansion visibly grows from and collapses back to the tile's current place.
+                """
+            method manual
+        }
+        check representation-controls {
+            statement """
+                Every representation keeps identity visible, exposes manipulation to pointer and keyboard without covering required content, and shares painting and hit-testing geometry.
+                """
+            method command
+            command "cargo test -p lege-shell compact_rungs_reveal_controls_only_when_hovered_or_focused_and_never_cover_the_title_line wide_and_up_keep_a_persistent_heading"
+            verified_by [ @legeos.evidence.home-chips-projects-appearance-lock-20260907/1 ]
+        }
+    }
+    after [ @legeos.work.adaptive-files-and-omnibox/4 ]
+    implements [ @legeos.decision.representation-ladder-is-the-organizing-principle ]
+    part_of [ @legeos.work.design-consolidation-roadmap ]
+    supersedes [ @legeos.work.representation-chrome-and-continuity/2 ]
     author "dk"
     source {
         kind external
@@ -17922,11 +18067,11 @@ record legeos.work.shared-index-completion-20261008/1 : work {
 }
 
 record legeos.work.silvaview-and-fsearch-share-the-index/1 : work {
-    title "The FSearch fork and Silvaview service mode consume the LegeOS index generation instead of scanning"
+    title "First-party launcher and Silvaview consume Index1; installed sharing qualification"
     state proposed
     scope [ path "distro/forks/**", path "interfaces/dbus/org.templaros.Files.Index1.xml" ]
     intent """
-        Make the two external consumers read the shared index rather than build their own: the LegeOS FSearch fork ships with no scanner, no watches and no fsearch.db, and Silvaview service mode obtains a consistent snapshot through Files.Index1.OpenSnapshot and projects it through its existing tree builder, keeping its direct MFT/jwalk scanners only as an explicit fallback and as future non-LegeOS ingestion backends.
+        The 2026-10-09 owner direction replaces the external FSearch adoption path with the shell's global Apps/Files launcher using SearchSession directly. Silvaview retains its Index1 service-mode integration and explicit direct-scan fallback. Preserve the historical FSearch prototype measurements and source snapshots without a live fork/package/provider route. Installed first-party and Silvaview same-index-generation sharing remains an explicit qualification task; the launcher implementation is legeos.work.unified-launcher-homegarden-20261009.
         """
     note """
         Split out of @legeos.work.shared-incremental-file-index on 2026-09-07 because it is the one part of that record this repository cannot verify: Silvaview-rs lives in a sibling repository, so no path scope here covers it, and the FSearch fork is a `distro/forks/manifest.toml` entry rather than source in this tree. Everything the parent could prove — the index core, its maintenance, incremental freshness, one owner, warm start, and two-million-entry scale — is proven and completed there.
@@ -17936,7 +18081,7 @@ record legeos.work.silvaview-and-fsearch-share-the-index/1 : work {
     acceptance {
         check consumers-share-the-index {
             statement """
-                LegeOS Files search, the LegeOS FSearch fork and Silvaview service mode consume the same index generation; the FSearch build owns no watches or fsearch.db and Silvaview service mode performs no recursive filesystem enumeration.
+                An owner-run installed session observes the first-party launcher Files mode and Silvaview service mode using the same Index1 generation, with no parallel service-mode recursive index and native-path activation preserved. Historical FSearch prototype results do not satisfy this installed check.
                 """
             method manual
         }
@@ -19173,6 +19318,157 @@ record legeos.work.trash-that-can-be-seen-and-emptied/2 : work {
     part_of [ @legeos.milestone.m2-session-runs ]
     supersedes [ @legeos.work.trash-that-can-be-seen-and-emptied/1 ]
     author "dk"
+}
+
+record legeos.work.unified-launcher-homegarden-20261009/1 : work {
+    title "Unify global launcher, Homegarden, gesture rail favorites and Essence window transitions"
+    state superseded
+    scope [
+        path "apps/templar-settings/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-effects/**",
+        path "crates/templar-session-core/**",
+        path "crates/templar-types/**",
+        path "distro/**",
+        path "services/templar-sessiond/**",
+        path "shell/templar-shell/**"
+    ]
+    intent """
+        Implement the owner's 2026-10-09 pasted entry, TemplarOS: unifying the launcher, gesture bars, and Homegarden. Homegarden represents working environments, bottom gesture rails navigate them, and one independently focused PixelKit ShellOverlay discovers and opens apps/files. Preserve the shared AppIdentity1/TaskKey/window groups, Index1 native paths and brokered Associations1 opening. Opening never creates a shortcut implicitly. Super+Space, rail search and Home launch shortcut share one popup without revealing Home or disturbing client activation. Apps opens focused with deduplicated favorites/recents, existing ranked search, direct click/Enter, Ctrl+Enter new instance, Tab retains text and toggles Files, Right opens app windows, Escape/outside focus dismiss, fixed size and scrolling. Files uses cancellable generation-fenced SearchSession across all roots by default (explicit Search Here scope), honest paging/freshness, recent blank mode, native file metadata. Context menus explicitly create Home/rail shortcuts, edit metadata aliases, show info and hide results without deleting files; hidden entries restore in Settings. Persistent app and terminal cwd/argv favorites deduplicate running tasks on both bar/gesture rail while preserving first-seen ordering and groups, directory launches use LaunchInDirectoryV1. Retire FSearch routing/provider defaults/fork packaging after replacement exists, keep Index1 and historical evidence. Prune unsupported dock grouping/resources mode, move real Homegarden/rail tuning to Advanced, simplify Settings destinations/duplicate controls and expose only consumed controls. Integrate Essence window transitions into existing compositor GLES scene path with shared plan/reverse, larger 6px grain adjusted through uniforms, tested simple/off/reduced-motion and shader-failure fallbacks; exclude material treatments and preserve rail animation feel.
+        """
+    note """
+        Baseline f8b45b7 preserves all existing uncommitted work. Three exploration agents scoped actual source and jointly read the full broad context, including contradictions/staleness. Planning agent delivered a complete A-D mid-level plan before implementation: immutable source templaros-unified-launcher-implementation-plan-20261009. Root owns host/bridge/search/activation/CLI/ledger/tests, UI agent owns model/screen/Home removal, config agent owns atomic metadata/Settings/rail/retirement, compositor agent owns focus/scene/production GLES Essence. Plan preserves native paths, shared authority and fallback behavior. Current OS is TemplarOS; Lubuntu is recovery only. No live-session deployment/restart/logout. Existing historical physical/installed qualification remains open separately.
+        """
+    acceptance {
+        check favorites {
+            statement """
+                Persistent app and named terminal-directory profiles appear in launcher and both rails, reconcile running app chips without duplicate launch targets and preserve TaskKey/groups ordering.
+                """
+            method command
+            command "cargo test -p templar-shell; cargo test -p templar-session-core"
+        }
+        check files-context {
+            statement """
+                Index1 search is cancellable and generation-fenced with native-path brokered opening, explicit scoped Search Here, context metadata/hide/restore and no FSearch runtime/packaging route.
+                """
+            method command
+            command "cargo test -p templar-shell; cargo xtask check-actions; cargo xtask check-packaging"
+        }
+        check global-launcher {
+            statement """
+                One true overlay opens over other/maximized apps without Home reveal; Apps/Files text-preserving Tab, direct click/Enter, explicit new-instance, Escape/outside dismissal and no implicit Home tiles.
+                """
+            method command
+            command "cargo test -p templar-shell; cargo test -p templar-comp"
+        }
+        check native-gates {
+            statement """
+                Native targeted regressions, offscreen renders, compositor --check, action/protocol/packaging consistency and AKR validation run with results recorded; installed physical qualification remains explicit.
+                """
+            method command
+            command "cargo fmt --all --check; cargo xtask check-actions; cargo xtask check-interface-signatures; akr validate"
+        }
+        check settings-effects {
+            statement """
+                Useful launcher/hidden/favorites controls and Advanced pruning consume typed settings; compositor Essence GLES rendering uses one reversible plan, cheap grain updates and simple/off/reduced-motion/init-failure fallbacks.
+                """
+            method command
+            command "cargo test -p templar-effects -p templar-comp -p templar-session-core -p templar-settings"
+        }
+    }
+    depends_on [
+        @legeos.constraint.native-lubuntu-is-the-development-environment,
+        @legeos.requirement.unified-launcher-homegarden-20261009
+    ]
+    implements [ @legeos.decision.the-home-field-is-a-launcher-not-a-search ]
+    supersedes [ @legeos.work.index-wp16-provider-adoption-20261008/1 ]
+    author "dk"
+    source {
+        kind internal
+        role rationale
+        document "templaros-unified-launcher-implementation-plan-20261009"
+        use """
+            Concrete mid-level implementation plan after all source exploration. Implementation follows its shared APIs, ownership lanes and parent-only validation.
+            """
+    }
+}
+
+record legeos.work.unified-launcher-homegarden-20261009/2 : work {
+    title "Unify global launcher, Homegarden, gesture rail favorites and Essence window transitions"
+    state active
+    scope [
+        path "apps/templar-settings/**",
+        path "cli/templar/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-client/**",
+        path "crates/templar-effects/**",
+        path "crates/templar-field/**",
+        path "crates/templar-session-core/**",
+        path "crates/templar-types/**",
+        path "distro/**",
+        path "interfaces/**",
+        path "services/templar-sessiond/**",
+        path "shell/templar-shell/**",
+        path "tests/integration/**"
+    ]
+    intent """
+        Implement the owner's 2026-10-09 pasted entry, TemplarOS: unifying the launcher, gesture bars, and Homegarden. Homegarden represents working environments, bottom gesture rails navigate them, and one independently focused PixelKit ShellOverlay discovers and opens apps/files. Preserve the shared AppIdentity1/TaskKey/window groups, Index1 native paths and brokered Associations1 opening. Opening never creates a shortcut implicitly. Super+Space, rail search and Home launch shortcut share one popup without revealing Home or disturbing client activation. Apps opens focused with deduplicated favorites/recents, existing ranked search, direct click/Enter, Ctrl+Enter new instance, Tab retains text and toggles Files, Right opens app windows, Escape/outside focus dismiss, fixed size and scrolling. Files uses cancellable generation-fenced SearchSession across all roots by default (explicit Search Here scope), honest paging/freshness, recent blank mode, native file metadata. Context menus explicitly create Home/rail shortcuts, edit metadata aliases, show info and hide results without deleting files; hidden entries restore in Settings. Persistent app and terminal cwd/argv favorites deduplicate running tasks on both bar/gesture rail while preserving first-seen ordering and groups, directory launches use LaunchInDirectoryV1. Retire FSearch routing/provider defaults/fork packaging after replacement exists, keep Index1 and historical evidence. Prune unsupported dock grouping/resources mode, move real Homegarden/rail tuning to Advanced, simplify Settings destinations/duplicate controls and expose only consumed controls. Integrate Essence window transitions into existing compositor GLES scene path with shared plan/reverse, larger 6px grain adjusted through uniforms, tested simple/off/reduced-motion and shader-failure fallbacks; exclude material treatments and preserve rail animation feel.
+        """
+    note """
+        Baseline f8b45b7 preserves all existing uncommitted work. Three exploration agents scoped actual source and jointly read the full broad context, including contradictions/staleness. Planning agent delivered a complete A-D mid-level plan before implementation: immutable source templaros-unified-launcher-implementation-plan-20261009. Root owns host/bridge/search/activation/CLI/ledger/tests, UI agent owns model/screen/Home removal, config agent owns atomic metadata/Settings/rail/retirement, compositor agent owns focus/scene/production GLES Essence. Plan preserves native paths, shared authority and fallback behavior. Current OS is TemplarOS; Lubuntu is recovery only. No live-session deployment/restart/logout. Existing historical physical/installed qualification remains open separately.
+        """
+    acceptance {
+        check favorites {
+            statement """
+                Persistent app and named terminal-directory profiles appear in launcher and both rails, reconcile running app chips without duplicate launch targets and preserve TaskKey/groups ordering.
+                """
+            method command
+            command "cargo test -p templar-shell; cargo test -p templar-session-core"
+        }
+        check files-context {
+            statement """
+                Index1 search is cancellable and generation-fenced with native-path brokered opening, explicit scoped Search Here, context metadata/hide/restore and no FSearch runtime/packaging route.
+                """
+            method command
+            command "cargo test -p templar-shell; cargo xtask check-actions; cargo xtask check-packaging"
+        }
+        check global-launcher {
+            statement """
+                One true overlay opens over other/maximized apps without Home reveal; Apps/Files text-preserving Tab, direct click/Enter, explicit new-instance, Escape/outside dismissal and no implicit Home tiles.
+                """
+            method command
+            command "cargo test -p templar-shell; cargo test -p templar-comp"
+        }
+        check native-gates {
+            statement """
+                Native targeted regressions, offscreen renders, compositor --check, action/protocol/packaging consistency and AKR validation run with results recorded; installed physical qualification remains explicit.
+                """
+            method command
+            command "cargo fmt --all --check; cargo xtask check-actions; cargo xtask check-interface-signatures; akr validate"
+        }
+        check settings-effects {
+            statement """
+                Useful launcher/hidden/favorites controls and Advanced pruning consume typed settings; compositor Essence GLES rendering uses one reversible plan, cheap grain updates and simple/off/reduced-motion/init-failure fallbacks.
+                """
+            method command
+            command "cargo test -p templar-effects -p templar-comp -p templar-session-core -p templar-settings"
+        }
+    }
+    depends_on [
+        @legeos.constraint.native-lubuntu-is-the-development-environment,
+        @legeos.requirement.unified-launcher-homegarden-20261009
+    ]
+    implements [ @legeos.decision.the-home-field-is-a-launcher-not-a-search ]
+    supersedes [ @legeos.work.unified-launcher-homegarden-20261009/1 ]
+    author "dk"
+    source {
+        kind internal
+        role rationale
+        document "templaros-unified-launcher-implementation-plan-20261009"
+        use """
+            Concrete mid-level implementation plan after all source exploration. Implementation follows its shared APIs, ownership lanes and parent-only validation.
+            """
+    }
 }
 
 record legeos.work.visible-notifications-pixelkit-20261007/1 : work {

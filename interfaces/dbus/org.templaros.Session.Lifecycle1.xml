@@ -1,19 +1,20 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
-<!-- Bus: org.templaros.Session. Path: /org/templaros/Session/Lifecycle. Ending, suspending or locking
-     the session.
+<!-- Bus: org.templaros.Session. Path: /org/templaros/Session/Lifecycle. Session navigation,
+     ending, suspending or locking the session.
 
      Before this existed there was no way out of a TemplarOS session at all: the session ends when
      templar-comp.service stops (session/templar-session/src/main.rs), and nothing a user could reach
      stopped it. A tester had to switch to a virtual terminal and kill the compositor by hand.
 
-     NOT polkit-gated, and deliberately not in templar-hostd. Every method here forwards to
+     NOT polkit-gated, and deliberately not in templar-hostd. Machine power methods forward to
      org.freedesktop.login1, which already authorises these actions for the active seat through
      its own polkit policy (org.freedesktop.login1.power-off and friends, allow_active=yes). Doing
      it again in TemplarOS would mean an administrator prompt to shut down your own laptop, and would
      put a session concern in the privileged daemon that ADR-0003 scopes to administrative
      actions like apt and deployments. sessiond runs unprivileged and needs no new privilege to
-     make these calls.
+     make these calls. OpenLauncherV1 is ordinary session navigation relayed through sessiond's
+     authenticated compositor channel, and grants no access to files or processes.
 
      The Can* methods mirror logind's own so a surface can grey out what is genuinely
      unavailable rather than offering a control that fails on click. Each returns one of
@@ -22,7 +23,8 @@
      supported by this machine) are different facts and a UI may want to say so. -->
 <node>
   <interface name="org.templaros.Session.Lifecycle1">
-    <!-- End this session. Stops templaros-session.target through logind's TerminateSession. -->
+    <!-- End this session. Stops templaros-session.target through the user manager, with logind
+         TerminateSession as the fallback. -->
     <method name="Logout"/>
     <method name="Reboot"/>
     <method name="PowerOff"/>
@@ -41,6 +43,16 @@
          covered: the caller has asked for a lock, and the surface appears a frame or two later.
          A caller needing confirmed coverage watches Locked, emitted from NotifyLocked. -->
     <method name="Lock"/>
+
+    <!-- Navigate to the single shell Apps/Files launcher. sessiond relays over its authenticated
+         compositor control channel. This grants no file access, launch or process rights.
+         mode is apps or files; an empty scope_uri means everywhere; nonempty scope is a local
+         absolute-directory file URI preserving native path bytes. query is literal text. -->
+    <method name="OpenLauncherV1">
+      <arg name="mode" type="s" direction="in"/>
+      <arg name="scope_uri" type="s" direction="in"/>
+      <arg name="query" type="s" direction="in"/>
+    </method>
 
     <!-- Somebody asked for the session to be locked (Lock, or `templar session lock`).
 

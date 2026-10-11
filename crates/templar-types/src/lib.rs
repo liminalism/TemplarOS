@@ -21,6 +21,7 @@ pub mod display;
 pub mod file_sort;
 pub mod identity;
 pub mod input;
+pub mod launcher;
 pub mod native_path;
 pub mod provider;
 pub mod settings;

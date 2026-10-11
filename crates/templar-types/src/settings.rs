@@ -23,11 +23,13 @@ pub enum SettingsPage {
     Input,
     Windows,
     DateTime,
+    Launcher,
+    Advanced,
 }
 
 impl SettingsPage {
     /// Navigation order, independent of the stable page discriminants used by view storage.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 21] = [
         Self::System,
         Self::DateTime,
         Self::Sound,
@@ -47,6 +49,8 @@ impl SettingsPage {
         Self::Resources,
         Self::History,
         Self::Hardware,
+        Self::Launcher,
+        Self::Advanced,
     ];
     pub const fn slug(self) -> &'static str {
         match self {
@@ -69,6 +73,8 @@ impl SettingsPage {
             Self::Hardware => "hardware",
             Self::Windows => "windows",
             Self::DateTime => "date-time",
+            Self::Launcher => "launcher",
+            Self::Advanced => "advanced",
         }
     }
     pub const fn label(self) -> &'static str {
@@ -92,10 +98,19 @@ impl SettingsPage {
             Self::Hardware => "Hardware",
             Self::Windows => "Windows",
             Self::DateTime => "Date & Time",
+            Self::Launcher => "Launcher",
+            Self::Advanced => "Advanced",
         }
     }
     pub const fn search_labels(self) -> &'static [&'static str] {
         match self {
+            Self::Launcher => &[
+                "favorites",
+                "shortcuts",
+                "hidden items",
+                "terminal profiles",
+            ],
+            Self::Advanced => &["diagnostics", "tuning", "rail geometry"],
             Self::System => &["battery", "volume", "brightness", "power", "screen off"],
             Self::Sound => &["audio", "microphone", "speakers", "headphones", "volume"],
             Self::Files => &["index", "search", "roots", "monitoring", "bookmarks"],
@@ -146,6 +161,66 @@ impl SettingsPage {
         }
     }
 }
+
+/// Ordinary navigation groups retain every original destination and stable deep link.
+#[derive(Clone, Copy, Debug)]
+pub struct SettingsGroup {
+    pub label: &'static str,
+    pub pages: &'static [SettingsPage],
+}
+pub const NAVIGATION_GROUPS: &[SettingsGroup] = &[
+    SettingsGroup {
+        label: "Network & Bluetooth",
+        pages: &[SettingsPage::Network, SettingsPage::Bluetooth],
+    },
+    SettingsGroup {
+        label: "Sound",
+        pages: &[SettingsPage::Sound],
+    },
+    SettingsGroup {
+        label: "Displays",
+        pages: &[SettingsPage::Displays],
+    },
+    SettingsGroup {
+        label: "Input",
+        pages: &[SettingsPage::Input],
+    },
+    SettingsGroup {
+        label: "Power",
+        pages: &[SettingsPage::System, SettingsPage::DateTime],
+    },
+    SettingsGroup {
+        label: "Appearance & Motion",
+        pages: &[SettingsPage::Appearance],
+    },
+    SettingsGroup {
+        label: "Desktop & Homegarden",
+        pages: &[SettingsPage::HomeField, SettingsPage::Homegarden],
+    },
+    SettingsGroup {
+        label: "Launcher & Files",
+        pages: &[SettingsPage::Launcher, SettingsPage::Files],
+    },
+    SettingsGroup {
+        label: "Applications & Defaults",
+        pages: &[
+            SettingsPage::Associations,
+            SettingsPage::Providers,
+            SettingsPage::Background,
+        ],
+    },
+    SettingsGroup {
+        label: "Advanced & Diagnostics",
+        pages: &[
+            SettingsPage::Advanced,
+            SettingsPage::Rails,
+            SettingsPage::Windows,
+            SettingsPage::Resources,
+            SettingsPage::History,
+            SettingsPage::Hardware,
+        ],
+    },
+];
 impl fmt::Display for SettingsPage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.slug())

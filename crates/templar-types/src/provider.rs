@@ -25,9 +25,8 @@ pub enum ProviderRole {
     /// The terminal emulator the desktop opens: the drop-down chord's target, "Open terminal
     /// here" in the Files object, and whatever else needs *a* terminal rather than one it named.
     Terminal,
-    /// The application that searches every file on the machine. `Files.Search1` answers inside
-    /// the folder you are looking at; this is where "search everywhere" goes. It is launched
-    /// and nothing more: TemplarOS neither reads nor feeds whatever index it keeps.
+    /// Legacy external-search role retained for stored manifest compatibility. The first-party
+    /// launcher owns file discovery; graphical Settings no longer offers this provider choice.
     FileSearch,
     /// The editor a project opens in. Like [`Self::Terminal`] and [`Self::FileManager`], this is
     /// a role rather than a path copied into every project's manifest: "open this project in the

@@ -64,6 +64,11 @@ pub struct TabCountUpdate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case")]
 pub enum ControlRequest {
+    OpenLauncher {
+        mode: crate::launcher::LauncherMode,
+        scope_uri: Option<String>,
+        query: String,
+    },
     Displays,
     ValidateDisplays {
         expected: Revision,

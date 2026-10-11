@@ -33,6 +33,13 @@ use tokio::sync::watch;
 type NativeApi = GbmGlesBackend<GlesRenderer, DrmDeviceFd>;
 pub trait WallpaperRenderer: Renderer {
     fn wallpaper_gles(&mut self) -> &mut GlesRenderer;
+    fn draw_essence(
+        element: &crate::essence_renderer::EssenceElement,
+        frame: &mut Self::Frame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+    ) -> Result<(), Self::Error>;
     fn draw_wallpaper(
         element: &WallpaperElement,
         frame: &mut Self::Frame<'_, '_>,
@@ -45,6 +52,15 @@ pub trait WallpaperRenderer: Renderer {
 impl WallpaperRenderer for GlesRenderer {
     fn wallpaper_gles(&mut self) -> &mut GlesRenderer {
         self
+    }
+    fn draw_essence(
+        element: &crate::essence_renderer::EssenceElement,
+        frame: &mut Self::Frame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+    ) -> Result<(), Self::Error> {
+        element.draw_gles(frame, src, dst, damage)
     }
     fn draw_wallpaper(
         element: &WallpaperElement,
@@ -60,6 +76,17 @@ impl WallpaperRenderer for GlesRenderer {
 impl WallpaperRenderer for MultiRenderer<'_, '_, NativeApi, NativeApi> {
     fn wallpaper_gles(&mut self) -> &mut GlesRenderer {
         self.as_mut()
+    }
+    fn draw_essence(
+        element: &crate::essence_renderer::EssenceElement,
+        frame: &mut Self::Frame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+    ) -> Result<(), Self::Error> {
+        element
+            .draw_gles(frame.as_mut(), src, dst, damage)
+            .map_err(smithay::backend::renderer::multigpu::Error::Render)
     }
     fn draw_wallpaper(
         element: &WallpaperElement,

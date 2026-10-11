@@ -547,4 +547,67 @@ mod tests {
             .unwrap();
         assert_eq!(stored, json);
     }
+
+    #[test]
+    fn launch_profile_is_persisted_literally_and_invalid_profile_leaves_store_unchanged() {
+        use templar_field::{Cell, Landing, SpanRange, Tile, TileId, TileKind};
+        use templar_types::launcher::{Favorite, FavoriteTarget};
+        let store = Store::in_memory().unwrap();
+        let doc = load_or_create(&store, "profiles", 12, 8).unwrap();
+        let profile = Favorite {
+            id: "work".into(),
+            label: "Work terminal".into(),
+            target: FavoriteTarget::Terminal {
+                app_id: "org.example.Terminal".into(),
+                cwd_b64: "L3dvcmsv/w==".into(),
+                arguments: vec!["$(literal)".into()],
+            },
+        };
+        let kind = TileKind::LaunchProfile {
+            profile: profile.clone(),
+        };
+        let tile = Tile {
+            id: TileId(91),
+            title: profile.label.clone(),
+            spans: SpanRange::for_kind(&kind, 12, 8),
+            kind,
+            accent: None,
+        };
+        let op = FieldOp::Place {
+            tile,
+            landing: Landing {
+                container: None,
+                cell: Cell::new(0, 0),
+            },
+        };
+        let saved = apply_op(&store, "profiles", &op).unwrap();
+        assert_eq!(load(&store, "profiles").unwrap().unwrap(), saved);
+        assert_eq!(
+            saved.tile(TileId(91)).unwrap().kind,
+            TileKind::LaunchProfile {
+                profile: profile.clone()
+            }
+        );
+        let mut invalid = profile;
+        if let FavoriteTarget::Terminal { cwd_b64, .. } = &mut invalid.target {
+            *cwd_b64 = "cmVsYXRpdmU=".into();
+        }
+        let kind = TileKind::LaunchProfile { profile: invalid };
+        let bad = FieldOp::Place {
+            tile: Tile {
+                id: TileId(92),
+                title: "bad".into(),
+                spans: SpanRange::for_kind(&kind, 12, 8),
+                kind,
+                accent: None,
+            },
+            landing: Landing {
+                container: None,
+                cell: Cell::new(1, 0),
+            },
+        };
+        assert!(apply_op(&store, "profiles", &FieldOp::Batch { ops: vec![bad] }).is_err());
+        assert_eq!(load(&store, "profiles").unwrap().unwrap(), saved);
+        assert_eq!(undo(&store, "profiles").unwrap().unwrap().tiles, doc.tiles);
+    }
 }

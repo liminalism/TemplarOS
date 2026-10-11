@@ -275,6 +275,8 @@ pub struct WindowService<I> {
     /// [`Self::is_visible`] needs, because the shell draws that walk on a `Layer::Presentation`
     /// surface exactly as it draws Taskfield, and a surface this predicate hides is never drawn.
     switch_walk: bool,
+    /// The one focused shell popup; promotion never changes client activation.
+    focused_popup: Option<WindowId>,
     /// Every live window group. Ordered so that iteration — the switcher's group list, the
     /// snapshot — is deterministic rather than hash-ordered.
     groups: BTreeMap<GroupId, GroupRecord>,
@@ -303,6 +305,7 @@ impl<I: IdentityCache> WindowService<I> {
             tab_pending: HashMap::new(),
             peek_output: None,
             switch_walk: false,
+            focused_popup: None,
             groups: BTreeMap::new(),
             next_group_id: 1,
         }
@@ -440,6 +443,9 @@ impl<I: IdentityCache> WindowService<I> {
             return false;
         }
         window.mapped = mapped;
+        if !mapped && self.focused_popup == Some(window_id) {
+            self.focused_popup = None;
+        }
         if !mapped {
             window.activated = false;
             // Unmapped windows hold no latch, reveal or deadline: nothing stranded across
@@ -539,6 +545,9 @@ impl<I: IdentityCache> WindowService<I> {
     pub fn on_toplevel_destroyed(&mut self, window_id: WindowId) {
         let group = self.group_of(window_id);
         self.windows.remove(&window_id);
+        if self.focused_popup == Some(window_id) {
+            self.focused_popup = None;
+        }
         // Tab state is per-window and dies with it: no latch, reveal or deadline may
         // outlive its window into a grab, a wakeup or a reused id.
         self.tab_corners.remove(&window_id);
@@ -1336,6 +1345,23 @@ impl<I: IdentityCache> WindowService<I> {
         }
     }
 
+    /// Borrowed popup keyboard focus promotes only that overlay over fullscreen work.
+    /// Returns whether the render/hit-test mirror needs synchronization.
+    pub fn set_focused_popup(&mut self, window: Option<WindowId>) -> bool {
+        let window = window.filter(|id| {
+            self.is_visible(*id)
+                && matches!(
+                    self.layer_of(*id),
+                    Some(Layer::ShellOverlay | Layer::SystemModal)
+                )
+        });
+        if self.focused_popup == window {
+            return false;
+        }
+        self.focused_popup = window;
+        true
+    }
+
     /// Every window, top-most first.
     ///
     /// The one exception to [`LayerStack`]'s pure layer order: while a visible fullscreen client
@@ -1353,7 +1379,8 @@ impl<I: IdentityCache> WindowService<I> {
     pub fn stacking_order(&self) -> Vec<WindowId> {
         let mut order = self.layers.order();
         if !order.iter().any(|id| {
-            self.outranks_overlay(*id)
+            self.focused_popup == Some(*id)
+                || self.outranks_overlay(*id)
                 || self.windows.get(id).is_some_and(|window| {
                     window.stacking != WindowStacking::Normal || window.transient_parent.is_some()
                 })
@@ -1374,23 +1401,32 @@ impl<I: IdentityCache> WindowService<I> {
         let Some(position) = self.layers.position(window_id) else {
             return (i32::MIN, 0, 0, 0);
         };
-        let layer = if self.outranks_overlay(window_id) {
-            i32::from(Layer::ShellOverlay.depth()) * 2 - 1
-        } else if self.is_always_on_top(window_id) {
-            i32::from(position.layer.depth().min(Layer::AppOnTop.depth())) * 2
-        } else if self
-            .windows
-            .get(&window_id)
-            .is_some_and(|window| window.stacking == WindowStacking::AlwaysOnBottom)
-            && matches!(position.layer, Layer::Normal | Layer::AppOnTop)
-        {
-            // Half-step below Normal, still above Home: bottom remains a visible, usable client.
-            i32::from(Layer::Normal.depth()) * 2 + 1
-        } else {
-            i32::from(position.layer.depth()) * 2
-        };
+        let layer =
+            if self.focused_popup == Some(window_id) && position.layer == Layer::ShellOverlay {
+                i32::from(Layer::Notification.depth()) * 2 + 1
+            } else if self.outranks_overlay(window_id) {
+                i32::from(Layer::ShellOverlay.depth()) * 2 - 1
+            } else if self.is_always_on_top(window_id) {
+                i32::from(position.layer.depth().min(Layer::AppOnTop.depth())) * 2
+            } else if self
+                .windows
+                .get(&window_id)
+                .is_some_and(|window| window.stacking == WindowStacking::AlwaysOnBottom)
+                && matches!(position.layer, Layer::Normal | Layer::AppOnTop)
+            {
+                // Half-step below Normal, still above Home: bottom remains a visible, usable client.
+                i32::from(Layer::Normal.depth()) * 2 + 1
+            } else {
+                i32::from(position.layer.depth()) * 2
+            };
         // Negated because `Layer`'s discriminants count *down* the screen: `SecureLock` is 0.
         let mut key = (-layer, position.rank, 0, position.rank);
+        if self.focused_popup == Some(window_id) && position.layer == Layer::ShellOverlay {
+            // Fullscreen uses the same half-step. Borrowed focus wins that step even
+            // if the underlying fullscreen client was raised after this popup mapped.
+            key.1 = u64::MAX;
+            key.3 = u64::MAX;
+        }
         if let Some(parent) = self
             .windows
             .get(&window_id)
@@ -4138,6 +4174,32 @@ mod tests {
             Rect::new(0, 1080 - 48, 1920, 48),
         );
         (service, app, bar)
+    }
+
+    #[test]
+    fn focused_popup_alone_outranks_fullscreen_and_keeps_client_state() {
+        let (mut service, app, bar) = service_with_a_bar();
+        let popup = shell_surface(
+            &mut service,
+            Layer::ShellOverlay,
+            Rect::new(600, 300, 700, 480),
+        );
+        service.set_fullscreen(app, true);
+        service.activate(app);
+        let before = service.shell_toplevels();
+        let order = service.stacking_order();
+        assert!(order.iter().position(|id| *id == app) < order.iter().position(|id| *id == popup));
+        assert!(service.set_focused_popup(Some(popup)));
+        service.raise(app);
+        let order = service.stacking_order();
+        assert!(order.iter().position(|id| *id == popup) < order.iter().position(|id| *id == app));
+        assert!(order.iter().position(|id| *id == app) < order.iter().position(|id| *id == bar));
+        assert_eq!(service.shell_toplevels(), before);
+        assert!(!service.home_revealed());
+        service.set_mapped(popup, false);
+        service.set_mapped(popup, true);
+        let order = service.stacking_order();
+        assert!(order.iter().position(|id| *id == app) < order.iter().position(|id| *id == popup));
     }
 
     /// "Genuinely full screen" is over the bar, not politely beside it: `usable()` is 1032 tall

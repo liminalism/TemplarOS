@@ -4051,6 +4051,7 @@ dependencies = [
  "templar-build",
  "templar-client",
  "templar-comp-integration",
+ "templar-effects",
  "templar-types",
  "templar-wallpaper",
  "templar-window",

@@ -9,6 +9,7 @@
 //! document forward. [`DOCUMENT_MIGRATIONS`] is where those steps go. Version 2 gives the
 //! formerly ordinary Desktop folder its independent dock kind, retaining its tile identity
 //! and every location. Resolving the current XDG path remains a merge-time responsibility.
+//! Version 3 adds self-contained saved launch profiles; existing tiles and locations stay intact.
 //!
 //! **Newer** is a problem this crate cannot solve, and the only question is what it does about
 //! it. A document written by a build from the future is refused, the caller is told, and
@@ -54,12 +55,25 @@ impl fmt::Debug for DocumentMigration {
 ///
 /// The first versioned step introduces the independent Desktop dock. Only the historic
 /// named Desktop tile is recognised here: arbitrary folders titled Desktop are not docks.
-pub const DOCUMENT_MIGRATIONS: &[DocumentMigration] = &[DocumentMigration {
-    from: 1,
-    to: 2,
-    summary: "Independent Desktop dock, retaining placement",
-    apply: migrate_desktop_dock,
-}];
+/// The next marks support for persisted launch configurations without changing older tiles.
+pub const DOCUMENT_MIGRATIONS: &[DocumentMigration] = &[
+    DocumentMigration {
+        from: 1,
+        to: 2,
+        summary: "Independent Desktop dock, retaining placement",
+        apply: migrate_desktop_dock,
+    },
+    DocumentMigration {
+        from: 2,
+        to: 3,
+        summary: "Self-contained saved launch profiles, retaining placement",
+        apply: migrate_launch_profiles,
+    },
+];
+
+// Existing documents have no profile tiles. The version marks a newly supported kind so
+// rollback builds leave a document containing copied launch metadata untouched.
+fn migrate_launch_profiles(_value: &mut serde_json::Value) {}
 
 fn migrate_desktop_dock(value: &mut serde_json::Value) {
     let Some(tiles) = value
@@ -283,7 +297,10 @@ mod tests {
         assert!(migrations_from(DOCUMENT_VERSION).is_empty());
         assert_eq!(
             migrations_from(1),
-            vec!["Independent Desktop dock, retaining placement"]
+            vec![
+                "Independent Desktop dock, retaining placement",
+                "Self-contained saved launch profiles, retaining placement"
+            ]
         );
     }
 

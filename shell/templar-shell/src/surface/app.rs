@@ -33,6 +33,7 @@ use crate::file_browser::{BrowseEntry, BrowserSources, DirectoryListing, EntryKi
 use crate::files_surface::FilesLocation;
 use crate::home_surface::Drawer;
 use crate::icons::{self, SystemIconRoots};
+use crate::launcher_model::{LauncherMode, LauncherTarget};
 use crate::omnibox::Scope;
 use crate::settings::{self, HomeFieldSettings, PreviewMode, RailSettings, TabSettings};
 use crate::surface::design;
@@ -46,6 +47,10 @@ use crate::surface::window::{
     HostedWindow, key_pressed, modifiers_of, scroll_pixels, translate_button, translate_keys,
 };
 use crate::wayland_bridge::{PresentOutcome, ShellBridge};
+
+#[path = "launcher_host.rs"]
+mod launcher_host;
+use launcher_host::LauncherRequest;
 
 /// Worker wakeups and native accessibility requests share the owned winit event loop.
 #[derive(Debug)]
@@ -90,6 +95,16 @@ enum DataUpdate {
     /// `HomeGarden1.Contexts` by root.
     Garden(HashMap<PathBuf, crate::garden::GardenPlace>),
     WorkingDirectories(HashMap<String, PathBuf>),
+    LauncherPreferences {
+        epoch: u64,
+        preferences: templar_types::launcher::LauncherPreferences,
+    },
+    FavoriteLaunched {
+        id: String,
+        target: templar_types::launcher::FavoriteTarget,
+        instance: String,
+    },
+    WindowTransition(u32, u32),
     HomeFieldSettings(HomeFieldSettings),
     /// Wallpaper1's observed presented state, independent of desired enabled/configuration.
     WallpaperApplied(Option<templar_types::wallpaper::WallpaperObservation>),
@@ -100,7 +115,7 @@ enum DataUpdate {
     /// `windows.tabs.*`: the committed window tab policy the compositor applies.
     TabSettings(TabSettings),
     /// Who fills an exclusive `Providers1` role the shell acts on: the `terminal` the drop-down
-    /// chord toggles, and the `file-search` the search panel's last row hands the query to.
+    /// chord toggles, and the file manager for directory activation.
     /// `None` is "nobody", which is a fact worth relaying — the compositor stops looking for a
     /// terminal window it will never find.
     Provider {
@@ -429,9 +444,8 @@ const MASK_SOLID: u32 = 0x00ff_ffff;
 /// `open_in_file_manager`'s "no file manager is selected" branch on a session that had one
 /// selected, because nothing ever asked for the role. A role the shell acts on and does not fetch
 /// is a control that silently does nothing.
-const SHELL_ROLES: [&str; 5] = [
+const SHELL_ROLES: [&str; 4] = [
     "terminal",
-    "file-search",
     "file-manager",
     "code-editor",
     // The bar's network chip. `network.open-control` has declared
@@ -590,6 +604,18 @@ struct ShellApp {
     /// about is the one this host asked on its behalf.
     location_query: String,
     home: Option<HostedWindow>,
+    launcher: Option<HostedWindow>,
+    launcher_screen: crate::surface::launcher_screen::LauncherScreen,
+    launcher_request: Option<LauncherRequest>,
+    launcher_focus_claimed: bool,
+    launcher_preferences: templar_types::launcher::LauncherPreferences,
+    launcher_mutations: tokio::sync::mpsc::Sender<templar_types::launcher::LauncherMutation>,
+    launcher_epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    working_directories: HashMap<String, PathBuf>,
+    favorite_instances: HashMap<String, String>,
+    last_recent_activation: Option<templar_window::WindowId>,
+    window_transition: (u32, u32),
+    window_transition_relayed: Option<(u32, u32)>,
 
     text: pixelkit_text::TextCache,
     kernel: RasterKernel,
@@ -819,6 +845,9 @@ impl ShellApp {
         let appearance = templar_client::appearance::AppearanceObserver::new(move || {
             let _ = appearance_wake.send_event(Wake::Data);
         });
+        let launcher_epoch = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let launcher_mutations =
+            launcher_host::mutation_queue(&runtime, &data_tx, &wake_proxy, launcher_epoch.clone());
         ShellApp {
             runtime,
             data_tx,
@@ -831,6 +860,18 @@ impl ShellApp {
             lock_input: pixelkit_shell::Input::new(),
             location_query: String::new(),
             home: None,
+            launcher: None,
+            launcher_screen: crate::surface::launcher_screen::LauncherScreen::default(),
+            launcher_request: None,
+            launcher_focus_claimed: false,
+            launcher_preferences: templar_types::launcher::LauncherPreferences::default(),
+            launcher_mutations,
+            launcher_epoch,
+            working_directories: HashMap::new(),
+            favorite_instances: HashMap::new(),
+            last_recent_activation: None,
+            window_transition: (2, 6),
+            window_transition_relayed: None,
             text: pixelkit_text::TextCache::new(fonts::set()),
             kernel: RasterKernel::new(),
             bar_mask: WindowBuffer::new(0, 0),
@@ -1359,8 +1400,9 @@ impl ShellApp {
                 .map(|path| vec![path.to_path_buf()])
                 .unwrap_or_default(),
             Scope::Applications => Vec::new(),
+            Scope::LauncherFiles(path) => path.iter().cloned().collect(),
         };
-        if roots.is_empty() {
+        if roots.is_empty() && !matches!(scope, Scope::LauncherFiles(_)) {
             return;
         }
         let tx = self.data_tx.clone();
@@ -1381,13 +1423,24 @@ impl ShellApp {
     }
 
     fn fetch_search_pages(&mut self) {
+        let (visible, offset) = if self.launcher_screen.state().open {
+            let visible = self.launcher_screen.visible_range();
+            let slots = self.launcher_file_slots();
+            let first = slots.get(visible.0).copied().unwrap_or(0);
+            let last = slots
+                .get(visible.1.saturating_sub(1))
+                .map_or(first, |index| index + 1);
+            ((first, last), self.launcher_screen.scroll_offset())
+        } else {
+            (
+                self.field_screen.files_view.search_visible,
+                self.field_screen.files.entry_scroll.offset(),
+            )
+        };
         let Some((_, _, Ok(batch))) = self.search_results.as_mut() else {
             return;
         };
-        let visible = self.field_screen.files_view.search_visible;
-        batch
-            .pages
-            .scrolled(self.field_screen.files.entry_scroll.offset());
+        batch.pages.scrolled(offset);
         for page in batch.pages.request(visible) {
             let session = batch.session.clone();
             let tx = self.data_tx.clone();
@@ -1550,9 +1603,15 @@ impl ShellApp {
                 self.field_settings.reduced_motion = appearance.reduced_motion;
                 if design::set_palette(appearance.palette) {
                     self.invalidate_treemap();
-                    for hosted in [&self.home, &self.bar, &self.cluster, &self.taskfield]
-                        .into_iter()
-                        .flatten()
+                    for hosted in [
+                        &self.home,
+                        &self.bar,
+                        &self.cluster,
+                        &self.taskfield,
+                        &self.launcher,
+                    ]
+                    .into_iter()
+                    .flatten()
                     {
                         hosted.request_redraw();
                     }
@@ -1632,7 +1691,60 @@ impl ShellApp {
                 }
                 DataUpdate::Projects(projects) => self.projects = projects,
                 DataUpdate::Garden(places) => self.garden = places,
-                DataUpdate::WorkingDirectories(cwds) => self.field_screen.set_terminal_cwds(cwds),
+                DataUpdate::WorkingDirectories(cwds) => {
+                    self.working_directories.clone_from(&cwds);
+                    self.field_screen.set_terminal_cwds(cwds);
+                }
+                DataUpdate::LauncherPreferences { epoch, preferences } => {
+                    if epoch
+                        < self
+                            .launcher_epoch
+                            .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        continue;
+                    }
+                    if preferences != self.launcher_preferences {
+                        self.launcher_preferences = preferences;
+                        self.bar_screen.reset();
+                        if let Some(launcher) = &self.launcher {
+                            launcher.request_redraw();
+                        }
+                        if let Some(bar) = &self.bar {
+                            bar.request_redraw();
+                        }
+                    }
+                }
+                DataUpdate::FavoriteLaunched {
+                    id,
+                    target,
+                    instance,
+                } => {
+                    if self.favorite_instances.len() >= 512 {
+                        let live: HashSet<_> = self
+                            .bridge
+                            .as_ref()
+                            .map(ShellBridge::toplevels)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter_map(|window| {
+                                window.instance_id.map(|instance| instance.to_string())
+                            })
+                            .collect();
+                        self.favorite_instances
+                            .retain(|_, instance| live.contains(instance));
+                        if self.favorite_instances.len() >= 512 {
+                            if let Some(key) = self.favorite_instances.keys().next().cloned() {
+                                self.favorite_instances.remove(&key);
+                            }
+                        }
+                    }
+                    self.favorite_instances
+                        .insert(launcher_host::profile_key(&id, &target), instance);
+                }
+                DataUpdate::WindowTransition(kind, size) => {
+                    self.window_transition = (kind, size);
+                    self.relay_window_transition();
+                }
                 DataUpdate::Widget(id, snapshot) => {
                     self.widgets.insert(id, snapshot);
                 }
@@ -1676,7 +1788,10 @@ impl ShellApp {
                     self.relay_tab_policy();
                 }
                 DataUpdate::Provider { role, app_id } => self.note_provider(role, app_id),
-                DataUpdate::LockRequested => self.engage_lock(),
+                DataUpdate::LockRequested => {
+                    self.dismiss_launcher();
+                    self.engage_lock();
+                }
                 DataUpdate::Unlock(Ok(())) => {
                     self.lock_screen.accepted();
                     self.release_lock();
@@ -1727,6 +1842,12 @@ impl ShellApp {
                         .report_operation(notice, undo_available, now_ms);
                 }
                 DataUpdate::Notice(text) => {
+                    if self.launcher_screen.state().open {
+                        self.launcher_screen.show_info(text.clone());
+                        if let Some(launcher) = &self.launcher {
+                            launcher.request_redraw();
+                        }
+                    }
                     let now_ms = self.started.elapsed().as_millis() as u64;
                     self.field_screen.report(text, now_ms);
                 }
@@ -1943,8 +2064,7 @@ impl ShellApp {
                     mut result,
                 } => {
                     if request_generation != self.search_generation
-                        || !self.field_screen.files_expanded
-                        || scope != Scope::Location(self.field_screen.files.location().clone())
+                        || !self.search_scope_current(&scope, &query)
                     {
                         if let Ok(batch) = result {
                             self.runtime.spawn(async move {
@@ -1975,6 +2095,11 @@ impl ShellApp {
                     if request_generation != self.search_generation {
                         continue;
                     }
+                    let selected = if self.launcher_screen.state().open {
+                        self.launcher_selected_path()
+                    } else {
+                        self.field_screen.files.selected_paths().into_iter().next()
+                    };
                     let Some((scope, query, Ok(batch))) = self.search_results.as_mut() else {
                         continue;
                     };
@@ -1999,8 +2124,6 @@ impl ShellApp {
                             }
                         },
                         Err(IndexCallError::SnapshotRequired(_)) => {
-                            let selected =
-                                self.field_screen.files.selected_paths().into_iter().next();
                             if batch.pages.snapshot_required(Instant::now(), selected) {
                                 self.search_refresh = Some(batch.pages.clone());
                                 batch.pages.paused = true;
@@ -2047,6 +2170,10 @@ impl ShellApp {
                     }
                 }
                 DataUpdate::FileOpened { path, result } => {
+                    if let Err(error) = &result {
+                        self.field_screen
+                            .report(error.clone(), self.started.elapsed().as_millis() as u64);
+                    }
                     self.browser_status = Some(match result {
                         Ok(opened) => format!(
                             "Opened {} with {} · instance {}",
@@ -2208,8 +2335,8 @@ impl ShellApp {
             }
         }
         let live = LiveState {
-            toplevels,
             projects: &self.projects,
+            toplevels,
         };
         sending.extend(field_model::merge(&mut self.field, &live));
         if !sending.is_empty() && self.field_synced == Some(true) {
@@ -2235,7 +2362,7 @@ impl ShellApp {
     /// jobs on the pool for rows nobody will look at. Each arrival wakes the loop, so the list
     /// still fills in over a second or two without this asking for a frame itself.
     fn ensure_launcher_icons(&mut self) {
-        let query = self.field_screen.search.text().to_owned();
+        let query = self.launcher_screen.state().query.clone();
         let wanted: Vec<String> = crate::app_search::search(&self.apps, &query, self.recent.ids())
             .into_iter()
             .take(LAUNCHER_ICON_LOOKAHEAD)
@@ -2460,11 +2587,9 @@ impl ShellApp {
         } else {
             Scope::Applications
         };
-        if self
-            .search_results
-            .as_ref()
-            .is_some_and(|(owner, _, _)| *owner != scope)
-        {
+        if self.search_results.as_ref().is_some_and(|(owner, _, _)| {
+            !matches!(owner, Scope::LauncherFiles(_)) && *owner != scope
+        }) {
             self.discard_search();
         }
         let Some(home) = &mut self.home else { return };
@@ -2493,19 +2618,6 @@ impl ShellApp {
             .search_results
             .as_ref()
             .filter(|(had, _, _)| *had == scope);
-        let file_search = self
-            .search_results
-            .as_ref()
-            .and_then(|(_, query, result)| {
-                result
-                    .as_ref()
-                    .ok()
-                    .map(|batch| crate::omnibox::FileResults {
-                        query,
-                        entries: batch.entries.as_slice(),
-                    })
-            })
-            .filter(|_| active_search.is_some());
         let search_query = active_search.map(|(_, query, _)| query.as_str());
         let search_entries = active_search
             .and_then(|(_, _, result)| result.as_ref().ok())
@@ -2542,7 +2654,6 @@ impl ShellApp {
             icons: &self.icons,
             home: self.home_dir.as_deref(),
         };
-        let recents = self.recent.resolve(&self.apps);
         self.field_screen.previews_on = self.field_settings.previews != PreviewMode::Off;
         let data = FieldData {
             notifications: &self.notification_rows,
@@ -2561,15 +2672,9 @@ impl ShellApp {
                 .is_some_and(ShellBridge::native_available),
             home_revealed,
             apps: &self.apps,
-            apps_available: self.apps_available,
             widgets: &self.widgets,
             variants: &self.app_variants,
-            projects: &self.projects,
             garden: &self.garden,
-            actions: templar_types::action::MANIFEST,
-            file_search,
-            recents: &recents,
-            recent_ids: self.recent.ids(),
             reduced_motion: self.field_settings.reduced_motion,
             now_ms: self.started.elapsed().as_millis() as u64,
         };
@@ -2580,16 +2685,6 @@ impl ShellApp {
         let modal = self.field_screen.modal_open();
         if modal {
             home.focus.clear();
-        } else if self.field_screen.search_focused
-            && home.focus.current().is_none()
-            && home.input.press_position().is_none()
-            && !home
-                .input
-                .keys()
-                .contains(&pixelkit_shell::KeyInput::Escape)
-            && !home.input.focus_requested(Rect::new(0, 0, width, height))
-        {
-            home.focus.set(0);
         }
         self.field_screen.controls_focused = home.focus.current().is_some();
         self.field_screen.shared_focus = !modal;
@@ -2721,19 +2816,17 @@ impl ShellApp {
                 });
             }
 
-            FieldAction::RunSearch { scope, query } => self.note_search(scope, query),
-            FieldAction::Launch(app_id) => {
-                // The panel's last row is not an application: it is the intent "search
-                // everywhere", and which program that is is a Providers1 choice. Resolved here,
-                // where the bus is, rather than in the pure module that composed the row.
-                if app_id.as_str() == crate::omnibox::SEARCH_EVERYWHERE {
-                    let query = self.location_query.clone();
-                    self.search_everywhere(Some(query).filter(|q| !q.is_empty()));
-                    return;
-                }
-                self.record_recent(&app_id);
-                self.spawn_launch(app_id);
+            FieldAction::LaunchProfile(profile) => {
+                self.activate_launch_profile(profile, crate::surface::omnibox_screen::Intent::Open)
             }
+            FieldAction::ShowLauncher { mode, scope, query } => {
+                self.request_launcher(mode, scope, query)
+            }
+            FieldAction::RunSearch { scope, query } => self.note_search(scope, query),
+            FieldAction::Launch(app_id) => self.activate_launcher_target(
+                LauncherTarget::App(app_id),
+                crate::surface::omnibox_screen::Intent::Open,
+            ),
             // Named on purpose, so it goes straight to `Launcher1.Launch` for that exact copy
             // rather than back through the daemon's default-variant policy.
             FieldAction::LaunchVariant(app_id) => {
@@ -3375,16 +3468,8 @@ impl ShellApp {
             "network.open-control" => self.spawn_network_control(),
             "clock.open-calendar" => self.open_calendar(),
             "clock.open-settings" => self.open_datetime_settings(),
-            // Two view-state actions: they change what the field's own search bar is doing, so
-            // there is no service behind them — but they are still declared, still reachable by
-            // pointer, and still routed through this one place like everything else.
-            "launcher.search" => self.field_screen.search_focused = true,
-            // "Show all" focuses the search with nothing typed. Recents already sit under the
-            // field; typing is what lists everything else.
-            "launcher.show-all" => {
-                self.field_screen.search.set_text("");
-                self.field_screen.omnibox.highlighted = 0;
-                self.field_screen.search_focused = true;
+            "launcher.search" | "launcher.show-all" => {
+                self.request_launcher(LauncherMode::Apps, None, String::new())
             }
             "notifications.clear" => self.spawn_clear_notifications(),
             "settings.open" => self.spawn_settings(),
@@ -4112,9 +4197,9 @@ impl ShellApp {
         let mut keys: Vec<String> = entries
             .iter()
             .flat_map(|entry| {
-                entry.app_id.iter().chain(
+                entry.icon_id.iter().chain(
                     entry
-                        .windows
+                        .windows()
                         .iter()
                         .filter_map(|window| window.app_id.as_ref()),
                 )
@@ -4694,6 +4779,13 @@ impl ShellApp {
         use crate::surface::bar_screen::BarAction;
         for action in actions {
             match action {
+                BarAction::OpenLauncher => {
+                    self.request_launcher(LauncherMode::Apps, None, String::new())
+                }
+                BarAction::OpenFavorite(id) => self.activate_launcher_target(
+                    LauncherTarget::Favorite(id),
+                    crate::surface::omnibox_screen::Intent::Open,
+                ),
                 BarAction::Activate(window) => self.perform(FieldAction::Activate(window)),
                 BarAction::Window { id, window } => {
                     self.perform(FieldAction::RunWindowAction { id, window });
@@ -4782,15 +4874,29 @@ impl ShellApp {
     fn bar_entries(
         &self,
         toplevels: &[templar_window::ShellToplevel],
-    ) -> (Vec<crate::taskbar::Entry>, Option<crate::taskbar::Rows>) {
-        let entries = crate::taskbar::entries_in(toplevels, self.lanes, &self.active_lane_apps);
+    ) -> (
+        Vec<crate::rail_model::RailEntry>,
+        Option<crate::taskbar::Rows>,
+    ) {
+        let tasks = crate::taskbar::entries_in(toplevels, self.lanes, &self.active_lane_apps);
+        let profiles = self.profile_windows(toplevels);
+        let mut entries = crate::rail_model::reconcile(
+            tasks,
+            &self.launcher_preferences,
+            &self.apps,
+            &self.app_variants,
+            &profiles,
+        );
         let width = self.output_width();
+        if self.lanes != crate::taskbar::LaneMode::Off {
+            entries.sort_by_key(|entry| entry.lane != crate::taskbar::Lane::Active);
+        }
         let capacity = if self.hosts_gesture {
             crate::surface::bar_screen::rail_row_capacity(width)
         } else {
             crate::surface::bar_screen::island_row_capacity(width)
         };
-        let rows = crate::taskbar::rows_of(&entries, self.lanes, capacity);
+        let rows = crate::rail_model::rows_of(&entries, self.lanes, capacity);
         (entries, rows)
     }
 
@@ -5129,10 +5235,16 @@ impl ShellApp {
         let Some(bridge) = &self.bridge else {
             return;
         };
-        for hosted in [&self.home, &self.bar, &self.cluster, &self.taskfield]
-            .into_iter()
-            .flatten()
-            .filter(|hosted| hosted.pending)
+        for hosted in [
+            &self.home,
+            &self.bar,
+            &self.cluster,
+            &self.taskfield,
+            &self.launcher,
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|hosted| hosted.pending)
         {
             if bridge.can_present(&hosted.window) {
                 hosted.request_redraw();
@@ -5558,6 +5670,7 @@ impl ShellApp {
     /// the rails, the lanes and the window tab policy. The signal is installed before the
     /// startup reads.
     fn spawn_settings_watch(&self) {
+        let launcher_epoch = self.launcher_epoch.clone();
         let tx = self.data_tx.clone();
         let proxy_wake = self.wake_proxy.clone();
         self.runtime.spawn(async move {
@@ -5572,12 +5685,15 @@ impl ShellApp {
                 return;
             };
             loop {
-                let (field, recents, rails, lanes, tabs) = tokio::join!(
+                let epoch = launcher_epoch.load(std::sync::atomic::Ordering::SeqCst);
+                let (field, recents, rails, lanes, tabs, launcher, transition) = tokio::join!(
                     fetch_home_field_settings(),
                     crate::settings::load_recent_apps(&settings),
                     crate::settings::rails(&settings),
                     crate::settings::lanes(&settings),
                     crate::settings::tabs(&settings),
+                    launcher_host::load_preferences(),
+                    launcher_host::load_transition(),
                 );
                 if tx.send(DataUpdate::HomeFieldSettings(field)).is_err() {
                     return;
@@ -5586,6 +5702,10 @@ impl ShellApp {
                 let _ = tx.send(DataUpdate::RailSettings(rails));
                 let _ = tx.send(DataUpdate::Lanes(lanes));
                 let _ = tx.send(DataUpdate::TabSettings(tabs));
+                if let Some(preferences) = launcher {
+                    let _ = tx.send(DataUpdate::LauncherPreferences { epoch, preferences });
+                }
+                let _ = tx.send(DataUpdate::WindowTransition(transition.0, transition.1));
                 let _ = proxy_wake.send_event(Wake::Data);
                 if changed.next().await.is_none() {
                     return;
@@ -5914,7 +6034,11 @@ impl ShellApp {
                 };
                 self.spawn_properties(path);
             }
-            FileVerb::SearchHere => self.search_everywhere(request.query.clone()),
+            FileVerb::SearchHere => self.request_launcher(
+                LauncherMode::Files,
+                request.directory.clone(),
+                request.query.clone().unwrap_or_default(),
+            ),
             FileVerb::OpenTerminal => {
                 let Some(path) = request.paths.first().cloned() else {
                     return;
@@ -6538,30 +6662,6 @@ impl ShellApp {
             let _ = tx.send(DataUpdate::Notice(notice));
             let _ = proxy_wake.send_event(Wake::Data);
         });
-    }
-
-    /// Hand a question to the application that searches every file on the machine.
-    ///
-    /// `--search` is FSearch's own option for a pattern to start with. There is no option to
-    /// scope it to a folder — it answers from its own index of everything — so "Search here…"
-    /// with nothing typed opens it on that index rather than pretending to narrow it.
-    fn search_everywhere(&mut self, query: Option<String>) {
-        let now_ms = self.started.elapsed().as_millis() as u64;
-        let Some(provider) = self.providers.get(&ProviderRole::FileSearch).cloned() else {
-            self.field_screen.report(
-                "No search application is selected — choose one in Settings ▸ Providers".to_owned(),
-                now_ms,
-            );
-            return;
-        };
-        let arguments = match query {
-            Some(query) if !query.trim().is_empty() => {
-                vec!["--search".to_owned(), query.trim().to_owned()]
-            }
-            _ => Vec::new(),
-        };
-        self.record_recent(&provider);
-        self.spawn_launch_with_args(provider, arguments);
     }
 
     /// Start the selected terminal in the folder this file is in.
@@ -7242,6 +7342,10 @@ impl ApplicationHandler<Wake> for ShellApp {
                 && home.window.id() == event.window_id
             {
                 home.accessibility_event(event.window_event);
+            } else if let Some(hosted) = &mut self.launcher
+                && hosted.window.id() == event.window_id
+            {
+                hosted.accessibility_event(event.window_event);
             } else if let Some(hosted) = &mut self.toast_host
                 && hosted.window.id() == event.window_id
             {
@@ -7253,6 +7357,9 @@ impl ApplicationHandler<Wake> for ShellApp {
             home.invalidate_semantics();
         }
         self.drain_updates();
+        if let Some(launcher) = &self.launcher {
+            launcher.request_redraw();
+        }
         let toplevels = self
             .bridge
             .as_ref()
@@ -7271,6 +7378,14 @@ impl ApplicationHandler<Wake> for ShellApp {
         window_id: WinitWindowId,
         event: WindowEvent,
     ) {
+        if self
+            .launcher
+            .as_ref()
+            .is_some_and(|hosted| hosted.window.id() == window_id)
+        {
+            self.launcher_event(&event);
+            return;
+        }
         let is_toast = self
             .toast_host
             .as_ref()
@@ -7509,7 +7624,9 @@ impl ApplicationHandler<Wake> for ShellApp {
             && let Err(error) = bridge.pump()
         {
             tracing::warn!(%error, "pumping the trusted-shell connection; treating it as gone");
+            self.dismiss_launcher();
             self.bridge = None;
+            self.window_transition_relayed = None;
             self.minimize_targets = MinimizeTargets::default();
             self.previews.clear();
             self.preview_requested.clear();
@@ -7529,17 +7646,14 @@ impl ApplicationHandler<Wake> for ShellApp {
         if self.drain_lock_keys() {
             self.paint_lock();
         }
-        // The same, for `Super+Space`: the compositor revealed Home and said so, and the caret
-        // has to be in the Apps bar by the time the person's next keystroke arrives.
+        // Super+Space opens the independent popup without revealing Home. The compositor
+        // retains physical keys until this overlay has committed and borrowed focus.
         if self
             .bridge
             .as_mut()
             .is_some_and(|bridge| bridge.take_launcher_focus() > 0)
         {
-            self.field_screen.focus_search();
-            if let Some(home) = &self.home {
-                home.request_redraw();
-            }
+            self.request_launcher(LauncherMode::Apps, None, String::new());
         }
         // Answered here rather than on the next paint: the terminal chord is a keypress a person
         // is waiting on, and Home is only redrawn when something asks it to be.
@@ -7548,7 +7662,19 @@ impl ApplicationHandler<Wake> for ShellApp {
         {
             home.request_redraw();
         }
+        if let Some(bridge) = &mut self.bridge {
+            for request in bridge.take_launcher_requests() {
+                self.launcher_request = Some(LauncherRequest {
+                    mode: request.mode,
+                    scope: request.scope,
+                    query: request.query,
+                });
+            }
+        }
         self.drain_updates();
+        self.ensure_launcher(event_loop);
+        self.flush_search();
+        self.fetch_search_pages();
         self.pump_native_file_drops();
         // winit's same-scale wl_surface.enter/leave has no WindowEvent. The already-awake
         // event loop still sees its updated current_monitor; redraw once if validity changed.
@@ -7573,6 +7699,8 @@ impl ApplicationHandler<Wake> for ShellApp {
         self.ensure_cluster(event_loop, &toplevels);
         self.sync_taskfield(event_loop);
         self.relay_reduced_motion();
+        self.relay_window_transition();
+        self.record_activation_recency(&toplevels);
         let (entries, rows) = self.bar_entries(&toplevels);
         self.sync_rail(entries.len(), rows);
         // A masked frame deferred because the compositor still held every buffer is owed, and
@@ -7588,6 +7716,9 @@ impl ApplicationHandler<Wake> for ShellApp {
         let generation = self.bridge.as_ref().map_or(0, ShellBridge::generation);
         if generation != self.bridge_generation {
             self.bridge_generation = generation;
+            if let Some(launcher) = &self.launcher {
+                launcher.request_redraw();
+            }
             if let Some(home) = &self.home {
                 home.request_redraw();
             }
@@ -7691,6 +7822,9 @@ impl ApplicationHandler<Wake> for ShellApp {
             home.request_redraw();
         }
         let deadline = [
+            self.search_pending
+                .as_ref()
+                .map(|(_, _, at)| *at + Self::SEARCH_DEBOUNCE),
             toast_deadline,
             bar_deadline,
             cluster_deadline,
@@ -7968,7 +8102,6 @@ mod tests {
         }
         for role in [
             ProviderRole::Terminal,
-            ProviderRole::FileSearch,
             ProviderRole::FileManager,
             ProviderRole::CodeEditor,
         ] {

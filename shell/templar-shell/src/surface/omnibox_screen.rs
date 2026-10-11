@@ -1,17 +1,7 @@
-//! The omnibox's dropdown: the federated result list, under the one search control.
+//! Shared result-row painting and the Files object's contextual result presentation.
 //!
-//! It draws over whatever is behind it rather than reserving space, because it exists only while
-//! the control has focus and a person is mid-question. The row shape is the launcher tile's —
-//! a mark, a name, and a second line saying which thing this is — kept because it was the right
-//! shape and the launcher tile is what this replaces.
-//!
-//! Two shapes, one list. The launcher's answer is a dropdown under the field: a name and an id
-//! per row, and nothing that needs room. A file search's answer is a **panel** (plan §4.2) — a
-//! partial-screen sheet, about two thirds of the field each way and centred, with a hairline
-//! edge and no shadow (plan §6) — because each of its rows carries a path, a size and a time,
-//! and a dropdown row has room for one of the three. Which shape is not a mode and not a
-//! setting: [`crate::omnibox::is_panel`] reads it off the rows, so the surface that composed
-//! them decides, and the two can never disagree about which is on screen.
+//! The global launcher uses these typography/icon primitives in its fixed overlay;
+//! its mode, keyboard focus, scrolling, and direct activation belong to LauncherScreen.
 
 use pixelkit_raster::{Bitmap, Rect, ScaleFilter};
 use pixelkit_shell::KeyInput;
@@ -50,7 +40,7 @@ pub enum Intent {
     Open,
     /// Ctrl+Enter: a *new* window, however many are already open.
     LaunchNew,
-    /// The right arrow or Tab: show every window of it, in the overview.
+    /// The right arrow: show every window of it, in the overview.
     ShowAll,
 }
 
@@ -104,7 +94,7 @@ impl OmniboxState {
                 }
                 // Sideways out of the list and into the overview: the row says how many windows
                 // are open, and this is the question that follows — *which* of them.
-                KeyInput::Right | KeyInput::Tab => {
+                KeyInput::Right => {
                     committed = Some((self.highlighted, Intent::ShowAll));
                 }
                 _ => {}
@@ -298,22 +288,7 @@ fn draw_panel(
     let (header, body) = inner.split_top(ui.px(PANEL_HEADER));
     draw_panel_header(ui, header);
 
-    // The last row is the way out, and it keeps its place at the foot of the panel whatever the
-    // list above it does.
-    let everywhere = rows
-        .iter()
-        .position(|row| row.extra == RowExtra::Everywhere);
-    let (body, footer) = if everywhere.is_some() {
-        body.split_top((body.h - row_height).max(0))
-    } else {
-        (body, Rect::new(body.x, body.bottom(), body.w, 0))
-    };
-
-    let results: Vec<(usize, &Row)> = rows
-        .iter()
-        .enumerate()
-        .filter(|(_, row)| row.extra != RowExtra::Everywhere)
-        .collect();
+    let results: Vec<(usize, &Row)> = rows.iter().enumerate().collect();
     let visible = (body.h / row_height).max(0) as usize;
     // Scroll only as far as the highlight demands, so the list does not move under a person who
     // is reading rather than stepping.
@@ -349,18 +324,6 @@ fn draw_panel(
         );
     }
 
-    if let Some(index) = everywhere {
-        if ui.input.focus_requested(footer) {
-            state.highlighted = index;
-        }
-        ui.painter.fill_rect(
-            Rect::new(footer.x, footer.y, footer.w, ui.scale.hairline()),
-            design::edge(),
-        );
-        if draw_panel_row(ui, footer, &rows[index], index == state.highlighted) {
-            outcome = commit(&rows[index]);
-        }
-    }
     outcome
 }
 
@@ -574,6 +537,90 @@ fn highlight(ui: &mut Ui<'_>, rect: Rect) {
     );
 }
 
+/// The launcher's fixed-list row uses the same icons, highlight and two-line typography.
+/// Painting does not claim pointer input or invent a target; the launcher owns those contracts.
+pub(crate) fn paint_launcher_row(
+    ui: &mut Ui<'_>,
+    rect: Rect,
+    row: &crate::launcher_model::LauncherRow,
+    highlighted: bool,
+    icons: &HashMap<String, Bitmap>,
+) {
+    ui.semantic(
+        pixelkit_ui::semantics::Role::ListBoxOption,
+        &row.label,
+        rect,
+        highlighted,
+        Some(highlighted),
+        None,
+    );
+    if highlighted {
+        highlight(ui, rect);
+    }
+    let side = ui.px(28).min(rect.h - ui.px(8)).max(1);
+    let mark = Rect::new(rect.x + ui.px(6), rect.y + (rect.h - side) / 2, side, side);
+    if let Some(icon) = row.icon_id.as_ref().and_then(|id| icons.get(id)) {
+        ui.painter.blit(icon, mark, ScaleFilter::Bilinear);
+    } else {
+        ui.painter
+            .fill_rounded_rect(mark, ui.px(design::CHIP_RADIUS), design::recessed());
+        let marker = match &row.target {
+            crate::launcher_model::LauncherTarget::App(_)
+            | crate::launcher_model::LauncherTarget::Favorite(_) => {
+                row.label.chars().next().unwrap_or('?').to_string()
+            }
+            crate::launcher_model::LauncherTarget::Directory(_) => "/".to_owned(),
+            crate::launcher_model::LauncherTarget::File(_) => "·".to_owned(),
+        };
+        ui.label_styled(
+            mark,
+            &marker,
+            design::title_style(ui),
+            design::text_dim(),
+            Align::Centre,
+        );
+    }
+    let text = Rect::new(
+        mark.right() + ui.px(10),
+        rect.y,
+        (rect.right() - mark.right() - ui.px(16)).max(0),
+        rect.h,
+    );
+    let (name, detail) = text.split_top(rect.h / 2);
+    ui.label_styled(
+        name,
+        &row.label,
+        design::title_style(ui),
+        if highlighted {
+            design::accent()
+        } else {
+            design::text()
+        },
+        Align::Left,
+    );
+    let mut metadata = row.detail.clone();
+    for extra in [
+        row.size_bytes.map(crate::format::bytes),
+        row.mtime_ms.map(crate::format::timestamp_ms),
+        row.running.then(|| "Running".to_owned()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !metadata.is_empty() {
+            metadata.push_str(" · ");
+        }
+        metadata.push_str(&extra);
+    }
+    ui.label_styled(
+        detail,
+        &metadata,
+        design::state_style(ui),
+        design::text_dim(),
+        Align::Left,
+    );
+}
+
 fn kind_mark(hit: &Hit) -> &'static str {
     match hit {
         Hit::App { .. } => "APP",
@@ -607,18 +654,6 @@ mod tests {
         }
     }
 
-    fn everywhere_row() -> Row {
-        Row {
-            extra: RowExtra::Everywhere,
-            ..row(
-                "Search everywhere with FSearch",
-                Hit::App {
-                    id: crate::omnibox::SEARCH_EVERYWHERE.parse().unwrap(),
-                },
-            )
-        }
-    }
-
     /// A launcher answer is a dropdown under the field; a file search's is a panel, about two
     /// thirds of the field each way and centred on it. The rect a click is tested against and
     /// the rect that gets drawn are the same one, which is what [`area`] exists to guarantee.
@@ -643,7 +678,7 @@ mod tests {
             &ui,
             anchor,
             bounds,
-            &[file_row("paper.pdf", "/home/a/paper.pdf"), everywhere_row()],
+            &[file_row("paper.pdf", "/home/a/paper.pdf")],
             FileState::Ready,
         )
         .expect("a search always has a panel, even with no matches");

@@ -38,6 +38,75 @@ impl SettingsApi {
             wallpaper,
         }
     }
+    fn commit<F>(&self, key: &str, origin: &str, prepare: F) -> anyhow::Result<SettingValue>
+    where
+        F: FnOnce(Option<SettingValue>) -> anyhow::Result<SettingValue>,
+    {
+        commit_setting(
+            &self.store,
+            &self.schema,
+            &self.values,
+            key,
+            origin,
+            prepare,
+        )
+    }
+}
+
+fn commit_setting<F>(
+    store: &Store,
+    schema: &RwLock<SettingsSchema>,
+    values: &RwLock<SettingsValues>,
+    key: &str,
+    origin: &str,
+    prepare: F,
+) -> anyhow::Result<SettingValue>
+where
+    F: FnOnce(Option<SettingValue>) -> anyhow::Result<SettingValue>,
+{
+    // Same order as Inspect. Publication remains excluded until audit and history commit.
+    let mut connection = store.lock();
+    let schema = schema.read();
+    let mut values = values.write();
+    let value = prepare(values.effective(&schema, key))?;
+    let transaction = connection.transaction()?;
+    let (old_json, new_json, _) = templar_session_core::settings::apply_within(
+        &transaction,
+        &schema,
+        &values,
+        key,
+        &value,
+        origin,
+    )?;
+    let event_id = EventId::new();
+    let change_id = change_log::record_within(
+        &transaction,
+        "settings",
+        key,
+        old_json.as_deref(),
+        Some(&new_json),
+        event_id,
+    )?;
+    append_within(
+        &transaction,
+        &Event {
+            id: event_id,
+            at_ms: templar_state::now_ms(),
+            kind: EventKind::SettingChange,
+            app_id: None,
+            instance_id: None,
+            message: format!("The setting {key} was changed."),
+            cause: Some(origin.to_owned()),
+            actions: vec![EventAction {
+                label: "Undo".into(),
+                command: change_log::undo_command(change_id),
+            }],
+            reversible: true,
+        },
+    )?;
+    transaction.commit()?;
+    values.set(key, value.clone());
+    Ok(value)
 }
 
 #[zbus::interface(name = "org.templaros.Settings1")]
@@ -90,49 +159,7 @@ impl SettingsApi {
         let value: SettingValue = serde_json::from_str(value_json)
             .map_err(|error| fdo::Error::InvalidArgs(format!("invalid value JSON: {error}")))?;
         let guard = self.appearance.lock().await;
-        (|| -> anyhow::Result<()> {
-            // Store -> schema -> values is also Inspect's lock order. Keep publication
-            // excluded until the entire audit/history transaction has committed.
-            let mut connection = self.store.lock();
-            let schema = self.schema.read();
-            let mut values = self.values.write();
-            let transaction = connection.transaction()?;
-            let tx = &transaction;
-            let (old_json, new_json, _audit_id) = templar_session_core::settings::apply_within(
-                tx, &schema, &values, key, &value, origin,
-            )?;
-
-            let event_id = EventId::new();
-            let change_id = change_log::record_within(
-                tx,
-                "settings",
-                key,
-                old_json.as_deref(),
-                Some(&new_json),
-                event_id,
-            )?;
-            append_within(
-                tx,
-                &Event {
-                    id: event_id,
-                    at_ms: templar_state::now_ms(),
-                    kind: EventKind::SettingChange,
-                    app_id: None,
-                    instance_id: None,
-                    message: format!("The setting {key} was changed."),
-                    cause: Some(origin.to_owned()),
-                    actions: vec![EventAction {
-                        label: "Undo".into(),
-                        command: change_log::undo_command(change_id),
-                    }],
-                    reversible: true,
-                },
-            )?;
-            transaction.commit()?;
-            values.set(key, value);
-            Ok(())
-        })()
-        .map_err(failed)?;
+        self.commit(key, origin, |_| Ok(value)).map_err(failed)?;
         let effects = if super::appearance::AppearanceEffects::affects(key) {
             self.appearance.reconcile(guard).await
         } else {
@@ -148,6 +175,42 @@ impl SettingsApi {
                 "Setting committed; supported toolkit configuration incomplete: {error:#}"
             ))
         })
+    }
+
+    /// Apply a narrow mutation against the latest owned value, preserving other clients' edits.
+    async fn update_launcher_v1(
+        &self,
+        command_json: &str,
+        origin: &str,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> fdo::Result<String> {
+        use templar_types::launcher::{LauncherMutation, PREFERENCES_KEY};
+        if command_json.len() > 128 * 1024 {
+            return Err(fdo::Error::InvalidArgs(
+                "Launcher mutation is too large".into(),
+            ));
+        }
+        let command: LauncherMutation = serde_json::from_str(command_json)
+            .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
+        let _guard = self.appearance.lock().await;
+        let value = self
+            .commit(PREFERENCES_KEY, origin, |current| {
+                let json = match current {
+                    Some(SettingValue::Str(json)) => json,
+                    _ => "{}".into(),
+                };
+                let mut preferences =
+                    templar_session_core::settings::parse_launcher_preferences(&json)
+                        .map_err(anyhow::Error::msg)?;
+                preferences.apply(&command).map_err(anyhow::Error::msg)?;
+                Ok(SettingValue::Str(serde_json::to_string(&preferences)?))
+            })
+            .map_err(failed)?;
+        let _ = emitter.changed(PREFERENCES_KEY.into()).await;
+        match value {
+            SettingValue::Str(json) => Ok(json),
+            _ => unreachable!("launcher value is a string"),
+        }
     }
 
     /// Every known key at its effective value, as `(key, value_json)` pairs.
@@ -182,12 +245,12 @@ impl SettingsApi {
                 .map(|(key, value)| {
                     let requires_restart =
                         schema.specs.get(&key).is_some_and(|spec| spec.privileged);
+                    let capability =
+                        templar_session_core::settings::setting_capability(&key, requires_restart);
                     templar_types::settings::SettingObservation {
                         key,
                         value,
-                        capability: templar_types::settings::Capability::Available {
-                            requires_restart,
-                        },
+                        capability,
                     }
                 })
                 .collect::<Vec<_>>(),
@@ -258,4 +321,132 @@ impl SettingsApi {
 
     #[zbus(signal)]
     async fn changed(signal_emitter: &SignalEmitter<'_>, key: String) -> zbus::Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use templar_types::launcher::{
+        Favorite, FavoriteTarget, LauncherMutation, LauncherPreferences, PREFERENCES_KEY,
+        app_identity,
+    };
+
+    fn mutate(
+        store: &Store,
+        schema: &RwLock<SettingsSchema>,
+        values: &RwLock<SettingsValues>,
+        command: LauncherMutation,
+    ) -> anyhow::Result<SettingValue> {
+        commit_setting(
+            store,
+            schema,
+            values,
+            PREFERENCES_KEY,
+            "test-client",
+            |current| {
+                let Some(SettingValue::Str(json)) = current else {
+                    anyhow::bail!("missing preferences")
+                };
+                let mut preferences =
+                    templar_session_core::settings::parse_launcher_preferences(&json)
+                        .map_err(anyhow::Error::msg)?;
+                preferences.apply(&command).map_err(anyhow::Error::msg)?;
+                Ok(SettingValue::Str(serde_json::to_string(&preferences)?))
+            },
+        )
+    }
+
+    #[test]
+    fn simultaneous_launcher_clients_keep_all_edits_and_commit_matching_audit_history() {
+        let store = Store::in_memory().unwrap();
+        let schema = Arc::new(RwLock::new(
+            templar_session_core::settings::baseline_schema(),
+        ));
+        let values = Arc::new(RwLock::new(SettingsValues::default()));
+        let barrier = Arc::new(std::sync::Barrier::new(13));
+        let threads: Vec<_> = (0..12)
+            .map(|index| {
+                let store = store.clone();
+                let schema = schema.clone();
+                let values = values.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let app = format!("org.example.App{index}");
+                    let command = match index % 3 {
+                        0 => LauncherMutation::SetAlias {
+                            identity: app_identity(&app),
+                            label: Some(format!("Name {index}")),
+                        },
+                        1 => LauncherMutation::SetHidden {
+                            identity: app_identity(&app),
+                            hidden: true,
+                        },
+                        _ => LauncherMutation::UpsertFavorite {
+                            favorite: Favorite {
+                                id: format!("favorite{index}"),
+                                label: format!("Favorite {index}"),
+                                target: FavoriteTarget::App { app_id: app },
+                            },
+                        },
+                    };
+                    barrier.wait();
+                    mutate(&store, &schema, &values, command).unwrap();
+                })
+            })
+            .collect();
+        barrier.wait();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let Some(SettingValue::Str(json)) =
+            values.read().effective(&schema.read(), PREFERENCES_KEY)
+        else {
+            panic!("missing preferences")
+        };
+        let preferences: LauncherPreferences = serde_json::from_str(&json).unwrap();
+        assert_eq!(preferences.aliases.len(), 4);
+        assert_eq!(preferences.visibility.hidden_apps.len(), 4);
+        assert_eq!(preferences.favorites.len(), 4);
+        assert_eq!(
+            templar_session_core::settings::load_values(&store)
+                .unwrap()
+                .effective(&schema.read(), PREFERENCES_KEY),
+            Some(SettingValue::Str(json.clone()))
+        );
+        for table in ["settings_changes", "history"] {
+            let count: i64 = store
+                .lock()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 12);
+        }
+        assert!(
+            mutate(
+                &store,
+                &schema,
+                &values,
+                LauncherMutation::SetHidden {
+                    identity: "path:cmVsYXRpdmU=".into(),
+                    hidden: true
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            values.read().effective(&schema.read(), PREFERENCES_KEY),
+            Some(SettingValue::Str(json))
+        );
+        let count: i64 = store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM settings_changes", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            count, 12,
+            "invalid mutation publishes neither state nor an audit row"
+        );
+    }
 }

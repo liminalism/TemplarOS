@@ -45,6 +45,8 @@ const PAGE_NAMES: [&str; SettingsPage::ALL.len()] = {
     }
     labels
 };
+const LAUNCHER_PAGE: usize = SettingsPage::Launcher as usize;
+const ADVANCED_PAGE: usize = SettingsPage::Advanced as usize;
 const HOME_PAGE: usize = SettingsPage::HomeField as usize;
 const SYSTEM_PAGE: usize = SettingsPage::System as usize;
 const SOUND_PAGE: usize = SettingsPage::Sound as usize;
@@ -79,6 +81,7 @@ struct SettingRow {
 #[derive(Debug)]
 enum Command {
     RefreshSettings,
+    Launcher(templar_types::launcher::LauncherMutation),
     Set { key: String, value: SettingValue },
     Reset { key: String },
     System(SystemCommand),
@@ -159,9 +162,6 @@ enum HistoryCommand {
 #[derive(Clone, Copy, Debug)]
 enum SystemCommand {
     Refresh,
-    SetVolume(u32),
-    StepVolume(i32),
-    ToggleMute,
     SetBrightness(u32),
     StepBrightness(i32),
 }
@@ -169,6 +169,7 @@ enum SystemCommand {
 #[derive(Debug)]
 enum ResultMessage {
     SettingsSnapshot(Result<SettingsSnapshot, String>),
+    Launcher(Result<templar_types::launcher::LauncherPreferences, String>),
     Wallpaper(crate::wallpaper::WallpaperState),
     Sound(crate::sound::SoundState),
     Files(crate::files::FilesState),
@@ -269,6 +270,7 @@ impl Backend {
                             Some(command) = power_rx.recv() => Command::Power(command),
                         };
                         let message = match command {
+                            Command::Launcher(command) => ResultMessage::Launcher(crate::launcher::mutate(command).await),
                             Command::RefreshSettings => ResultMessage::SettingsSnapshot(
                                 read_setting_values().await.map_err(|error| error.to_string())),
                             Command::System(system) => run_system_command(system).await,
@@ -567,6 +569,7 @@ async fn run_setting_command(command: Command) -> ResultMessage {
     let key = match &command {
         Command::Set { key, .. } | Command::Reset { key } => key.clone(),
         Command::RefreshSettings
+        | Command::Launcher(_)
         | Command::System(_)
         | Command::Background(_)
         | Command::Sound(_)
@@ -644,9 +647,6 @@ async fn run_system_command(command: SystemCommand) -> ResultMessage {
         let bus = system::Bus::connect(&connection).await?;
         let attempted = match command {
             SystemCommand::Refresh => Ok(()),
-            SystemCommand::SetVolume(percent) => bus.set_volume(percent).await,
-            SystemCommand::StepVolume(delta) => bus.adjust_volume(delta).await,
-            SystemCommand::ToggleMute => bus.toggle_muted().await,
             SystemCommand::SetBrightness(percent) => bus.set_brightness(percent).await,
             SystemCommand::StepBrightness(delta) => bus.adjust_brightness(delta).await,
         };
@@ -859,6 +859,8 @@ fn associations_confirmation(command: &AssociationsCommand) -> Option<String> {
 }
 
 struct SettingsApp {
+    launcher: crate::launcher::LauncherView,
+    advanced: Vec<SettingRow>,
     home: Vec<SettingRow>,
     /// `shell.appearance.*`, kept apart from the Home Field's keys so each page lists only its
     /// own — a page that shows a key it is not about is a page a person has to read twice.
@@ -925,6 +927,7 @@ impl SettingsApp {
     /// The rows one page of typed keys is editing.
     fn rows_for(&self, page: usize) -> &[SettingRow] {
         match page {
+            ADVANCED_PAGE => &self.advanced,
             APPEARANCE_PAGE => &self.appearance,
             GARDEN_PAGE => &self.garden,
             RAILS_PAGE => &self.rails,
@@ -936,6 +939,7 @@ impl SettingsApp {
 
     fn rows_for_mut(&mut self, page: usize) -> &mut Vec<SettingRow> {
         match page {
+            ADVANCED_PAGE => &mut self.advanced,
             APPEARANCE_PAGE => &mut self.appearance,
             GARDEN_PAGE => &mut self.garden,
             RAILS_PAGE => &mut self.rails,
@@ -964,6 +968,13 @@ impl SettingsApp {
             self.input.clear_accessible_text_edit();
             self.semantics.invalidate();
             match message {
+                ResultMessage::Launcher(result) => match result {
+                    Ok(preferences) => {
+                        self.launcher.preferences = preferences;
+                        self.status = "Launcher preferences stored and read back".into();
+                    }
+                    Err(error) => self.status = format!("Launcher change failed — {error}"),
+                },
                 ResultMessage::Wallpaper(state) => self.wallpaper.replace(state),
                 ResultMessage::Files(state) => {
                     if self.selected_page == FILES_PAGE {
@@ -1020,6 +1031,13 @@ impl SettingsApp {
                     Ok(snapshot) if snapshot.revision.supersedes(self.settings_revision) => {
                         self.settings_revision = snapshot.revision;
                         for observation in snapshot.value {
+                            if observation.key == templar_types::launcher::PREFERENCES_KEY
+                                && let SettingValue::Str(json) = &observation.value
+                                && let Ok(preferences) =
+                                    templar_session_core::settings::parse_launcher_preferences(json)
+                            {
+                                self.launcher.preferences = preferences;
+                            }
                             if let Some(page) = page_for(&observation.key)
                                 && let Some(row) = self
                                     .rows_for_mut(page)
@@ -1051,6 +1069,9 @@ impl SettingsApp {
                             &mut self.appearance,
                             &mut self.garden,
                             &mut self.rails,
+                            &mut self.advanced,
+                            &mut self.tabs,
+                            &mut self.notifications,
                         ] {
                             if let Some(row) = rows.iter_mut().find(|row| row.spec.key == key) {
                                 row.value = value.clone();
@@ -1139,6 +1160,12 @@ impl SettingsApp {
                 .backend
                 .commands
                 .send(Command::Power(crate::power::PowerCommand::Refresh));
+        }
+        if page == DISPLAYS_PAGE {
+            let _ = self
+                .backend
+                .commands
+                .send(Command::System(SystemCommand::Refresh));
         }
         let _ =
             self.backend
@@ -1275,7 +1302,7 @@ impl SettingsApp {
 
     /// Appearance keeps theme controls above a separately scrollable native wallpaper form.
     fn draw_appearance(&mut self, ui: &mut Ui<'_>, area: Rect) {
-        let theme_height = ui.px(176).min(area.h / 3);
+        let theme_height = ui.px(400).min(area.h * 2 / 3);
         self.draw_key_form(
             ui,
             Rect::new(area.x, area.y, area.w, theme_height),
@@ -1298,7 +1325,18 @@ impl SettingsApp {
     /// `page` picks both the scroll state and which list of rows is being edited, so a change on
     /// the Appearance page can never write an index into the Home Field's list.
     fn draw_key_form(&mut self, ui: &mut Ui<'_>, area: Rect, page: usize, prefix: &str) {
-        let rows = self.rows_for(page).to_vec();
+        let source = self.rows_for(page).to_vec();
+        let rows: Vec<(usize, SettingRow)> = source
+            .into_iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                row.spec.key != "shell.home-field.preview-rate"
+                    || self.home.iter().any(|home| {
+                        home.spec.key == "shell.home-field.previews"
+                            && home.value == SettingValue::Choice("live".into())
+                    })
+            })
+            .collect();
         let heights = vec![ui.px(88); rows.len()];
         let mut wanted: Option<(usize, Option<SettingValue>)> = None;
         let mut scroll = self.scroll[page];
@@ -1306,9 +1344,9 @@ impl SettingsApp {
             &mut scroll,
             area,
             &heights,
-            |ui, index, rect| match key_form_row(ui, &rows[index], rect, prefix) {
-                Some(KeyEdit::Set(value)) => wanted = Some((index, Some(value))),
-                Some(KeyEdit::Reset) => wanted = Some((index, None)),
+            |ui, index, rect| match key_form_row(ui, &rows[index].1, rect, prefix) {
+                Some(KeyEdit::Set(value)) => wanted = Some((rows[index].0, Some(value))),
+                Some(KeyEdit::Reset) => wanted = Some((rows[index].0, None)),
                 None => {}
             },
         );
@@ -1558,40 +1596,14 @@ impl SettingsApp {
         let _ = system_row(ui, area, 0, "Battery", &battery);
 
         let volume_line = crate::system::volume_line(self.system.audio.as_ref());
-        let settable = crate::system::volume_settable(&self.system);
-        let (percent, muted) = self
-            .system
-            .audio
-            .as_ref()
-            .map_or((0, false), |audio| (audio.volume_percent, audio.muted));
-        let controls = system_row(ui, area, 1, "Volume", &volume_line);
-        match level_controls(ui, controls, percent, settable, Some(muted)) {
-            Some(LevelChange::Step(delta)) => self.system(SystemCommand::StepVolume(delta)),
-            Some(LevelChange::ToggleMute) => self.system(SystemCommand::ToggleMute),
-            // Only when the drag has actually moved it: `pressing` is true every frame the button
-            // is held, and without this the page would write once per frame for as long as a
-            // person rested their finger on the track.
-            Some(LevelChange::Set(wanted)) if wanted != percent => {
-                self.system(SystemCommand::SetVolume(wanted));
-            }
-            None | Some(LevelChange::Set(_)) => {}
+        let controls = system_row(ui, area, 1, "Sound", &volume_line);
+        if ui.button(controls, "Sound settings") {
+            self.selected_page = SOUND_PAGE;
         }
-
         let brightness_line = crate::system::brightness_line(self.system.backlight.as_ref());
-        let settable = crate::system::brightness_settable(&self.system);
-        let percent = self
-            .system
-            .backlight
-            .as_ref()
-            .map_or(0, |backlight| backlight.percent);
-        let controls = system_row(ui, area, 2, "Brightness", &brightness_line);
-        match level_controls(ui, controls, percent, settable, None) {
-            Some(LevelChange::Step(delta)) => self.system(SystemCommand::StepBrightness(delta)),
-            Some(LevelChange::Set(wanted)) if wanted != percent => {
-                self.system(SystemCommand::SetBrightness(wanted));
-            }
-            // A display has no mute, so `level_controls` is never asked for one here.
-            None | Some(LevelChange::ToggleMute | LevelChange::Set(_)) => {}
+        let controls = system_row(ui, area, 2, "Display brightness", &brightness_line);
+        if ui.button(controls, "Display settings") {
+            self.selected_page = DISPLAYS_PAGE;
         }
 
         let policy_y = area.y + ui.px(264);
@@ -2401,6 +2413,7 @@ impl PixelApp for SettingsApp {
             semantics.begin(PAGE_NAMES[self.selected_page]);
         }
         let previous_page = self.selected_page;
+        let mut refreshed_page = previous_page;
         let mut layout_changed = false;
         {
             let ui = Ui::new(
@@ -2421,11 +2434,34 @@ impl PixelApp for SettingsApp {
             let inset = whole.inset(ui.px(18));
             ui.heading(Rect::new(inset.x, inset.y, inset.w, ui.px(48)), "Settings");
             let navigation_y = inset.y + ui.px(56);
-            let heights = [ui.px(38); PAGE_NAMES.len()];
+            let mut navigation: Vec<(String, usize)> = Vec::new();
+            for group in templar_types::settings::NAVIGATION_GROUPS {
+                let selected = group
+                    .pages
+                    .iter()
+                    .any(|page| *page as usize == self.selected_page);
+                navigation.push((
+                    group.label.into(),
+                    if selected {
+                        self.selected_page
+                    } else {
+                        group.pages[0] as usize
+                    },
+                ));
+                if selected && group.pages.len() > 1 {
+                    navigation.extend(
+                        group
+                            .pages
+                            .iter()
+                            .map(|page| (format!("  {}", page.label()), *page as usize)),
+                    );
+                }
+            }
+            let heights = vec![ui.px(38); navigation.len()];
             let nav = Rect::new(
                 inset.x,
                 navigation_y,
-                ui.px(166),
+                ui.px(210),
                 inset.bottom() - navigation_y - ui.px(48),
             );
             ui.scroll_list(
@@ -2433,13 +2469,13 @@ impl PixelApp for SettingsApp {
                 nav,
                 &heights,
                 |ui, index, area| {
-                    let page = SettingsPage::ALL[index];
+                    let (label, page) = &navigation[index];
                     let panel = ui.theme.panel;
-                    if page as usize == self.selected_page {
+                    if *page == self.selected_page {
                         ui.theme.panel = ui.theme.selection;
                     }
-                    if ui.button(area, page.label()) {
-                        self.selected_page = page as usize;
+                    if ui.button(area, label) {
+                        self.selected_page = *page;
                     }
                     ui.theme.panel = panel;
                 },
@@ -2450,14 +2486,24 @@ impl PixelApp for SettingsApp {
                 self.chooser.close();
                 self.chooser_row = None;
                 self.refresh_page(self.selected_page);
+                refreshed_page = self.selected_page;
             }
             let content = Rect::new(
-                inset.x + ui.px(182),
+                inset.x + ui.px(226),
                 navigation_y,
-                inset.w - ui.px(182),
+                inset.w - ui.px(226),
                 inset.bottom() - navigation_y - ui.px(48),
             );
             match self.selected_page {
+                LAUNCHER_PAGE => {
+                    if let Some(command) = self.launcher.draw(&mut ui, content, &self.names) {
+                        let _ = self.backend.commands.send(Command::Launcher(command));
+                    }
+                    if let Some(error) = &self.launcher.error {
+                        self.status = error.clone();
+                    }
+                }
+                ADVANCED_PAGE => self.draw_key_form(&mut ui, content, ADVANCED_PAGE, "shell."),
                 HOME_PAGE => self.draw_home(&mut ui, content),
                 SYSTEM_PAGE => {
                     layout_changed |= self.draw_system(&mut ui, content);
@@ -2485,7 +2531,41 @@ impl PixelApp for SettingsApp {
                     }
                 }
                 DISPLAYS_PAGE => {
-                    let (command, changed) = self.displays.draw(&mut ui, content);
+                    let brightness = Rect::new(content.x, content.y, content.w, ui.px(80));
+                    let controls = system_row(
+                        &mut ui,
+                        brightness,
+                        0,
+                        "Brightness",
+                        &crate::system::brightness_line(self.system.backlight.as_ref()),
+                    );
+                    let percent = self
+                        .system
+                        .backlight
+                        .as_ref()
+                        .map_or(0, |state| state.percent);
+                    match level_controls(
+                        &mut ui,
+                        controls,
+                        percent,
+                        crate::system::brightness_settable(&self.system),
+                        None,
+                    ) {
+                        Some(LevelChange::Step(delta)) => {
+                            self.system(SystemCommand::StepBrightness(delta))
+                        }
+                        Some(LevelChange::Set(wanted)) if wanted != percent => {
+                            self.system(SystemCommand::SetBrightness(wanted))
+                        }
+                        _ => {}
+                    }
+                    let display_content = Rect::new(
+                        content.x,
+                        content.y + ui.px(84),
+                        content.w,
+                        (content.h - ui.px(84)).max(0),
+                    );
+                    let (command, changed) = self.displays.draw(&mut ui, display_content);
                     layout_changed |= changed;
                     if let Some(command) = command {
                         let _ = self.backend.commands.send(Command::Displays(command));
@@ -2522,6 +2602,11 @@ impl PixelApp for SettingsApp {
                 Align::Left,
             );
             input.end_frame();
+        }
+        if self.selected_page != refreshed_page {
+            self.chooser.close();
+            self.chooser_row = None;
+            self.refresh_page(self.selected_page);
         }
         if self.selected_page != previous_page || layout_changed {
             semantics.invalidate();
@@ -2672,7 +2757,7 @@ fn appearance_for(
             _ => {}
         }
     }
-    let reduced_motion = home.iter().any(|row| {
+    let reduced_motion = home.iter().chain(appearance).any(|row| {
         row.spec.key == "shell.home-field.reduced-motion" && row.value == SettingValue::Bool(true)
     });
     templar_types::appearance::Appearance::from_settings(theme, accent, reduced_motion)
@@ -2700,6 +2785,22 @@ pub(super) fn fonts() -> &'static FontSet {
 /// all. `shell.home-garden.*` used to fall through to `None`, which is why Home's default-on
 /// automation had no graphical settings at all.
 fn page_for(key: &str) -> Option<usize> {
+    if key == "shell.home-field.reduced-motion" {
+        return Some(APPEARANCE_PAGE);
+    }
+    if matches!(
+        key,
+        "shell.home-field.throw"
+            | "shell.home-field.preview-rate"
+            | "shell.home-garden.half-life-hours"
+            | "shell.home-garden.half-life-sessions"
+            | "shell.home-garden.max-contexts"
+            | "shell.rails.gate-width"
+            | "shell.rails.gate-height"
+            | "shell.rails.lanes"
+    ) {
+        return Some(ADVANCED_PAGE);
+    }
     if key.starts_with(HOME_PREFIX) {
         Some(HOME_PAGE)
     } else if key.starts_with(APPEARANCE_PREFIX) {
@@ -2728,7 +2829,16 @@ async fn load(initial_page: SettingsPage) -> Result<SettingsApp> {
         .into_iter()
         .map(|observation| (observation.key.clone(), observation))
         .collect();
-    let (mut home, mut appearance, mut garden, mut rails, mut notifications, mut tabs) = (
+    let (
+        mut home,
+        mut appearance,
+        mut garden,
+        mut rails,
+        mut notifications,
+        mut tabs,
+        mut advanced,
+    ) = (
+        Vec::new(),
         Vec::new(),
         Vec::new(),
         Vec::new(),
@@ -2739,6 +2849,7 @@ async fn load(initial_page: SettingsPage) -> Result<SettingsApp> {
     for json in proxy.schema_details().await? {
         let spec: SettingSpec = serde_json::from_str(&json)?;
         let list = match page_for(&spec.key) {
+            Some(ADVANCED_PAGE) => &mut advanced,
             Some(APPEARANCE_PAGE) => &mut appearance,
             Some(GARDEN_PAGE) => &mut garden,
             Some(RAILS_PAGE) => &mut rails,
@@ -2763,6 +2874,7 @@ async fn load(initial_page: SettingsPage) -> Result<SettingsApp> {
         &mut rails,
         &mut notifications,
         &mut tabs,
+        &mut advanced,
     ] {
         list.sort_by(|left, right| left.spec.key.cmp(&right.spec.key));
     }
@@ -2853,7 +2965,16 @@ async fn load(initial_page: SettingsPage) -> Result<SettingsApp> {
     let _ = backend
         .commands
         .send(Command::DateTime(crate::datetime::DateTimeCommand::Refresh));
+    let mut launcher = crate::launcher::LauncherView::default();
+    if let Some(observation) = values.remove(templar_types::launcher::PREFERENCES_KEY)
+        && let SettingValue::Str(json) = observation.value
+        && let Ok(preferences) = templar_session_core::settings::parse_launcher_preferences(&json)
+    {
+        launcher.preferences = preferences;
+    }
     Ok(SettingsApp {
+        launcher,
+        advanced,
         visual: templar_ui::AppearanceState::new(appearance_for(&appearance, &home)),
         home,
         appearance,
@@ -2911,6 +3032,39 @@ pub fn run(initial_page: SettingsPage) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advanced_controls_and_single_motion_toggle_have_canonical_destinations() {
+        for key in [
+            "shell.home-field.throw",
+            "shell.home-field.preview-rate",
+            "shell.home-garden.half-life-hours",
+            "shell.home-garden.max-contexts",
+            "shell.rails.gate-width",
+            "shell.rails.lanes",
+        ] {
+            assert_eq!(page_for(key), Some(ADVANCED_PAGE));
+        }
+        assert_eq!(
+            page_for("shell.home-field.reduced-motion"),
+            Some(APPEARANCE_PAGE)
+        );
+        assert_eq!(
+            page_for("shell.appearance.window-transition"),
+            Some(APPEARANCE_PAGE)
+        );
+        assert_eq!(templar_types::settings::NAVIGATION_GROUPS.len(), 10);
+        for page in SettingsPage::ALL {
+            assert_eq!(
+                templar_types::settings::NAVIGATION_GROUPS
+                    .iter()
+                    .flat_map(|group| group.pages)
+                    .filter(|candidate| **candidate == page)
+                    .count(),
+                1
+            );
+        }
+    }
 
     #[test]
     fn every_tab_key_lands_on_the_windows_page_and_neighbours_stay_put() {

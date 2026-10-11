@@ -41,12 +41,14 @@ if [ "${TEMPLAR_NESTED_ISOLATED:-0}" != 1 ]; then
         TEMPLAR_NESTED_ISOLATED=1 \
         TEMPLAR_NESTED_SKIP_BUILD=1 \
         TEMPLAR_NESTED_INPUT_JOURNEY="${TEMPLAR_NESTED_INPUT_JOURNEY:-0}" \
+        TEMPLAR_NESTED_LAUNCHER_JOURNEY="${TEMPLAR_NESTED_LAUNCHER_JOURNEY:-0}" \
         TEMPLAROS_NESTED_BIN_DIR="$bin" \
         TEMPLAR_NESTED_ROOT="$nested_root" \
         CARGO_HOME="$nested_cargo_home" \
         RUSTUP_HOME="$nested_rustup_home" \
         HOME="$nested_root/home" \
         XDG_CONFIG_HOME="$nested_root/config" \
+        XDG_CONFIG_DIRS="$nested_root/config" \
         XDG_DATA_HOME="$nested_root/data" \
         XDG_DATA_DIRS="$nested_root/data" \
         XDG_STATE_HOME="$nested_root/state" \
@@ -59,6 +61,8 @@ if [ "${TEMPLAR_NESTED_ISOLATED:-0}" != 1 ]; then
     exit "${status:-0}"
 fi
 : "${TEMPLAR_NESTED_ROOT:?isolated wrapper did not provide TEMPLAR_NESTED_ROOT}"
+# Service adapters must also stay off the host's system bus in this owned fixture.
+export DBUS_SYSTEM_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS"
 
 pids=()
 cleanup_processes() {
@@ -114,14 +118,27 @@ wait_for_path "$XDG_RUNTIME_DIR/templaros-integration"
 # socket no confined application may open (compositor/templar-comp/src/shell_socket.rs).
 wait_for_path "$XDG_RUNTIME_DIR/templaros-shell-templaros-integration"
 
+launcher_roots=()
+launcher_control=()
+if [ "${TEMPLAR_NESTED_LAUNCHER_JOURNEY:-0}" = 1 ]; then
+    /usr/bin/python3 "$root/tests/integration/nested-launcher.py" prepare "$TEMPLAR_NESTED_ROOT"
+    start_service launcher-manager /usr/bin/python3 "$root/tests/integration/nested-launcher.py" manager "$TEMPLAR_NESTED_ROOT"
+    wait_for_name org.freedesktop.systemd1
+    wait_for_path "$XDG_RUNTIME_DIR/templar-wallpaper-fixture-control.sock"
+    launcher_roots=(--index-root "$TEMPLAR_NESTED_ROOT/probe-index")
+    launcher_control=(--wallpaper-control-socket "$XDG_RUNTIME_DIR/templar-wallpaper-fixture-control.sock")
+fi
 start_service sessiond env WAYLAND_DISPLAY=templaros-integration "$bin/templar-sessiond" \
     --manifest-dir "$root/tests/fixtures/manifests" \
     --application-dir "$TEMPLAR_NESTED_ROOT/data/applications" \
     --no-default-discovery \
-    --state-db "$TEMPLAR_NESTED_ROOT/state/session.db"
+    --state-db "$TEMPLAR_NESTED_ROOT/state/session.db" "${launcher_control[@]}"
+# Both owners share this freshly created database. Let sessiond finish its
+# initial migrations before filed installs its additional schema and root policy.
+wait_for_name org.templaros.Session
 start_service filed "$bin/templar-filed" --reserve-percent 0 \
     --state-db "$TEMPLAR_NESTED_ROOT/state/session.db" \
-    --index-root "$root/tests/fixtures"
+    --index-root "$root/tests/fixtures" "${launcher_roots[@]}"
 start_service resourced "$bin/templar-resourced" --interval-ms 250 \
     --state-dir "$TEMPLAR_NESTED_ROOT/state/resources"
 # The portal backend belongs in the journey for the same reason the daemons do: a sandboxed
@@ -137,7 +154,20 @@ wait_for_name org.freedesktop.impl.portal.desktop.templaros
 
 # Exercise typed state over D-Bus and verify the read-after-write/history path.
 "$bin/templar" app list --json | grep 'org.templaros.Viewer' >/dev/null
-"$bin/templar" files search image-root --json | grep 'image-root' >/dev/null
+# Name ownership precedes the asynchronous initial index walk. Wait for the actual
+# fixture hit instead of treating a freshly registered, empty index as a failure.
+fixture_search_ready=0
+for _ in $(seq 1 100); do
+    if "$bin/templar" files search image-root --json | grep 'image-root' >/dev/null; then
+        fixture_search_ready=1
+        break
+    fi
+    sleep 0.1
+done
+if [ "$fixture_search_ready" != 1 ]; then
+    echo "nested session: FAILED — Index1 did not return the image-root fixture" >&2
+    exit 1
+fi
 "$bin/templar" settings set shell.wallpaper.enabled '{"type":"bool","value":true}' >/dev/null
 "$bin/templar" settings get shell.wallpaper.enabled --json | grep 'true' >/dev/null
 "$bin/templar" history search wallpaper --json | grep 'shell.wallpaper.enabled' >/dev/null
@@ -160,11 +190,17 @@ if ! kill -0 "${pids[0]}" 2>/dev/null; then
     exit 1
 fi
 
-if [ "${TEMPLAR_NESTED_INPUT_JOURNEY:-0}" = 1 ]; then
+if [ "${TEMPLAR_NESTED_INPUT_JOURNEY:-0}" = 1 ] || [ "${TEMPLAR_NESTED_LAUNCHER_JOURNEY:-0}" = 1 ]; then
     # Direct first-party Wayland clients, not transient user units or host tools.
     start_service client-settings env -u DISPLAY WAYLAND_DISPLAY=templaros-integration "$bin/templar-settings"
     start_service client-files env -u DISPLAY WAYLAND_DISPLAY=templaros-integration "$bin/templar-files" "$root/tests/fixtures"
-    "$root/tests/integration/nested-input.py" --socket "$TEMPLAR_NESTED_ROOT/runtime/input.sock"
+    if [ "${TEMPLAR_NESTED_INPUT_JOURNEY:-0}" = 1 ]; then
+        "$root/tests/integration/nested-input.py" --socket "$TEMPLAR_NESTED_ROOT/runtime/input.sock"
+    fi
+    if [ "${TEMPLAR_NESTED_LAUNCHER_JOURNEY:-0}" = 1 ]; then
+        /usr/bin/python3 "$root/tests/integration/nested-launcher.py" journey "$TEMPLAR_NESTED_ROOT" \
+            "$TEMPLAR_NESTED_ROOT/runtime/input.sock" "$bin/templar"
+    fi
 fi
 
 echo "nested session: ok (live compositor, shell, services, CLI state journey)"

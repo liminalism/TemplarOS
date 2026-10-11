@@ -1,13 +1,13 @@
 # The task system
 
-Four scales, each answering one question, none duplicating another:
+Five scales, each answering one question:
 
 | Scale | Question | Where |
 |---|---|---|
 | HomeGarden | what am I working on? | the shell's Home Surface — a **place** |
-| Task Island | what is running? | the bottom bar, kept small on purpose |
+| Task Island | what can I return to? | the bottom rail's live tasks and saved launch targets |
 | Taskfield | where are all my windows? | the compositor's window overview — a **view** |
-| Apps bar | what can I start? | Home's launcher |
+| Launcher | what can I find or open? | one global Apps/Files overlay |
 | `Alt+Tab` | which window next? | every open window, most recent first |
 
 **HomeGarden is a place; Taskfield is a view.** Home exists with nothing running: projects, places
@@ -46,6 +46,20 @@ row card falls back to its own window's icon until a capture arrives. An initial
 no icon resolves at all — the lookup tries the desktop entry's `Icon=`, then the desktop file's own
 name, and is repeated with the manifest's hints once the application catalogue arrives.
 
+Persisted favorites are a separate input to rail reconciliation, not stored `TaskKey`s.
+`rail_model.rs` combines them with the taskbar projection before drawing: a saved plain app
+and its running task occupy one chip, while named terminal directory/argument profiles keep
+their own launch configuration. Reconciliation retains actual task units and first-seen order,
+including explicit groups and unverified windows; it does not merge away distinct authoritative
+`TaskKey`s. A saved target with no matching window launches through `Launcher1`.
+
+The launcher shares the catalogue, favorite metadata and window activation path. Blank Apps
+shows favorites followed by recent applications, suppressing duplicate plain app identities;
+typing uses `app_search::search`. Tab retains the query while switching to Index1 Files search.
+Click or Enter activates immediately and closes the popup. Ctrl+Enter requests a new instance;
+Right shows existing app/profile windows. Shortcut creation is an explicit context action,
+never a side effect of choosing a result. See [the launcher guide](../launcher.md).
+
 ## Alt+Tab
 
 `Alt+Tab` walks `WindowService::alt_tab_order`: every mapped application window, parked ones
@@ -70,6 +84,12 @@ nothing. `is_visible`, `home_is_covered` and the `stacking_order` exception each
 value. The lock screen and the recovery overlay are not modes here — they are `Layer`s, and a layer
 outranks everything by construction.
 
+The explicit launcher is an independently focused `Layer::ShellOverlay` surface. Super+Space
+requests it without changing `presentation()` or revealing Home. The compositor lends it
+keyboard focus above fullscreen/passive chrome, and dismissing it returns to the underlying
+activation. Outside-click dismissal is enforced by compositor focus handling because a
+Wayland client cannot observe pointer events sent to another client.
+
 In Taskfield the compositor draws each window's surface tree at
 `WindowService::presentation_rect(id)`. No `xdg_toplevel.configure` is sent, clients keep painting
 at their real sizes, and leaving is a render change rather than a geometry change — which is why it
@@ -92,7 +112,7 @@ compositor draws its own and the mode works exactly as well.
 
 ## Chords
 
-`Super` Home · `Super+Space` start · `Super+Tab` the overview · `Alt+Tab` next window ·
+`Super` Home · `Super+Space` Apps/Files launcher · `Super+Tab` the overview · `Alt+Tab` next window ·
 `` Alt+` `` this one · `Ctrl+Alt+Space` the overview again, as the recovery spelling.
 
 `Super+Tab` used to cycle between window groups; the overview answers that question by showing

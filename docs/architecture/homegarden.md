@@ -10,6 +10,14 @@ stable; Keep protects retention, while an explicit resize owns geometry. Current
 `legeos.decision.homegarden-activity-grown-places/3`; the September documents in `docs/garden/`
 are historical rationale, not permission to defer the October 7 owner PDF.
 
+Homegarden has no permanent application search field or recent-app strip. Its **Open launcher**
+context action and bare-background typing request the same global Apps/Files overlay as
+Super+Space and the bottom rail. Opening a search result creates no garden tile. **Add to Home**
+is an explicit launcher context action; saved terminal profiles become copied `LaunchProfile`
+shortcuts that retain their name, application, native directory and literal arguments even
+after the corresponding rail favorite is edited or removed. Existing project/window linking
+and tile dragging remain separate organizing actions. See [the launcher guide](../launcher.md).
+
 ## Current work
 
 The Homegarden and HDMI owner plan is tracked in AKR. The current secondary-output
@@ -47,9 +55,13 @@ and stops asking for the life of the connection when the compositor is older tha
 Home is redrawn on every window-snapshot change whether or not it is revealed, so a window has a
 target before its first park. The compositor uses the target only to animate parking into and
 restoring out of the card; it never changes geometry, layout, stacking or input.
+Appearance & Motion selects Essence, Simple or Off for park/restore. Essence follows one
+reversible plan toward the existing target and renders in the compositor's GLES scene; missing
+shader or bounded-snapshot capabilities fall back to simple motion. The particle-size setting
+(default 6 logical px, range 1–24) changes uniforms without rebuilding the movement plan.
 The existing `shell.home-field.reduced-motion` preference suppresses these transitions and rail
-reveal as well as Home zoom/throw effects. Park/restore follows a smooth geometric size curve;
-the client image keeps its own aspect inside the moving rectangle.
+reveal as well as Home zoom/throw effects. Turning it on cancels active visual motion while
+retaining the committed window state. No material shader is added to Homegarden.
 
 Window cards do not become persistent field objects. The field remains the owner of project
 geometry, while the garden owns verified links and retained session data. Neither transient

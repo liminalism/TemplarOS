@@ -61,6 +61,7 @@ smithay::backend::renderer::element::render_elements! {
     Chrome=MemoryRenderBufferRenderElement<R>,
     Surface=WaylandSurfaceRenderElement<R>,
     Wallpaper=crate::wallpaper::WallpaperElement,
+    Essence=crate::essence_renderer::EssenceElement,
     Ground=smithay::backend::renderer::element::solid::SolidColorRenderElement,
 }
 
@@ -117,6 +118,7 @@ pub fn window_scene_order(windows: &[(WindowId, bool, bool)]) -> Vec<ScenePiece>
 pub fn collect<R: ImportAll + ImportMem + WallpaperRenderer>(
     chrome: &mut ChromeState,
     wallpaper: &mut crate::wallpaper::WallpaperState,
+    essence: &mut crate::essence_renderer::EssenceRenderer,
     windows: &crate::window_bridge::WindowIndex,
     inputs: &ChromeInputs<'_>,
     output: &Output,
@@ -142,6 +144,11 @@ where
     let mut elements: Vec<SceneElement<R>> =
         overlay.into_iter().map(SceneElement::Chrome).collect();
 
+    essence.retire(renderer.wallpaper_gles(), |id| {
+        !inputs.session_lock.locked
+            && drawn_motion(inputs, id).is_some()
+            && inputs.motions.essence(id, inputs.now_ns).is_some()
+    });
     if inputs.session_lock.locked {
         // Never import or render ordinary surfaces while locked, even if fallback chrome fails.
         // A transparent lock surface composites over the cleared frame, not the user's work.
@@ -212,6 +219,22 @@ where
                     continue;
                 };
                 drawn.push(window.clone());
+                if drawn_motion(inputs, window_id).is_some()
+                    && let Some(motion) = inputs.motions.essence(window_id, inputs.now_ns)
+                    && let Some(effect) = essence.element(
+                        renderer,
+                        window_id,
+                        window,
+                        motion,
+                        inputs.motions.style(),
+                        inputs.now_ns,
+                        output_rect,
+                        output_scale,
+                    )
+                {
+                    elements.push(SceneElement::Essence(effect));
+                    continue;
+                }
                 let (presentation, alpha) = surface_placement(inputs, window, window_id);
                 surface_elements(
                     window,

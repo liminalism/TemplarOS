@@ -1,14 +1,8 @@
-//! The two search controls of the shell, and what each one answers.
+//! Pure search rows for applications and Index1 files.
 //!
-//! The bar at the top of bare Home is the application launcher and nothing else: typing there
-//! names an application to open. Files are not looked for from Home — a file search belongs to
-//! the Files object, scoped to the location it is showing, and the wider search of everything
-//! indexed is the job of a real search tool (the plan integrates fsearch for that). Projects are
-//! tiles and actions have the context menu and the cheat sheet, so neither is a search result.
-//!
-//! The shell once federated every source into one list, and a query for a browser came back as
-//! six unrelated files with the application somewhere among them. One control, one kind of
-//! answer, is the rule now.
+//! The global launcher chooses Apps or Files explicitly. Files searches all indexed
+//! roots by default; Search Here supplies a native directory scope. Location-scoped
+//! browsing remains available to the Files object without an external search provider.
 //!
 //! Three rules make the file list trustworthy rather than merely full:
 //!
@@ -63,9 +57,6 @@ pub enum RowExtra {
     /// A file or folder in the search panel, with the two facts the panel shows in its own
     /// columns: how big it is and when it last changed.
     File { size_bytes: u64, mtime_ms: i64 },
-    /// "Search everywhere with FSearch": the panel's last row, which hands the question to the
-    /// `file-search` provider instead of answering it.
-    Everywhere,
 }
 
 /// One row of the dropdown, or of the search panel.
@@ -80,19 +71,6 @@ pub struct Row {
     /// (see [`is_panel`]).
     pub extra: RowExtra,
 }
-
-/// The application id the "Search everywhere" row carries.
-///
-/// Not an installed application, and deliberately so: *which* program searches everywhere is a
-/// `Providers1` choice (the `file-search` role), and this module is pure — it has no bus to ask
-/// on. The row names the intent, the host resolves it to the selected provider and hands over
-/// the query. A reserved id rather than a new `Hit` variant so every existing caller keeps
-/// compiling and treating it as what it is: something to launch.
-pub const SEARCH_EVERYWHERE: &str = "templaros.search-everywhere";
-
-/// What the last row says. The provider is named because a person choosing to leave one search
-/// for another deserves to know which program they are about to be handed to.
-const SEARCH_EVERYWHERE_LABEL: &str = "Search everywhere with FSearch";
 
 /// Whether this list is the Files object's search, which is shown as a panel rather than as a
 /// dropdown under the field (plan §4.2): its rows carry three facts each, and a dropdown row
@@ -109,6 +87,8 @@ pub enum Scope {
     Applications,
     /// Inside the expanded Files object: the files and folders of this location.
     Location(FilesLocation),
+    /// Global launcher Files mode; no directory means every indexed root.
+    LauncherFiles(Option<PathBuf>),
 }
 
 /// The last file search that completed, and the query it answered.
@@ -206,9 +186,8 @@ pub fn literal_directory(query: &str, home: Option<&Path>) -> Option<PathBuf> {
 
 /// The ranked rows for `query` in `scope`, at most `limit` of them.
 ///
-/// An empty query is not a list: recents live under the launcher field, and typing is what
-/// asks. On bare Home the answer is applications and only applications; inside the Files
-/// object it is the folders and files of that location.
+/// This adapter handles typed queries; the global launcher composes favorites and recent
+/// targets separately for its blank view. The explicit scope selects applications or files.
 pub fn federate(sources: Sources<'_>, query: &str, scope: &Scope, limit: usize) -> Vec<Row> {
     let needle = query.trim().to_lowercase();
     let mut rows: Vec<Row> = Vec::new();
@@ -224,7 +203,7 @@ pub fn federate(sources: Sources<'_>, query: &str, scope: &Scope, limit: usize) 
             sources.recents,
             sources.running,
         )),
-        Scope::Location(_) => {
+        Scope::Location(_) | Scope::LauncherFiles(_) => {
             let (directories, files) = files_split(sources.files, &needle);
             rows.extend(capped(directories, DIRECTORY_CAP));
             rows.extend(capped(files, FILE_CAP));
@@ -270,21 +249,6 @@ pub fn federate(sources: Sources<'_>, query: &str, scope: &Scope, limit: usize) 
             );
             rows.truncate(limit);
         }
-    }
-    // The way out of this search and into the one that covers the whole machine. Appended after
-    // the cap, never sorted with the results and never cut by the limit: it is not a result, and
-    // a person looking for the row that widens the search must find it in the same place every
-    // time — the bottom.
-    if matches!(scope, Scope::Location(_))
-        && let Ok(id) = SEARCH_EVERYWHERE.parse::<AppId>()
-    {
-        rows.push(Row {
-            hit: Hit::App { id },
-            label: SEARCH_EVERYWHERE_LABEL.to_owned(),
-            detail: format!("every indexed file, for “{}”", query.trim()),
-            kind: MatchKind::NameSubstring,
-            extra: RowExtra::Everywhere,
-        });
     }
     rows
 }
@@ -488,45 +452,7 @@ mod tests {
         }
     }
 
-    /// The row that widens the search is always there, always last, and is never sorted in
-    /// among the results or cut by the cap: it is the answer to "not this", and it has to be in
-    /// the same place every time.
-    #[test]
-    fn a_file_search_always_ends_with_the_way_out_of_it() {
-        let entries: Vec<BrowseEntry> = (0..30)
-            .map(|n| entry(&format!("/home/a/paper-{n}.pdf"), false))
-            .collect();
-        let apps: Vec<AppEntry> = Vec::new();
-        let files = FileResults {
-            query: "paper",
-            entries: &entries,
-        };
-        let rows = federate(
-            sources(&apps, Some(files)),
-            "paper",
-            &Scope::Location(FilesLocation::Directory("/home/a".into())),
-            TOTAL_CAP,
-        );
-        let last = rows.last().expect("a search always has this row");
-        assert_eq!(last.extra, RowExtra::Everywhere);
-        assert_eq!(
-            last.hit,
-            Hit::App {
-                id: SEARCH_EVERYWHERE.parse().unwrap()
-            }
-        );
-        assert!(rows.len() > 1, "and the results above it");
-        assert!(
-            rows[..rows.len() - 1]
-                .iter()
-                .all(|row| matches!(row.extra, RowExtra::File { .. })),
-            "every result carries the size and time the panel shows"
-        );
-        assert!(is_panel(&rows), "which makes this list a panel");
-    }
-
-    /// A search that found nothing still offers the way out — that is the moment it is most
-    /// wanted — while the launcher's own list stays a dropdown with no such row.
+    /// Every row is a real result; neither mode synthesizes an external provider action.
     #[test]
     fn the_launcher_has_no_search_everywhere_row_and_is_never_a_panel() {
         let apps = [app("org.templaros.Files", "Files")];
@@ -541,22 +467,16 @@ mod tests {
             &Scope::Location(FilesLocation::Directory("/home/a".into())),
             TOTAL_CAP,
         );
-        assert_eq!(empty.len(), 1);
-        assert_eq!(empty[0].extra, RowExtra::Everywhere);
-        assert!(is_panel(&empty));
+        assert!(empty.is_empty());
     }
 
     fn labels(rows: &[Row]) -> Vec<&str> {
         rows.iter().map(|row| row.label.as_str()).collect()
     }
 
-    /// The results only. A location's list always ends with the row that hands the question to
-    /// the search application, and that row is not an answer to the question.
+    /// Real result labels, with no external provider sentinel.
     fn results(rows: &[Row]) -> Vec<&str> {
-        rows.iter()
-            .filter(|row| row.extra != RowExtra::Everywhere)
-            .map(|row| row.label.as_str())
-            .collect()
+        rows.iter().map(|row| row.label.as_str()).collect()
     }
 
     fn sources<'a>(apps: &'a [AppEntry], files: Option<FileResults<'a>>) -> Sources<'a> {

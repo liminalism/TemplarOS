@@ -674,6 +674,29 @@
     "title": "The Task System — one window model, four scales, and Taskfield (planning document, 2026-09-09, with the reviewer's place-versus-view appendix)"
   },
   {
+    "added_at": "2026-10-09",
+    "availability": "full",
+    "byte_len": 34697,
+    "content_hash": "sha256:bf30ca93c17fcafd4a339ba6812467102711bb217133a6029ebc9a465472a776",
+    "id": "templaros-unified-launcher-homegarden-20261009",
+    "media_type": "text/markdown",
+    "origin": "external",
+    "path": "sources/external/templaros-unified-launcher-homegarden-20261009--bf30ca93.md",
+    "scope": "shell/templar-shell/**",
+    "title": "TemplarOS: unifying the launcher, gesture bars, and Homegarden"
+  },
+  {
+    "added_at": "2026-10-09",
+    "availability": "full",
+    "byte_len": 25390,
+    "content_hash": "sha256:aefd86407c4263b3e58f56de8197d9bb1ec44de6709ca928bd11b91364413f00",
+    "id": "templaros-unified-launcher-implementation-plan-20261009",
+    "media_type": "text/markdown",
+    "origin": "internal-reference",
+    "path": "sources/external/templaros-unified-launcher-implementation-plan-20261009--aefd8640.md",
+    "title": "Unified launcher implementation plan from exploration and planning agents"
+  },
+  {
     "added_at": "2026-10-06",
     "availability": "full",
     "byte_len": 146394,

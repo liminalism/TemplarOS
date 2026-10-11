@@ -19,6 +19,7 @@ mod garden;
 mod hardware;
 mod history;
 mod input;
+mod launcher;
 mod names;
 mod network;
 mod notifications;
@@ -137,7 +138,9 @@ async fn print_page(cli: Cli) {
         | SettingsPage::HomeField
         | SettingsPage::Homegarden
         | SettingsPage::Rails
-        | SettingsPage::Windows => {
+        | SettingsPage::Windows
+        | SettingsPage::Launcher
+        | SettingsPage::Advanced => {
             if page == SettingsPage::Appearance {
                 match wallpaper::print().await {
                     Ok(status) => println!("{status}"),
@@ -150,6 +153,8 @@ async fn print_page(cli: Cli) {
                 SettingsPage::Homegarden => "shell.home-garden",
                 SettingsPage::Rails => "shell.rails",
                 SettingsPage::Windows => "windows.tabs",
+                SettingsPage::Launcher => "shell.launcher",
+                SettingsPage::Advanced => "shell",
                 _ => unreachable!(),
             };
             match zbus::Connection::session().await {

@@ -49,6 +49,11 @@ pub enum TileKind {
     AppGroup { group_id: String },
     /// A dormant or running application.
     App { app_id: AppId },
+    /// An explicitly saved launch configuration. Its copied native directory and literal
+    /// arguments survive removing or editing the rail favorite from which it was created.
+    LaunchProfile {
+        profile: templar_types::launcher::Favorite,
+    },
     /// A window collapsed into the field — explicit minimisation made visible. `identifier` is
     /// the foreign-toplevel identifier the compositor relays, which is also what a preview is
     /// filed under; `app_id` is its canonical owner when known.
@@ -108,6 +113,7 @@ impl TileKind {
             Self::WindowGroup { .. } => "group",
             Self::AppGroup { .. } => "app group",
             Self::App { .. } => "app",
+            Self::LaunchProfile { .. } => "launch profile",
             Self::ParkedSession { .. } => "session",
             Self::Tray { .. } => "tray",
             Self::Folder { .. } => "folder",
@@ -201,7 +207,9 @@ impl SpanRange {
             TileKind::AppGroup { .. } => {
                 Self::new(Span::new(2, 2), Span::new(2, 2), Span::new(6, 4))
             }
-            TileKind::App { .. } => Self::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 2)),
+            TileKind::App { .. } | TileKind::LaunchProfile { .. } => {
+                Self::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 2))
+            }
             TileKind::File { .. } => Self::new(Span::new(1, 1), Span::new(1, 1), Span::new(2, 1)),
             TileKind::ParkedSession { .. } => {
                 Self::new(Span::new(2, 1), Span::new(4, 2), Span::new(8, 4))
@@ -390,7 +398,7 @@ impl RungLadder {
             },
             // An application is an icon, and a name once there is a second cell to put it in.
             // It never climbs further: the ceiling is 2×2.
-            TileKind::App { .. } => Self {
+            TileKind::App { .. } | TileKind::LaunchProfile { .. } => Self {
                 base: Representation::Micro,
                 small: Some(RungFloor::new(1, 1, 2)),
                 wide: None,
@@ -467,6 +475,17 @@ mod tests {
             },
             TileKind::AppGroup {
                 group_id: "g".into(),
+            },
+            TileKind::LaunchProfile {
+                profile: templar_types::launcher::Favorite {
+                    id: "development".into(),
+                    label: "Development".into(),
+                    target: templar_types::launcher::FavoriteTarget::Terminal {
+                        app_id: "org.example.Terminal".into(),
+                        cwd_b64: "L3dvcms=".into(),
+                        arguments: vec![],
+                    },
+                },
             },
         ]
     }
@@ -690,7 +709,7 @@ mod tests {
                 0..=3 => Representation::Wide,
                 _ => Representation::Large,
             },
-            TileKind::App { .. } => {
+            TileKind::App { .. } | TileKind::LaunchProfile { .. } => {
                 if cells == 1 {
                     Representation::Micro
                 } else {

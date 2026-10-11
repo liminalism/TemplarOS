@@ -97,7 +97,7 @@ use templar_window::{
 /// group requests below check `self.manager.version()` and not `toplevel.version()` — against a
 /// version-4 compositor the latter also reads 4, which is `>= 3` and would happily send a request
 /// that compositor has never heard of.
-const SHELL_PROTOCOL_VERSION: u32 = 14;
+const SHELL_PROTOCOL_VERSION: u32 = 15;
 
 /// The manager version that carries `set_edge_alignment`. A version-5 compositor has never heard
 /// of it, so the shell asks only when the manager it actually bound is new enough — the same rule
@@ -410,6 +410,7 @@ pub struct BridgeState {
     /// `launcher_focus` events not yet answered. Counted like `terminal_requests`, and for the
     /// same reason: two presses of `Super+Space` are two people asking, and a flag drops one.
     launcher_focus: u32,
+    launcher_requests: Vec<LauncherPopupRequest>,
     /// Bumped on every toplevel or reveal event, so a host can redraw when the window list
     /// changed and only then, instead of on a timer.
     generation: u64,
@@ -433,6 +434,14 @@ pub struct BridgeState {
     /// The ordinary clipboard and drag-and-drop globals. The shell is a normal Wayland client as
     /// well as a privileged one, and this is the normal half.
     pub(crate) data: DataDeviceBridge,
+}
+
+/// A scoped request from a file manager or other compositor client.
+#[derive(Clone, Debug)]
+pub struct LauncherPopupRequest {
+    pub mode: templar_types::launcher::LauncherMode,
+    pub scope: Option<std::path::PathBuf>,
+    pub query: String,
 }
 
 /// What the compositor says the window overview is showing (version 8).
@@ -1084,9 +1093,37 @@ impl Dispatch<TemplarShellManagerV2, ()> for BridgeState {
                 };
                 state.generation = state.generation.wrapping_add(1);
             }
-            // Version 8: `Super+Space` revealed Home and wants the caret in the Apps bar.
+            // Version 8: open the independent launcher without revealing Home.
             templar_shell_manager_v2::Event::LauncherFocus => {
                 state.launcher_focus = state.launcher_focus.saturating_add(1);
+            }
+            templar_shell_manager_v2::Event::LauncherRequest {
+                mode,
+                scope_uri,
+                query,
+            } => {
+                let mode = match mode {
+                    WEnum::Value(templar_shell_manager_v2::LauncherMode::Apps) => {
+                        templar_types::launcher::LauncherMode::Apps
+                    }
+                    WEnum::Value(templar_shell_manager_v2::LauncherMode::Files) => {
+                        templar_types::launcher::LauncherMode::Files
+                    }
+                    _ => return,
+                };
+                let scope = if scope_uri.is_empty() {
+                    None
+                } else {
+                    let Some(path) = templar_types::uri_list::decode_uri(&scope_uri) else {
+                        return;
+                    };
+                    Some(path)
+                };
+                // Only the latest popup request can be presented on this seat.
+                state.launcher_requests.clear();
+                state
+                    .launcher_requests
+                    .push(LauncherPopupRequest { mode, scope, query });
             }
             // Version 9: the gate opened a rail, or the open one closed. Kept apart from
             // `generation` on purpose — see `rail_generation`.
@@ -2337,7 +2374,27 @@ impl ShellBridge {
         Ok(())
     }
 
-    /// How many times `Super+Space` asked for the Apps bar since this was last called. Drained
+    pub fn set_window_transition(&self, kind: u32, particle_size: u32) -> Result<()> {
+        if self.protocol_version() < 15 {
+            return Ok(());
+        }
+        let kind = match kind {
+            0 => templar_shell_manager_v2::WindowTransition::Off,
+            1 => templar_shell_manager_v2::WindowTransition::Simple,
+            _ => templar_shell_manager_v2::WindowTransition::Essence,
+        };
+        self.shell_manager()?
+            .set_window_transition(kind, particle_size.clamp(1, 24));
+        self.connection
+            .flush()
+            .context("flushing window transition settings")
+    }
+
+    pub fn take_launcher_requests(&mut self) -> Vec<LauncherPopupRequest> {
+        std::mem::take(&mut self.state.launcher_requests)
+    }
+
+    /// How many times `Super+Space` asked for the launcher since this was last called. Drained
     /// for the same reason the terminal requests are: an unanswered one would be answered again
     /// on the next frame.
     pub fn take_launcher_focus(&mut self) -> u32 {

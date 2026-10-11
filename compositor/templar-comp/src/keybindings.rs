@@ -464,7 +464,6 @@ impl<B: Backend + 'static> TemplarCompState<B> {
                 crate::space_sync::sync_after_change(self);
             }
             RecoveryAction::RevealLauncher => {
-                self.reveal_home(RevealHome::Show);
                 crate::protocols_shell::send_launcher_focus(self);
             }
             RecoveryAction::RevealHome => self.reveal_home(RevealHome::Toggle),
@@ -1350,6 +1349,32 @@ mod tests {
         assert_eq!(
             tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_x), 220, false),
             SuperTapDecision::Forward
+        );
+    }
+
+    #[test]
+    fn super_space_ends_momentary_home_before_requesting_launcher() {
+        let mut tap = SuperTapTracker::default();
+        assert_eq!(
+            tap.update(KeyState::Pressed, super_l(), 0, false),
+            SuperTapDecision::Reveal
+        );
+        assert_eq!(
+            tap.update(KeyState::Pressed, Keysym::new(keysyms::KEY_space), 20, true),
+            SuperTapDecision::ForwardEndingReveal
+        );
+        assert_eq!(
+            tap.update(
+                KeyState::Released,
+                Keysym::new(keysyms::KEY_space),
+                40,
+                false
+            ),
+            SuperTapDecision::Forward
+        );
+        assert_eq!(
+            tap.update(KeyState::Released, super_l(), 60, false),
+            SuperTapDecision::Intercept
         );
     }
 

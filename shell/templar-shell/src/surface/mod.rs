@@ -18,6 +18,7 @@ pub mod file_browser;
 pub mod files_screen;
 pub mod fonts;
 pub mod glyphs;
+pub mod launcher_screen;
 pub mod lock_screen;
 pub mod notification_feed;
 pub mod notification_popup;

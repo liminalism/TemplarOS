@@ -25,7 +25,8 @@ use templar_client::proxies::{
     FilesActionsProxy, FilesIndexProxy, FilesOperationsProxy, FilesRecentsProxy, FilesSearchProxy,
     FilesTrashProxy, FilesVolumesProxy, HistoryProxy, HomeFieldProxy, HomeGardenProxy,
     HostDeploymentsProxy, HostDriversProxy, HostHardwareProxy, HostStorageProxy, HostUpdatesProxy,
-    LauncherProxy, PowerProxy, ProjectsProxy, ProvidersProxy, ResourcesProxy, SettingsProxy,
+    LauncherProxy, LifecycleProxy, PowerProxy, ProjectsProxy, ProvidersProxy, ResourcesProxy,
+    SettingsProxy,
 };
 use templar_types::ProviderRole;
 
@@ -462,6 +463,12 @@ enum ResCommand {
 
 #[derive(Debug, Subcommand)]
 enum FilesCommand {
+    /// Open the global launcher in Files mode within this directory.
+    SearchHere {
+        directory: PathBuf,
+        #[arg(long, default_value = "")]
+        query: String,
+    },
     /// Every volume with its free space and reserve.
     Volumes,
     /// Recent file operations and their progress.
@@ -1846,8 +1853,36 @@ async fn res_command(command: ResCommand, json: bool) -> Result<()> {
 }
 
 async fn files_command(command: FilesCommand, json: bool) -> Result<()> {
+    if let FilesCommand::SearchHere { directory, query } = &command {
+        let directory = if directory.is_absolute() {
+            directory.clone()
+        } else {
+            std::env::current_dir()?.join(directory)
+        };
+        anyhow::ensure!(
+            directory.is_dir(),
+            "Search Here requires an existing directory"
+        );
+        let connection = bus::session().await?;
+        let lifecycle = LifecycleProxy::new(&connection).await?;
+        lifecycle
+            .open_launcher_v1(
+                "files",
+                &templar_types::uri_list::encode_path(&directory),
+                query,
+            )
+            .await?;
+        return emit(
+            json,
+            &serde_json::json!({"opened": true}),
+            "Opened Files search in the launcher",
+        );
+    }
     let connection = bus::session().await?;
     match command {
+        FilesCommand::SearchHere { .. } => {
+            unreachable!("handled before connecting to the session bus")
+        }
         FilesCommand::Volumes => {
             let proxy = FilesVolumesProxy::new(&connection).await?;
             let volumes = files::parse_volumes(&files::VolumesClient::list(&proxy).await?)?;
@@ -2796,6 +2831,10 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
 
+    mod bash_fixture {
+        include!("bash_hook_fixture.rs");
+    }
+
     #[test]
     fn a_closed_stdout_pipe_kills_quietly_instead_of_panicking() {
         // `signal` returns the previous disposition, so calling it a second time proves the
@@ -2944,10 +2983,9 @@ mod tests {
     /// and it must leave every shell that is not an interactive TemplarOS Bash alone. A `templar` on
     /// PATH that only records its arguments is what makes this observable without a session.
     ///
-    /// The hook is *loaded the way the installed one is*: as an rc file read by an interactive,
-    /// non-login bash, which is the only kind a graphical terminal spawns. Sourcing it by hand
-    /// inside `bash -c` — what this test used to do — passes even when nothing on the host ever
-    /// reads the file, which is exactly how a day of terminal work reached the garden as silence.
+    /// The hook is loaded during interactive, non-login Bash startup, before the first prompt.
+    /// The fixture restores its requested desktop after /etc/bash.bashrc, preventing installed
+    /// hooks from preloading the same functions. Package delivery is tested separately below.
     #[test]
     fn garden_s_prompt_hook_speaks_once_per_directory_and_stays_quiet_elsewhere() {
         let hook = concat!(
@@ -2965,18 +3003,9 @@ mod tests {
         let trace = tmp.path().join("trace");
 
         let run = |desktop: &str, args: &[&str]| {
-            std::process::Command::new("bash")
+            bash_fixture::command(tmp.path(), Path::new(hook), desktop)
                 .args(args)
                 .env("TRACE_FILE", &trace)
-                .env("XDG_CURRENT_DESKTOP", desktop)
-                .env(
-                    "PATH",
-                    format!(
-                        "{}:{}",
-                        tmp.path().display(),
-                        std::env::var("PATH").unwrap()
-                    ),
-                )
                 .current_dir(tmp.path())
                 // The two negative cases fail loudly on purpose; their noise is not a result.
                 .stderr(std::process::Stdio::null())
@@ -2987,39 +3016,37 @@ mod tests {
             "__templaros_garden_prompt; __templaros_garden_prompt; cd /; __templaros_garden_prompt";
 
         // Not a TemplarOS session: the hook is not even defined, so calling it fails.
-        assert!(
-            !run(
-                "GNOME",
-                &["--noprofile", "--rcfile", hook, "-i", "-c", script]
-            )
-            .success()
-        );
+        assert!(!run("GNOME", &["-i", "-c", script]).success());
         assert!(!trace.exists() || std::fs::read_to_string(&trace).unwrap().is_empty());
 
         // A non-interactive shell reads no rc file at all, and would be left alone even if it did.
-        assert!(
-            !run(
-                "TemplarOS",
-                &["--noprofile", "--rcfile", hook, "-c", script]
-            )
-            .success()
-        );
+        assert!(!run("TemplarOS", &["-c", script]).success());
 
         // Interactive and TemplarOS: one line per directory, and the repeat says nothing.
-        assert!(
-            run(
-                "TemplarOS",
-                &["--noprofile", "--rcfile", hook, "-i", "-c", script]
-            )
-            .success()
-        );
+        assert!(run("TemplarOS", &["-i", "-c", script]).success());
         let lines: Vec<String> = std::fs::read_to_string(&trace)
             .unwrap()
             .lines()
             .map(str::to_owned)
             .collect();
         assert_eq!(
-            lines,
+            lines
+                .iter()
+                .filter(|line| line.starts_with("garden journal-init "))
+                .count(),
+            1,
+            "the checkout hook initializes its journal once: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.starts_with("notify ")),
+            "the completion hook is not part of this fixture: {lines:?}"
+        );
+        let observations: Vec<_> = lines
+            .into_iter()
+            .filter(|line| line.starts_with("garden observe "))
+            .collect();
+        assert_eq!(
+            observations,
             [
                 format!(
                     "garden observe terminal-entered {} --role terminal",
@@ -3065,16 +3092,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let rcfile = tmp.path().join("bash.bashrc");
         std::fs::write(&rcfile, block).unwrap();
-        let status = std::process::Command::new("bash")
-            .args([
-                "--noprofile",
-                "--rcfile",
-                &rcfile.to_string_lossy(),
-                "-i",
-                "-c",
-                "declare -F __templaros_garden_prompt",
-            ])
-            .env("XDG_CURRENT_DESKTOP", "TemplarOS")
+        let status = bash_fixture::command(tmp.path(), &rcfile, "TemplarOS")
+            .args(["-i", "-c", "declare -F __templaros_garden_prompt"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
@@ -3118,16 +3137,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let rcfile = tmp.path().join("bash.bashrc");
         std::fs::write(&rcfile, block).unwrap();
-        let status = std::process::Command::new("bash")
-            .args([
-                "--noprofile",
-                "--rcfile",
-                &rcfile.to_string_lossy(),
-                "-i",
-                "-c",
-                "declare -F __templaros_completion_precmd",
-            ])
-            .env("XDG_CURRENT_DESKTOP", "TemplarOS")
+        let status = bash_fixture::command(tmp.path(), &rcfile, "TemplarOS")
+            .args(["-i", "-c", "declare -F __templaros_completion_precmd"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()

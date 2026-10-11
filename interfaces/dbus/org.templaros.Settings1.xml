@@ -23,6 +23,13 @@
       <arg name="value_json" type="s" direction="in"/>
       <arg name="origin" type="s" direction="in"/>
     </method>
+    <!-- Atomically apply LauncherMutation JSON to current shell.launcher.preferences, with
+         the same validation, history and Undo as Set. Returns raw LauncherPreferences JSON. -->
+    <method name="UpdateLauncherV1">
+      <arg name="command_json" type="s" direction="in"/>
+      <arg name="origin" type="s" direction="in"/>
+      <arg name="preferences_json" type="s" direction="out"/>
+    </method>
     <!-- Every known key at its effective value, as (key, value_json) pairs. -->
     <method name="List">
       <arg name="values" type="a(ss)" direction="out"/>

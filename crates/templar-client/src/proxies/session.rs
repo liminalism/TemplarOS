@@ -287,6 +287,9 @@ mod settings {
 
         fn set(&self, key: &str, value_json: &str, origin: &str) -> zbus::Result<()>;
 
+        /// Apply one LauncherMutation to the owner's current preferences; returns preferences JSON.
+        fn update_launcher_v1(&self, command_json: &str, origin: &str) -> zbus::Result<String>;
+
         fn list(&self) -> zbus::Result<Vec<(String, String)>>;
 
         /// Observation<Vec<SettingObservation<SettingValue>>> JSON from one owned read.
@@ -520,7 +523,7 @@ mod notifications {
 mod lifecycle {
     use zbus::proxy;
 
-    /// `org.templaros.Session.Lifecycle1` — ending, suspending and locking the session.
+    /// `org.templaros.Session.Lifecycle1` — session navigation, ending, suspending and locking.
     ///
     /// The `Can*` methods return logind's own `"yes" | "no" | "na" | "challenge"` rather than a
     /// boolean, so a caller can tell "this machine cannot" from "this would need
@@ -540,6 +543,9 @@ mod lifecycle {
         fn suspend(&self) -> zbus::Result<()>;
 
         fn lock(&self) -> zbus::Result<()>;
+
+        /// Session-owned navigation relay to the authenticated compositor control channel.
+        fn open_launcher_v1(&self, mode: &str, scope_uri: &str, query: &str) -> zbus::Result<()>;
 
         /// The trusted shell observed the compositor's lock coverage barrier.
         fn notify_locked(&self) -> zbus::Result<()>;
