@@ -3941,6 +3941,17 @@ record legeos.papercut.optmem-compression-of180-181-exceeded-its280/1 : papercut
     created_at 2026-10-08
 }
 
+record legeos.papercut.optmem-nap-rejected-a-dense-final-compression/1 : papercut {
+    title "OptMem nap rejected a dense final compression twice (285 and281 bytes…"
+    state verified
+    statement """
+        OptMem nap rejected a dense final compression twice (285 and281 bytes against280). Preflight the final UTF-8 byte count before calling nap; trimming obsolete intermediate status leaves space for commit references and native/physical qualification limits.
+        """
+    observed_at git:db81db062612bee1a0c66636b5e0511a4b089488
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.optmem-note-nap-enforce-a-280-byte-utf-8-limit/1 : papercut {
     title "OptMem note/nap enforce a 280-byte UTF-8 limit; two proposed summaries…"
     state verified

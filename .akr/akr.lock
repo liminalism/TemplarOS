@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.1"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:b75345fce80d1b82632d5ab914c158c32536b98e9c188bc1408770f8f64d643c"
+    source_graph "sha256:c6fcc352140336d7681a58a211ef88c36457764bdd63e589e26b4a7cf24cf042"
 }
 
 source ".akr/project.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:c47d8acd99ee71d8627728ec3ad0b3a0d5abd6d7fe95d53633ed410d8d738257"
-    records 707
+    hash "sha256:bc4f6c30076b7effbd859b43607d563f891df14f0d01ae8a3611a174541bb015"
+    records 708
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -13615,6 +13615,11 @@ seal @legeos.papercut.on-this-ntfs-fuse-workspace-systemd-analyze/1 {
 seal @legeos.papercut.optmem-compression-of180-181-exceeded-its280/1 {
     state verified
     hash "sha256:b9448b2acfc4bd1c6865ab73aa621626dc1f576adb1055dcd9c6dbd986a87b26"
+}
+
+seal @legeos.papercut.optmem-nap-rejected-a-dense-final-compression/1 {
+    state verified
+    hash "sha256:cb49e2bf1dba639885a9eadbadb69b4a4d1700568fefbac89a71ddaef369ab33"
 }
 
 seal @legeos.papercut.optmem-note-nap-enforce-a-280-byte-utf-8-limit/1 {
