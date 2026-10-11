@@ -1601,7 +1601,7 @@ record legeos.observation.hostd-stages-candidates-outside-the-declared-deploymen
 
 record legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/5 : observation {
     title "Current native deployment layout fixtures pass; earlier guest boot evidence remains historical and installed gates open"
-    state verified
+    state superseded
     statement """
         Revalidated on 2026-10-08 at Git12295f351ab14e649f900573190060cd88a7251e plus the shared working tree, with exact source hashes in docs/measurements/index-closure-2026-10-08-wp17.json. Production hostd real_config reads DeploymentLayout rather than state_dir/deployments. The current native factory fixture changes installed candidate/subvolume/ESP declarations and checks both the real factory and engine paths; layout, boot entry, transaction and root-paired account tests pass in the native109-test hostd run. Current xtask64 declaration tests pass. Mounted candidate location, @deployments/{id} boot identity and ESP identity remain distinct; no historical /var path is silently treated as a boot subvolume.
         The earlier owned QEMU candidate/rollback/interrupted-stage observations remain historical evidence from revision4 and its retained native guest artifacts. Those guest boot journeys were not rerun at this current source snapshot. This revision supplies current source/owned-fixture evidence for the declared layout and temporary development/provisioning exceptions, not a new installed or hardware result. Full installed writer/promotion-health/schema-upgrade, Canonical shim/GRUB Secure Boot, reference laptop and physical daily-driver acceptance remain open. Root read-only and guest-only results are not promoted to laptop qualification.
@@ -1617,6 +1617,24 @@ record legeos.observation.hostd-stages-candidates-outside-the-declared-deploymen
         @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/4
     ]
     verified_by [ @legeos.evidence.index-wp17-cli-hostd-xtask-20261008/1 ]
+    author "dk"
+}
+
+record legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/6 : observation {
+    title "Current native deployment factory and ownership fixtures pass; installed gates remain open"
+    state verified
+    statement "Revalidated on 2026-10-11 at Git432b58b51a462d0513a47d21c7e911ed93b88fda. Native scripts/cargo-native.sh test -p templar-hostd -p xtask produced105 hostd unit tests,4 root-paired account integration tests and64 xtask tests passing. Production hostd real_config consumes DeploymentLayout, and the current owned factory/layout/boot-entry/transaction/account fixtures pass at this source. The existing declaration checks pass; no code declaration mismatch was found by check-ownership, whose stale preexisting supporting observation triggered this rerun. Exact current source hashes and command results are recorded in docs/measurements/unified-launcher-2026-10-11.json.\nThe earlier owned QEMU candidate/rollback/interrupted-stage observations remain historical evidence in revisions4-5 and retained guest artifacts. No guest/installed boot journey, promotion-health/schema-upgrade, Canonical shim/GRUB Secure Boot, reference laptop or physical daily-driver acceptance was rerun. Persistent machine-state bindings and candidate/subvolume/ESP identity remain declared separately. This observation is current source/owned-fixture evidence only; root read-only, installed writer and physical qualification remain open."
+    observed_at git:432b58b51a462d0513a47d21c7e911ed93b88fda
+    method command
+    watches [
+        "services/templar-hostd/src/**",
+        "distro/deploy/layout.toml",
+        "distro/deploy/components.toml"
+    ]
+    supersedes [
+        @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/5
+    ]
+    verified_by [ @legeos.evidence.unified-launcher-ownership-fixtures-20261011/1 ]
     author "dk"
 }
 
@@ -2690,6 +2708,34 @@ record legeos.observation.ubuntu-2604-splits-firmware-and-modules-into-per-vendo
         @legeos.observation.ubuntu-2604-splits-firmware-and-modules-into-per-vendor-packages/1
     ]
     verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
+}
+
+record legeos.observation.unified-launcher-homegarden-20261011/1 : observation {
+    title "Unified launcher, intentional favorites and production GLES Essence are implemented and natively qualified"
+    state verified
+    statement "At the recorded implementation commit, TemplarOS has one focused PixelKit ShellOverlay launcher shared by Super+Space, rail and Home actions. Native interaction tests and the private real compositor/shell/Index1/Associations journey passed; immediate typed input retains text when Tab changes Apps/Files, opens native paths through the broker, preserves underlying maximized geometry/Home state and restores focus on dismissal. Ordinary activation produces no shortcut operation. App/terminal native cwd and literal argv favorites, copied Home profiles, aliases/hidden metadata and atomic Settings owner mutations are persisted; rails reconcile them with genuine TaskKeys and keep explicit groups. Current FSearch fallback/provider/fork packaging is removed, with Index1 and historical source/evidence retained. Settings consumes launcher and motion values, prunes unsupported ordinary controls and groups destinations. Production Essence uses a shared reversible plan and bounded GLES snapshots/shaders with6 logical pixel default grain, drawing-only size changes and simple/off/reduced-motion fallbacks. Native production shader endpoint/orientation, grain4/12, obstacle and initialization-recovery pixels passed. All2081 targeted tests, builds, offscreen fixtures and declared consistency gates passed. The real wl_keyboard regression includes modifier advertisement after an intercepted Super release, keeping reserved key events swallowed. Installed deployment, physical output/reset and integrated-GPU performance/feel remain unqualified and no live desktop was changed."
+    observed_at git:432b58b51a462d0513a47d21c7e911ed93b88fda
+    method command
+    watches [
+        "shell/templar-shell/src/**",
+        "compositor/templar-comp/src/**",
+        "crates/templar-field/src/**",
+        "crates/templar-types/src/launcher.rs",
+        "crates/templar-session-core/src/settings.rs",
+        "services/templar-sessiond/src/apis/settings.rs",
+        "apps/templar-settings/src/**",
+        "interfaces/wayland/templar-shell-v2.xml",
+        "distro/forks/manifest.toml",
+        "tests/integration/nested-launcher.py"
+    ]
+    verified_by [
+        @legeos.evidence.unified-launcher-favorites-20261011/1,
+        @legeos.evidence.unified-launcher-files-context-20261011/1,
+        @legeos.evidence.unified-launcher-global-launcher-20261011/1,
+        @legeos.evidence.unified-launcher-native-gates-20261011/1,
+        @legeos.evidence.unified-launcher-settings-effects-20261011/1
+    ]
+    author "dk"
 }
 
 record legeos.observation.unprivileged-fanotify-costs-more-per-directory-than-inotify/1 : observation {

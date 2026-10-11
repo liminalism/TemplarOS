@@ -19395,7 +19395,7 @@ record legeos.work.unified-launcher-homegarden-20261009/1 : work {
 
 record legeos.work.unified-launcher-homegarden-20261009/2 : work {
     title "Unify global launcher, Homegarden, gesture rail favorites and Essence window transitions"
-    state active
+    state completed
     scope [
         path "apps/templar-settings/**",
         path "cli/templar/**",
@@ -19424,6 +19424,7 @@ record legeos.work.unified-launcher-homegarden-20261009/2 : work {
                 """
             method command
             command "cargo test -p templar-shell; cargo test -p templar-session-core"
+            verified_by [ @legeos.evidence.unified-launcher-favorites-20261011/1 ]
         }
         check files-context {
             statement """
@@ -19431,6 +19432,7 @@ record legeos.work.unified-launcher-homegarden-20261009/2 : work {
                 """
             method command
             command "cargo test -p templar-shell; cargo xtask check-actions; cargo xtask check-packaging"
+            verified_by [ @legeos.evidence.unified-launcher-files-context-20261011/1 ]
         }
         check global-launcher {
             statement """
@@ -19438,6 +19440,7 @@ record legeos.work.unified-launcher-homegarden-20261009/2 : work {
                 """
             method command
             command "cargo test -p templar-shell; cargo test -p templar-comp"
+            verified_by [ @legeos.evidence.unified-launcher-global-launcher-20261011/1 ]
         }
         check native-gates {
             statement """
@@ -19445,6 +19448,7 @@ record legeos.work.unified-launcher-homegarden-20261009/2 : work {
                 """
             method command
             command "cargo fmt --all --check; cargo xtask check-actions; cargo xtask check-interface-signatures; akr validate"
+            verified_by [ @legeos.evidence.unified-launcher-native-gates-20261011/1 ]
         }
         check settings-effects {
             statement """
@@ -19452,6 +19456,7 @@ record legeos.work.unified-launcher-homegarden-20261009/2 : work {
                 """
             method command
             command "cargo test -p templar-effects -p templar-comp -p templar-session-core -p templar-settings"
+            verified_by [ @legeos.evidence.unified-launcher-settings-effects-20261011/1 ]
         }
     }
     depends_on [

@@ -1938,7 +1938,7 @@ record legeos.decision.three-ownership-tiers/2 : decision {
     ]
     supersedes [ @legeos.decision.three-ownership-tiers/1 ]
     supported_by [
-        @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/5
+        @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/6
     ]
     author "dk"
     source {

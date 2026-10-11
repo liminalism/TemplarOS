@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.1"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:624e9c6525c089ac1be3787eb03018fc0a8ac5e7f983b7f18b6858eac887d9f2"
+    source_graph "sha256:b75345fce80d1b82632d5ab914c158c32536b98e9c188bc1408770f8f64d643c"
 }
 
 source ".akr/project.akr" {
@@ -24,13 +24,13 @@ source ".akr/records/legeos/constraints.akr" {
 }
 
 source ".akr/records/legeos/decisions.akr" {
-    hash "sha256:ca418ca517f62e53a9f07c1788aee8a866fcc21ee6633548c527f18d4699f4ca"
+    hash "sha256:c93eff3b6bf26d1ee54e4e7a547ece735720bfb826a4c37c0b7f89ecf1e6ae99"
     records 70
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:49f62ba87e45b03aeaeeba3bf01c430371110dae8cb3dc4579bf829de9809a03"
-    records 598
+    hash "sha256:88f8d70af95d7fe23d1e924901600eba203331da4b6510475a9c81a8efc4e0a8"
+    records 604
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -39,8 +39,8 @@ source ".akr/records/legeos/milestones.akr" {
 }
 
 source ".akr/records/legeos/observations.akr" {
-    hash "sha256:8d76298f007fcb6fca8922788bc5b0bf60919f5c0948ced6af96ea17243085ac"
-    records 140
+    hash "sha256:f333f9df4ef499ed9417472eb2c4aea15b12d2fd2503e8553c2fa1c95f138c99"
+    records 142
 }
 
 source ".akr/records/legeos/papercuts.akr" {
@@ -59,7 +59,7 @@ source ".akr/records/legeos/requirements.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:7d84f00705e1c59789a0116be8d75d5314d631d0e9498e14f4a9c26baf6ba11f"
+    hash "sha256:9b02f55a8b02a364495dee2439e7638b88c0d9f4be2d660e0f9f24d07bb1d1ff"
     records 395
 }
 
@@ -1115,8 +1115,8 @@ resolution @legeos.decision.three-ownership-tiers/1 {
 
 resolution @legeos.decision.three-ownership-tiers/1 {
     slot supported_by
-    to @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/5
-    hash "sha256:9a593063012fe1a2830cfa41a4febe2909319a8a262464aff1bfeda4847919cc"
+    to @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/6
+    hash "sha256:5e870fc84e36829b014dac77b357797e194d34750e0fce28405af223a17e360e"
 }
 
 resolution @legeos.decision.three-ownership-tiers/1 {
@@ -5717,8 +5717,8 @@ resolution @legeos.work.host-update-transaction/2 {
 
 resolution @legeos.work.hostd-deployments-follow-the-layout-20261002/1 {
     slot derived_from
-    to @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/5
-    hash "sha256:9a593063012fe1a2830cfa41a4febe2909319a8a262464aff1bfeda4847919cc"
+    to @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/6
+    hash "sha256:5e870fc84e36829b014dac77b357797e194d34750e0fce28405af223a17e360e"
 }
 
 resolution @legeos.work.hostd-deployments-follow-the-layout-20261002/1 {
@@ -6060,7 +6060,7 @@ resolution @legeos.work.native-pixelkit-filechooser-cutover-20261007/1 {
 resolution @legeos.work.ownership-tier-declaration-20261002/1 {
     slot implements
     to @legeos.decision.three-ownership-tiers/2
-    hash "sha256:8c0c989e17385eb3d371c55a4d1338e3d4bdc0753a4c185767b84b3f11db3ba0"
+    hash "sha256:c72194ee108b7fa6895b0fb089c0d03e17b9cb5c1d17c05f7b0fa01f40b9c337"
 }
 
 resolution @legeos.work.ownership-tier-declaration-20261002/1 {
@@ -6072,7 +6072,7 @@ resolution @legeos.work.ownership-tier-declaration-20261002/1 {
 resolution @legeos.work.ownership-tiers-20261002/1 {
     slot implements
     to @legeos.decision.three-ownership-tiers/2
-    hash "sha256:8c0c989e17385eb3d371c55a4d1338e3d4bdc0753a4c185767b84b3f11db3ba0"
+    hash "sha256:c72194ee108b7fa6895b0fb089c0d03e17b9cb5c1d17c05f7b0fa01f40b9c337"
 }
 
 resolution @legeos.work.partition-manager-in-the-installer-20260909/1 {
@@ -6234,7 +6234,7 @@ resolution @legeos.work.read-only-system-deployment-20261002/1 {
 resolution @legeos.work.read-only-system-deployment-20261002/1 {
     slot implements
     to @legeos.decision.three-ownership-tiers/2
-    hash "sha256:8c0c989e17385eb3d371c55a4d1338e3d4bdc0753a4c185767b84b3f11db3ba0"
+    hash "sha256:c72194ee108b7fa6895b0fb089c0d03e17b9cb5c1d17c05f7b0fa01f40b9c337"
 }
 
 resolution @legeos.work.read-only-system-deployment-20261002/1 {
@@ -7116,7 +7116,7 @@ resolution @legeos.work.terminal-workload-identity-20261002/1 {
 resolution @legeos.work.terminal-workload-identity-20261002/1 {
     slot implements
     to @legeos.decision.three-ownership-tiers/2
-    hash "sha256:8c0c989e17385eb3d371c55a4d1338e3d4bdc0753a4c185767b84b3f11db3ba0"
+    hash "sha256:c72194ee108b7fa6895b0fb089c0d03e17b9cb5c1d17c05f7b0fa01f40b9c337"
 }
 
 resolution @legeos.work.terminal-workload-identity-20261002/1 {
@@ -8134,7 +8134,7 @@ seal @legeos.decision.three-ownership-tiers/1 {
 
 seal @legeos.decision.three-ownership-tiers/2 {
     state active
-    hash "sha256:8c0c989e17385eb3d371c55a4d1338e3d4bdc0753a4c185767b84b3f11db3ba0"
+    hash "sha256:c72194ee108b7fa6895b0fb089c0d03e17b9cb5c1d17c05f7b0fa01f40b9c337"
 }
 
 seal @legeos.decision.toolchain-licence-namespace/1 {
@@ -10922,6 +10922,36 @@ seal @legeos.evidence.trash1-surfaces-20260831/1 {
     hash "sha256:64f2b211bf9beea0f731905380a28ffa90135bcd791390653442bd087378a445"
 }
 
+seal @legeos.evidence.unified-launcher-favorites-20261011/1 {
+    state verified
+    hash "sha256:b64fa0373817f4239bffbd88fec1a25d6411f61446f6da8460e8285e7dd367a4"
+}
+
+seal @legeos.evidence.unified-launcher-files-context-20261011/1 {
+    state verified
+    hash "sha256:f2cee8e7ef759d005c7602c958712ab66f79656c406ba7a9e2afa65e195584d7"
+}
+
+seal @legeos.evidence.unified-launcher-global-launcher-20261011/1 {
+    state verified
+    hash "sha256:f18f8d089ab96e20e83df4378434b5e6142d469d254b78fcc9f556e92b8080f8"
+}
+
+seal @legeos.evidence.unified-launcher-native-gates-20261011/1 {
+    state verified
+    hash "sha256:feb8ecac6b0706f238c3c67a27aeb635056625affe6f46f2d581616da9d1d84c"
+}
+
+seal @legeos.evidence.unified-launcher-ownership-fixtures-20261011/1 {
+    state verified
+    hash "sha256:7608553d4f03a16c06332aa00b6b7c2b6dca2df0489388298b21ea56e2600d78"
+}
+
+seal @legeos.evidence.unified-launcher-settings-effects-20261011/1 {
+    state verified
+    hash "sha256:3e74e53f7a892735cd04a309de1b14cde594e2a325cf2b759a0158de9f1a141c"
+}
+
 seal @legeos.evidence.update-templaros-host-gates-20260911/1 {
     state verified
     hash "sha256:b049b29003b4b11f2d0625949a834114bda01d3937c71d51fe5f0c8350e95b66"
@@ -11573,8 +11603,13 @@ seal @legeos.observation.hostd-stages-candidates-outside-the-declared-deployment
 }
 
 seal @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/5 {
+    state superseded
+    hash "sha256:2ea0686a34389ab223d7669ddfc05864db33af53224819c141c9b511ef9152ae"
+}
+
+seal @legeos.observation.hostd-stages-candidates-outside-the-declared-deployments-subvolume/6 {
     state verified
-    hash "sha256:9a593063012fe1a2830cfa41a4febe2909319a8a262464aff1bfeda4847919cc"
+    hash "sha256:5e870fc84e36829b014dac77b357797e194d34750e0fce28405af223a17e360e"
 }
 
 seal @legeos.observation.identity-never-resolves-in-a-nested-session/1 {
@@ -11840,6 +11875,11 @@ seal @legeos.observation.ubuntu-2604-splits-firmware-and-modules-into-per-vendor
 seal @legeos.observation.ubuntu-2604-splits-firmware-and-modules-into-per-vendor-packages/2 {
     state verified
     hash "sha256:18b9f9506fa53d274e6e20cb02aa73efa98f1141707d08c772d34024b970fa1c"
+}
+
+seal @legeos.observation.unified-launcher-homegarden-20261011/1 {
+    state verified
+    hash "sha256:4ddf094eaa93d464b3f2cc66e9d5cad7d97a7bda2e186e795e9b7716742a3fd5"
 }
 
 seal @legeos.observation.unprivileged-fanotify-costs-more-per-directory-than-inotify/1 {
@@ -17058,8 +17098,8 @@ seal @legeos.work.unified-launcher-homegarden-20261009/1 {
 }
 
 seal @legeos.work.unified-launcher-homegarden-20261009/2 {
-    state active
-    hash "sha256:ffeeaf921c5823b71481032c13315e75592f3c9262b3518a7789606c75f6b8d3"
+    state completed
+    hash "sha256:d92f8da05b35f7da99f831a4e5e27c007107196059496fbf79f71a56e188314c"
 }
 
 seal @legeos.work.wallpaper-default-quantization/1 {
