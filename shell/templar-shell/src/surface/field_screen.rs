@@ -205,6 +205,8 @@ pub enum FieldAction {
     /// Dismiss exactly one notification (`Notifications1.Dismiss`); the bulk clear stays the
     /// declared `notifications.clear` action.
     DismissNotification(u32),
+    /// Invoke the default action or activate the notification's existing source window.
+    OpenNotification(u32),
     /// Invoke one notification's declared action (`Notifications1.Invoke`), which emits the
     /// freedesktop `ActionInvoked` for the owning application.
     InvokeNotification {
@@ -6071,6 +6073,10 @@ impl FieldScreen {
                             widgets::notifications::NotificationsOutcome::Dismiss(id) => {
                                 self.confirming = None;
                                 actions.push(FieldAction::DismissNotification(id));
+                                None
+                            }
+                            widgets::notifications::NotificationsOutcome::Open(id) => {
+                                actions.push(FieldAction::OpenNotification(id));
                                 None
                             }
                             widgets::notifications::NotificationsOutcome::Invoke { id, key } => {

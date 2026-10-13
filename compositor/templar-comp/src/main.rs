@@ -33,6 +33,7 @@ mod space_sync;
 mod state;
 mod tab_metadata;
 mod test_input;
+mod video_idle;
 mod viewport;
 mod wallpaper;
 mod watchdog;

@@ -306,8 +306,10 @@ fn log_home_visibility<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
 /// window that is in it is on screen. The governor is told `visible = mapped && !shelved`, but
 /// deliberately ignores a Home reveal: a momentary view must not suspend every application.
 pub fn sync_after_change<B: Backend + 'static>(state: &mut TemplarCompState<B>) {
+    crate::video_idle::refresh(state);
     if state.name_tab_menu.open.is_some_and(|menu| {
         !state.window_service.is_visible(menu.window_id)
+            || !state.window_service.title_revealed(menu.window_id)
             || !matches!(
                 state.window_service.presentation(),
                 templar_window::Presentation::Normal

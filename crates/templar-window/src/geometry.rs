@@ -1217,8 +1217,7 @@ pub struct TabPolicy {
     /// Follow the nearest corner as the pointer approaches; when false every window keeps
     /// [`Self::fixed_corner`].
     pub follow_pointer: bool,
-    /// The predictable accessibility fallback, and the corner used while `follow_pointer`
-    /// is false.
+    /// The fixed corner used by default and while `follow_pointer` is false.
     pub fixed_corner: Corner,
     /// Show controls always instead of only on hover reveal.
     pub controls_always: bool,
@@ -1233,11 +1232,11 @@ impl Default for TabPolicy {
     fn default() -> Self {
         Self {
             placement: TabPlacement::SameCorner,
-            follow_pointer: true,
-            fixed_corner: Corner::TopRight,
+            follow_pointer: false,
+            fixed_corner: Corner::BottomRight,
             controls_always: false,
             title_always: true,
-            default_corner: Corner::TopRight,
+            default_corner: Corner::BottomRight,
         }
     }
 }
@@ -1254,18 +1253,23 @@ impl TabPolicy {
         title: u32,
         default_corner: u32,
     ) -> Self {
+        let defaults = Self::default();
         let corner = |raw: u32| {
             Corner::ALL
                 .get(usize::try_from(raw).unwrap_or(usize::MAX))
                 .copied()
-                .unwrap_or(Corner::TopRight)
+                .unwrap_or(defaults.default_corner)
         };
         Self {
             placement: match placement {
                 1 => TabPlacement::OppositeCorners,
                 _ => TabPlacement::SameCorner,
             },
-            follow_pointer: follow_pointer != 0,
+            follow_pointer: match follow_pointer {
+                0 => false,
+                1 => true,
+                _ => defaults.follow_pointer,
+            },
             fixed_corner: corner(fixed_corner),
             controls_always: controls == 1,
             title_always: title != 1,
@@ -1278,6 +1282,7 @@ impl TabPolicy {
     /// back to [`Self::default`] field by field, which is what makes Set/Reset/undo/restart
     /// converge: every reader parses the same committed bytes through this one function.
     pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Self {
+        let defaults = Self::default();
         let choice = |key: &str| lookup(key);
         let flag = |key: &str, default: bool| {
             choice(key).map_or(default, |value| match value.as_str() {
@@ -1291,17 +1296,17 @@ impl TabPolicy {
                 .as_deref()
                 .and_then(TabPlacement::from_name)
                 .unwrap_or(TabPlacement::SameCorner),
-            follow_pointer: flag("windows.tabs.follow-pointer", true),
+            follow_pointer: flag("windows.tabs.follow-pointer", defaults.follow_pointer),
             fixed_corner: choice("windows.tabs.fixed-corner")
                 .as_deref()
                 .and_then(Corner::from_name)
-                .unwrap_or(Corner::TopRight),
+                .unwrap_or(defaults.fixed_corner),
             controls_always: choice("windows.tabs.controls").is_some_and(|value| value == "always"),
             title_always: choice("windows.tabs.title").is_none_or(|value| value != "hover"),
             default_corner: choice("windows.tabs.default-corner")
                 .as_deref()
                 .and_then(Corner::from_name)
-                .unwrap_or(Corner::TopRight),
+                .unwrap_or(defaults.default_corner),
         }
     }
 }
@@ -3388,13 +3393,15 @@ mod tab_layout_tests {
             let map = map.clone();
             move |key: &str| -> Option<String> { map.get(key).cloned() }
         };
-        // Empty store: the proposed defaults.
+        // Empty store: fixed bottom-right tabs.
         let empty: HashMap<String, String> = HashMap::new();
         assert_eq!(
             TabPolicy::from_lookup(&lookup(&empty)),
             TabPolicy::default()
         );
-        assert_eq!(TabPolicy::default().default_corner, Corner::TopRight);
+        assert_eq!(TabPolicy::default().default_corner, Corner::BottomRight);
+        assert_eq!(TabPolicy::default().fixed_corner, Corner::BottomRight);
+        assert!(!TabPolicy::default().follow_pointer);
         assert!(TabPolicy::default().title_always);
         // Every field set: every field honoured.
         let full: HashMap<String, String> = [
@@ -3425,7 +3432,7 @@ mod tab_layout_tests {
         mixed.insert("windows.tabs.follow-pointer".into(), "sometimes".into());
         let policy = TabPolicy::from_lookup(&lookup(&mixed));
         assert_eq!(policy.placement, TabPlacement::SameCorner);
-        assert!(policy.follow_pointer);
+        assert!(!policy.follow_pointer);
         mixed.insert("windows.tabs.title".into(), "sometimes".into());
         assert!(TabPolicy::from_lookup(&lookup(&mixed)).title_always);
         assert_eq!(policy.fixed_corner, Corner::BottomLeft);
@@ -3436,7 +3443,7 @@ mod tab_layout_tests {
     #[test]
     fn tab_policy_parses_protocol_values_with_field_defaults() {
         assert_eq!(
-            TabPolicy::from_protocol(0, 1, 1, 0, 0, 1),
+            TabPolicy::from_protocol(0, 0, 3, 0, 0, 3),
             TabPolicy::default()
         );
         assert_eq!(

@@ -21,6 +21,7 @@ pub mod governor;
 pub mod identity;
 pub mod idle;
 mod pid;
+pub mod video_idle;
 
 pub use broadcaster::{ShellStateBroadcaster, ShellStateSink, ShellStateSnapshot, snapshot};
 pub use governor::GovernorNotifier;

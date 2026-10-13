@@ -1,6 +1,14 @@
 {
   "version": 1,
   "interfaces": {
+    "org.freedesktop.ScreenSaver": {
+      "methods": {
+        "Inhibit": "(ss)->(u)",
+        "UnInhibit": "(u)->()"
+      },
+      "signals": {},
+      "properties": {}
+    },
     "org.templaros.AppIdentity1": {
       "methods": {
         "ListApplications": "()->(a(ssssasasb))",
@@ -148,9 +156,9 @@
     },
     "org.templaros.Files.Index1": {
       "methods": {
+        "AcceptVolume": "(xs)->()",
         "ChangesSince": "(tu)->(s)",
         "CloseCursor": "(s)->()",
-        "AcceptVolume": "(xs)->()",
         "ConfigureRoot": "(sss)->(x)",
         "FetchPage": "(suu)->(s)",
         "Observe": "(bt)->()",

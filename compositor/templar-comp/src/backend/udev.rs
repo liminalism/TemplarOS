@@ -588,6 +588,12 @@ pub fn run(
     } else {
         None
     };
+    if session_activation {
+        templar_comp_integration::video_idle::spawn(
+            &handle,
+            crate::video_idle::install(&event_loop.handle()),
+        );
+    }
 
     State::create_private_globals(&dh);
     let shell_socket_name = crate::shell_socket::install(&mut state, &socket_name)?;

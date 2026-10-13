@@ -158,6 +158,11 @@ impl NameTabMenu {
         button: u32,
         pressed: bool,
     ) -> bool {
+        if self.open.is_some_and(|target| {
+            !service.is_visible(target.window_id) || !service.title_revealed(target.window_id)
+        }) {
+            self.dismiss();
+        }
         if !pressed {
             let Some((held, choice)) = self.pressed else {
                 return self.open.is_some();
@@ -170,6 +175,7 @@ impl NameTabMenu {
                 if let Some(target) = self.open
                     && target.choice_at(pos) == Some(choice)
                     && service.is_visible(target.window_id)
+                    && service.title_revealed(target.window_id)
                 {
                     service.set_window_stacking(target.window_id, choice);
                 }
@@ -182,7 +188,10 @@ impl NameTabMenu {
         };
         let choice = target.choice_at(pos);
         self.pressed = Some((button, (button == 0x110).then_some(choice).flatten()));
-        if choice.is_none() || !service.is_visible(target.window_id) {
+        if choice.is_none()
+            || !service.is_visible(target.window_id)
+            || !service.title_revealed(target.window_id)
+        {
             self.dismiss();
         }
         true
@@ -516,11 +525,10 @@ where
     chrome.taskfield_headers.clear();
     chrome.taskfield_ring.clear();
 
-    if let Some(menu) = inputs
-        .name_tab_menu
-        .open
-        .filter(|menu| inputs.window_service.is_visible(menu.window_id))
-    {
+    if let Some(menu) = inputs.name_tab_menu.open.filter(|menu| {
+        inputs.window_service.is_visible(menu.window_id)
+            && inputs.window_service.title_revealed(menu.window_id)
+    }) {
         collect_name_tab_menu(
             chrome,
             inputs.window_service,
@@ -740,7 +748,7 @@ pub fn collect_window_chrome<R: ImportMem>(
 ) where
     R::TextureId: Clone + Send + 'static,
 {
-    // All client windows share one visibility policy, including fullscreen overlays.
+    // Shared paint/input policy suppresses tabs for fullscreen clients.
     if window_service.is_client_window(window_id) {
         if window_service.title_revealed(window_id) {
             collect_name_tag(
@@ -1733,6 +1741,29 @@ mod name_tab_menu_tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn fullscreen_entry_cancels_title_menu_without_leaking_held_release() {
+        let (mut service, first, _) = windows();
+        let mut menu = NameTabMenu::default();
+        menu.show(
+            first,
+            Point { x: 100, y: 100 },
+            Rect::new(0, 0, 800, 600),
+            0x111,
+        );
+        let point = row_point(&menu, 0);
+        assert!(menu.button(&mut service, point, 0x111, false));
+        assert!(menu.button(&mut service, point, 0x110, true));
+        service.set_fullscreen(first, true);
+        assert!(menu.button(&mut service, point, 0x110, false));
+        assert!(menu.open.is_none());
+        assert_eq!(
+            service.window(first).unwrap().stacking,
+            WindowStacking::Normal
+        );
+        assert!(!menu.button(&mut service, point, 0x110, true));
     }
 
     #[test]

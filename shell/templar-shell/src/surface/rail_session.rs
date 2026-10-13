@@ -6,7 +6,8 @@
 //! the rail as far as the hand is concerned, and a pointer on its way to one must not lose it.
 //!
 //! So the rule is forgiving on purpose. The rail holds while the pointer is anywhere in its **hold
-//! region** — the band over the rail's own side, well above the row; the gate it came in through;
+//! region** — the band over the rail's own side, well above the row; the output's bottom row;
+//! the gate it came in through;
 //! every solid shape the rail's screen reports above the row, grown by a margin — and it is
 //! dismissed only after the pointer has been outside that region for [`RAIL_GRACE`] without
 //! coming back. A held button holds it too: a slider dragged off its track is still being dragged.
@@ -24,6 +25,9 @@ pub const RAIL_GRACE: Duration = Duration::from_millis(350);
 /// How far above the row the hold band reaches, logical px. Generous: the hand travelling along
 /// the rail is not travelling along a line.
 pub const RAIL_HOLD_BAND: i32 = 56;
+
+/// The entry row spans the output, so a remote horizontal swipe can reach centred controls.
+pub const RAIL_BOTTOM_ROW: i32 = 8;
 
 /// How far a reported shape (fan card, tooltip, popover) is grown before it holds the rail.
 pub const RAIL_SHAPE_MARGIN: i32 = 24;
@@ -52,6 +56,7 @@ impl Area {
 pub struct RailSession {
     band: Area,
     gate: Area,
+    bottom_row: Area,
     shapes: Vec<Area>,
     button_held: bool,
     last_pointer: Option<(f64, f64)>,
@@ -85,6 +90,12 @@ impl RailSession {
         Self {
             band,
             gate,
+            bottom_row: Area {
+                x0: 0,
+                y0: height - RAIL_BOTTOM_ROW,
+                x1: width,
+                y1: height,
+            },
             shapes: Vec::new(),
             button_held: false,
             last_pointer: None,
@@ -132,6 +143,7 @@ impl RailSession {
     pub fn holds(&self, x: f64, y: f64) -> bool {
         self.band.contains(x, y)
             || self.gate.contains(x, y)
+            || self.bottom_row.contains(x, y)
             || self.shapes.iter().any(|shape| shape.contains(x, y))
     }
 
@@ -186,7 +198,7 @@ mod tests {
         assert!(session.holds(500.0, f64::from(1080 - BAR_HEIGHT - RAIL_HOLD_BAND)));
         assert!(session.holds(1020.0, 1060.0));
         // The other side's row and the screen above the band are not the rail.
-        assert!(!session.holds(1500.0, 1075.0));
+        assert!(!session.holds(1500.0, 1050.0));
         assert!(!session.holds(500.0, 900.0));
     }
 
@@ -196,6 +208,29 @@ mod tests {
         session.pointer(500.0, 400.0, now);
         assert!(!session.expired(now + RAIL_GRACE.saturating_sub(ms(1))));
         assert_eq!(session.deadline(), Some(now + RAIL_GRACE));
+    }
+
+    #[test]
+    fn rail_session_remote_bottom_entry_holds_until_the_pointer_leaves_the_row() {
+        for (side, remote_x) in [(RailSide::Right, 200.0), (RailSide::Left, 1720.0)] {
+            let now = Instant::now();
+            let mut session = RailSession::new(side, OUTPUT, GATE);
+            session.pointer(remote_x, 1079.0, now);
+            assert_eq!(session.deadline(), None);
+            assert!(!session.expired(now + ms(5000)));
+            // The entire route from the remote entry to the rail's centre stays held.
+            session.pointer(f64::midpoint(remote_x, 960.0), 1079.0, now + ms(5000));
+            session.pointer(960.0, 1079.0, now + ms(6000));
+            assert_eq!(session.deadline(), None);
+            // Above the entry row on the opposite side, the ordinary grace still applies.
+            session.pointer(
+                remote_x,
+                f64::from(1080 - RAIL_BOTTOM_ROW - 1),
+                now + ms(7000),
+            );
+            assert_eq!(session.deadline(), Some(now + ms(7000) + RAIL_GRACE));
+            assert!(session.expired(now + ms(7000) + RAIL_GRACE));
+        }
     }
 
     #[test]

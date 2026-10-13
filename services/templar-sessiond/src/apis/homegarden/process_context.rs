@@ -1,4 +1,4 @@
-//! HomeGarden presentation evidence, deliberately NOT AppIdentity or provider authority.
+//! HomeGarden and notification presentation evidence, NOT AppIdentity or provider authority.
 //! A cgroup-escaped terminal child is associated only while every same-UID ancestry edge,
 //! process lifetime and the terminal's current exact registered cgroup remain valid.
 use anyhow::{Context as _, Result, ensure};
@@ -71,7 +71,7 @@ fn snapshot(root: &Path, pid: u32) -> Result<Snapshot> {
 
 /// Also accepts the bus's ProcessFD: a queried numeric PID is not the bus peer's lifetime.
 #[allow(unsafe_code)]
-pub(super) fn require_live(fd: impl AsFd) -> Result<()> {
+pub(crate) fn require_live(fd: impl AsFd) -> Result<()> {
     let mut poll = libc::pollfd {
         fd: fd.as_fd().as_raw_fd(),
         events: libc::POLLIN,
@@ -115,7 +115,7 @@ impl Pin {
     }
 }
 
-pub(super) struct Association {
+pub(crate) struct Association {
     pub record: InstanceRecord,
     chain: Vec<Pin>,
 }
@@ -163,7 +163,7 @@ pub(super) fn terminal(
 }
 
 /// No name, scope name, claimed instance, cwd or historical parent ever grants a link.
-pub(super) fn associate(
+pub(crate) fn associate(
     registry: &Registry,
     pid: u32,
     uid: u32,
@@ -255,7 +255,7 @@ pub(super) fn discover(
     result
 }
 
-pub(super) fn session_uid() -> Result<u32> {
+pub(crate) fn session_uid() -> Result<u32> {
     Ok(snapshot(Path::new("/proc"), std::process::id())?.uid)
 }
 

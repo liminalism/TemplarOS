@@ -1104,6 +1104,17 @@ mod store {
         hits: Vec<Hit>,
     }
 
+    fn directory_expansion_sql(ranges_param: usize) -> String {
+        format!(
+            "SELECT e.entry_id FROM json_each(?{ranges_param}) AS r
+             CROSS JOIN roots AS o
+             CROSS JOIN entries AS e INDEXED BY entries_path
+               ON e.root_id = o.root_id
+              AND e.path_bytes >= unhex(json_extract(r.value, '$[0]'))
+              AND e.path_bytes < unhex(json_extract(r.value, '$[1]'))"
+        )
+    }
+
     fn ranked_matches(
         transaction: &rusqlite::Connection,
         plan: &PlannedQuery,
@@ -1116,15 +1127,14 @@ mod store {
         let mut candidates = plan.candidates_sql.clone();
         if let Some(ranges) = directory_ranges(transaction, plan)? {
             binds.push(rusqlite::types::Value::Text(ranges));
+            // Keep each matching directory range outside the entries lookup. An ordinary JOIN
+            // lets SQLite put entries first, then parse every range for every indexed row: a
+            // broad cold search over a million-row home can keep a reader busy for minutes.
+            // CROSS JOIN fixes the loop order, and entries_path bounds each inner lookup.
             let _ = write!(
                 candidates,
-                " UNION SELECT e.entry_id FROM json_each(?{}) AS r
-                JOIN roots AS o
-                JOIN entries AS e
-                  ON e.root_id = o.root_id
-                 AND e.path_bytes >= unhex(json_extract(r.value, '$[0]'))
-                 AND e.path_bytes < unhex(json_extract(r.value, '$[1]'))",
-                binds.len()
+                " UNION {}",
+                directory_expansion_sql(binds.len())
             );
         }
         let filters = filter_sql(query, &mut binds);
@@ -1251,6 +1261,39 @@ mod store {
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_")
+    }
+
+    #[cfg(test)]
+    mod range_plan_tests {
+        use super::*;
+
+        #[test]
+        fn directory_expansion_uses_indexed_ranges_instead_of_scanning_every_entry() {
+            let dir = tempfile::tempdir().unwrap();
+            let index = crate::Index::open(
+                &dir.path().join("index.sqlite3"),
+                crate::IndexConfig::default(),
+            )
+            .unwrap();
+            index
+                .with_read(|connection| {
+                    let plan = connection
+                        .prepare(&format!(
+                            "EXPLAIN QUERY PLAN {}",
+                            directory_expansion_sql(1)
+                        ))?
+                        .query_map(["[]"], |row| row.get::<_, String>(3))?
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    assert!(
+                        plan.iter().any(|step| step.contains("SEARCH e")
+                            && step.contains("root_id=? AND path_bytes>? AND path_bytes<?")),
+                        "directory expansion must bound the entry lookup: {plan:?}"
+                    );
+                    assert!(!plan.iter().any(|step| step.contains("SCAN e")), "{plan:?}");
+                    Ok(())
+                })
+                .unwrap();
+        }
     }
 }
 

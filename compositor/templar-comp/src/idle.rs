@@ -40,7 +40,7 @@ pub fn delay_before_blanking(
 }
 
 /// The idle watcher's whole state: the configured delay, the timer currently armed (if any),
-/// whether the outputs are off right now, and how many `zwp_idle_inhibitor_v1` objects are alive.
+/// whether the outputs are off right now, and how many visible fullscreen videos inhibit it.
 #[derive(Debug)]
 pub struct IdleState {
     timeout: Option<Duration>,
@@ -104,17 +104,20 @@ impl IdleState {
         true
     }
 
-    /// One more `zwp_idle_inhibitor_v1` is alive.
-    pub fn add_inhibitor(&mut self) {
-        self.inhibitors = self.inhibitors.saturating_add(1);
-    }
-
-    /// One fewer — saturating, because a client that destroys an inhibitor it never created is a
-    /// protocol error Smithay rejects before this is reached, and an underflow here would turn a
-    /// bug into a screen that never blanks again.
-    pub fn remove_inhibitor(&mut self) {
-        self.inhibitors = self.inhibitors.saturating_sub(1);
-        self.last_activity = Instant::now();
+    /// Reconcile eligible playback sources. Pausing, leaving fullscreen, shelving and closing
+    /// all release inhibition and begin a fresh timeout without inventing seat activity.
+    /// Unchanged sources do not re-arm a timer on every video frame.
+    pub fn set_inhibitor_count(&mut self, count: usize) -> bool {
+        if self.inhibitors == count {
+            return false;
+        }
+        let was_inhibited = self.inhibited();
+        self.inhibitors = count;
+        let inhibited = self.inhibited();
+        if was_inhibited && !inhibited {
+            self.last_activity = Instant::now();
+        }
+        was_inhibited != inhibited
     }
 
     /// Mark the screen off. Returns whether it was on before, so the caller only reaches for the
@@ -194,24 +197,26 @@ mod tests {
         assert_eq!(delay_before_blanking(timeout, false, true), None);
     }
 
-    /// Inhibitors nest: a video player and a presentation tool each hold one, and the screen may
+    /// Inhibitors nest: two playing fullscreen videos each hold one, and the screen may
     /// blank again only once both are gone.
     #[test]
     fn inhibitors_nest_and_the_screen_stays_awake_until_the_last_one_goes() {
         let mut idle = IdleState::default();
         let _ = idle.set_timeout(Some(Duration::from_secs(300)));
-        idle.add_inhibitor();
-        idle.add_inhibitor();
+        assert!(idle.set_inhibitor_count(1));
+        assert!(!idle.set_inhibitor_count(2));
         assert_eq!(idle.next_delay(), None);
-        idle.remove_inhibitor();
+        assert!(!idle.set_inhibitor_count(1));
         assert_eq!(idle.next_delay(), None);
-        idle.remove_inhibitor();
+        assert!(idle.set_inhibitor_count(0));
         assert_eq!(
             idle.next_delay_at(idle.last_activity),
             Some(Duration::from_secs(300))
         );
-        // An unbalanced destroy must not underflow into "inhibited forever".
-        idle.remove_inhibitor();
+        // Repeated scene updates cannot underflow or extend the timeout forever.
+        let epoch = idle.last_activity;
+        assert!(!idle.set_inhibitor_count(0));
+        assert_eq!(idle.last_activity, epoch);
         assert_eq!(
             idle.next_delay_at(idle.last_activity),
             Some(Duration::from_secs(300))
@@ -261,8 +266,8 @@ mod tests {
         assert!(!idle.wake());
         idle.note_activity();
         assert_eq!(idle.activity_serial(), 2);
-        idle.add_inhibitor();
-        idle.remove_inhibitor();
+        idle.set_inhibitor_count(1);
+        idle.set_inhibitor_count(0);
         assert_eq!(
             idle.activity_serial(),
             2,

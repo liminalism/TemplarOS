@@ -462,6 +462,8 @@ pub async fn fetch_notifications_widget() -> (
                 app: row["app_name"].as_str().unwrap_or("Application").to_owned(),
                 summary: row["summary"].as_str().unwrap_or("Notification").to_owned(),
                 actions,
+                app_id: row["app_id"].as_str().map(str::to_owned),
+                source_instance_id: row["source_instance_id"].as_str().map(str::to_owned),
             })
         })
         .collect();

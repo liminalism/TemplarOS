@@ -4,6 +4,8 @@
     <!-- Active notification documents, newest first, encoded as JSON. Each document carries
          the full presentation row the shell renders (app_name, app_id, summary, body, icon,
          urgency, category, actions, created_ms, expires_ms) plus:
+         - source_instance_id: optional managed source for returning to an existing
+           window after a body click, bound to this event_id; presentation only.
          - format_version: the presentation document version (1 today).
          - event_id: the replacement generation. A same-ID replacement carries a new one,
            so (id, event_id) — never the highest numeric ID — distinguishes content.

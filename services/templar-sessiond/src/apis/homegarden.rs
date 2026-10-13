@@ -8,7 +8,7 @@
 //! `Lifecycle1` observes; launches with a directory argument arrive on the launch channel.
 //! Nothing here ticks.
 
-mod process_context;
+pub(crate) mod process_context;
 
 /// This private display association cannot be returned as an IdentityResolution.
 struct PresentationSender {
@@ -57,7 +57,10 @@ fn record_descendant_directory(
     }
 }
 
-fn descendant_peer_pid(credentials: &fdo::ConnectionCredentials, uid: u32) -> fdo::Result<u32> {
+pub(crate) fn descendant_peer_pid(
+    credentials: &fdo::ConnectionCredentials,
+    uid: u32,
+) -> fdo::Result<u32> {
     if credentials.unix_user_id() != Some(uid) {
         return Err(fdo::Error::AccessDenied(
             "observer is not the session user".into(),

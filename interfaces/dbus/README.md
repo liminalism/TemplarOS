@@ -10,6 +10,7 @@ bus name.
 | `org.templaros.Resources` | session | `templar-resourced` | `Resources1` |
 | `org.templaros.Files` | session | `templar-filed` | `Files.Volumes1` (+ `Operations1`, `Recents1`, `Search1` to come) |
 | `org.templaros.Host` | system | `templar-hostd` | `Host.Updates1`, `Host.Deployments1`, `Host.Drivers1`, `Host.Storage1`, `Host.Hardware1` |
+| `org.freedesktop.ScreenSaver` | session | installed `templar-comp` via `templar-comp-integration` | Playback compatibility at `/ScreenSaver` and `/org/freedesktop/ScreenSaver`; explicit video reasons are limited to the sender's visible fullscreen window, and released on pause/stop or disconnect |
 
 Rules: `cargo xtask check-interfaces` fails if a `#[zbus::interface]` / `#[proxy]` name in the code has no
 XML here. Constants live in `crates/templar-types/src/dbus.rs`; client proxies in `crates/templar-client`.

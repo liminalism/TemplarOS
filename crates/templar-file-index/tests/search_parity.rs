@@ -108,6 +108,55 @@ fn assert_parity(index: &Index, query: &Query) -> bool {
 }
 
 #[test]
+fn a_cold_broad_directory_search_keeps_exact_results_across_many_ranges_and_roots() {
+    let dir = tempfile::tempdir().unwrap();
+    let tree = dir.path().join("tree");
+    for bucket in 0..24 {
+        let folder = tree.join(format!("bucket-{bucket:02}-match"));
+        std::fs::create_dir_all(folder.join("nested-match")).unwrap();
+        for file in 0..64 {
+            // These filenames do not match: only their directory brings them into the result.
+            std::fs::write(folder.join(format!("document-{file:02}.txt")), b"x").unwrap();
+        }
+        std::fs::write(folder.join("nested-match/leaf.txt"), b"x").unwrap();
+    }
+    std::fs::create_dir_all(tree.join("unrelated")).unwrap();
+    for file in 0..512 {
+        std::fs::write(
+            tree.join("unrelated").join(format!("other-{file:03}")),
+            b"x",
+        )
+        .unwrap();
+    }
+    let index = open(dir.path());
+    let outer = scanned(&index, &tree);
+    let nested = scanned(&index, &tree.join("bucket-12-match"));
+    index.scan_root(outer, ScanOptions::default()).unwrap();
+
+    let mut query = Query::new("match").with_page_size(31);
+    let cold = index
+        .search_with(
+            &Fts5TrigramPlanner,
+            &query,
+            &templar_file_index::CallContext::internal(),
+        )
+        .unwrap();
+    // Matching top and nested directory plus 64 direct files and one nested leaf per bucket.
+    assert_eq!(cold.total, Some(24 * 67));
+    assert_eq!(cold.total_folders, Some(48));
+    assert_eq!(sequence(&index, &cold, 31).len(), 24 * 67);
+
+    index.prepare_search_arrays().unwrap();
+    for sort in [Sort::Relevance, Sort::Name, Sort::Path] {
+        query.sort = sort;
+        assert!(assert_parity(&index, &query), "{sort:?}");
+    }
+    query.roots = vec![nested];
+    assert!(assert_parity(&index, &query));
+    assert_eq!(both(&index, &query).1.total, Some(67));
+}
+
+#[test]
 fn a_folder_and_its_own_subfolder_scope_every_match_in_the_folder() {
     let dir = tempfile::tempdir().unwrap();
     let tree = dir.path().join("tree");

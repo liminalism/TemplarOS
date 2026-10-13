@@ -18,6 +18,7 @@ pub mod browse;
 pub mod dbus;
 pub mod delta_catchup;
 pub mod execute;
+mod index_background;
 pub mod index_host;
 pub mod index_lanes;
 pub mod index_metrics;

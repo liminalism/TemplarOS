@@ -231,6 +231,7 @@ struct IndexedSearchResults {
 enum ToastUserAction {
     Dismiss,
     Invoke(String),
+    Open,
 }
 
 /// Whether a window fills the screen, so the switcher collapses to its hint and the machine
@@ -2023,6 +2024,8 @@ impl ShellApp {
                                 app: row.app_name.clone(),
                                 summary: row.summary.clone(),
                                 actions: row.actions.clone(),
+                                app_id: row.app_id.clone(),
+                                source_instance_id: row.source_instance_id.clone(),
                             },
                         )
                         .collect();
@@ -2801,6 +2804,39 @@ impl ShellApp {
     #[allow(clippy::too_many_lines)]
     fn perform(&mut self, action: FieldAction) {
         match action {
+            FieldAction::OpenNotification(id) => {
+                let Some(row) = self.notification_rows.iter().find(|row| row.id == id) else {
+                    return;
+                };
+                let windows = self
+                    .bridge
+                    .as_ref()
+                    .map(ShellBridge::toplevels)
+                    .unwrap_or_default();
+                match notification_popup::body_action(
+                    &row.actions,
+                    row.app_id.as_deref(),
+                    row.source_instance_id.as_deref(),
+                    &windows,
+                    &self.apps,
+                ) {
+                    notification_popup::BodyAction::Invoke(key) => {
+                        self.toast_stack.invoke(id);
+                        self.perform(FieldAction::InvokeNotification { id, key });
+                    }
+                    notification_popup::BodyAction::Activate(window) => {
+                        self.perform(FieldAction::Activate(window));
+                        self.toast_stack.dismiss(id);
+                        self.perform(FieldAction::DismissNotification(id));
+                    }
+                    notification_popup::BodyAction::Unavailable => {
+                        let _ = self.data_tx.send(DataUpdate::Notice(
+                            "The notification's source window is no longer available".into(),
+                        ));
+                        let _ = self.wake_proxy.send_event(Wake::Data);
+                    }
+                }
+            }
             FieldAction::DismissNotification(id) => self.spawn_notification_call(move |proxy| {
                 Box::pin(async move {
                     proxy.dismiss(id).await?;
@@ -4984,6 +5020,9 @@ impl ShellApp {
         entries: usize,
         rows: Option<crate::taskbar::Rows>,
     ) {
+        if self.launcher_screen.state().open || self.launcher_request.is_some() {
+            self.dismiss_launcher();
+        }
         let host = rail_host(side, self.rail_settings.swap);
         let (width, height) = self.output_size();
         let (length, initial, wanted) = match host {
@@ -5304,8 +5343,14 @@ impl ShellApp {
                 dismiss_label: "Dismiss",
             };
             let (outcome, layout) = ui.toast((0, y), buffer_width, &card);
-            rects.push(Rect::new(0, y, buffer_width, layout.height));
+            let card_rect = Rect::new(0, y, buffer_width, layout.height);
+            rects.push(card_rect);
             control_counts.push(layout.actions.len() + 1);
+            if outcome.is_none()
+                && notification_popup::take_card_body_click(ui.input, card_rect, &layout)
+            {
+                card_actions.push((row.id, ToastUserAction::Open));
+            }
             if outcome.dismissed {
                 card_actions.push((row.id, ToastUserAction::Dismiss));
             }
@@ -5410,6 +5455,7 @@ impl ShellApp {
                     self.toast_stack.invoke(id);
                     self.perform(FieldAction::InvokeNotification { id, key });
                 }
+                ToastUserAction::Open => self.perform(FieldAction::OpenNotification(id)),
             }
         }
     }

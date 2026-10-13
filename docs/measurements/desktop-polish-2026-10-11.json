@@ -1,0 +1,498 @@
+{
+  "date": "2026-10-11",
+  "generated_at": "2026-10-11T08:53:54.170173+00:00",
+  "git_head": "1d81374717e0fea2bcf5d2eb3d321d82d937b8d8",
+  "environment": "Native TemplarOS; private D-Bus/runtime fixtures for compositor/service tests.",
+  "deployment": "Source changes and development binaries only. Installed desktop and filed daemon were not restarted, replaced or deployed.",
+  "ledger_work": "legeos.work.desktop-polish-20261011/4",
+  "installed_filed_observation": {
+    "pid": 71444,
+    "busy_tid": 71477,
+    "busy_thread": "templar-index-i",
+    "sample_seconds": 5.002,
+    "sample_cpu_percent": 99.56,
+    "lifetime_cpu_percent": 98.3,
+    "lifetime_cpu_time": "00:27:20",
+    "watcher_sample_cpu_percent": 0.4,
+    "maintenance_sample_cpu_percent": 0.4,
+    "read_bytes_delta": 12288,
+    "write_bytes_delta": 114688,
+    "main_root_entries": 1054940,
+    "root_state": "current",
+    "initial_reconcile_finished_utc": "2026-10-11T07:49:46Z",
+    "pending_events": 0,
+    "overflow_count": 0,
+    "interactive_running": 1,
+    "interactive_queued": 0,
+    "oldest_read_ms": 1708819,
+    "wal_bytes": 1294462832,
+    "installed_expansion_plan": [
+      "SCAN e USING COVERING INDEX entries_path",
+      "SEARCH o USING INTEGER PRIMARY KEY (rowid=?)",
+      "SCAN r VIRTUAL TABLE INDEX 1:"
+    ],
+    "fixed_expansion_plan": [
+      "SCAN r VIRTUAL TABLE INDEX 1:",
+      "SCAN o USING COVERING INDEX sqlite_autoindex_roots_1",
+      "SEARCH e USING COVERING INDEX entries_path (root_id=? AND path_bytes>? AND path_bytes<?)"
+    ],
+    "interpretation": "The load was an interactive query after completed initial indexing. The installed directory expansion plan permits entries-times-ranges work. Exact executing SQL and stack were unavailable, so attributing the active query specifically to that expansion is an inference.",
+    "method": "Read-only PID-based ps, five-second /proc counters, Index1 Roots, journal, SQLite immutable read-only EXPLAIN. perf denied by existing paranoid=4; host settings untouched."
+  },
+  "changes": {
+    "video_idle": "Visible fullscreen Video-hinted Wayland surfaces need a live idle inhibitor. Explicit Firefox/Chromium playing-video ScreenSaver reasons require a matching fullscreen source window. Releasing requests resumes idle timeout. Generic fullscreen apps/audio/presentation are excluded.",
+    "tabs": "Fullscreen has no title/control tab paint or hit geometry; normal defaults fixed bottom-right; explicit normal-window user overrides retained.",
+    "launcher": "Raster-drawn magnifier replaces unsupported Unicode glyph.",
+    "gestures": "Horizontal bottom eight logical pixels: left Apps/running windows, right System; 16px commit, pause250ms or row exit rearms; original downward diagonal approach retained. Opening a rail dismisses pending/visible app search; remote openings fully reveal centered controls and bottom row holds the rail during traversal.",
+    "index": "Force indexed directory-range lookup order, bound interactive calls to five seconds, lower watcher/maintenance thread CPU nice10 and idle I/O only.",
+    "notifications": "Popup bodies and Home rows invoke declared default actions, otherwise activate/restore an existing source window. Kernel credential/pinned terminal ancestry associates managed instances. Unique catalogue attribution supplies MRU fallback, including detected unmanaged Kitty via desktop-entry. Persisted links bind to event IDs to reject stale replacement/rollback associations. Missing/stale sources produce feedback; no guessed executable launches."
+  },
+  "limits": [
+    "Video-only inhibition requires client playback signals; pause depends on clients releasing them. Live browser playback was not exercised; protocol fixtures and primary browser architecture sources were used.",
+    "The ScreenSaver API carries process identity, not DOM fullscreen identity; F11 plus a playing video may qualify.",
+    "Ambiguous multiple exposed windows for one video wake-lock PID are rejected.",
+    "The installed stuck query remains unaffected until the owner activates the updated service.",
+    "Positive managed-terminal cgroup ancestry attribution was not exercised end-to-end; real private-bus credential rejection, kernel lifetime helper tests, and pure positive exact-instance window selection passed. Unmanaged terminals without attribution/default action cannot provide an activation target."
+  ],
+  "primary_browser_sources": [
+    "https://raw.githubusercontent.com/mozilla/gecko-dev/master/widget/gtk/nsAppShell.cpp",
+    "https://raw.githubusercontent.com/mozilla/gecko-dev/master/widget/gtk/WakeLockListener.cpp",
+    "https://raw.githubusercontent.com/chromium/chromium/main/content/public/browser/device_service.h",
+    "https://raw.githubusercontent.com/chromium/chromium/main/services/device/wake_lock/power_save_blocker/power_save_blocker_linux.cc"
+  ],
+  "validation": {
+    "desktop_index_batch": {
+      "groups": [
+        {
+          "suite": "Running unittests src/main.rs (target/debug/deps/templar_comp-b1e4d7a715e344bb)",
+          "result": "ok",
+          "passed": 239,
+          "failed": 0,
+          "ignored": 1
+        },
+        {
+          "suite": "Running unittests src/lib.rs (target/debug/deps/templar_comp_integration-dc6012fe33f9a5fb)",
+          "result": "ok",
+          "passed": 18,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/lib.rs (target/debug/deps/templar_file_index-ca37dad44034dd26)",
+          "result": "ok",
+          "passed": 134,
+          "failed": 0,
+          "ignored": 3
+        },
+        {
+          "suite": "Running tests/btrfs_delta_fixture.rs (target/debug/deps/btrfs_delta_fixture-b4c10dfa41ace342)",
+          "result": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 5
+        },
+        {
+          "suite": "Running tests/cache_recovery.rs (target/debug/deps/cache_recovery-aafdff7c74396102)",
+          "result": "ok",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/consumer_contract.rs (target/debug/deps/consumer_contract-3f9e34baa2338e91)",
+          "result": "ok",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/cursors.rs (target/debug/deps/cursors-2ea9ab00b187b68a)",
+          "result": "ok",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/generations.rs (target/debug/deps/generations-f24e7c928f94cce3)",
+          "result": "ok",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/reconcile.rs (target/debug/deps/reconcile-8057c03cc90237ef)",
+          "result": "ok",
+          "passed": 11,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/search_parity.rs (target/debug/deps/search_parity-c0793fbe4b921b91)",
+          "result": "ok",
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/volumes.rs (target/debug/deps/volumes-59c558f9a8ab3b4f)",
+          "result": "ok",
+          "passed": 13,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/watch.rs (target/debug/deps/watch-041a7ee50c237f3d)",
+          "result": "ok",
+          "passed": 9,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/lib.rs (target/debug/deps/templar_filed-f254c2e1f3bda053)",
+          "result": "ok",
+          "passed": 185,
+          "failed": 0,
+          "ignored": 1
+        },
+        {
+          "suite": "Running unittests src/main.rs (target/debug/deps/templar_filed-f0b3e81bf69dcf24)",
+          "result": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/crash_reopen.rs (target/debug/deps/crash_reopen-21edd97383c421bf)",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 1
+        },
+        {
+          "suite": "Running tests/private_runtime.rs (target/debug/deps/private_runtime-f1ea958699c737b8)",
+          "result": "ok",
+          "passed": 6,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/snapshot_consumer.rs (target/debug/deps/snapshot_consumer-26c2add9be331c4a)",
+          "result": "ok",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/lib.rs (target/debug/deps/templar_session_core-1a2af9f951e25933)",
+          "result": "ok",
+          "passed": 151,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/lib.rs (target/debug/deps/templar_shell-202a86a011ecf49e)",
+          "result": "ok",
+          "passed": 571,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/main.rs (target/debug/deps/templar_shell-5ce58a2b32e7379d)",
+          "result": "ok",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/bin/templar-unlock.rs (target/debug/deps/templar_unlock-acd1d1382a7dde05)",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/lib.rs (target/debug/deps/templar_types-f1d347bbe2888a8d)",
+          "result": "ok",
+          "passed": 53,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/lib.rs (target/debug/deps/templar_window-d4ee8fc4ab8e8cb6)",
+          "result": "ok",
+          "passed": 225,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Doc-tests templar_comp_integration",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Doc-tests templar_file_index",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Doc-tests templar_filed",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Doc-tests templar_session_core",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Doc-tests templar_shell",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Doc-tests templar_types",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Doc-tests templar_window",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "passed": 1658,
+      "failed": 0,
+      "ignored": 11
+    },
+    "notification_batch": {
+      "groups": [
+        {
+          "suite": "Running unittests src/lib.rs (target/debug/deps/templar_session_core-200939be8cc8b6b1)",
+          "result": "ok",
+          "passed": 151,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/main.rs (target/debug/deps/templar_sessiond-3ac3d97152f7274e)",
+          "result": "ok",
+          "passed": 137,
+          "failed": 0,
+          "ignored": 1
+        },
+        {
+          "suite": "Running tests/private_audio.rs (target/debug/deps/private_audio-c47cfae9c6dc0947)",
+          "result": "ok",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 1
+        },
+        {
+          "suite": "Running unittests src/lib.rs (target/debug/deps/templar_shell-084c064c2651d747)",
+          "result": "ok",
+          "passed": 580,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/main.rs (target/debug/deps/templar_shell-b1589984f35130ba)",
+          "result": "ok",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/bin/templar-unlock.rs (target/debug/deps/templar_unlock-d770e1d27294bd48)",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/lib.rs (target/debug/deps/templar_state-c88b05e1a57d3df7)",
+          "result": "ok",
+          "passed": 11,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/migration_0006.rs (target/debug/deps/migration_0006-7d5968dcad571103)",
+          "result": "ok",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Doc-tests templar_session_core",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Doc-tests templar_shell",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Doc-tests templar_state",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "passed": 890,
+      "failed": 0,
+      "ignored": 2
+    },
+    "notification_cli": {
+      "groups": [
+        {
+          "suite": "Running unittests src/lib.rs (target/debug/deps/templar-a893a2aebdec8f3b)",
+          "result": "ok",
+          "passed": 20,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/main.rs (target/debug/deps/templar-4e7a47a235787ad5)",
+          "result": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "passed": 21,
+      "failed": 0,
+      "ignored": 0
+    },
+    "index_priority_final": {
+      "groups": [
+        {
+          "suite": "Running unittests src/lib.rs (target/debug/deps/templar_filed-878ad9658abd0712)",
+          "result": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running unittests src/main.rs (target/debug/deps/templar_filed-6f40d54a9a7d1792)",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/crash_reopen.rs (target/debug/deps/crash_reopen-3e262faf8e00526e)",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/private_runtime.rs (target/debug/deps/private_runtime-eb914636c92871da)",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        },
+        {
+          "suite": "Running tests/snapshot_consumer.rs (target/debug/deps/snapshot_consumer-874f2c378d7e4fa6)",
+          "result": "ok",
+          "passed": 0,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "index_strict_clippy": "Passed cargo clippy --offline -p templar-file-index -p templar-filed -p templar-client --all-targets -- -D warnings. Existing still265 dependency deprecation warnings remain.",
+    "desktop_strict_clippy": "Broader desktop strict Clippy remains blocked by existing lint debt; new diagnostics introduced in these changes were corrected.",
+    "build": "cargo build --offline -p templar-comp -p templar-filed -p templar-shell -p templar-sessiond -p templar succeeded.",
+    "headless_check": "templar-comp --check passed on private bus/runtime.",
+    "renders": "Headless bottom bar at1x/2x and both rails half/full; search icon inspected visually.",
+    "interfaces": "Interface declarations, signatures (309members/45interfaces), Wayland versions, ownership, proxies, actions and assets passed; additive ScreenSaver baseline frozen.",
+    "akr": "Final build and validate exited0 after work completion with all6acceptance checks evidenced. Parsing, typing, links, resolution, lock hashes and generated views passed. Warnings remain for45 uncommitted watched paths and10 historical unmatched scopes; existing39 stale/17at-risk records remain. No source commit was requested."
+  },
+  "source_sha256": {
+    "cli/templar/src/notify.rs": "22c485738dea09dbcc0b9e74ea768d36150df6f0eb2e1380f40f77986709060b",
+    "compositor/COMPOSITOR.md": "bf7f80162e16dfec49e8e79ea55474807ea59e8178ec631ed1da674277df9260",
+    "compositor/templar-comp-integration/src/lib.rs": "21b325b710b783c8e20366c80de7f10c5154bc47a8ac093dba3526e1f6cf14a7",
+    "compositor/templar-comp-integration/src/video_idle.rs": "4e7bd5a1bb18b82fdef8dc3306235aa9381b66e61717f3f98d4b37d8ca1bd637",
+    "compositor/templar-comp/Cargo.toml": "3ce343f7a41e17aef8400f31a53ea278b3ae8b7e63313e6f07ef6366c51a8be6",
+    "compositor/templar-comp/src/backend/check.rs": "c823f115e8f4b1d057147bb5af9a5ee29fa21fc598b3231f7ffb2b393200e254",
+    "compositor/templar-comp/src/backend/udev.rs": "e3fd8d744bd4ddcdd42f0edc770a5ce6a86610abcb09a2c20f7df8810c018349",
+    "compositor/templar-comp/src/chrome/mod.rs": "5c787a4dd3859be2df9b05d5726f57100764e9555e309d37022e2a79322dd2de",
+    "compositor/templar-comp/src/gesture_gate.rs": "0dc1db1526b93b7035e1c8a397b3c7565dbdc8e17647a8ab9dee7cf9a32467ce",
+    "compositor/templar-comp/src/idle.rs": "d9adb0a93b32a05b3e3706b485fc0d1b7a98f782dce94a5025348e3aecfd2602",
+    "compositor/templar-comp/src/main.rs": "b88ed6527510844f64f884d392a180c812d77d7fa13f7bffe533eda3440ce583",
+    "compositor/templar-comp/src/session_lock.rs": "f8717d77b53b30830c466cb6c61793f84faaab5c062450279a36f869a8aafa07",
+    "compositor/templar-comp/src/space_sync.rs": "88a37918a4392ed7cb31fc8dd8038e63e2579db43ecf24a20b7229adcdcb298a",
+    "compositor/templar-comp/src/state.rs": "3cbd24ce618b3a1d4e18c43ae65018c88d9fb832ea9f0c8494bbff19de38cf9a",
+    "compositor/templar-comp/src/test_input.rs": "609237f63356117762046396c3396f1e561995f83a7c485fb08932de669da37e",
+    "compositor/templar-comp/src/video_idle.rs": "f459ad398164061aac109dff915ce93a5b5732485266562e41489f79c75e187a",
+    "compositor/templar-comp/src/xdg_shell.rs": "d345ac09dce61ef35536437cfb3824d81f2b5a8392833d8d0d19b2e61e91b062",
+    "crates/templar-file-index/src/query.rs": "e7ff8f0f5e15a60491e4e5d44f95a2d527124328e8b99c6f06d2b049dfe3fb2e",
+    "crates/templar-file-index/tests/search_parity.rs": "5ab14501fb5b613941ebdf77745bda1a85147c7eb1216a24044158559725e3c3",
+    "crates/templar-session-core/src/settings.rs": "0f0903a64c769cb59c4d36494c56505f992078c0823e5b3bfc60440aac5f23cc",
+    "crates/templar-state/src/migrations/session.rs": "a4f2be448ee148c7dbb15dcc4363e89fefde45b579064c59039d58930f40545a",
+    "crates/templar-types/src/dbus.rs": "a29e250329775af4119ee9c1a7bb1935e9c2af511231ef01f48a65433975e505",
+    "crates/templar-types/src/launcher.rs": "4635f1b49139ad60f146990d081ed09ddb872a7f0fa2374d7babcd60a8fdff95",
+    "crates/templar-window/src/geometry.rs": "36f85b7ff8d98c55f39e797c6b88cf07245e5d8b1044ae222691957b7607e239",
+    "crates/templar-window/src/service.rs": "87ec0f33979fe864b8a0f9491910a00828209a47970dff28e017fc1e127f5917",
+    "docs/architecture/compositor-shell.md": "38c237c2f7b590f2816aa1ede2faf6d573819935f11afeb0bbba79597b7c2470",
+    "docs/architecture/files.md": "883b58424d08c0e008b2f8b14a7215e42c0ce8cfa7f9c7e05dd330c07841a2cd",
+    "docs/launcher.md": "c1819fddc5e38e38e9e1330b51344079f14b647c19e158c39bd102fba36dac43",
+    "interfaces/baseline.json": "2d5f8c48c0610e06c500b7d6ebf2ee43d41f187d9cf65405cede1378fd4cc544",
+    "interfaces/dbus/README.md": "c15041f6498a65b224a5e9ba17874246bcd9490e4a7f3b948e945426e7832f2b",
+    "interfaces/dbus/org.freedesktop.ScreenSaver.xml": "1898eb96d4bc4bb6fdbb96e184d7184e53715499bd1825edeb8e0adb2ca69fe7",
+    "interfaces/dbus/org.templaros.Notifications1.xml": "31cdefd4fee770d4b57fcb295f74d8317687e48c0f4da6c5f5b8c6edf442e29f",
+    "interfaces/wayland/templar-shell-v2.xml": "4f554ec7d799e84238f39d9d3ad432983efb2d6dcfffc16f28e57cdf0ccb1ab7",
+    "services/templar-filed/src/index_background.rs": "00bee04a39fb2e2b28e1a467ec976f98f994b72f3e89e59196f3214034256ebb",
+    "services/templar-filed/src/index_lanes.rs": "972b4ed5c626ff02c31bb9299e930e5ba9a0604c21f63dc054e0880c45473d96",
+    "services/templar-filed/src/lib.rs": "712797e59302e7f3cf855710169c58a6f291150f2944f4f143ddc8befb9f0c04",
+    "services/templar-filed/src/watcher.rs": "2587059c157bc9262ee46e653af27ac692ffe78d4ba325434786167bbeecd964",
+    "services/templar-sessiond/src/apis/homegarden.rs": "50f264dbd02fc5c21d6c5ce01d3f9bb453b73edbd2e9a22730d64629a418d8cc",
+    "services/templar-sessiond/src/apis/homegarden/process_context.rs": "cf648c7f8031ab71a294a9641151b6cc3d3f62aa718771bc08f74aff659c4de1",
+    "services/templar-sessiond/src/apis/notifications.rs": "a1855b79dee239de6ba4b36672a8059fbeb3fa44f4c23ac3154570280cbff8e9",
+    "services/templar-sessiond/src/apis/notifications_native_tests.rs": "f1f2fc46fb95ca5c99ca481639df3786969d6933a0d9a66c0decaf3d153a3d22",
+    "shell/templar-shell/src/data.rs": "a004d66b9e20a3f7a141add4891dfcaf1c3ca3a1f92226c4a774f2fb8e109d4e",
+    "shell/templar-shell/src/settings.rs": "e2a30fbeb16417bae252073f265c8abc7149d9488be6c5d9690bb8f7e6fbd820",
+    "shell/templar-shell/src/surface/app.rs": "7175d02913d80891e5b13f9009e44ac1134e31ffa4d59305ccd8a5e734393769",
+    "shell/templar-shell/src/surface/bar_screen.rs": "2f3ae53ae307fc56aa528bb2e1920d3082fa8ee0ed8cd303ac30224f00641173",
+    "shell/templar-shell/src/surface/field_screen.rs": "7857d7749542bcddf4971dcdd95bec599c4003967137d425ea647590baafa5b1",
+    "shell/templar-shell/src/surface/glyphs.rs": "34bf59034ff39e82835e7b83382991528e05939e8dc9b5882d1796b321e861b6",
+    "shell/templar-shell/src/surface/notification_popup.rs": "a51cf89e4ef328eca82c45dcefd0e8f54ba99113d158935c34c24db6fbd799a8",
+    "shell/templar-shell/src/surface/offscreen.rs": "85244485818b733791911795b1c79fd506b7fefe38177f1c88d21400378966fa",
+    "shell/templar-shell/src/surface/rail.rs": "7c3e2cd98bccd5ff3e10a5d963bbe220a3ca8519a45461fe91191d442733d37a",
+    "shell/templar-shell/src/surface/rail_session.rs": "f2b985756e8e66f0c7b1f3defe421d19c8c497cc870ce46746ad76e9a08f9a5e",
+    "shell/templar-shell/src/surface/widgets/notifications.rs": "57a02ad67bd7e8244d1ec8589dfe3ab2a620fce4f5c2d8ed916d45f826925c86"
+  },
+  "render_sha256": {
+    "docs/measurements/desktop-polish-20261011/bar-final.png": "cf49f08d959c314dbf38320d2bc3def19fbc109b3816d3c0b38aba87d884c050",
+    "docs/measurements/desktop-polish-20261011/bar-final@2x.png": "dad403c0c5fb1c578772bda06c927b8c01ad7c40e2ebd7f23857f581524c12ae",
+    "docs/measurements/desktop-polish-20261011/rail-apps-full.png": "bb793a6d0c8aee35a12c94c9dfd60e9707176cd4e5b4cf37d52ccfaaf47e92a4",
+    "docs/measurements/desktop-polish-20261011/rail-apps-half.png": "90bf044f99dfe4c73db897c93cdbfba9f1cf625aeb39b20c36d8b678160c762f",
+    "docs/measurements/desktop-polish-20261011/rail-system-full.png": "a57955f5a38c9bc1714641d1f38880f03709df7a41f39b77c21b445ac24145b6",
+    "docs/measurements/desktop-polish-20261011/rail-system-half.png": "68b9c1b1c1aaf9044c72c9f309c8af043fd4349e470f9a8b265c27376a2f64e9"
+  }
+}

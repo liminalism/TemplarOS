@@ -541,13 +541,17 @@ mod tests {
             Rect::new(100, 100, 400, 300),
         );
         let shot = tab_snapshot(&service, id);
-        assert_eq!(shot["corner"], "top-right");
+        assert_eq!(shot["corner"], "bottom-right");
         assert_eq!(shot["latched"], false);
         assert_eq!(shot["title_revealed"], true);
         assert_eq!(shot["controls_revealed"], false);
         assert_eq!(shot["overlay"], false);
         assert!(shot["title"].is_object());
 
+        service.set_tab_policy(templar_window::TabPolicy {
+            follow_pointer: true,
+            ..templar_window::TabPolicy::default()
+        });
         service.set_tab_corner(id, Corner::BottomLeft);
         service.set_tab_latched(id, true);
         service.set_controls_revealed(id, true);

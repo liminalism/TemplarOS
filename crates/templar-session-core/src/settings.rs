@@ -599,9 +599,9 @@ fn add_notification_specs(schema: &mut SettingsSchema) {
     }
 }
 
-/// The corner-following window tab policy (`windows.tabs.*`), planning doc §3: one
-/// horizontal title tab plus three controls per window, following the nearest client
-/// corner. The compositor reads these through the shell's `TabSettings` and the
+/// The window tab policy (`windows.tabs.*`): one horizontal title tab plus three
+/// controls per window, fixed at the bottom-right by default, with optional pointer
+/// following. The compositor reads these through the shell's `TabSettings` and the
 /// `templar-shell-v2` `set_tab_policy` request; every reader parses the committed bytes
 /// through one function, so Set/Reset/undo/restart converge on the same policy.
 fn add_window_tab_specs(schema: &mut SettingsSchema) {
@@ -617,14 +617,13 @@ fn add_window_tab_specs(schema: &mut SettingsSchema) {
             WINDOW_TABS_FOLLOW_POINTER_KEY,
             "Follow the nearest client corner as the pointer approaches from any side. \
              Off keeps every window's tabs at the fixed corner",
-            SettingValue::Bool(true),
+            SettingValue::Bool(false),
             vec![],
         ),
         (
             WINDOW_TABS_FIXED_CORNER_KEY,
-            "The corner tabs keep while follow-pointer is off: the predictable \
-             accessibility fallback",
-            SettingValue::Choice("top-right".into()),
+            "The corner tabs keep while follow-pointer is off",
+            SettingValue::Choice("bottom-right".into()),
             vec![
                 "top-left".to_owned(),
                 "top-right".to_owned(),
@@ -640,15 +639,15 @@ fn add_window_tab_specs(schema: &mut SettingsSchema) {
         ),
         (
             WINDOW_TABS_TITLE_KEY,
-            "When the title tab draws: always while its window is visible, or only with \
-             the hovered controls",
+            "When a non-fullscreen window's title tab draws: always while visible, or \
+             only with the hovered controls",
             SettingValue::Choice("always".into()),
             vec!["always".to_owned(), "hover".to_owned()],
         ),
         (
             WINDOW_TABS_DEFAULT_CORNER_KEY,
             "The corner a new window's tabs start at",
-            SettingValue::Choice("top-right".into()),
+            SettingValue::Choice("bottom-right".into()),
             vec![
                 "top-left".to_owned(),
                 "top-right".to_owned(),
@@ -1178,19 +1177,19 @@ mod tests {
     }
 
     /// Child 4 (`settings-converge`, schema half): the six tab keys exist with the
-    /// proposed defaults, accept exactly their documented values, and reject the rest.
+    /// fixed bottom-right defaults, accept their documented values, and reject the rest.
     #[test]
-    fn window_tab_schema_carries_the_policy_with_proposed_defaults() {
+    fn window_tab_schema_carries_the_policy_with_fixed_bottom_right_defaults() {
         let schema = baseline_schema();
         for (key, default) in [
             (
                 WINDOW_TABS_PLACEMENT_KEY,
                 SettingValue::Choice("same-corner".into()),
             ),
-            (WINDOW_TABS_FOLLOW_POINTER_KEY, SettingValue::Bool(true)),
+            (WINDOW_TABS_FOLLOW_POINTER_KEY, SettingValue::Bool(false)),
             (
                 WINDOW_TABS_FIXED_CORNER_KEY,
-                SettingValue::Choice("top-right".into()),
+                SettingValue::Choice("bottom-right".into()),
             ),
             (
                 WINDOW_TABS_CONTROLS_KEY,
@@ -1199,7 +1198,7 @@ mod tests {
             (WINDOW_TABS_TITLE_KEY, SettingValue::Choice("always".into())),
             (
                 WINDOW_TABS_DEFAULT_CORNER_KEY,
-                SettingValue::Choice("top-right".into()),
+                SettingValue::Choice("bottom-right".into()),
             ),
         ] {
             let spec = schema
@@ -1258,14 +1257,14 @@ mod tests {
             WINDOW_TABS_PLACEMENT_KEY,
             SettingValue::Choice("opposite-corners".into()),
         );
-        values.set(WINDOW_TABS_FOLLOW_POINTER_KEY, SettingValue::Bool(false));
+        values.set(WINDOW_TABS_FOLLOW_POINTER_KEY, SettingValue::Bool(true));
         assert_eq!(
             values.effective(&schema, WINDOW_TABS_PLACEMENT_KEY),
             Some(SettingValue::Choice("opposite-corners".into()))
         );
         assert_eq!(
             values.effective(&schema, WINDOW_TABS_FOLLOW_POINTER_KEY),
-            Some(SettingValue::Bool(false))
+            Some(SettingValue::Bool(true))
         );
         values.reset(WINDOW_TABS_PLACEMENT_KEY);
         values.reset(WINDOW_TABS_FOLLOW_POINTER_KEY);
@@ -1275,7 +1274,7 @@ mod tests {
         );
         assert_eq!(
             values.effective(&schema, WINDOW_TABS_FOLLOW_POINTER_KEY),
-            Some(SettingValue::Bool(true))
+            Some(SettingValue::Bool(false))
         );
     }
 

@@ -3,11 +3,11 @@
 //! notification becomes a searchable history event (`docs/architecture/history.md`) so nothing
 //! is lost if the shell restarts; the shell only renders.
 //!
-//! Attribution to a canonical [`AppId`] is a best-effort match of the caller-supplied
-//! `app_name` against an installed manifest's display name or desktop-file ID — the spec does
-//! not hand this interface the caller's PID/cgroup the way `AppIdentity1.ResolveWindow` gets
-//! one, so it cannot be cgroup-verified the way window identity is. A future improvement would
-//! read the D-Bus message header's sender and resolve its peer credentials.
+//! Source presentation first uses the D-Bus peer's kernel credentials and registered
+//! instance, including a bounded same-user ancestry link for terminal completion helpers.
+//! Otherwise attribution is a unique match of `desktop-entry` or `app_name` against the
+//! installed catalogue. These associations only select an existing window after a click;
+//! they confer no application permissions and never launch a guessed executable.
 //!
 //! Every committed transition — creation, replacement, sender close, expiry, dismiss and
 //! action — is published exactly once on each side that owns it: the standard
@@ -32,7 +32,7 @@ use templar_session_core::history::{
     Event, EventAction, EventId, EventKind, HistoryStore, SqliteHistory,
 };
 use templar_state::Store;
-use templar_types::{AppCatalog, AppId, dbus::session as names};
+use templar_types::{AppCatalog, AppId, InstanceId, dbus::session as names};
 use zbus::{fdo, object_server::SignalEmitter, zvariant::OwnedValue};
 
 /// The freedesktop notification path/interface, served only while sessiond holds the
@@ -341,18 +341,57 @@ impl NotificationsApi {
         self
     }
 
-    fn attribute(&self, app_name: &str) -> Option<AppId> {
-        self.registry
-            .manifests()
-            .into_iter()
-            .find(|manifest| {
-                manifest.display_name == app_name
+    fn attribute(&self, app_name: &str, desktop_entry: Option<&str>) -> Option<AppId> {
+        let manifests = self.registry.manifests();
+        let unique = |name: &str, display: bool| {
+            let mut matches = manifests.iter().filter(|manifest| {
+                (display && manifest.display_name == name)
                     || manifest
                         .primary_desktop_file_id
                         .trim_end_matches(".desktop")
-                        == app_name
-            })
-            .map(|manifest| manifest.id.clone())
+                        == name.trim_end_matches(".desktop")
+                    || manifest.id.as_str() == name
+            });
+            let first = matches.next()?;
+            matches.next().is_none().then(|| first.id.clone())
+        };
+        desktop_entry
+            .and_then(|entry| unique(entry, false))
+            .or_else(|| unique(app_name, true))
+    }
+
+    /// Peer identity wins over caller-supplied names/hints. Terminal ancestry is a
+    /// presentation association only, with the existing lifetime/UID/boundary checks.
+    async fn source_instance(
+        &self,
+        connection: &zbus::Connection,
+        header: &zbus::message::Header<'_>,
+    ) -> Option<(AppId, InstanceId)> {
+        use super::homegarden::{descendant_peer_pid, process_context};
+        let sender = header.sender()?;
+        let bus = fdo::DBusProxy::new(connection).await.ok()?;
+        let credentials = bus
+            .get_connection_credentials(sender.clone().into())
+            .await
+            .ok()?;
+        let uid = process_context::session_uid().ok()?;
+        let pid = descendant_peer_pid(&credentials, uid).ok()?;
+        let identity = self
+            .registry
+            .resolve_window(pid, &templar_types::WindowClaims::default())
+            .ok()?;
+        let source = if identity.confidence.is_verified() {
+            Some((identity.app_id?, identity.instance_id?))
+        } else {
+            let association = process_context::associate(&self.registry, pid, uid, None).ok()?;
+            association
+                .current(&self.registry)
+                .then(|| (association.record.app_id.clone(), association.record.id))
+        };
+        credentials
+            .process_fd()
+            .filter(|fd| process_context::require_live(fd).is_ok())
+            .and(source)
     }
 
     /// Insert the notification, or replace the row `replaces_id` names. Returns the live ID.
@@ -370,14 +409,15 @@ impl NotificationsApi {
             category,
             actions_json,
             expires_ms,
+            source_instance_id,
         } = *row;
         self.store.transaction(|tx| -> anyhow::Result<u32> {
             if replaces_id == 0 {
                 tx.execute(
                     "INSERT INTO notifications_active
                         (event_id, app_name, app_id, created_ms, summary, body, icon, urgency,
-                         category, actions_json, expires_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                         category, actions_json, expires_ms, source_instance_id, source_event_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?1)",
                     params![
                         event_id,
                         app_name,
@@ -389,7 +429,8 @@ impl NotificationsApi {
                         urgency,
                         category,
                         actions_json,
-                        expires_ms
+                        expires_ms,
+                        source_instance_id
                     ],
                 )?;
                 return Ok(u32::try_from(tx.last_insert_rowid()).unwrap_or(u32::MAX));
@@ -397,14 +438,16 @@ impl NotificationsApi {
             tx.execute(
                 "INSERT INTO notifications_active
                     (id, event_id, app_name, app_id, created_ms, summary, body, icon,
-                     urgency, category, actions_json, expires_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                     urgency, category, actions_json, expires_ms, source_instance_id, source_event_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?2)
                  ON CONFLICT (id) DO UPDATE SET
                     event_id = excluded.event_id, app_name = excluded.app_name,
                     app_id = excluded.app_id, created_ms = excluded.created_ms,
                     summary = excluded.summary, body = excluded.body, icon = excluded.icon,
                     urgency = excluded.urgency, category = excluded.category,
-                    actions_json = excluded.actions_json, expires_ms = excluded.expires_ms",
+                    actions_json = excluded.actions_json, expires_ms = excluded.expires_ms,
+                    source_instance_id = excluded.source_instance_id,
+                    source_event_id = excluded.source_event_id",
                 params![
                     replaces_id,
                     event_id,
@@ -417,7 +460,8 @@ impl NotificationsApi {
                     urgency,
                     category,
                     actions_json,
-                    expires_ms
+                    expires_ms,
+                    source_instance_id
                 ],
             )?;
             Ok(replaces_id)
@@ -470,6 +514,23 @@ fn spawn_expiry(
     });
 }
 
+fn presentation_hints(hints: &HashMap<String, OwnedValue>) -> (u8, String, Option<&str>) {
+    let urgency = hints
+        .get("urgency")
+        .and_then(|value| u8::try_from(value).ok())
+        .unwrap_or(1)
+        .min(2);
+    let category = hints
+        .get("category")
+        .and_then(|value| <&str>::try_from(value).ok())
+        .map(str::to_owned)
+        .unwrap_or_default();
+    let desktop_entry = hints
+        .get("desktop-entry")
+        .and_then(|value| <&str>::try_from(value).ok());
+    (urgency, category, desktop_entry)
+}
+
 /// The columns of one `notifications_active` row, gathered so the write is a single argument.
 struct ActiveRow<'a> {
     replaces_id: u32,
@@ -484,6 +545,7 @@ struct ActiveRow<'a> {
     category: &'a str,
     actions_json: &'a str,
     expires_ms: Option<i64>,
+    source_instance_id: Option<&'a str>,
 }
 
 /// Complete presentation data for one still-active notification: everything the shell's
@@ -498,6 +560,9 @@ pub struct ActiveNotification {
     pub sequence: u64,
     pub app_name: String,
     pub app_id: Option<String>,
+    /// Kernel-linked managed launch. Presentation only; never a grant or a program to run.
+    #[serde(default)]
+    pub source_instance_id: Option<String>,
     pub summary: String,
     pub body: String,
     pub icon: String,
@@ -572,7 +637,8 @@ impl NotificationsControlApi {
         let connection = self.store.lock();
         let mut statement = connection.prepare(
             "SELECT id, event_id, app_name, app_id, summary, body, icon, urgency, category,
-                    actions_json, created_ms, expires_ms
+                    actions_json, created_ms, expires_ms,
+                    CASE WHEN source_event_id = event_id THEN source_instance_id ELSE NULL END
                FROM notifications_active ORDER BY created_ms DESC, id DESC",
         )?;
         let rows = statement.query_map([], |row| {
@@ -594,6 +660,7 @@ impl NotificationsControlApi {
                 actions: serde_json::from_str(&actions_json).unwrap_or_default(),
                 created_ms: row.get(10)?,
                 expires_ms: row.get(11)?,
+                source_instance_id: row.get(12)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -797,20 +864,17 @@ impl NotificationsApi {
         actions: Vec<String>,
         hints: HashMap<String, OwnedValue>,
         expire_timeout: i32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> fdo::Result<u32> {
         let _mutation = self.journal.0.mutation.lock().await;
-        let urgency = hints
-            .get("urgency")
-            .and_then(|value| u8::try_from(value).ok())
-            .unwrap_or(1)
-            .min(2);
-        let category = hints
-            .get("category")
-            .and_then(|value| <&str>::try_from(value).ok())
-            .map(str::to_owned)
-            .unwrap_or_default();
-        let app_id = self.attribute(app_name);
+        let (urgency, category, desktop_entry) = presentation_hints(&hints);
+        let source = self.source_instance(emitter.connection(), &header).await;
+        let app_id = source
+            .as_ref()
+            .map(|(app, _)| app.clone())
+            .or_else(|| self.attribute(app_name, desktop_entry));
+        let source_instance_id = source.as_ref().map(|(_, instance)| instance.to_string());
         let action_pairs: Vec<(String, String)> = actions
             .chunks(2)
             .filter(|pair| pair.len() == 2)
@@ -827,7 +891,7 @@ impl NotificationsApi {
             at_ms: templar_state::now_ms(),
             kind: EventKind::Notification,
             app_id: app_id.clone(),
-            instance_id: None,
+            instance_id: source.as_ref().map(|(_, instance)| *instance),
             message,
             cause: Some(format!("urgency:{urgency};category:{category}")),
             actions: action_pairs
@@ -871,6 +935,7 @@ impl NotificationsApi {
                 category: &category,
                 actions_json: &actions_json,
                 expires_ms,
+                source_instance_id: source_instance_id.as_deref(),
             })
             .map_err(|error| fdo::Error::Failed(error.to_string()))?;
 
@@ -891,6 +956,7 @@ impl NotificationsApi {
             sequence: 0,
             app_name: app_name.to_owned(),
             app_id: app_id.as_ref().map(|app_id| app_id.as_str().to_owned()),
+            source_instance_id,
             summary: summary.to_owned(),
             body: body.to_owned(),
             icon: app_icon.to_owned(),

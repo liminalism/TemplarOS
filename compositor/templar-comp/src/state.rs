@@ -223,10 +223,10 @@ pub struct TemplarCompState<B: Backend + 'static> {
     pub(crate) pending_activations: crate::xdg_shell::PendingActivations,
     pub foreign_parent: crate::xdg_foreign::ForeignState,
     pub session_lock_manager_state: SessionLockManagerState,
-    /// `zwp_idle_inhibit_manager_v1`: a client (a video player, a presentation) declaring that the
-    /// screen must not turn off while its surface is up. Held so the global stays registered;
-    /// the count that matters lives in `idle`.
+    /// Client wake locks are scoped to visible fullscreen Video surfaces (`video_idle`).
     pub idle_inhibit_manager_state: smithay::wayland::idle_inhibit::IdleInhibitManagerState,
+    pub content_type_state: smithay::wayland::content_type::ContentTypeState,
+    pub video_idle: crate::video_idle::VideoIdleState,
     pub foreign_toplevel_list_state:
         smithay::wayland::foreign_toplevel_list::ForeignToplevelListState,
     pub dmabuf_state: DmabufState,
@@ -493,6 +493,8 @@ impl<B: Backend + 'static> TemplarCompState<B> {
             ),
             idle_inhibit_manager_state:
                 smithay::wayland::idle_inhibit::IdleInhibitManagerState::new::<Self>(dh),
+            content_type_state: smithay::wayland::content_type::ContentTypeState::new::<Self>(dh),
+            video_idle: crate::video_idle::VideoIdleState::default(),
             foreign_toplevel_list_state:
                 smithay::wayland::foreign_toplevel_list::ForeignToplevelListState::new::<Self>(dh),
             dmabuf_state: smithay::wayland::dmabuf::DmabufState::new(),
@@ -662,17 +664,14 @@ impl<B: Backend + 'static> TemplarCompState<B> {
 impl<B: Backend + 'static> smithay::wayland::idle_inhibit::IdleInhibitHandler
     for TemplarCompState<B>
 {
-    fn inhibit(&mut self, _surface: WlSurface) {
-        self.idle.add_inhibitor();
-        // Re-arm rather than merely counting: with an inhibitor up there is no timer at all
-        // (`idle::delay_before_blanking`), so the one already armed has to come back out of the
-        // event loop.
-        self.arm_idle_timer();
+    fn inhibit(&mut self, surface: WlSurface) {
+        self.video_idle.inhibit(surface);
+        crate::video_idle::refresh(self);
     }
 
-    fn uninhibit(&mut self, _surface: WlSurface) {
-        self.idle.remove_inhibitor();
-        self.arm_idle_timer();
+    fn uninhibit(&mut self, surface: WlSurface) {
+        self.video_idle.uninhibit(&surface);
+        crate::video_idle::refresh(self);
     }
 }
 

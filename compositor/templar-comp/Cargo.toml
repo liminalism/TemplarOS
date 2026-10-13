@@ -104,6 +104,7 @@ tempfile = { workspace = true }
 # over the compositor's actual socket and reads the actual registry, so the test exercises the
 # wire protocol rather than our own view of it.
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["staging", "unstable", "client"] }
 
 [lints]
 workspace = true

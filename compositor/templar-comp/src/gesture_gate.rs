@@ -1,5 +1,5 @@
 //! The gesture gate: an invisible rectangle centred on each output's bottom edge that turns
-//! "came down into it from above, then went sideways" into a request for one of the shell's two
+//! "came down into it from above, then went sideways" or a horizontal bottom-row swipe into one of the shell's two
 //! rails (`templar-shell-v2.xml`'s `set_gesture_gate`).
 //!
 //! Compositor state, not a surface: nothing here takes input or installs a grab, so a pointer
@@ -15,15 +15,15 @@
 //! - **Arm** by entering the gate through any edge, or with one motion segment that jumps across
 //!   it, having been above its top edge (by [`ABOVE_MARGIN`]) within [`ABOVE_MEMORY_MS`]. A
 //!   segment, not a point: a fast flick can cross the whole gate between two reports. Starting
-//!   inside, or sliding in sideways low on the screen with no recent "above", arms nothing — that
-//!   is what separates a request from a pointer that happens to pass by.
+//!   inside, or sliding in sideways low on the screen with no recent "above", arms nothing unless
+//!   the pointer is in the narrow bottom row, where horizontal swipes have their own entry path.
 //! - **Open** once the pointer is [`COMMIT_DISTANCE`] sideways from where it entered, whatever it
 //!   did vertically. The side is latched for the opening; reversing never switches rails.
 //! - **Disarm** on rising [`RISE_CANCEL`] above the gate, on a held button, after
 //!   [`ARM_TIMEOUT_MS`] without committing, or on moving to another output.
 //! - After a disarm that was not the pointer rising, and after every close, the pointer has to be
-//!   above the gate again before it can arm — the "await exit" state that stops a rail that has
-//!   just closed from reopening under a pointer still resting at the bottom.
+//!   above the gate again before a diagonal can arm. A bottom-row swipe can rearm after leaving
+//!   that row or a brief pause, so closing never reopens the rail in the same motion stream.
 
 /// How far above the gate's top edge the pointer must be for the approach to count as "from
 /// above", logical pixels. Small: the rule is about direction, not distance.
@@ -35,6 +35,10 @@ pub const ABOVE_MEMORY_MS: u64 = 700;
 /// Sideways travel from the entry point that opens a rail, logical pixels. Vertical motion is
 /// ignored entirely — a diagonal, a hook and a straight line down-then-across all commit.
 pub const COMMIT_DISTANCE: f64 = 16.0;
+/// A horizontal swipe can start anywhere in this narrow output-bottom band, logical pixels.
+pub const BOTTOM_ROW_HEIGHT: f64 = 8.0;
+/// A fresh swipe may start at the bottom after this pause in motion reports, milliseconds.
+pub const BOTTOM_REARM_MS: u64 = 250;
 /// How far above the gate's top edge an armed pointer may wander before it is taken back,
 /// logical pixels. Generous, so wobbling out of the top of the gate on the way in is not a cancel.
 pub const RISE_CANCEL: f64 = 40.0;
@@ -170,6 +174,9 @@ pub struct GestureGate {
     /// The output and time the pointer was last seen above the gate. `None` is the "await exit"
     /// state: nothing can arm until the pointer has been above again.
     above: Option<(usize, u64)>,
+    /// Suppress the remainder of a swipe after dismissing a rail or cancelling an arm.
+    bottom_blocked: bool,
+    last_motion_ms: Option<u64>,
 }
 
 impl GestureGate {
@@ -195,6 +202,7 @@ impl GestureGate {
     pub fn close(&mut self) {
         self.phase = Phase::Idle;
         self.above = None;
+        self.bottom_blocked = true;
     }
 
     /// The gate on the output whose rectangle is `screen`: the configured size, clamped to the
@@ -220,6 +228,7 @@ impl GestureGate {
         if !self.config.enabled {
             return None;
         }
+        let at_bottom = self.note_bottom_motion(sample);
         let gate = self.area(sample.screen);
         let above_line = gate.y - ABOVE_MARGIN;
         match self.phase {
@@ -243,6 +252,7 @@ impl GestureGate {
                 };
                 if let Some(reason) = reason {
                     self.phase = Phase::Idle;
+                    self.bottom_blocked = true;
                     // Rising out of the top *is* being above: coming straight back down is a
                     // fresh approach. Every other cancel needs the pointer to go up again.
                     self.above =
@@ -252,6 +262,27 @@ impl GestureGate {
                 self.commit(entry, sample.to, output)
             }
             Phase::Idle => {
+                // Starting in the bottom row is intentional horizontal input: it needs neither
+                // a descent nor the central gate. Keep the same direction latch and distance as
+                // the diagonal route; exceptions and held-button rules apply to both.
+                if at_bottom
+                    && !self.bottom_blocked
+                    && (sample.to.x - sample.from.x).abs() > f64::EPSILON
+                    && !sample.button_held
+                {
+                    if !may_arm(&self.config) {
+                        return None;
+                    }
+                    self.phase = Phase::Armed {
+                        entry: sample.from,
+                        since: sample.now_ms,
+                        output: sample.output,
+                    };
+                    return Some(
+                        self.commit(sample.from, sample.to, sample.output)
+                            .unwrap_or(Transition::Armed),
+                    );
+                }
                 if sample.from.y < above_line || sample.to.y < above_line {
                     self.above = Some((sample.output, sample.now_ms));
                 }
@@ -280,6 +311,27 @@ impl GestureGate {
                 )
             }
         }
+    }
+
+    fn note_bottom_motion(&mut self, sample: Sample) -> bool {
+        let bottom_row = Area {
+            y: sample.screen.bottom() - BOTTOM_ROW_HEIGHT.min(sample.screen.height),
+            height: BOTTOM_ROW_HEIGHT.min(sample.screen.height),
+            ..sample.screen
+        };
+        let at_bottom = bottom_row.contains(sample.from) && bottom_row.contains(sample.to);
+        if !at_bottom
+            || self
+                .last_motion_ms
+                .is_none_or(|at| sample.now_ms.saturating_sub(at) >= BOTTOM_REARM_MS)
+        {
+            self.bottom_blocked = false;
+        }
+        self.last_motion_ms = Some(sample.now_ms);
+        if sample.button_held {
+            self.bottom_blocked = true;
+        }
+        at_bottom
     }
 
     fn commit(&mut self, entry: Pos, to: Pos, output: usize) -> Option<Transition> {
@@ -489,6 +541,92 @@ mod tests {
         assert!(pointer.walk(at(LEFT + 2.0, 1040.0), 30).is_empty());
         assert!(pointer.walk(at(RIGHT - 2.0, 1060.0), 60).is_empty());
         assert_eq!(pointer.gate.phase(), Phase::Idle);
+    }
+
+    #[test]
+    fn horizontal_bottom_row_swipes_open_in_their_direction() {
+        // Both routes also work far outside the central gate.
+        for (start, end, side) in [(1600.0, 1500.0, Side::Left), (200.0, 300.0, Side::Right)] {
+            let mut pointer = Pointer::new(at(start, SCREEN.bottom() - 1.0));
+            assert_eq!(
+                pointer.walk(at(end, SCREEN.bottom() - 1.0), 20),
+                [Transition::Armed, Transition::Opened(side)]
+            );
+        }
+    }
+
+    #[test]
+    fn bottom_row_jitter_and_a_stationary_pointer_do_not_open() {
+        let mut pointer = Pointer::new(at(CENTRE, SCREEN.bottom() - 1.0));
+        assert_eq!(pointer.to(pointer.pos), None);
+        assert_eq!(
+            pointer.to(at(CENTRE + 3.0, pointer.pos.y)),
+            Some(Transition::Armed)
+        );
+        assert_eq!(pointer.to(at(CENTRE - 3.0, pointer.pos.y)), None);
+        assert_eq!(pointer.to(at(CENTRE, pointer.pos.y)), None);
+        assert!(matches!(pointer.gate.phase(), Phase::Armed { .. }));
+    }
+
+    #[test]
+    fn closing_at_bottom_requires_a_pause_or_leaving_the_row() {
+        let y = SCREEN.bottom() - 1.0;
+        let mut pointer = Pointer::new(at(CENTRE, y));
+        assert_eq!(
+            pointer.to(at(CENTRE - 30.0, y)),
+            Some(Transition::Opened(Side::Left))
+        );
+        pointer.gate.close();
+        assert!(pointer.walk(at(CENTRE + 100.0, y), 20).is_empty());
+        pointer.now += BOTTOM_REARM_MS;
+        assert_eq!(
+            pointer.to(at(CENTRE + 130.0, y)),
+            Some(Transition::Opened(Side::Right))
+        );
+        pointer.gate.close();
+        pointer.to(at(CENTRE, y - BOTTOM_ROW_HEIGHT));
+        pointer.to(at(CENTRE, y));
+        assert_eq!(
+            pointer.to(at(CENTRE - 30.0, y)),
+            Some(Transition::Opened(Side::Left))
+        );
+    }
+
+    #[test]
+    fn bottom_row_swipes_respect_buttons_exceptions_and_output_coordinates() {
+        let mut pointer = Pointer::new(at(CENTRE, SCREEN.bottom() - 1.0));
+        pointer.button = true;
+        assert!(
+            pointer
+                .walk(at(CENTRE - 80.0, pointer.pos.y), 20)
+                .is_empty()
+        );
+        pointer.button = false;
+        assert!(
+            pointer
+                .walk(at(CENTRE + 80.0, pointer.pos.y), 20)
+                .is_empty()
+        );
+        let mut gate = enabled();
+        let screen = Area {
+            x: -1920.0,
+            y: 500.0,
+            ..SCREEN
+        };
+        let sample = Sample {
+            output: 1,
+            screen,
+            from: at(-900.0, screen.bottom() - 1.0),
+            to: at(-950.0, screen.bottom() - 1.0),
+            now_ms: 1,
+            button_held: false,
+        };
+        assert_eq!(gate.feed(sample, |_| false), None);
+        assert_eq!(gate.phase(), Phase::Idle);
+        assert_eq!(
+            gate.feed(sample, |_| true),
+            Some(Transition::Opened(Side::Left))
+        );
     }
 
     #[test]

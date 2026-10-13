@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<!-- Compatibility API owned by the installed templar-comp compositor on the session bus.
+     Both /ScreenSaver (Firefox) and /org/freedesktop/ScreenSaver (Chromium) expose this
+     interface. Only explicit playing-video reasons become activity, attributed to the
+     sender's bus-verified process ID. They inhibit only while that process has a single
+     exposed application window and it is fullscreen; ambiguous multi-window activity is
+     ignored. UnInhibit and sender disconnect retire cookies.
+     Generic screen, audio, presentation and game requests return inert cookies. No desktop
+     compatibility name is registered by --check or nested winit. An existing owner is
+     never replaced or queued behind. This API does not implement portal Inhibit.
+     Upstream contract: https://specifications.freedesktop.org/idle-inhibit-spec/latest/ -->
+<node>
+  <interface name="org.freedesktop.ScreenSaver">
+    <method name="Inhibit">
+      <arg name="application_name" type="s" direction="in"/>
+      <arg name="reason" type="s" direction="in"/>
+      <arg name="cookie" type="u" direction="out"/>
+    </method>
+    <method name="UnInhibit">
+      <arg name="cookie" type="u" direction="in"/>
+    </method>
+  </interface>
+</node>

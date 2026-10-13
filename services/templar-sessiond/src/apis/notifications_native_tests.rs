@@ -59,7 +59,8 @@ struct Fixture {
     journal: NotificationJournal,
     server: zbus::Connection,
     client: zbus::Connection,
-    _store: Store,
+    store: Store,
+    registry: Arc<Registry>,
 }
 
 impl Fixture {
@@ -98,7 +99,8 @@ impl Fixture {
             journal,
             server,
             client,
-            _store: store,
+            store,
+            registry,
         })
     }
 
@@ -221,6 +223,153 @@ fn owned_str(value: &str) -> OwnedValue {
     zbus::zvariant::Value::from(value)
         .try_to_owned()
         .expect("string hint serializes")
+}
+
+fn terminal_manifest(id: &str, desktop: &str) -> templar_types::AppManifest {
+    serde_json::from_value(serde_json::json!({
+        "id": id,
+        "display_name": "Terminal",
+        "primary_desktop_file_id": desktop,
+        "executable": "/usr/bin/true",
+        "resource_class": "Interactive",
+        "categories": ["TerminalEmulator"]
+    }))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn desktop_hint_is_unique_catalogue_data_and_forged_source_is_not_peer_identity() {
+    let fixture = Fixture::run().await.unwrap();
+    fixture
+        .registry
+        .insert_manifest(terminal_manifest("org.example.TerminalA", "kitty.desktop"));
+    fixture
+        .registry
+        .insert_manifest(terminal_manifest("org.example.TerminalB", "other.desktop"));
+    let forged = InstanceId::new().to_string();
+    let hints = HashMap::from([
+        ("desktop-entry".into(), owned_str("kitty")),
+        ("source_instance_id".into(), owned_str(&forged)),
+        ("x-templaros-source-instance-id".into(), owned_str(&forged)),
+    ]);
+    let id = fixture
+        .notify(
+            "Terminal",
+            0,
+            "done",
+            "",
+            &["default", "Open"],
+            hints.clone(),
+            0,
+        )
+        .await
+        .unwrap();
+    let row = fixture
+        .list_active()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == id)
+        .unwrap();
+    assert_eq!(row.app_id.as_deref(), Some("org.example.TerminalA"));
+    assert!(
+        row.source_instance_id.is_none(),
+        "sender hints cannot invent a managed instance"
+    );
+    assert_eq!(row.actions, vec![("default".into(), "Open".into())]);
+
+    // Another installed copy sharing the desktop ID makes the claim ambiguous.
+    fixture
+        .registry
+        .insert_manifest(terminal_manifest("org.example.TerminalC", "kitty.desktop"));
+    let second = fixture
+        .notify("Terminal", 0, "ambiguous", "", &[], hints, 0)
+        .await
+        .unwrap();
+    let row = fixture
+        .list_active()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == second)
+        .unwrap();
+    assert!(row.app_id.is_none());
+    assert!(row.source_instance_id.is_none());
+    fixture.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn source_instance_survives_a_reader_restart_and_replacement_retires_it() {
+    let fixture = Fixture::run().await.unwrap();
+    let source = InstanceId::new().to_string();
+    let api = NotificationsApi::new(
+        fixture.store.clone(),
+        Arc::new(SqliteHistory::new(fixture.store.clone())),
+        fixture.registry.clone(),
+    );
+    let id = api
+        .store_active(&ActiveRow {
+            replaces_id: 0,
+            event_id: "origin-event",
+            app_name: "Terminal",
+            app_id: Some("org.example.Terminal"),
+            created_ms: templar_state::now_ms(),
+            summary: "finished",
+            body: "",
+            icon: "",
+            urgency: 1,
+            category: "terminal.completed",
+            actions_json: "[]",
+            expires_ms: None,
+            source_instance_id: Some(&source),
+        })
+        .unwrap();
+    let fresh_reader = NotificationsControlApi::new(fixture.store.clone());
+    assert_eq!(
+        fresh_reader.active_rows().unwrap()[0]
+            .source_instance_id
+            .as_deref(),
+        Some(source.as_str())
+    );
+    assert_eq!(
+        fixture.snapshot().await.unwrap().notifications[0]
+            .source_instance_id
+            .as_deref(),
+        Some(source.as_str())
+    );
+
+    // Rolled-back writers do not know the additive source columns. Changing only
+    // event_id must also retire the source, even while its old bytes remain stored.
+    fixture
+        .store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE notifications_active SET event_id = 'older-writer-event' WHERE id = ?1",
+                [id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        fresh_reader.active_rows().unwrap()[0]
+            .source_instance_id
+            .is_none()
+    );
+
+    // A replacement has its own sender; it must not inherit the old row's association.
+    assert_eq!(
+        fixture
+            .notify("unmanaged", id, "replacement", "", &[], HashMap::new(), 0)
+            .await
+            .unwrap(),
+        id
+    );
+    assert!(
+        fixture.list_active().await.unwrap()[0]
+            .source_instance_id
+            .is_none()
+    );
+    fixture.stop().await.unwrap();
 }
 
 /// Receive one signal body, failing when nothing arrives within the call budget.

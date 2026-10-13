@@ -143,13 +143,31 @@ URI/Bash round-trips, and cache-deletion identity fencing.
 Index calls run on bounded Interactive, Bulk and Maintenance worker lanes. Search and paging
 use Interactive; snapshots use Bulk; large change reads and maintenance have separate admission.
 Caller limits and latest client tags cancel superseded searches; the hard-capped reader pool and
-SQLite interruption bound outstanding work. Snapshot writers stream through a 256 KiB buffer,
+SQLite interruption bound outstanding work. Interactive requests also carry a five-second deadline
+from admission, including queue time. The SQLite progress callback and array match checks honor
+it, return the typed `Cancelled` error, and release the read view instead of pinning old WAL pages
+indefinitely. Bulk snapshots and maintenance retain their own limits. Snapshot writers stream through a 256 KiB buffer,
 enforce byte/entry/time limits and patch the header before sealing. Readers validate all four
 seals, exact length and manifest identity before borrowing entries from an immutable mmap.
 
 Acquisition gives each path to the most specific registered root. Search acceleration uses
 root-local immutable shards and bounded generation-fenced overlays; declared path/other SQL
 fallbacks remain. Current fixture p95 gains do not qualify the remaining SQL p99 tails.
+SQL directory expansion fixes its loop order to directory ranges, registered roots, then indexed
+`entries_path` lookups bounded by root and native path range. This prevents a cold broad query from
+evaluating every directory range once for each indexed entry. Watcher acquisition and maintenance
+workers use Linux nice 10 and idle I/O priority where supported; interactive search and browsing
+workers keep their normal priority. These settings belong to the background threads, so the
+service's file operations and UI queries retain their existing scheduling policy.
+
+Read-only installed inspection on 2026-10-11 found both roots complete/current and the startup
+reconciliation already finished. A single Interactive worker consumed 99.56% of one CPU in a
+five-second sample while the watcher consumed 0.4%; one read view had been held for over 28 minutes
+and 1.29 GB of WAL remained. Installed-schema `EXPLAIN QUERY PLAN` showed an entries-first scan
+followed by repeated JSON directory-range scans. The revised SQL produces indexed native path
+range lookups instead. The executing query text and stack were unavailable; this inspection did
+not restart, deploy, cancel or change the installed daemon.
+
 `Roots` diagnostics expose availability, main/WAL/SHM sizes, queues, readers, cursors, shards,
 overlays and server-held snapshot descriptors. Commit-triggered checkpoints do not add an idle
 polling timer. Mountinfo presence and measured UUID/fsid confidence fence offline roots;

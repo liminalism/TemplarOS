@@ -188,8 +188,7 @@ pub async fn render_field(path: &Path, width: u32, height: u32) -> Result<()> {
 }
 
 /// Render the bottom bar at rest to a PNG: the network and clock chips plus three taskbar
-/// entries — a group (active, with its accent stripe and its plate), a plain application, and one
-/// under the pointer — at `scale`, in a surface exactly the size the host would ask for.
+/// entries and the launcher — at `scale`, in a surface exactly the size the host would ask for.
 ///
 /// The counterpart to [`render_field`] for the one surface nobody could see: the bar is a few
 /// hundred pixels in the corner of a live session, and every question about it (is the ground
@@ -222,10 +221,13 @@ pub(super) fn bar_frame(
         BarData, BarScreen, HINT_OPEN_MS, HOVER_OPEN_MS, Presence, wanted_size,
     };
 
-    let entries: Vec<crate::rail_model::RailEntry> = crate::taskbar::entries(&fixture_toplevels())
-        .into_iter()
-        .map(Into::into)
-        .collect();
+    let entries = crate::rail_model::reconcile(
+        crate::taskbar::entries(&fixture_toplevels()),
+        &templar_types::launcher::LauncherPreferences::default(),
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     let logical = wanted_size(
         presence,
         open_fan.then(|| entries[0].visible()),
@@ -556,10 +558,13 @@ pub fn render_rails(path: &Path) -> Result<Vec<std::path::PathBuf>> {
 
     let width = RAIL_OUTPUT_WIDTH;
     let origin = width / 2;
-    let entries: Vec<crate::rail_model::RailEntry> = crate::taskbar::entries(&fixture_toplevels())
-        .into_iter()
-        .map(Into::into)
-        .collect();
+    let entries = crate::rail_model::reconcile(
+        crate::taskbar::entries(&fixture_toplevels()),
+        &templar_types::launcher::LauncherPreferences::default(),
+        &[],
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     let icons = fixture_icons();
     let machine = crate::data::MachineReadings::default();
     let mut text = pixelkit_text::TextCache::new(fonts::set());

@@ -1,8 +1,7 @@
 //! Technocratic system marks for the bottom bar.
 //!
 //! One construction: a square, a constant stroke, open geometry, and a node only where a joint
-//! needs a stop. The five marks are Settings (a calibration dial), Network (three linked nodes),
-//! Account (a head on a shoulder yoke), Calendar (a date plate) and Terminal (a prompt plate).
+//! needs a stop. Settings, Network, Account, Calendar, Terminal and Search share the same ink.
 //! They are drawn here, in the shell's own ink, so a missing icon theme cannot blank the bar.
 //!
 //! The clock on the cluster stays words. The calendar mark belongs to the calendar the clock
@@ -18,15 +17,17 @@ pub enum Glyph {
     Account,
     Calendar,
     Terminal,
+    Search,
 }
 
 impl Glyph {
-    pub const ALL: [Glyph; 5] = [
+    pub const ALL: [Glyph; 6] = [
         Glyph::Settings,
         Glyph::Network,
         Glyph::Account,
         Glyph::Calendar,
         Glyph::Terminal,
+        Glyph::Search,
     ];
 
     #[must_use]
@@ -37,6 +38,7 @@ impl Glyph {
             Glyph::Account => "account",
             Glyph::Calendar => "calendar",
             Glyph::Terminal => "terminal",
+            Glyph::Search => "search",
         }
     }
 }
@@ -87,6 +89,7 @@ pub fn draw(
         Glyph::Account => identity(painter, kernel, origin, side, stroke, ink),
         Glyph::Calendar => plate(painter, kernel, origin, side, stroke, ink),
         Glyph::Terminal => prompt(painter, kernel, origin, side, stroke, ink),
+        Glyph::Search => search(painter, kernel, origin, side, stroke, ink),
     }
     painter.pop_clip();
 }
@@ -119,6 +122,32 @@ fn ring(
 
 fn dot(painter: &mut Painter<'_>, kernel: &mut RasterKernel, c: [f32; 2], radius: f32, ink: u32) {
     painter.fill_circle_aa(kernel, c[0], c[1], radius, ink, 255);
+}
+
+fn search(
+    painter: &mut Painter<'_>,
+    kernel: &mut RasterKernel,
+    origin: [f32; 2],
+    side: f32,
+    stroke: f32,
+    ink: u32,
+) {
+    ring(
+        painter,
+        kernel,
+        at(origin, side, 0.42, 0.42),
+        side * 0.25,
+        stroke,
+        ink,
+    );
+    line(
+        painter,
+        kernel,
+        at(origin, side, 0.60, 0.60),
+        at(origin, side, 0.84, 0.84),
+        stroke,
+        ink,
+    );
 }
 
 /// A closed rectangle whose corners meet. Butt caps stop at the endpoint, so each side runs
@@ -372,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn the_five_marks_are_different_pictures() {
+    fn the_marks_are_different_pictures() {
         let masks: Vec<Vec<bool>> = Glyph::ALL
             .iter()
             .map(|glyph| {

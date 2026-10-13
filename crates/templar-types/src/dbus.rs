@@ -70,6 +70,14 @@ pub mod resources {
     pub const IFACE: &str = "org.templaros.Resources1";
 }
 
+/// Playback compatibility owned by the installed compositor, never a nested session.
+pub mod screensaver {
+    pub const BUS_NAME: &str = "org.freedesktop.ScreenSaver";
+    pub const IFACE: &str = "org.freedesktop.ScreenSaver";
+    pub const FIREFOX_PATH: &str = "/ScreenSaver";
+    pub const PATH: &str = "/org/freedesktop/ScreenSaver";
+}
+
 /// File service (`templar-filed`).
 pub mod files {
     pub const BUS_NAME: &str = "org.templaros.Files";

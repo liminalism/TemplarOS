@@ -222,6 +222,12 @@ mod tests {
 
         let ordinary = connect(&socket_name);
         let advertised = registry_of(&ordinary);
+        assert!(
+            advertised
+                .iter()
+                .any(|name| name == "wp_content_type_manager_v1"),
+            "ordinary video clients must be able to declare Video content"
+        );
 
         // The security boundary, from the outside: everything in `TRUSTED_ONLY` is gated by
         // `can_view` on having connected over the private socket.

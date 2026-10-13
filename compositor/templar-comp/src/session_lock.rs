@@ -144,6 +144,7 @@ impl<B: Backend + 'static> SessionLockHandler for TemplarCompState<B> {
             return;
         }
         self.session_lock.locked = true;
+        crate::video_idle::refresh(self);
         self.name_tab_menu = crate::chrome::NameTabMenu::default();
         self.session_lock.generation = self
             .session_lock
@@ -197,6 +198,7 @@ impl<B: Backend + 'static> SessionLockHandler for TemplarCompState<B> {
 
     fn unlock(&mut self) {
         self.session_lock.locked = false;
+        crate::video_idle::refresh(self);
         self.session_lock.surfaces.clear();
         self.session_lock.confirmation = None;
         self.session_lock.coverage.clear();

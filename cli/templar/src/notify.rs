@@ -259,6 +259,23 @@ pub fn detect_emulator() -> String {
     String::new()
 }
 
+/// Standard presentation hint lets an unmanaged terminal completion return to an
+/// existing emulator window. It is catalogue lookup data, never an executable command.
+fn completion_hints(
+    emulator: &str,
+    category: &str,
+    urgency: u8,
+) -> Result<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> {
+    use zbus::zvariant::{OwnedValue, Value};
+    let mut hints = std::collections::HashMap::new();
+    hints.insert("category".into(), Value::from(category).try_to_owned()?);
+    hints.insert("urgency".into(), OwnedValue::from(urgency));
+    if emulator == "kitty" {
+        hints.insert("desktop-entry".into(), Value::from("kitty").try_to_owned()?);
+    }
+    Ok(hints)
+}
+
 /// The hook-prefilter line a new shell evaluates at startup: the effective long-job
 /// threshold in seconds, or 0 when every-job mode makes the prefilter pass everything.
 pub fn policy_sh(policy: &CompletionPolicy) -> String {
@@ -315,10 +332,7 @@ impl CompletionDeps for BusDeps {
     }
 
     async fn send(&self, summary: &str, body: &str, category: &str, urgency: u8) -> Result<u32> {
-        use zbus::zvariant::{OwnedValue, Value};
-        let mut hints = std::collections::HashMap::new();
-        hints.insert("category".to_owned(), Value::from(category).try_to_owned()?);
-        hints.insert("urgency".to_owned(), OwnedValue::from(urgency));
+        let hints = completion_hints(&detect_emulator(), category, urgency)?;
         let proxy = zbus::Proxy::new(&self.connection, FDO_BUS_NAME, FDO_PATH, FDO_IFACE).await?;
         let id: u32 = proxy
             .call(
@@ -377,6 +391,27 @@ pub async fn read_policy_on(deps: &impl CompletionDeps) -> CompletionPolicy {
 mod tests {
     use super::*;
     use templar_session_core::notifications::CompletionOutcome;
+
+    #[test]
+    fn completion_desktop_hint_uses_only_a_detected_supported_emulator() {
+        let kitty = completion_hints("kitty", "terminal.completed", 1).unwrap();
+        assert_eq!(<&str>::try_from(&kitty["desktop-entry"]).unwrap(), "kitty");
+        assert_eq!(
+            <&str>::try_from(&kitty["category"]).unwrap(),
+            "terminal.completed"
+        );
+        assert_eq!(u8::try_from(&kitty["urgency"]).unwrap(), 1);
+        assert!(
+            !completion_hints("", "terminal.completed", 1)
+                .unwrap()
+                .contains_key("desktop-entry")
+        );
+        assert!(
+            !completion_hints("another-terminal", "terminal.completed", 1)
+                .unwrap()
+                .contains_key("desktop-entry")
+        );
+    }
 
     struct FakeDeps {
         values: BTreeMap<String, SettingValue>,

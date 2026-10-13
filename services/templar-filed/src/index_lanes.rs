@@ -15,7 +15,7 @@ use parking_lot::{Condvar, Mutex};
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use templar_file_index::{CallContext, IndexError};
 
@@ -129,6 +129,10 @@ struct Lane {
 /// Recent waits kept for the percentiles.
 const WAIT_WINDOW: usize = 256;
 
+/// Interactive work must relinquish its read view even if its consumer never replaces or
+/// cancels the request. SQLite's progress handler and array matching honor this deadline.
+const INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl Lane {
     fn work_loop(self: &Arc<Self>) {
         loop {
@@ -161,7 +165,7 @@ impl Lane {
                 }
             };
             let waited = job.enqueued.elapsed().as_millis() as u64;
-            if job.cx.cancel.is_cancelled() {
+            if job.cx.check().is_err() {
                 let mut state = self.state.lock();
                 state.cancelled += 1;
                 state.running.retain(|(_, cx)| !Arc::ptr_eq(cx, &job.cx));
@@ -187,7 +191,7 @@ impl Lane {
                 .running
                 .retain(|(_, running)| !Arc::ptr_eq(running, &cx));
             release(&mut state, job.caller.as_ref());
-            if cx.cancel.is_cancelled() {
+            if cx.check().is_err() {
                 state.cancelled += 1;
             } else {
                 state.completed += 1;
@@ -262,6 +266,7 @@ fn request_tag(
 /// The three lanes, their worker threads and the latest-request-wins tags.
 pub struct Lanes {
     pools: [Arc<Lane>; 3],
+    interactive_timeout: Duration,
     pub snapshots: Arc<crate::index_metrics::SnapshotMeter>,
     workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
     tags: Mutex<TaggedCalls>,
@@ -297,6 +302,7 @@ impl Lanes {
         });
         let this = Arc::new(Self {
             pools: lanes,
+            interactive_timeout: INTERACTIVE_TIMEOUT,
             snapshots: Arc::default(),
             workers: Mutex::new(Vec::new()),
             tags: Mutex::new(HashMap::new()),
@@ -306,7 +312,12 @@ impl Lanes {
                 let worker = Arc::clone(lane);
                 let handle = std::thread::Builder::new()
                     .name(format!("templar-index-{}-{number}", lane.kind.as_str()))
-                    .spawn(move || worker.work_loop())?;
+                    .spawn(move || {
+                        if worker.kind == LaneKind::Maintenance {
+                            crate::index_background::lower_thread_priority();
+                        }
+                        worker.work_loop();
+                    })?;
                 this.workers.lock().push(handle);
             }
         }
@@ -324,9 +335,18 @@ impl Lanes {
             + 1
     }
 
+    fn call_context(&self, kind: LaneKind, caller: Option<Arc<str>>) -> Arc<CallContext> {
+        let context = CallContext::for_owner(caller);
+        Arc::new(if kind == LaneKind::Interactive {
+            context.with_deadline(Instant::now() + self.interactive_timeout)
+        } else {
+            context
+        })
+    }
+
     /// Runs `job` on `kind`'s lane for `caller`. `Busy` if the lane's queue or the caller's own
     /// allowance is full; `Cancelled` if a newer request with the same `(caller, tag)` replaced it
-    /// before or while it ran.
+    /// before or while it ran, or an interactive request exceeds its five-second deadline.
     pub async fn run<T: Send + 'static>(
         &self,
         kind: LaneKind,
@@ -347,7 +367,7 @@ impl Lanes {
         job: impl FnOnce(&CallContext) -> Result<T, IndexError> + Send + 'static,
         cleanup: impl FnOnce(T) + Send + 'static,
     ) -> Result<Ran<T>, IndexError> {
-        let cx = Arc::new(CallContext::for_owner(caller.clone()));
+        let cx = self.call_context(kind, caller.clone());
         let tag_key = request_tag(caller.as_ref(), tag)?;
         let (sender, receiver) = tokio::sync::oneshot::channel::<Result<Ran<T>, IndexError>>();
         let sender = Arc::new(Mutex::new(Some(sender)));
@@ -601,6 +621,89 @@ mod tests {
             Arc::new(std::sync::Barrier::new(2)),
             Arc::new(AtomicUsize::new(0)),
         )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_interactive_deadline_interrupts_sql_and_releases_the_reader_and_worker() {
+        #[derive(Debug)]
+        struct EndlessCount;
+        impl templar_file_index::query::QueryPlanner for EndlessCount {
+            fn plan(
+                &self,
+                _: &templar_file_index::Query,
+                _: &str,
+                _: bool,
+            ) -> templar_file_index::query::PlannedQuery {
+                templar_file_index::query::PlannedQuery {
+                    candidates_sql: "WITH RECURSIVE endless(id) AS
+                        (SELECT 1 UNION ALL SELECT 1 FROM endless) SELECT sum(id) FROM endless"
+                        .into(),
+                    binds: Vec::new(),
+                    strategy: "endless-test-count",
+                    expand_directories: false,
+                }
+            }
+            fn name(&self) -> &'static str {
+                "endless-test-count"
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        let index = templar_file_index::Index::open(
+            &dir.path().join("index.sqlite3"),
+            templar_file_index::IndexConfig::default(),
+        )
+        .unwrap();
+        let root = index
+            .add_root(
+                &templar_file_index::NativePath::from_path(&home),
+                templar_file_index::RootPolicy::default_home(),
+            )
+            .unwrap()
+            .root;
+        index
+            .scan_root(root, templar_file_index::ScanOptions::default())
+            .unwrap();
+        let mut lanes = lanes(LaneConfig {
+            workers: 1,
+            queue: 4,
+            per_caller: 4,
+        });
+        Arc::get_mut(&mut lanes).unwrap().interactive_timeout = Duration::from_secs(1);
+        let queried = index.clone();
+        let result = lanes
+            .run(
+                LaneKind::Interactive,
+                Some(Arc::from(":1.deadline")),
+                None,
+                move |cx| {
+                    assert!(
+                        cx.deadline.is_some(),
+                        "interactive work needs a finite deadline"
+                    );
+                    queried.search_with(
+                        &EndlessCount,
+                        &templar_file_index::Query::new("needle"),
+                        cx,
+                    )
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(IndexError::Cancelled)));
+        assert_eq!(index.reader_metrics().in_use, 0);
+        assert_eq!(index.diagnostics().unwrap().cursor_count, 0);
+        assert!(
+            lanes
+                .run(LaneKind::Interactive, None, None, move |cx| {
+                    index.search(&templar_file_index::Query::new("home"), cx)
+                })
+                .await
+                .is_ok(),
+            "the same worker and read connection must remain usable"
+        );
+        assert_eq!(lanes.metrics()[0].cancelled, 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

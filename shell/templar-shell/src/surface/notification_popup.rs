@@ -15,7 +15,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use templar_window::{Layer, Output, Rect as WindowRect, ShellToplevel};
+use templar_window::{Layer, Output, Rect as WindowRect, ShellToplevel, WindowId};
 
 use crate::surface::bar_screen::BAR_HEIGHT;
 
@@ -47,6 +47,9 @@ pub struct ToastPresentation {
     pub sequence: u64,
     pub app_name: String,
     pub app_id: Option<String>,
+    /// Managed source launch, when the service linked the sender's kernel identity.
+    #[serde(default)]
+    pub source_instance_id: Option<String>,
     pub summary: String,
     pub body: String,
     pub icon: String,
@@ -102,6 +105,10 @@ impl ToastPresentation {
                 .get("app_id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned),
+            source_instance_id: row
+                .get("source_instance_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
             summary: row
                 .get("summary")
                 .and_then(serde_json::Value::as_str)
@@ -141,6 +148,94 @@ impl ToastPresentation {
     pub fn server_expired(&self, now_ms: i64) -> bool {
         self.expires_ms.is_some_and(|expires| expires <= now_ms)
     }
+}
+
+/// Notification body activation uses declared default actions first, then an existing
+/// source window. It never turns display text into an executable to launch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BodyAction {
+    Invoke(String),
+    Activate(WindowId),
+    Unavailable,
+}
+
+pub fn body_action(
+    actions: &[(String, String)],
+    app_id: Option<&str>,
+    source_instance_id: Option<&str>,
+    windows: &[ShellToplevel],
+    catalogue: &[crate::app_search::AppEntry],
+) -> BodyAction {
+    if actions.iter().any(|(key, _)| key == "default") {
+        return BodyAction::Invoke("default".into());
+    }
+    let source = source_instance_id.and_then(templar_types::InstanceId::parse);
+    // Legacy windows may expose only their desktop ID claim. Permit an exact,
+    // unambiguous catalogue stem solely for this explicit user's focus request.
+    let claim_app = app_id
+        .and_then(|id| catalogue.iter().find(|app| app.id.as_str() == id))
+        .filter(|app| {
+            !app.desktop_file_id.is_empty()
+                && catalogue
+                    .iter()
+                    .filter(|other| other.desktop_file_id == app.desktop_file_id)
+                    .count()
+                    == 1
+        });
+    // A supplied source that disappeared or is malformed must not open a different
+    // terminal instance merely because both instances have the same application ID.
+    let window = windows
+        .iter()
+        .filter(|window| matches!(window.layer, Layer::Normal | Layer::AppOnTop))
+        .filter(|window| {
+            if source_instance_id.is_some() {
+                source.is_some()
+                    && window.verified_identity
+                    && window.instance_id == source
+                    && app_id.is_none_or(|app| {
+                        window
+                            .canonical_app_id
+                            .as_ref()
+                            .map(templar_types::AppId::as_str)
+                            == Some(app)
+                    })
+            } else {
+                app_id.is_some()
+                    && (window
+                        .canonical_app_id
+                        .as_ref()
+                        .map(templar_types::AppId::as_str)
+                        == app_id
+                        || (window.canonical_app_id.is_none()
+                            && !window.verified_identity
+                            && claim_app.is_some_and(|app| {
+                                window.claimed_app_id.as_deref().is_some_and(|claim| {
+                                    claim == app.desktop_file_id.trim_end_matches(".desktop")
+                                        || claim == app.id.as_str()
+                                })
+                            })))
+            }
+        })
+        .min_by_key(|window| (window.mru_rank, window.window_id));
+    window.map_or(BodyAction::Unavailable, |window| {
+        BodyAction::Activate(window.window_id)
+    })
+}
+
+/// Claim the card body only after PixelKit has handled its controls. The same measured
+/// layout excludes dismiss/actions and gaps, so one press cannot dispatch two actions.
+pub fn take_card_body_click(
+    input: &mut pixelkit_shell::Input,
+    card: pixelkit_raster::Rect,
+    layout: &pixelkit_ui::toast::ToastLayout,
+) -> bool {
+    let Some((x, y)) = input.press_position() else {
+        return false;
+    };
+    if layout.dismiss.contains(x, y) || layout.actions.iter().any(|area| area.contains(x, y)) {
+        return false;
+    }
+    input.take_click(card)
 }
 
 /// Presentation dwell class. Dwell begins on first presentation, not receipt.
@@ -708,6 +803,7 @@ mod tests {
             sequence: u64::from(id),
             app_name: "Terminal".to_owned(),
             app_id: Some("org.templaros.Terminal".to_owned()),
+            source_instance_id: None,
             summary: format!("Job {id} finished"),
             body: "elapsed 12s".to_owned(),
             icon: String::new(),
@@ -754,6 +850,7 @@ mod tests {
             "id": 41,
             "app_name": "Build",
             "app_id": "org.example.Build",
+            "source_instance_id": "instance-from-service",
             "summary": "Done",
             "body": "42 targets",
             "icon": "build",
@@ -769,6 +866,10 @@ mod tests {
         assert_eq!(row.id, 41);
         assert_eq!(row.app_name, "Build");
         assert_eq!(row.app_id.as_deref(), Some("org.example.Build"));
+        assert_eq!(
+            row.source_instance_id.as_deref(),
+            Some("instance-from-service")
+        );
         assert_eq!(row.summary, "Done");
         assert_eq!(row.body, "42 targets");
         assert_eq!(row.icon, "build");
@@ -783,6 +884,181 @@ mod tests {
         );
         assert_eq!(row.created_ms, 7_000);
         assert_eq!(row.expires_ms, Some(12_000));
+    }
+
+    #[test]
+    fn body_activation_returns_to_the_exact_source_instance_including_parked_windows() {
+        let first = templar_types::InstanceId::new();
+        let second = templar_types::InstanceId::new();
+        let mut original = toplevel(false, false, true);
+        original.window_id = WindowId(41);
+        original.canonical_app_id = Some("org.example.Terminal".parse().unwrap());
+        original.instance_id = Some(first);
+        original.verified_identity = true;
+        original.mru_rank = 7;
+        let mut other = original.clone();
+        other.window_id = WindowId(42);
+        other.instance_id = Some(second);
+        other.shelved = false;
+        other.mru_rank = 0;
+        let windows = [other.clone(), original];
+        assert_eq!(
+            body_action(
+                &[],
+                Some("org.example.Terminal"),
+                Some(&first.to_string()),
+                &windows,
+                &[]
+            ),
+            BodyAction::Activate(WindowId(41))
+        );
+        assert_eq!(
+            body_action(
+                &[],
+                Some("org.example.Terminal"),
+                Some(&first.to_string()),
+                &[other],
+                &[]
+            ),
+            BodyAction::Unavailable,
+            "a gone source must not retarget another terminal"
+        );
+        assert_eq!(
+            body_action(
+                &[],
+                Some("org.example.Terminal"),
+                Some("malformed"),
+                &windows,
+                &[]
+            ),
+            BodyAction::Unavailable
+        );
+    }
+
+    #[test]
+    fn body_activation_prefers_declared_default_then_canonical_application_recency() {
+        let mut first = toplevel(false, false, false);
+        first.window_id = WindowId(11);
+        first.canonical_app_id = Some("org.example.Mail".parse().unwrap());
+        first.mru_rank = 3;
+        let mut recent = first.clone();
+        recent.window_id = WindowId(12);
+        recent.mru_rank = 1;
+        let mut misleading = recent.clone();
+        misleading.window_id = WindowId(13);
+        misleading.mru_rank = 0;
+        misleading.canonical_app_id = None;
+        misleading.claimed_app_id = Some("org.example.Mail".into());
+        let windows = [first, recent, misleading];
+        assert_eq!(
+            body_action(
+                &[("default".into(), "Open".into())],
+                Some("org.example.Mail"),
+                None,
+                &windows,
+                &[]
+            ),
+            BodyAction::Invoke("default".into())
+        );
+        assert_eq!(
+            body_action(
+                &[("reply".into(), "Reply".into())],
+                Some("org.example.Mail"),
+                None,
+                &windows,
+                &[]
+            ),
+            BodyAction::Activate(WindowId(12)),
+            "nondefault chips remain separate and an unverified raw claim does not retarget"
+        );
+        assert_eq!(
+            body_action(&[], None, None, &windows, &[]),
+            BodyAction::Unavailable
+        );
+    }
+
+    #[test]
+    fn unmanaged_terminal_focus_uses_an_unambiguous_installed_desktop_claim() {
+        let app = crate::app_search::AppEntry {
+            id: "desktop-import.kitty.desktop".parse().unwrap(),
+            name: "kitty".into(),
+            desktop_file_id: "kitty.desktop".into(),
+            icon: String::new(),
+            categories: vec!["TerminalEmulator".into()],
+            keywords: Vec::new(),
+            no_display: false,
+            logical: String::new(),
+            variants: 1,
+        };
+        let mut window = toplevel(false, false, false);
+        window.window_id = WindowId(27);
+        window.canonical_app_id = None;
+        window.claimed_app_id = Some("kitty".into());
+        let windows = [window];
+        assert_eq!(
+            body_action(
+                &[],
+                Some(app.id.as_str()),
+                None,
+                &windows,
+                std::slice::from_ref(&app)
+            ),
+            BodyAction::Activate(WindowId(27))
+        );
+        let mut collision = app.clone();
+        collision.id = "org.example.OtherKitty".parse().unwrap();
+        assert_eq!(
+            body_action(
+                &[],
+                Some(app.id.as_str()),
+                None,
+                &windows,
+                &[app.clone(), collision]
+            ),
+            BodyAction::Unavailable
+        );
+        assert_eq!(
+            body_action(
+                &[],
+                Some(app.id.as_str()),
+                Some(&templar_types::InstanceId::new().to_string()),
+                &windows,
+                std::slice::from_ref(&app)
+            ),
+            BodyAction::Unavailable,
+            "a legacy claim never replaces a verified source instance"
+        );
+    }
+
+    #[test]
+    fn notification_body_click_excludes_dismiss_action_controls_and_stack_gaps() {
+        use pixelkit_raster::Rect;
+        use pixelkit_shell::{Input, MouseButton};
+        let layout = pixelkit_ui::toast::ToastLayout {
+            height: 120,
+            dismiss: Rect::new(340, 10, 28, 28),
+            actions: vec![Rect::new(12, 90, 80, 26)],
+            body_lines: 1,
+            text_width: 310,
+        };
+        let card = Rect::new(0, 0, 380, 120);
+        for (point, expected) in [
+            ((20_i16, 50_i16), true),
+            ((350, 20), false),
+            ((30, 100), false),
+            ((20, 125), false),
+        ] {
+            let mut input = Input::new();
+            input.cursor_moved(f32::from(point.0), f32::from(point.1));
+            input.mouse(MouseButton::Left, true);
+            assert_eq!(take_card_body_click(&mut input, card, &layout), expected);
+            if expected {
+                assert!(
+                    !take_card_body_click(&mut input, card, &layout),
+                    "one dispatch per press"
+                );
+            }
+        }
     }
 
     #[test]

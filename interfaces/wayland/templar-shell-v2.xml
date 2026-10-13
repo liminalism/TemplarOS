@@ -440,10 +440,11 @@
     </request>
     <request name="set_tab_policy" since="14">
       <description summary="the committed window tab policy, parsed from windows.tabs.*">
-        The shell forwards the committed window tab policy (planning doc §3) after reading
+        The shell forwards the committed window tab policy after reading
         it from Settings1 and on every committed change of any `windows.tabs.*` key: one
-        horizontal title tab plus three controls per window, following the nearest client
-        corner. Every argument mirrors one settings key (`windows.tabs.placement`,
+        horizontal title tab plus three controls per non-fullscreen window, fixed at the
+        bottom-right by default, with optional pointer following. Fullscreen suppresses
+        both title and control tabs. Every argument mirrors one settings key (`windows.tabs.placement`,
         `windows.tabs.follow-pointer`, `windows.tabs.fixed-corner`, `windows.tabs.controls`,
         `windows.tabs.title`, `windows.tabs.default-corner`), parsed with the schema's own
         defaults, so Set/Reset/undo/restart converge on the same policy however the keys
@@ -486,7 +487,7 @@
     <enum name="tab_title" since="14">
       <description summary="when the title tab draws"/>
       <entry name="always" value="0">
-        <description summary="visible while its window is visible (windows.tabs.title=always)"/>
+        <description summary="visible while its non-fullscreen window is visible (windows.tabs.title=always)"/>
       </entry>
       <entry name="hover" value="1">
         <description summary="only with the hovered controls (windows.tabs.title=hover)"/>

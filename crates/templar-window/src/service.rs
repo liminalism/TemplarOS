@@ -487,6 +487,11 @@ impl<I: IdentityCache> WindowService<I> {
             };
         }
         let geometry = window.geometry;
+        // Fullscreen owns its complete client area: retire hover state so neither a
+        // pending reveal nor an old control press survives entry or restore.
+        self.tab_latched.remove(&window_id);
+        self.tab_revealed.remove(&window_id);
+        self.tab_pending.remove(&window_id);
         Some(geometry)
     }
 
@@ -1231,7 +1236,8 @@ impl<I: IdentityCache> WindowService<I> {
     }
 
     /// Whether `window_id` has an exterior resize perimeter. Screen-filling windows
-    /// still draw the shared title/control layout, but cannot be resized until restored.
+    /// cannot be resized until restored. Maximized windows retain their corner tabs;
+    /// fullscreen windows suppress them.
     pub fn has_frame(&self, window_id: WindowId) -> bool {
         if !self.is_client_window(window_id) {
             return false;
@@ -1584,6 +1590,9 @@ impl<I: IdentityCache> WindowService<I> {
     /// anything changed. Reveal changes nothing else — no focus, no raise, no action —
     /// and a hidden control takes no input.
     pub fn set_controls_revealed(&mut self, window_id: WindowId, revealed: bool) -> bool {
+        if revealed && !self.has_window_tabs(window_id) {
+            return false;
+        }
         if revealed {
             self.tab_revealed.insert(window_id)
         } else {
@@ -1594,21 +1603,33 @@ impl<I: IdentityCache> WindowService<I> {
     /// Whether `window_id`'s controls are currently drawn and clickable: always, under the
     /// always-controls policy, else only while revealed.
     pub fn controls_revealed(&self, window_id: WindowId) -> bool {
-        self.tab_policy.controls_always || self.tab_revealed.contains(&window_id)
+        self.has_window_tabs(window_id)
+            && (self.tab_policy.controls_always || self.tab_revealed.contains(&window_id))
     }
 
     /// Whether `window_id`'s title is currently drawn: always, under the default policy,
     /// else only while revealed.
     pub fn title_revealed(&self, window_id: WindowId) -> bool {
-        self.tab_policy.title_always || self.tab_revealed.contains(&window_id)
+        self.has_window_tabs(window_id)
+            && (self.tab_policy.title_always || self.tab_revealed.contains(&window_id))
+    }
+
+    /// Fullscreen clients own their entire surface, including every corner. This one
+    /// policy governs both tab paint and hit geometry; maximized clients keep their tabs.
+    fn has_window_tabs(&self, window_id: WindowId) -> bool {
+        self.is_client_window(window_id)
+            && self
+                .windows
+                .get(&window_id)
+                .is_some_and(|window| !window.fullscreen)
     }
 
     /// `window_id`'s complete tab geometry: the stored corner, the shared policy, the
     /// window's own output for the exterior/overlay decision. `None` for unknown or
-    /// non-client windows. Every consumer — paint, hit, damage, recovery, configure —
-    /// derives its rectangles from this and nothing else.
+    /// non-client or fullscreen windows. Every consumer — paint, hit, damage, recovery,
+    /// configure — derives its rectangles from this and nothing else.
     pub fn window_layout(&self, window_id: WindowId) -> Option<WindowLayout> {
-        if !self.is_client_window(window_id) {
+        if !self.has_window_tabs(window_id) {
             return None;
         }
         let geometry = self.windows.get(&window_id)?.geometry;
@@ -1634,7 +1655,7 @@ impl<I: IdentityCache> WindowService<I> {
 
     /// Arm once on entry, preserving the original deadline across further motion.
     pub fn note_tab_approach(&mut self, window_id: WindowId, now_ns: u64) {
-        if !self.is_visible(window_id) || !self.is_client_window(window_id) {
+        if !self.is_visible(window_id) || !self.has_window_tabs(window_id) {
             return;
         }
         if self.tab_revealed.contains(&window_id)
@@ -4488,6 +4509,10 @@ mod tests {
     #[test]
     fn pure_tab_moves_never_resize_the_client() {
         let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        service.set_tab_policy(TabPolicy {
+            follow_pointer: true,
+            ..TabPolicy::default()
+        });
         let client = service.client_area(id).unwrap();
         assert_eq!(client, Rect::new(100, 100, 400, 300));
 
@@ -4519,7 +4544,11 @@ mod tests {
     #[test]
     fn one_shared_layout_survives_transitions() {
         let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
-        assert_eq!(service.tab_corner(id), Corner::TopRight);
+        service.set_tab_policy(TabPolicy {
+            follow_pointer: true,
+            ..TabPolicy::default()
+        });
+        assert_eq!(service.tab_corner(id), Corner::BottomRight);
         assert!(service.set_tab_corner(id, Corner::BottomLeft));
         assert!(!service.set_tab_corner(id, Corner::BottomLeft));
         let layout = service.window_layout(id).unwrap();
@@ -4546,14 +4575,14 @@ mod tests {
         );
         service.group(id, other);
         assert_eq!(service.tab_corner(id), Corner::BottomLeft);
-        assert_eq!(service.tab_corner(other), Corner::TopRight);
+        assert_eq!(service.tab_corner(other), Corner::BottomRight);
         // Output loss re-derives the layout against the surviving topology without
         // forgetting the corner.
         service.on_outputs_changed(vec![Output::new("eDP-1", Rect::new(0, 0, 800, 600), 1000)]);
         assert_eq!(service.tab_corner(id), Corner::BottomLeft);
         assert!(service.window_layout(id).is_some());
         // Unknown windows answer the default corner and no layout.
-        assert_eq!(service.tab_corner(WindowId(9999)), Corner::TopRight);
+        assert_eq!(service.tab_corner(WindowId(9999)), Corner::BottomRight);
         assert!(service.window_layout(WindowId(9999)).is_none());
     }
 
@@ -4563,6 +4592,10 @@ mod tests {
     #[test]
     fn latched_tabs_hold_their_corner_until_the_grab_ends() {
         let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        service.set_tab_policy(TabPolicy {
+            follow_pointer: true,
+            ..TabPolicy::default()
+        });
         service.set_tab_corner(id, Corner::TopLeft);
         // Unlatched, the far corner wins.
         assert_eq!(
@@ -4687,6 +4720,7 @@ mod tests {
         for placement in [TabPlacement::SameCorner, TabPlacement::OppositeCorners] {
             let policy = TabPolicy {
                 placement,
+                follow_pointer: true,
                 ..TabPolicy::default()
             };
             service.set_tab_policy(policy);
@@ -4772,23 +4806,87 @@ mod tests {
     }
 
     #[test]
-    fn screen_filling_windows_keep_title_and_bounded_controls_without_a_second_owner() {
+    fn maximized_windows_keep_title_and_bounded_controls() {
         let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
-        for fullscreen in [false, true] {
-            if fullscreen {
-                service.set_fullscreen(id, true);
-            } else {
-                service.set_maximized(id, true);
-            }
-            assert!(service.title_revealed(id));
-            assert!(!service.controls_revealed(id));
-            for corner in Corner::ALL {
-                service.set_tab_corner(id, corner);
-                let layout = service.window_layout(id).unwrap();
-                assert!(layout.overlay);
-                assert!(layout.title.y >= 16);
-                assert!(layout.title.bottom() <= service.outputs()[0].usable().bottom() - 16);
-            }
+        service.set_tab_policy(TabPolicy {
+            follow_pointer: true,
+            ..TabPolicy::default()
+        });
+        service.set_maximized(id, true);
+        assert!(service.title_revealed(id));
+        assert!(!service.controls_revealed(id));
+        for corner in Corner::ALL {
+            service.set_tab_corner(id, corner);
+            let layout = service.window_layout(id).unwrap();
+            assert!(layout.overlay);
+            assert!(layout.title.y >= 16);
+            assert!(layout.title.bottom() <= service.outputs()[0].usable().bottom() - 16);
         }
+    }
+
+    #[test]
+    fn default_tabs_stay_bottom_right_on_approach_and_after_restore() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        for pos in [Point { x: 0, y: 0 }, Point { x: 900, y: 0 }] {
+            assert_eq!(
+                service.select_tab_corner(id, pos),
+                Some((Corner::BottomRight, Corner::BottomRight))
+            );
+            assert_eq!(
+                service.window_layout(id).unwrap().corner,
+                Corner::BottomRight
+            );
+        }
+        service.set_fullscreen(id, true);
+        service.set_fullscreen(id, false);
+        assert_eq!(
+            service.window_layout(id).unwrap().corner,
+            Corner::BottomRight
+        );
+    }
+
+    #[test]
+    fn fullscreen_retires_tabs_and_blocks_hover_until_restored() {
+        let (mut service, id) = one_window(Rect::new(100, 100, 400, 300));
+        service.note_tab_approach(id, 0);
+        service.set_controls_revealed(id, true);
+        service.set_tab_latched(id, true);
+        service.set_fullscreen(id, true);
+
+        assert!(!service.title_revealed(id));
+        assert!(!service.controls_revealed(id));
+        assert!(
+            service.window_layout(id).is_none(),
+            "no clickable tab rectangles"
+        );
+        assert!(!service.is_tab_latched(id));
+        assert_eq!(service.next_tab_deadline(), None);
+        assert!(service.fire_tab_deadlines(u64::MAX).is_empty());
+        service.note_tab_approach(id, 1);
+        assert!(!service.set_controls_revealed(id, true));
+        assert_eq!(service.next_tab_deadline(), None);
+
+        service.set_tab_policy(TabPolicy {
+            controls_always: true,
+            ..TabPolicy::default()
+        });
+        assert!(!service.title_revealed(id));
+        assert!(
+            !service.controls_revealed(id),
+            "fullscreen overrides always-controls"
+        );
+
+        service.set_tab_policy(TabPolicy::default());
+        service.set_fullscreen(id, false);
+        assert!(service.title_revealed(id));
+        assert!(
+            !service.controls_revealed(id),
+            "old hover does not survive restore"
+        );
+        service.note_tab_approach(id, 0);
+        assert_eq!(
+            service.fire_tab_deadlines(u64::MAX),
+            vec![TabDeadlineFired::Reveal(id)]
+        );
     }
 }

@@ -12,6 +12,15 @@ context menu. The shell opens one focused overlay above the current application,
 maximized or fullscreen application, without revealing Home or changing its window geometry.
 Typing on bare Home also forwards the text to this popup.
 
+The rail's launcher control wears a drawn magnifying glass. With the default gesture layout,
+swipe left along the bottom row to reveal running windows and saved applications; swipe right
+to reveal System. You can start anywhere in the bottom eight logical pixels, including with
+the cursor already resting there. The existing approach down into the centre gate and then
+left or right also works. After closing a rail, briefly pause or leave the bottom row before
+starting another swipe. Opening either rail dismisses app search. Keep the pointer in the
+bottom row while travelling to the centred controls; a swipe from the opposite side fully
+reveals them. Click the magnifying glass to open search.
+
 The popup starts in **Apps** with keyboard focus in the search field. With no query it shows
 favorites, then recent applications, suppressing duplicate plain application targets. Typing
 uses the existing ranked application matcher. **Tab** switches to **Files** and back while

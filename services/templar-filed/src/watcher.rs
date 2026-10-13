@@ -136,6 +136,7 @@ pub fn spawn_with_source<S: EventSource + 'static>(
     let thread = std::thread::Builder::new()
         .name("templar-index-watcher".to_owned())
         .spawn(move || {
+            crate::index_background::lower_thread_priority();
             let mut loop_ = WatchLoop::new(index, source);
             if let Some(setup) = delta
                 && let Some(checkpoints) =

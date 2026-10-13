@@ -175,9 +175,11 @@ impl<B: Backend + 'static> CompositorHandler for TemplarCompState<B> {
         self.popups.commit(surface);
         ensure_initial_popup_configure(&mut self.popups, surface);
         self.handle_toplevel_commit(surface);
+        crate::video_idle::refresh(self);
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        self.video_idle.forget_surface(surface);
         self.pending_activations.remove(&surface.id());
         crate::xdg_foreign::surface_destroyed(self, surface);
         if let Some(window) = window_for_surface(self, surface) {
@@ -187,6 +189,7 @@ impl<B: Backend + 'static> CompositorHandler for TemplarCompState<B> {
             tracing::info!(?window_id, "toplevel surface destroyed");
             crate::space_sync::on_window_destroyed(self, window_id);
         }
+        crate::video_idle::refresh(self);
     }
 }
 

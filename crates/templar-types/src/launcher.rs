@@ -210,7 +210,7 @@ impl LauncherPreferences {
                 }
             }
             LauncherMutation::RemoveFavorite { id } => {
-                updated.favorites.retain(|favorite| &favorite.id != id)
+                updated.favorites.retain(|favorite| &favorite.id != id);
             }
             LauncherMutation::ReorderFavorites { ids } => {
                 if ids.len() != updated.favorites.len()

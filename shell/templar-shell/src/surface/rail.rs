@@ -1,7 +1,7 @@
 //! A gesture rail: the bar or the cluster drawn outward from the bottom centre, a clip at a time.
 //!
-//! The compositor recognises the gesture (pointer down into a box at the bottom centre, then
-//! sideways) and says which side opened; the shell draws the rail on that side. Everything here is
+//! The compositor recognises a downward approach at the bottom centre or a horizontal bottom-row
+//! swipe and says which side opened; the shell draws the rail on that side. Everything here is
 //! the part both screens share: which way the rail runs, how much of it the pointer has revealed,
 //! and which actions leave it open.
 //!
@@ -114,6 +114,8 @@ pub struct RailReveal {
     length: i32,
     lead: i32,
     visible: i32,
+    /// The first pointer report can follow the opening in a later protocol dispatch.
+    awaiting_entry: bool,
 }
 
 impl RailReveal {
@@ -127,6 +129,7 @@ impl RailReveal {
             length,
             lead: RAIL_LEAD,
             visible: initial.clamp(0, length),
+            awaiting_entry: true,
         }
     }
 
@@ -137,6 +140,17 @@ impl RailReveal {
             return false;
         }
         let outward = f64::from(self.side.dir()) * (pointer_x - f64::from(self.origin));
+        if self.awaiting_entry {
+            self.awaiting_entry = false;
+            // A bottom-row swipe can open the right rail from the output's far left, or the
+            // left rail from its far right. Keep the established centred chip positions, but
+            // expose the whole rail so the hand can travel to it along the bottom row.
+            if outward < 0.0 {
+                let grew = self.visible < self.length;
+                self.show_all();
+                return grew;
+            }
+        }
         let wanted = (outward + f64::from(self.lead))
             .clamp(0.0, f64::from(self.length))
             .round() as i32;
@@ -249,6 +263,40 @@ mod tests {
         assert!(!reveal.advance(f64::INFINITY));
         assert!(!reveal.advance(f64::NEG_INFINITY));
         assert_eq!(reveal.visible(), 40);
+    }
+
+    #[test]
+    fn rail_remote_bottom_opening_exposes_controls_without_moving_them() {
+        for (side, entry) in [(RailSide::Right, 200.0), (RailSide::Left, 1720.0)] {
+            let mut reveal = RailReveal::new(960, side, 400, 72);
+            assert!(reveal.advance(entry));
+            assert_eq!(reveal.visible(), 400);
+            assert_eq!(reveal.view().origin, 960);
+            // Returning through the centre must not make controls disappear.
+            for x in [entry, 960.0, 960.0 + f64::from(side.dir()) * 40.0] {
+                assert!(!reveal.advance(x));
+                assert_eq!(reveal.visible(), 400);
+            }
+        }
+    }
+
+    #[test]
+    fn rail_centred_opening_keeps_the_progressive_reveal() {
+        for side in [RailSide::Left, RailSide::Right] {
+            let mut reveal = RailReveal::new(960, side, 400, 72);
+            assert!(!reveal.advance(960.0));
+            assert_eq!(reveal.visible(), 72);
+            assert!(reveal.advance(960.0 + f64::from(side.dir()) * 100.0));
+            assert_eq!(reveal.visible(), 100 + RAIL_LEAD);
+        }
+    }
+
+    #[test]
+    fn rail_delayed_entry_ignores_invalid_pointer_reports() {
+        let mut reveal = RailReveal::new(960, RailSide::Right, 400, 72);
+        assert!(!reveal.advance(f64::NAN));
+        assert!(reveal.advance(200.0));
+        assert_eq!(reveal.visible(), 400);
     }
 
     #[test]

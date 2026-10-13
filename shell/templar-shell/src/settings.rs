@@ -410,11 +410,11 @@ impl Default for TabSettings {
     fn default() -> Self {
         Self {
             placement: TabPlacement::SameCorner,
-            follow_pointer: true,
-            fixed_corner: TabCorner::TopRight,
+            follow_pointer: false,
+            fixed_corner: TabCorner::BottomRight,
             controls_always: false,
             title_always: true,
-            default_corner: TabCorner::TopRight,
+            default_corner: TabCorner::BottomRight,
         }
     }
 }
@@ -602,7 +602,12 @@ mod tests {
     #[tokio::test]
     async fn tabs_read_the_policy_and_fall_back_field_by_field() {
         assert_eq!(tabs(&Fake(Err(()))).await, TabSettings::default());
-        assert_eq!(TabSettings::default().default_corner, TabCorner::TopRight);
+        assert_eq!(
+            TabSettings::default().default_corner,
+            TabCorner::BottomRight
+        );
+        assert_eq!(TabSettings::default().fixed_corner, TabCorner::BottomRight);
+        assert!(!TabSettings::default().follow_pointer);
 
         let choice = |value: &str| format!(r#"{{"type":"choice","value":"{value}"}}"#);
         let flag = |value: bool| format!(r#"{{"type":"bool","value":{value}}}"#);
@@ -643,7 +648,7 @@ mod tests {
         let settings = tabs(&partial).await;
         assert_eq!(settings.placement, TabPlacement::SameCorner);
         assert_eq!(settings.default_corner, TabCorner::BottomLeft);
-        assert!(settings.follow_pointer);
+        assert!(!settings.follow_pointer);
         assert!(settings.title_always);
     }
 

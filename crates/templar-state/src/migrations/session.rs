@@ -183,4 +183,15 @@ pub const MIGRATIONS: &[Migration] = &[
         );
 ",
     ),
+    Migration::additive(
+        "0008-notification-source-instance",
+        r"
+        -- A notification can return to the exact managed launch that sent it, including
+        -- a terminal completion helper. Older readers ignore this optional association.
+        ALTER TABLE notifications_active ADD COLUMN source_instance_id TEXT;
+        -- Bind the link to its event: a rolled-back writer replaces event_id without
+        -- knowing about either column, and must not carry the old sender forward.
+        ALTER TABLE notifications_active ADD COLUMN source_event_id TEXT;
+",
+    ),
 ];

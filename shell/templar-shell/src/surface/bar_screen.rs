@@ -1123,7 +1123,13 @@ impl BarScreen {
                 icon_side,
             );
             if entry.slot == RailSlot::Launcher {
-                ui.label(icon, "⌕", design::TAG_INK, Align::Centre);
+                super::glyphs::draw(
+                    &mut ui.painter,
+                    ui.kernel,
+                    icon,
+                    super::glyphs::Glyph::Search,
+                    design::TAG_INK,
+                );
             } else if entry.is_group() {
                 let count = entry.windows().len().min(3);
                 let side = (icon_side * 3 / 4).max(1);

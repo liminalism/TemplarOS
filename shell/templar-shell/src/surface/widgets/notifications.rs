@@ -25,6 +25,8 @@ pub struct NotificationRow {
     pub app: String,
     pub summary: String,
     pub actions: Vec<(String, String)>,
+    pub app_id: Option<String>,
+    pub source_instance_id: Option<String>,
 }
 
 /// What the widget's content is drawn from.
@@ -41,6 +43,8 @@ pub enum NotificationsOutcome {
     None,
     /// Dismiss exactly this notification (`Notifications1.Dismiss`).
     Dismiss(u32),
+    /// Invoke the declared default action or return to this row's source window.
+    Open(u32),
     /// Invoke this notification's declared action (`Notifications1.Invoke`).
     Invoke {
         id: u32,
@@ -119,6 +123,8 @@ pub fn draw(
         );
         if ui.input.take_click(dismiss) {
             outcome = NotificationsOutcome::Dismiss(row.id);
+        } else if ui.input.take_click(text) {
+            outcome = NotificationsOutcome::Open(row.id);
         }
         y += row_height;
 
@@ -175,12 +181,16 @@ mod tests {
                 app: "Mail".into(),
                 summary: "New message".into(),
                 actions: vec![("reply".into(), "Reply".into())],
+                app_id: None,
+                source_instance_id: None,
             },
             NotificationRow {
                 id: 9,
                 app: "Build".into(),
                 summary: "Finished".into(),
                 actions: Vec::new(),
+                app_id: None,
+                source_instance_id: None,
             },
         ]
     }
@@ -269,6 +279,13 @@ mod tests {
         );
     }
 
+    #[test]
+    fn notification_row_body_opens_its_source_without_invoking_a_nondefault_chip() {
+        let mut harness = Harness::new();
+        let outcome = harness.frame(Representation::Large, &rows(), Some((30, 34 + 11)));
+        assert_eq!(outcome, NotificationsOutcome::Open(7));
+    }
+
     /// Growing the tile shows more rows: the cap is the tile's height, not a constant.
     #[test]
     fn notifications_rows_fill_the_available_height() {
@@ -279,6 +296,8 @@ mod tests {
                 app: "App".into(),
                 summary: format!("Item {index}"),
                 actions: Vec::new(),
+                app_id: None,
+                source_instance_id: None,
             })
             .collect();
         // No click: just draw at both rungs; the Wide rung on a short tile draws fewer rows
