@@ -3465,6 +3465,308 @@ record legeos.work.desktop-interaction-fixes-20261007/1 : work {
     author "dk"
 }
 
+record legeos.work.desktop-polish-20261011/1 : work {
+    title "Fullscreen video idle, window tabs, launcher icon, bottom gestures and indexing interference"
+    state superseded
+    scope [
+        path "compositor/COMPOSITOR.md",
+        path "compositor/templar-comp-integration/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-file-index/**",
+        path "crates/templar-session-core/src/settings.rs",
+        path "crates/templar-types/src/dbus.rs",
+        path "crates/templar-window/src/**",
+        path "docs/architecture/compositor-shell.md",
+        path "docs/launcher.md",
+        path "interfaces/**",
+        path "services/templar-filed/**",
+        path "shell/templar-shell/src/settings.rs",
+        path "shell/templar-shell/src/surface/**"
+    ]
+    intent """
+        Apply the owner's five installed-desktop corrections: monitor sleep is inhibited for fullscreen video playback rather than arbitrary fullscreen applications, paused playback should release inhibition when observable; hide window popup tabs in fullscreen and restore bottom-right corner placement; draw a generic search icon on the launcher button; measure current filed CPU and determine initial indexing versus faulty maintenance, correcting interference; allow a horizontal left swipe along the bottom row to open running windows and right swipe to open System while preserving downward diagonal gestures and keeping launcher activation deliberate. Preserve existing doctor work and the live session; parent alone runs tests, no deployment or logout.
+        """
+    acceptance {
+        check bottom-gestures {
+            statement """
+                Horizontal bottom-row left/right swipes choose running windows/System, existing diagonal approach works, close rearm and exceptions remain safe; native gate tests pass.
+                """
+            method command
+            command "cargo test -p templar-comp gesture_gate"
+        }
+        check fullscreen-tabs {
+            statement """
+                Fullscreen suppresses corner popup tabs and normal windows use bottom-right placement, with native geometry/input tests passing.
+                """
+            method command
+            command "cargo test -p templar-window"
+        }
+        check index-interference {
+            statement """
+                Read-only installed CPU/index measurements identify whether initial scanning or maintenance is responsible; implementation fixes and private regressions are recorded without live-session changes.
+                """
+            method command
+            command "cargo test -p templar-filed -p templar-file-index"
+        }
+        check launcher-icon {
+            statement """
+                Launcher button uses a visible font-independent search symbol and shell render succeeds.
+                """
+            method command
+            command "templar-shell --render-bar"
+        }
+        check video-idle {
+            statement """
+                Fullscreen video playback honors activity inhibition without blanketing fullscreen apps, with paused behavior and protocol limits recorded; native relevant tests pass.
+                """
+            method command
+            command "cargo test -p templar-comp idle"
+        }
+    }
+    author "dk"
+}
+
+record legeos.work.desktop-polish-20261011/2 : work {
+    title "Desktop video idle, tabs, launcher gestures, indexing and notification activation"
+    state superseded
+    scope [
+        path "compositor/COMPOSITOR.md",
+        path "compositor/templar-comp-integration/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-file-index/**",
+        path "crates/templar-session-core/src/notifications.rs",
+        path "crates/templar-session-core/src/settings.rs",
+        path "crates/templar-types/src/dbus.rs",
+        path "crates/templar-types/src/launcher.rs",
+        path "crates/templar-window/src/**",
+        path "docs/architecture/compositor-shell.md",
+        path "docs/architecture/files.md",
+        path "docs/launcher.md",
+        path "docs/measurements/desktop-polish-2026-10-11.json",
+        path "docs/measurements/desktop-polish-20261011/**",
+        path "interfaces/**",
+        path "services/templar-filed/**",
+        path "services/templar-sessiond/src/apis/notifications*",
+        path "services/templar-sessiond/src/background/notification_provider.rs",
+        path "shell/templar-shell/src/settings.rs",
+        path "shell/templar-shell/src/surface/**"
+    ]
+    intent """
+        Apply the owner's desktop corrections: monitor sleep is inhibited for fullscreen video playback rather than arbitrary fullscreen applications, paused playback should release inhibition when observable; hide window popup tabs in fullscreen and restore bottom-right corner placement; draw a generic search icon on the launcher button; measure current filed CPU and determine initial indexing versus faulty maintenance, correcting interference; allow a horizontal left swipe along the bottom row to open running windows and right swipe to open System while preserving downward diagonal gestures and keeping launcher activation deliberate; make notification bodies clickable so a terminal notification brings its terminal window forward while preserving declared notification actions. Preserve existing doctor work and the live session; parent alone runs tests, no deployment or logout.
+        """
+    acceptance {
+        check bottom-gestures {
+            statement """
+                Horizontal bottom-row left/right swipes choose running windows/System, existing diagonal approach works, close rearm and exceptions remain safe; native gate tests pass.
+                """
+            method command
+            command "cargo test -p templar-comp gesture_gate"
+        }
+        check fullscreen-tabs {
+            statement """
+                Fullscreen suppresses corner popup tabs and normal windows use bottom-right placement, with native geometry/input tests passing.
+                """
+            method command
+            command "cargo test -p templar-window"
+        }
+        check index-interference {
+            statement """
+                Read-only installed CPU/index measurements identify whether initial scanning or maintenance is responsible; implementation fixes and private regressions are recorded without live-session changes.
+                """
+            method command
+            command "cargo test -p templar-filed -p templar-file-index"
+        }
+        check launcher-icon {
+            statement """
+                Launcher button uses a visible font-independent search symbol and shell render succeeds.
+                """
+            method command
+            command "templar-shell --render-bar"
+        }
+        check notification-activation {
+            statement """
+                Clicking a notification invokes the declared default action or activates its existing source application window, including a terminal, with native regressions for ownership and click dispatch.
+                """
+            method command
+            command "cargo test -p templar-shell -p templar-session-core -p templar-sessiond"
+        }
+        check video-idle {
+            statement """
+                Fullscreen video playback honors activity inhibition without blanketing fullscreen apps, with paused behavior and protocol limits recorded; native relevant tests pass.
+                """
+            method command
+            command "cargo test -p templar-comp idle"
+        }
+    }
+    supersedes [ @legeos.work.desktop-polish-20261011/1 ]
+    author "dk"
+}
+
+record legeos.work.desktop-polish-20261011/3 : work {
+    title "Desktop video idle, tabs, launcher gestures, indexing and notification activation"
+    state superseded
+    scope [
+        path "cli/templar/src/notify.rs",
+        path "compositor/COMPOSITOR.md",
+        path "compositor/templar-comp-integration/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-file-index/**",
+        path "crates/templar-session-core/src/notifications.rs",
+        path "crates/templar-session-core/src/settings.rs",
+        path "crates/templar-state/src/migrations/**",
+        path "crates/templar-types/src/dbus.rs",
+        path "crates/templar-types/src/launcher.rs",
+        path "crates/templar-window/src/**",
+        path "docs/architecture/compositor-shell.md",
+        path "docs/architecture/files.md",
+        path "docs/launcher.md",
+        path "docs/measurements/desktop-polish-2026-10-11.json",
+        path "docs/measurements/desktop-polish-20261011/**",
+        path "interfaces/**",
+        path "services/templar-filed/**",
+        path "services/templar-sessiond/src/apis/homegarden.rs",
+        path "services/templar-sessiond/src/apis/homegarden/process_context.rs",
+        path "services/templar-sessiond/src/apis/notifications*",
+        path "services/templar-sessiond/src/background/notification_provider.rs",
+        path "shell/templar-shell/src/**",
+        path "shell/templar-shell/src/settings.rs"
+    ]
+    intent """
+        Apply the owner's desktop corrections: monitor sleep is inhibited for fullscreen video playback rather than arbitrary fullscreen applications, paused playback should release inhibition when observable; hide window popup tabs in fullscreen and restore bottom-right corner placement; draw a generic search icon on the launcher button; measure current filed CPU and determine initial indexing versus faulty maintenance, correcting interference; allow a horizontal left swipe along the bottom row to open running windows and right swipe to open System while preserving downward diagonal gestures and keeping launcher activation deliberate; make notification bodies clickable so a terminal notification brings its terminal window forward while preserving declared notification actions. Preserve existing doctor work and the live session; parent alone runs tests, no deployment or logout.
+        """
+    acceptance {
+        check bottom-gestures {
+            statement """
+                Horizontal bottom-row left/right swipes choose running windows/System, existing diagonal approach works, close rearm and exceptions remain safe; native gate tests pass.
+                """
+            method command
+            command "cargo test -p templar-comp gesture_gate"
+        }
+        check fullscreen-tabs {
+            statement """
+                Fullscreen suppresses corner popup tabs and normal windows use bottom-right placement, with native geometry/input tests passing.
+                """
+            method command
+            command "cargo test -p templar-window"
+        }
+        check index-interference {
+            statement """
+                Read-only installed CPU/index measurements identify whether initial scanning or maintenance is responsible; implementation fixes and private regressions are recorded without live-session changes.
+                """
+            method command
+            command "cargo test -p templar-filed -p templar-file-index"
+        }
+        check launcher-icon {
+            statement """
+                Launcher button uses a visible font-independent search symbol and shell render succeeds.
+                """
+            method command
+            command "templar-shell --render-bar"
+        }
+        check notification-activation {
+            statement """
+                Clicking a notification invokes the declared default action or activates its existing source application window, including a terminal, with native regressions for ownership and click dispatch.
+                """
+            method command
+            command "cargo test -p templar-shell -p templar-session-core -p templar-sessiond"
+        }
+        check video-idle {
+            statement """
+                Fullscreen video playback honors activity inhibition without blanketing fullscreen apps, with paused behavior and protocol limits recorded; native relevant tests pass.
+                """
+            method command
+            command "cargo test -p templar-comp idle"
+        }
+    }
+    supersedes [ @legeos.work.desktop-polish-20261011/2 ]
+    author "dk"
+}
+
+record legeos.work.desktop-polish-20261011/4 : work {
+    title "Desktop video idle, tabs, launcher gestures, indexing and notification activation"
+    state completed
+    scope [
+        path "cli/templar/src/notify.rs",
+        path "compositor/COMPOSITOR.md",
+        path "compositor/templar-comp-integration/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-file-index/**",
+        path "crates/templar-session-core/src/notifications.rs",
+        path "crates/templar-session-core/src/settings.rs",
+        path "crates/templar-state/src/migrations/**",
+        path "crates/templar-types/src/dbus.rs",
+        path "crates/templar-types/src/launcher.rs",
+        path "crates/templar-window/src/**",
+        path "docs/architecture/compositor-shell.md",
+        path "docs/architecture/files.md",
+        path "docs/launcher.md",
+        path "docs/measurements/**",
+        path "interfaces/**",
+        path "services/templar-filed/**",
+        path "services/templar-sessiond/src/apis/homegarden.rs",
+        path "services/templar-sessiond/src/apis/homegarden/process_context.rs",
+        path "services/templar-sessiond/src/apis/notifications*",
+        path "services/templar-sessiond/src/background/notification_provider.rs",
+        path "shell/templar-shell/src/**",
+        path "shell/templar-shell/src/settings.rs"
+    ]
+    intent """
+        Apply the owner's desktop corrections: monitor sleep is inhibited for fullscreen video playback rather than arbitrary fullscreen applications, paused playback should release inhibition when observable; hide window popup tabs in fullscreen and restore bottom-right corner placement; draw a generic search icon on the launcher button; measure current filed CPU and determine initial indexing versus faulty maintenance, correcting interference; allow a horizontal left swipe along the bottom row to open running windows and right swipe to open System while preserving downward diagonal gestures and keeping launcher activation deliberate; make notification bodies clickable so a terminal notification brings its terminal window forward while preserving declared notification actions. Preserve existing doctor work and the live session; parent alone runs tests, no deployment or logout.
+        """
+    acceptance {
+        check bottom-gestures {
+            statement """
+                Horizontal bottom-row left/right swipes choose running windows/System, existing diagonal approach works, close rearm and exceptions remain safe; native gate tests pass.
+                """
+            method command
+            command "cargo test -p templar-comp gesture_gate"
+            verified_by [ @legeos.evidence.desktop-polish-native-20261011/1 ]
+        }
+        check fullscreen-tabs {
+            statement """
+                Fullscreen suppresses corner popup tabs and normal windows use bottom-right placement, with native geometry/input tests passing.
+                """
+            method command
+            command "cargo test -p templar-window"
+            verified_by [ @legeos.evidence.desktop-polish-native-20261011/1 ]
+        }
+        check index-interference {
+            statement """
+                Read-only installed CPU/index measurements identify whether initial scanning or maintenance is responsible; implementation fixes and private regressions are recorded without live-session changes.
+                """
+            method command
+            command "cargo test -p templar-filed -p templar-file-index"
+            verified_by [ @legeos.evidence.desktop-polish-index-20261011/2 ]
+        }
+        check launcher-icon {
+            statement """
+                Launcher button uses a visible font-independent search symbol and shell render succeeds.
+                """
+            method command
+            command "templar-shell --render-bar"
+            verified_by [ @legeos.evidence.desktop-polish-visual-20261011/1 ]
+        }
+        check notification-activation {
+            statement """
+                Clicking a notification invokes the declared default action or activates its existing source application window, including a terminal, with native regressions for ownership and click dispatch.
+                """
+            method command
+            command "cargo test -p templar-shell -p templar-session-core -p templar-sessiond"
+            verified_by [ @legeos.evidence.desktop-polish-notifications-20261011/1 ]
+        }
+        check video-idle {
+            statement """
+                Fullscreen video playback honors activity inhibition without blanketing fullscreen apps, with paused behavior and protocol limits recorded; native relevant tests pass.
+                """
+            method command
+            command "cargo test -p templar-comp idle"
+            verified_by [ @legeos.evidence.desktop-polish-native-20261011/1 ]
+        }
+    }
+    supersedes [ @legeos.work.desktop-polish-20261011/3 ]
+    author "dk"
+}
+
 record legeos.work.desktop-polish-a1-one-window-language-20261005/1 : work {
     title "a1-one-window-language"
     state active
@@ -15678,6 +15980,50 @@ record legeos.work.memory-polling-indexing-effectiveness-20260909/2 : work {
     supersedes [ @legeos.work.memory-polling-indexing-effectiveness-20260909/1 ]
 }
 
+record legeos.work.native-package-rebuild-20261011/1 : work {
+    title "Rebuild current native packages for owner installation and next login"
+    state completed
+    scope [
+        path "distro/deploy/components.toml",
+        path "distro/forks/**",
+        path "scripts/build-fork-deb.sh",
+        path "scripts/build-local-source-deb.py",
+        path "scripts/build-preview-codecs.sh",
+        path "tools/xtask/src/build_set.rs"
+    ]
+    intent """
+        Reconcile available handoffs in oldest-first order and rebuild the current native TemplarOS packages for owner-controlled installation and next-login activation. The September ISO packet had already been delivered and its missing receipt was filed retrospectively. Preserve all existing source edits and the live desktop. Build the 14 component packages, eight metapackages, selected LiminalView source package and a clean copy of the exact pinned nm-tray fork, using bounded native build parallelism. Record actual artifact versions, hashes, runtime build stamps and owned packaged self-checks; retain physical and owner-run qualification gaps explicitly.
+        """
+    acceptance {
+        check artifacts-inspected {
+            statement """
+                All 24 package controls, recorded sizes and SHA256 hashes agree with the chosen cohort; stamped packaged binaries contain its ID. The actual packaged compositor and preview helper pass self-checks in an owned headless environment.
+                """
+            method command
+            command "python3 .agent/scratch/package-rebuild-20261011/verify.py"
+            verified_by [ @legeos.evidence.native-package-inspection-20261011/1 ]
+        }
+        check ledger-valid {
+            statement """
+                AKR validates without errors and remaining historical scope warnings and physical/owner qualification gaps are disclosed.
+                """
+            method command
+            command "akr build; akr validate"
+            verified_by [ @legeos.evidence.native-package-ledger-20261011/1 ]
+        }
+        check packages-rebuilt {
+            statement """
+                The native build finishes all 23 build-set packages and the separately built pinned nm-tray package at the same Debian version, preserving the original nm-tray working tree.
+                """
+            method command
+            command "bash .agent/scratch/package-rebuild-20261011/build.sh"
+            verified_by [ @legeos.evidence.native-package-rebuild-20261011/1 ]
+        }
+    }
+    part_of [ @legeos.work.build-set-archive-verification/3 ]
+    author "dk"
+}
+
 record legeos.work.native-pixelkit-filechooser-cutover-20261007/1 : work {
     title "Native PixelKit FileChooser replaces LXQt portal; PCManFM and policykit retained"
     state superseded
@@ -16841,6 +17187,47 @@ record legeos.work.reference-machine-provisioning/2 : work {
     author "dk"
 }
 
+record legeos.work.reinstall-doctor-20261011/1 : work {
+    title "Repair the stale compositor protocol doctor check and distinguish warnings"
+    state completed
+    scope [
+        path "cli/templar/src/doctor/checks.rs",
+        path "cli/templar/src/doctor/mod.rs",
+        path "cli/templar/src/main.rs"
+    ]
+    intent """
+        Correct the owner-reported package reinstall blocker: doctor still requires templar-shell-v1.xml after the compositor package moved to templar-shell-v2.xml. Preserve the four JSON outcomes and severity-based exit status while making terminal rows and the closing tally distinguish warning failures from blocking errors. Retain truthful diagnostics for old live processes, the separately installable LiminalView package and the current index's Snap watcher permission error. Prepare a coherent native package cohort and run the actual packaged doctor against its compositor package in an isolated root. The owner performs installation and session activation.
+        """
+    acceptance {
+        check doctor-regression {
+            statement """
+                Native doctor tests pass: a v2-only package layout is accepted, v1-only is refused, warning failures are identified separately, and error/warning exit statuses remain 1/2.
+                """
+            method command
+            command "scripts/cargo-native.sh test -p templar doctor::"
+            verified_by [ @legeos.evidence.reinstall-doctor-regression-final-20261011/1 ]
+        }
+        check ledger-valid {
+            statement """
+                AKR validates without errors; warnings and owner-controlled installation/activation limits are disclosed.
+                """
+            method command
+            command "akr build; akr validate"
+            verified_by [ @legeos.evidence.reinstall-doctor-ledger-20261011/1 ]
+        }
+        check packaged-doctor {
+            statement """
+                All 24 native packages are prepared at one fresh cohort version; the actual packaged CLI accepts its actual compositor protocol payload and still refuses a payload lacking v2. Packaged compositor/helper self-checks and source/artifact inspection pass without live activation.
+                """
+            method command
+            command "python3 .agent/scratch/reinstall-doctor-20261011/verify.py"
+            verified_by [ @legeos.evidence.reinstall-doctor-packages-20261011/1 ]
+        }
+    }
+    part_of [ @legeos.work.build-set-archive-verification/3 ]
+    author "dk"
+}
+
 record legeos.work.representation-chrome-and-continuity/1 : work {
     title "WS3 — Home representation controls and spatially continuous expansion"
     state superseded
@@ -17569,6 +17956,39 @@ record legeos.work.semantic-window-registry-20260909/2 : work {
     derived_from [ @legeos.work.focus-and-switching-20260908/1 ]
     part_of [ @legeos.milestone.developer-edition-0-1 ]
     supersedes [ @legeos.work.semantic-window-registry-20260909/1 ]
+    author "dk"
+}
+
+record legeos.work.service-resource-hotspots-20261013/1 : work {
+    title "Stop filed rewriting its index on every reconcile and sessiond losing compositor subscriptions"
+    state active
+    scope [
+        path "compositor/templar-comp/src/compositor_control.rs",
+        path "crates/templar-file-index/src/generation.rs",
+        path "crates/templar-file-index/tests/generations.rs",
+        path "services/templar-sessiond/src/apis/displays.rs",
+        path "services/templar-sessiond/src/apis/input.rs",
+        path "services/templar-sessiond/src/apis/tab_counts.rs"
+    ]
+    intent """
+        Remove the two measured resource hotspots in @legeos.observation.filed-and-sessiond-resource-hotspots-20261013/1. In templar-file-index, a scan commit writes only staged rows that differ from their live row (metadata, coverage or parent link), collection treats the surviving staging row as the sighting, and a subtree commit maintains entry_count arithmetically instead of recounting the root. In templar-comp, the control server admits 16 concurrent connections and logs a refusal instead of dropping it silently. In templar-sessiond, the input and display observers signal Changed only on losing a working stream and back off to 60 s, and the tab-count feed backs off likewise.
+        """
+    acceptance {
+        check installed-session-relief {
+            statement """
+                On an installed TemplarOS session with these packages and a fresh login, templar-filed's systemd memory peak is far below the previous 4.6-5.9 GB, and the journal shows no repeating "native input/display observation disconnected" warnings.
+                """
+            method manual
+        }
+        check unchanged-rescan-writes-nothing {
+            statement """
+                An unchanged rescan rewrites at most the root row, a removed file is still collected, subtree entry_count equals a recount, and the file-index, filed and sessiond suites pass.
+                """
+            method command
+            command "cargo test -p templar-file-index -p templar-filed -p templar-sessiond"
+            verified_by [ @legeos.evidence.service-resource-hotspots-tests-20261013/1 ]
+        }
+    }
     author "dk"
 }
 

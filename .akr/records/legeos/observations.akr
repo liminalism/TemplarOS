@@ -611,6 +611,41 @@ record legeos.observation.desktop-import-skips-vim-ignores-terminal/1 : observat
     author "dk"
 }
 
+record legeos.observation.desktop-polish-20261011/1 : observation {
+    title "Fullscreen video idle, corner tabs, bottom gestures and notification activation native results"
+    state verified
+    scope [
+        path "cli/templar/src/notify.rs",
+        path "compositor/templar-comp-integration/**",
+        path "compositor/templar-comp/**",
+        path "crates/templar-state/src/migrations/**",
+        path "crates/templar-window/**",
+        path "services/templar-sessiond/src/apis/notifications*",
+        path "shell/templar-shell/src/**"
+    ]
+    statement """
+        On 2026-10-11 the desktop correction source passed native protocol and UI fixtures without changing the installed session. Monitor sleep inhibition now requires a visible fullscreen Video-hinted surface with active Wayland idle inhibitor, or an explicit playing-video ScreenSaver reason from a same-PID unambiguous exposed fullscreen window. Client release on pause removes inhibition; generic fullscreen/audio/presentation requests do not count. Browser D-Bus process identity cannot distinguish DOM video fullscreen from F11, and clients without video signals remain uninhibited. Fullscreen tabs have no paint/hit geometry; normal defaults are fixed bottom-right. Search uses a drawn magnifier. Bottom-row horizontal left/right opens running Apps/System while existing downward diagonal gestures remain; rail entry dismisses app search and the bottom row holds remote traversal. Notification bodies/default actions and Home rows now return to existing attributed source windows, restoring parked terminals. Source association uses authenticated peer identity/bounded terminal ancestry and event-bound additive persistence; unique catalogue lookup supports detected unmanaged Kitty. Native initial batch1658passed11ignored, affected final notification/rail batch890passed2ignored, CLI notification21passed; positive managed-cgroup ancestry was not exercised end-to-end. See the measurement JSON for source hashes, protocol limits and observed results. Deployment and live playback qualification remain owner actions.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    method instrumented
+    watches [
+        "compositor/templar-comp/src/*.rs",
+        "compositor/templar-comp-integration/src/*.rs",
+        "crates/templar-window/src/*.rs",
+        "shell/templar-shell/src/surface/*.rs",
+        "services/templar-sessiond/src/apis/notifications*",
+        "crates/templar-state/src/migrations/session.rs",
+        "cli/templar/src/notify.rs"
+    ]
+    derived_from [ @legeos.work.desktop-polish-20261011/4 ]
+    verified_by [
+        @legeos.evidence.desktop-polish-native-20261011/1,
+        @legeos.evidence.desktop-polish-notifications-20261011/1,
+        @legeos.evidence.desktop-polish-visual-20261011/1
+    ]
+    author "dk"
+}
+
 record legeos.observation.desktop-polish-selected-forks-20261005/1 : observation {
     title "Selected conservative native desktop forks and owner-controlled activation"
     state superseded
@@ -692,6 +727,70 @@ record legeos.observation.fanotify-cannot-span-btrfs-subvolumes/3 : observation 
     review_after 2027-03-08
     supersedes [ @legeos.observation.fanotify-cannot-span-btrfs-subvolumes/2 ]
     verified_by [ @legeos.evidence.stale-observation-triage-20260908/1 ]
+    author "dk"
+}
+
+record legeos.observation.filed-and-sessiond-resource-hotspots-20261013/1 : observation {
+    title "filed rewrote its whole index on every reconcile; sessiond lost two compositor subscriptions for whole sessions"
+    state verified
+    statement """
+        Read from the installed TemplarOS journal and index on 2026-10-13 (boots 2026-10-09 to 2026-10-12). templar-filed reached a 4.6-5.9 GB cgroup memory peak in every session, already 4.7-4.9 GB within 75-95 s of start, and spent about 36 s CPU in that first minute; one session used 42 min CPU in 66 min. Its index (root 1, about 1.06M entries) is a 3.0 GB file of which 2.1 GB are free pages. Cause: ScanSession::commit upserted every staged row with a new written_generation, so even a no-change startup reconcile rewrote all rows, every entries index, the FTS table and every parent link in one WAL transaction, and invalidated cursors and search-array overlays for the whole root; each of about 360 subtree repairs per session also re-ran COUNT(*) over the root. templar-sessiond logged about 1,800 "native input/display observation disconnected: Broken pipe" warnings per hour in every session and emitted a D-Bus Changed signal on each 2 s retry. Cause: templar-comp's control server admits 4 concurrent connections and silently drops the rest, while sessiond holds 6 long-lived subscriptions (input, displays, power and wallpaper activity, wallpaper, tab windows).
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    method observation
+    watches [
+        "crates/templar-file-index/src/generation.rs",
+        "compositor/templar-comp/src/compositor_control.rs"
+    ]
+    author "dk"
+}
+
+record legeos.observation.filed-interactive-load-20261011/1 : observation {
+    title "Installed filed full-core load was an old interactive reader after completed initial indexing"
+    state superseded
+    scope [
+        path "crates/templar-file-index/src/query.rs",
+        path "docs/measurements/desktop-polish-2026-10-11.json",
+        path "services/templar-filed/**"
+    ]
+    statement """
+        On 2026-10-11 read-only native sampling of installed filed PID71444 found interactive TID71477 consuming99.56% of one core over5.002s, after the initial1.05M-entry root reconcile had completed. Index1 reported one interactive query and a1708819ms old read view; WAL was1294462832bytes while watcher and maintenance each used0.4% CPU. The installed directory-expansion query plan put entries before json_each ranges, allowing repeated per-entry range scanning. Explicit CROSS JOIN ordering and entries_path lookup yielded indexed root/path bounds. The load belonged to interactive work rather than initial indexing; exact executing SQL/stack was unavailable, so identifying directory expansion as that particular active request remains inference. Source fixes bound interactive calls to5s and lower only background watcher/maintenance priority. No live daemon restart or deployment was performed. Measurements and native regression outcomes are recorded in docs/measurements/desktop-polish-2026-10-11.json.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    method instrumented
+    watches [
+        "services/templar-filed/src/index_lanes.rs",
+        "services/templar-filed/src/index_background.rs",
+        "services/templar-filed/src/watcher.rs",
+        "crates/templar-file-index/src/query.rs"
+    ]
+    derived_from [ @legeos.work.desktop-polish-20261011/2 ]
+    verified_by [ @legeos.evidence.filed-live-load-20261011/1 ]
+    author "dk"
+}
+
+record legeos.observation.filed-interactive-load-20261011/2 : observation {
+    title "Installed filed full-core load was an old interactive reader after completed initial indexing"
+    state verified
+    scope [
+        path "crates/templar-file-index/src/query.rs",
+        path "docs/measurements/**",
+        path "services/templar-filed/**"
+    ]
+    statement """
+        On 2026-10-11 read-only native sampling of installed filed PID71444 found interactive TID71477 consuming99.56% of one core over5.002s, after the initial1.05M-entry root reconcile had completed. Index1 reported one interactive query and a1708819ms old read view; WAL was1294462832bytes while watcher and maintenance each used0.4% CPU. The installed directory-expansion query plan put entries before json_each ranges, allowing repeated per-entry range scanning. Explicit CROSS JOIN ordering and entries_path lookup yielded indexed root/path bounds. The load belonged to interactive work rather than initial indexing; exact executing SQL/stack was unavailable, so identifying directory expansion as that particular active request remains inference. Source fixes bound interactive calls to5s and lower only background watcher/maintenance priority. No live daemon restart or deployment was performed. Measurements and native regression outcomes are recorded in docs/measurements/desktop-polish-2026-10-11.json.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    method instrumented
+    watches [
+        "services/templar-filed/src/index_lanes.rs",
+        "services/templar-filed/src/index_*.rs",
+        "services/templar-filed/src/watcher.rs",
+        "crates/templar-file-index/src/query.rs"
+    ]
+    derived_from [ @legeos.work.desktop-polish-20261011/2 ]
+    supersedes [ @legeos.observation.filed-interactive-load-20261011/1 ]
+    verified_by [ @legeos.evidence.filed-live-load-20261011/1 ]
     author "dk"
 }
 

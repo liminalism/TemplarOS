@@ -422,6 +422,17 @@ record legeos.papercut.a-source-archive-file-listing-over-all-agent/1 : papercut
     created_at 2026-10-08
 }
 
+record legeos.papercut.a-standalone-private-bus-headless-compositor/1 : papercut {
+    title "A standalone private-bus headless compositor check failed because the…"
+    state verified
+    statement """
+        A standalone private-bus headless compositor check failed because the sandbox denies dbus Unix socket binding; rerunning the same private fixture with escalation passed. Guessed observation ledger and optional README/Makefile reads also missed; rg --files found the actual paths.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.a-whole-workspace-rust-formatting-context-with/1 : papercut {
     title "A whole-workspace Rust formatting context with **/*.rs required 17967…"
     state verified
@@ -818,6 +829,17 @@ record legeos.papercut.akr-build-could-not-refresh-the-ledger-after/1 : papercut
     about "akr"
     author "codex"
     created_at 2026-09-09
+}
+
+record legeos.papercut.akr-context-accepts-the-exact-revision/1 : papercut {
+    title "AKR context accepts the exact revision reference, but revise rejects /1…"
+    state verified
+    statement """
+        AKR context accepts the exact revision reference, but revise rejects /1 suffix with AKR-C004 because it expects a bare key. Retried revise with the bare desktop-polish key.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.akr-context-budget-16000-emitted-a-45k-token/1 : papercut {
@@ -1424,6 +1446,17 @@ record legeos.papercut.boot-recovery-orientation-blocked-knowledge/1 : papercut 
     created_at 2026-10-09
 }
 
+record legeos.papercut.build-monitoring-with-ps-inside-an-exec-sandbox/1 : papercut {
+    title "Build monitoring with ps inside an exec sandbox exposed only that call…"
+    state verified
+    statement """
+        Build monitoring with ps inside an exec sandbox exposed only that call PID namespace and verbose wrapper argv, not the running Cargo build or live desktop processes. Use the retained build log and exec session handle; sandbox doctor also loses live process/bus visibility and can report readonly state access as a warning.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.building-the-metapackages-with-dpkg-deb-from-a/1 : papercut {
     title "Building the metapackages with dpkg-deb from a staging tree under…"
     state superseded
@@ -1656,6 +1689,17 @@ record legeos.papercut.check-packaging-initially-failed-because-the/1 : papercut
         check-packaging initially failed because the required preview-codec binary and LEGE-PDF license had not been staged after the environment interruption. The existing scripts/build-preview-codecs.sh rebuilt, tested and staged the declared companion; no package metadata workaround was needed.
         """
     observed_at git:f8b45b799337788c258f373f409886a08e7ee7ef
+    author "codex"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.checking-the-earlier-pam-recovery-before/1 : papercut {
+    title "Checking the earlier PAM recovery before handing over packages, guessed…"
+    state verified
+    statement """
+        Checking the earlier PAM recovery before handing over packages, guessed account_maintenance/pam filename globs under hostd matched nothing. The maintained guard is packaging/templaros-hostd/postinst; used rg --files to find actual module paths.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
     author "codex"
     created_at 2026-10-11
 }
@@ -1995,6 +2039,28 @@ record legeos.papercut.desktop-repair-context-requested-budget-2000/1 : papercut
     created_at 2026-10-07
 }
 
+record legeos.papercut.diagnosing-reinstall-doctor-failures-context/1 : papercut {
+    title "Diagnosing reinstall doctor failures: context --budget 26000 emitted…"
+    state verified
+    statement """
+        Diagnosing reinstall doctor failures: context --budget 26000 emitted 112388 tokens, and initial reads guessed nonexistent doctor/runner.rs, manifest TOML and distro/debian paths. Use rg --files and compare unchanged context against bundles already read to avoid truncation.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.direct-desktop-clippy-reports-33-pre-existing/1 : papercut {
+    title "Direct desktop Clippy reports 33 pre-existing shell lints in launcher,…"
+    state verified
+    statement """
+        Direct desktop Clippy reports 33 pre-existing shell lints in launcher, field, app and notification code. Native desktop tests pass; narrowed strict Clippy to compositor/integration/window/settings/types while retaining the broad failure log.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.distro-forks-manifest-toml-s-nm-tray-2-note/1 : papercut {
     title "distro/forks/manifest.toml's nm-tray-2 `note` says build-fork-deb.sh…"
     state superseded
@@ -2089,6 +2155,17 @@ record legeos.papercut.during-advisor-startup-akr-context-positional/2 : papercu
     supersedes [ @legeos.papercut.during-advisor-startup-akr-context-positional/1 ]
     author "installer-advisor"
     created_at 2026-09-11
+}
+
+record legeos.papercut.during-browser-wake-lock-pid-attribution-review/1 : papercut {
+    title "During browser wake-lock PID attribution review, several valid Chromium…"
+    state verified
+    statement """
+        During browser wake-lock PID attribution review, several valid Chromium source/tag URLs returned web cache misses; the public DeviceService interface and Firefox parent-process registration were readable, so coverage claims remain upstream architecture rather than installed-browser runtime evidence.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.during-continuation-several-handoff-path/1 : papercut {
@@ -2236,6 +2313,28 @@ record legeos.papercut.external-desktop-proof-must-not-await-captured/1 : paperc
     created_at 2026-10-06
 }
 
+record legeos.papercut.final-akr-build-refreshed-all-lock-hashes-but/1 : papercut {
+    title "Final AKR build refreshed all lock hashes, but validate promotes G004…"
+    state verified
+    statement """
+        Final AKR build refreshed all lock hashes, but validate promotes G004 for39 uncommitted watched paths. New exact artifact/watch paths also looked missing at observed HEAD before commit; revised own scopes to existing measurement directory and index-file glob. No commit requested; strict dirty-path diagnostic remains explicit.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.final-clippy-found-notification-growth-exceeded/1 : papercut {
+    title "Final Clippy found notification growth exceeded Notify's 100-line bound…"
+    state verified
+    statement """
+        Final Clippy found notification growth exceeded Notify's 100-line bound and new regression tests started using an underscore-prefixed fixture field. Extracted presentation-hint parsing and named the now-used store field; behavior stays the same.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.final-desktop-checks-encountered-reused-native/1 : papercut {
     title "Final desktop checks encountered reused native artifacts:…"
     state verified
@@ -2245,6 +2344,17 @@ record legeos.papercut.final-desktop-checks-encountered-reused-native/1 : paperc
     observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
     author "codex"
     created_at 2026-10-03
+}
+
+record legeos.papercut.final-evidence-registration-rejected-the-build/1 : papercut {
+    title "Final evidence registration rejected the build log and package report…"
+    state verified
+    statement """
+        Final evidence registration rejected the build log and package report with AKR-T023 because the scratch cohort had not been retained. Retaining package-rebuild-20261011 through akr scratch keep before citing its evidence artifacts.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.first-frozen-core-filed-test-compile-found-a/1 : papercut {
@@ -2372,6 +2482,17 @@ record legeos.papercut.fresh-mandatory-2m-index-workload-cannot-use/2 : papercut
     created_at 2026-10-06
 }
 
+record legeos.papercut.fresh-package-verifier-passes-actual-packaged/1 : papercut {
+    title "Fresh package verifier passes actual packaged doctor and asset checks,…"
+    state verified
+    statement """
+        Fresh package verifier passes actual packaged doctor and asset checks, but sandboxed compositor --check cannot create its private Unix socket (EPERM). Re-running the same isolated verifier with narrowly scoped escalation is required; its HOME/XDG directories and both bus addresses are private and no live service is accessed.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.fresh-source-build-passed-strict-native/1 : papercut {
     title "Fresh source build passed strict native prerequisites, then empty…"
     state verified
@@ -2429,6 +2550,17 @@ record legeos.papercut.fsearch-package-preflight-assumed-copying-this/1 : paperc
     created_at 2026-10-08
 }
 
+record legeos.papercut.full-compositor-regression-caught-test-input/1 : papercut {
+    title "Full compositor regression caught test_input tab_snapshot expecting the…"
+    state verified
+    statement """
+        Full compositor regression caught test_input tab_snapshot expecting the previous top-right default after the intended bottom-right change. Update the snapshot assertion rather than treating this as a runtime failure; failing log retained.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.full-native-just-deb-built-sessiond/1 : papercut {
     title "Full native just deb built sessiond successfully, but cargo-deb…"
     state superseded
@@ -2451,6 +2583,28 @@ record legeos.papercut.full-native-just-deb-built-sessiond/2 : papercut {
     supersedes [ @legeos.papercut.full-native-just-deb-built-sessiond/1 ]
     author "omp"
     created_at 2026-10-05
+}
+
+record legeos.papercut.full-shell-regressions-failed-at-native-drop/1 : papercut {
+    title "Full shell regressions failed at…"
+    state verified
+    statement """
+        Full shell regressions failed at native_drop_reader_requires_complete_utf8_transfer with EPERM because sandbox blocks Unix transport; requested native escalation and retained the failing log before rerunning owned fixtures.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.fullscreen-video-sleep-work-hands-on-run-4/1 : papercut {
+    title "Fullscreen-video sleep work: hands-on-run-4 context budget 10000 failed…"
+    state verified
+    statement """
+        Fullscreen-video sleep work: hands-on-run-4 context budget 10000 failed AKR-X021 because mandatory sections require 11735 tokens; retrying with the reported floor.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.generating-a-pw-dump-output-bound-fixture-with/1 : papercut {
@@ -3391,6 +3545,17 @@ record legeos.papercut.live-usb-session-templar-sessiond-failed-226/2 : papercut
     created_at 2026-09-11
 }
 
+record legeos.papercut.loading-fullscreen-and-launcher-context-with/1 : papercut {
+    title "Loading fullscreen and launcher context with --budget 16000 emitted…"
+    state verified
+    statement """
+        Loading fullscreen and launcher context with --budget 16000 emitted about 98000 tokens because related record metadata bypasses the prose budget; output truncated. Use narrow leaf work scopes and capture the bundle to scratch for complete chunked reading.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.looking-for-source-archive-commands-with-tools/1 : papercut {
     title "Looking for source archive commands with tools/xtask/src/source*.rs…"
     state verified
@@ -3805,6 +3970,50 @@ record legeos.papercut.normal-launcher-activation-intent-is-surface/1 : papercut
     created_at 2026-10-09
 }
 
+record legeos.papercut.notification-activation-compile-found-a/1 : papercut {
+    title "Notification activation compile found a nonexistent ShellApp.notice…"
+    state verified
+    statement """
+        Notification activation compile found a nonexistent ShellApp.notice field after confusing it with another surface's notice storage. Use existing DataUpdate::Notice and Wake::Data so unavailable-source feedback follows the current shell path.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.notification-follow-up-compiled-after-replacing/1 : papercut {
+    title "Notification follow-up compiled after replacing an invalid ShellApp…"
+    state verified
+    statement """
+        Notification follow-up compiled after replacing an invalid ShellApp feedback field, but all-target Clippy then found redundant reborrows/closures, a new long Notify handler, underscore fixture uses and midpoint test arithmetic. Fixed only diagnostics introduced by this patch; broad desktop lint debt remains.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.notification-regression-patch-matched-a-guessed/1 : papercut {
+    title "Notification regression patch matched a guessed parsed variable instead…"
+    state verified
+    statement """
+        Notification regression patch matched a guessed parsed variable instead of the actual row binding in the existing parser test, causing atomic patch rejection. The initializer was read and the regression hunks are being applied separately.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.notification-source-attribution-patch-failed/1 : papercut {
+    title "Notification source-attribution patch failed atomically because…"
+    state verified
+    statement """
+        Notification source-attribution patch failed atomically because ActiveNotification writes app_id through a closure rather than the guessed map spelling. Read the exact initializer before retrying; no partial edit was applied.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.offline-pam-ctypes-probe-passed-null-instead-of/1 : papercut {
     title "Offline PAM ctypes probe passed NULL instead of a pam_conv struct to…"
     state verified
@@ -3941,6 +4150,17 @@ record legeos.papercut.optmem-compression-of180-181-exceeded-its280/1 : papercut
     created_at 2026-10-08
 }
 
+record legeos.papercut.optmem-compression-rejected-two-package/1 : papercut {
+    title "OptMem compression rejected two package-delivery summaries at 290 and…"
+    state verified
+    statement """
+        OptMem compression rejected two package-delivery summaries at 290 and 285 bytes against its 280-byte limit. The shorter summaries were accepted and all requested compression completed; precheck UTF-8 byte length before future nap calls.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.optmem-nap-rejected-a-dense-final-compression/1 : papercut {
     title "OptMem nap rejected a dense final compression twice (285 and281 bytes…"
     state verified
@@ -3961,6 +4181,28 @@ record legeos.papercut.optmem-note-nap-enforce-a-280-byte-utf-8-limit/1 : paperc
     observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
     author "integration-stabilization"
     created_at 2026-10-06
+}
+
+record legeos.papercut.optmem-note-rejected-a-281-byte-desktop-polish/1 : papercut {
+    title "OptMem note rejected a 281-byte desktop-polish update at the 280-byte…"
+    state verified
+    statement """
+        OptMem note rejected a 281-byte desktop-polish update at the 280-byte limit; shortened and retried. Shell glyph lookup also initially targeted nonexistent symbols.rs; actual module is surface/glyphs.rs.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.optmem-rejected-one-new-note-at285bytes/1 : papercut {
+    title "OptMem rejected one new note at285bytes; shortening to under280bytes…"
+    state verified
+    statement """
+        OptMem rejected one new note at285bytes; shortening to under280bytes saved it. Several guessed shell protocol/rail and notification interface filenames missed during review; directory-wide rg and rg --files located the actual sources.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.optmem-requested-nested-compression-after/1 : papercut {
@@ -4174,6 +4416,28 @@ record legeos.papercut.package-verification-mistakenly-passed-a-dpkg/1 : papercu
     created_at 2026-10-08
 }
 
+record legeos.papercut.package-verification-source-lookup-tried-org/1 : papercut {
+    title "Package verification source lookup tried org.templaros.Lifecycle1.xml,…"
+    state verified
+    statement """
+        Package verification source lookup tried org.templaros.Lifecycle1.xml, but the shipped filename retains Session: org.templaros.Session.Lifecycle1.xml. Launcher1 and Settings1 files resolved normally; no source change was needed.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.packaged-compositor-check-was-denied-private/1 : papercut {
+    title "Packaged compositor --check was denied private Unix socket creation…"
+    state verified
+    statement """
+        Packaged compositor --check was denied private Unix socket creation inside the sandbox (EPERM). Re-ran the owned verification script with escalation; it isolates HOME/XDG and sets both bus addresses to nonexistent private sockets, with no live services or GPU backend.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.partitioning-file-ownership-across-five/1 : papercut {
     title "Partitioning file ownership across five parallel agents left the shared…"
     state verified
@@ -4363,6 +4627,17 @@ record legeos.papercut.provisioner-defaults-drifted-from-the-set/2 : papercut {
     supersedes [ @legeos.papercut.provisioner-defaults-drifted-from-the-set/1 ]
     author "claude"
     created_at 2026-09-30
+}
+
+record legeos.papercut.read-only-indexing-policy-lookup-used-obsolete/1 : papercut {
+    title "Read-only indexing policy lookup used obsolete session/systemd path;…"
+    state verified
+    statement """
+        Read-only indexing policy lookup used obsolete session/systemd path; service units are discovered with rg --files rather than guessed directory names.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.read-xd-eval-browser-1-110-interprets-its/1 : papercut {
@@ -4559,6 +4834,28 @@ record legeos.papercut.redeployment-lookup-desktop-dry-run-fails-on/2 : papercut
     supersedes [ @legeos.papercut.redeployment-lookup-desktop-dry-run-fails-on/1 ]
     author "omp"
     created_at 2026-10-03
+}
+
+record legeos.papercut.registering-the-package-rebuild-work-hit-two/1 : papercut {
+    title "Registering the package rebuild work hit two CLI syntax traps: scope…"
+    state verified
+    statement """
+        Registering the package rebuild work hit two CLI syntax traps: scope path entries require a comma-separated list rather than repeated path slots, and revise expects an unversioned key, while get/context accept versioned refs. No ledger record was changed by the failed calls.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.reinstall-failure-investigation-doctor-prints/1 : papercut {
+    title "Reinstall failure investigation: doctor prints fail for warnings and…"
+    state verified
+    statement """
+        Reinstall failure investigation: doctor prints fail for warnings and its stale shell-v1 protocol check rejects the actual shell-v2 package. The successful rebuild inspection did not run the packaged doctor against the compositor payload; add that package-level regression. CLI subcommand discovery also required evidence add rather than guessed evidence-add/activate.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.renaming-the-used-directory-fixture-field-with/1 : papercut {
@@ -4788,6 +5085,17 @@ record legeos.papercut.scratch-keep-was-attempted-for-the-planned/1 : papercut {
     created_at 2026-10-08
 }
 
+record legeos.papercut.screensaver-compatibility-clippy-pinned-zbus-5/1 : papercut {
+    title "ScreenSaver compatibility Clippy: pinned zbus 5 macro passes Header by…"
+    state verified
+    statement """
+        ScreenSaver compatibility Clippy: pinned zbus 5 macro passes Header by value and uses underscore-prefixed wire arguments in generated dispatch. Rename ignored wire labels and use method-local needless_pass_by_value allow where ownership is macro-required.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.scripts-nested-session-sh-records-of-a/1 : papercut {
     title "scripts/nested-session.sh records $! of a backgrounded shell FUNCTION…"
     state superseded
@@ -4941,6 +5249,17 @@ record legeos.papercut.searched-for-a-transition-command-while/1 : papercut {
     observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
     author "Main"
     created_at 2026-10-06
+}
+
+record legeos.papercut.searching-guessed-compositor-md-windowing-md/1 : papercut {
+    title "Searching guessed compositor.md/windowing.md documentation paths missed…"
+    state verified
+    statement """
+        Searching guessed compositor.md/windowing.md documentation paths missed because the actual file is docs/architecture/compositor-shell.md. Discover documentation with rg --files before targeting paths.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.searching-two-artifact-outputs-in-one-semicolon/1 : papercut {
@@ -5158,6 +5477,39 @@ record legeos.papercut.strict-akr-validation-promoted-g022-on-the-new/1 : paperc
     observed_at git:7c68786687bea7b20dbc382bdacc2804e7284b70
     author "codex"
     created_at 2026-10-08
+}
+
+record legeos.papercut.strict-desktop-clippy-reached-two-pre-existing/1 : papercut {
+    title "Strict desktop Clippy reached two pre-existing templar-field…"
+    state verified
+    statement """
+        Strict desktop Clippy reached two pre-existing templar-field long-function lints in desktop_dock.rs and ops.rs; use --no-deps to check the directly changed desktop packages without expanding this bug-fix task into unrelated field refactoring.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.strict-desktop-clippy-stopped-in-pre-existing/1 : papercut {
+    title "Strict desktop Clippy stopped in pre-existing templar-types launcher…"
+    state verified
+    statement """
+        Strict desktop Clippy stopped in pre-existing templar-types launcher RemoveFavorite branch on semicolon_if_nothing_returned before checking changed UI code. Retained output and corrected the missing semicolon so the required validation can proceed.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.strict-index1-all-target-clippy-rejected-the/1 : papercut {
+    title "Strict Index1 all-target Clippy rejected the new range-plan test module…"
+    state verified
+    statement """
+        Strict Index1 all-target Clippy rejected the new range-plan test module placed before materialize and escape_like (items_after_test_module). Moved the test module after production SQL helpers; no lint suppression or behavior change.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "index_load"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.supersede-could-not-add-an-edge-to-an-already/1 : papercut {
@@ -5615,6 +5967,17 @@ record legeos.papercut.the-current-proot-helper-build-hit-the-host/1 : papercut 
     created_at 2026-10-08
 }
 
+record legeos.papercut.the-deb-verifier-assumed-cargo-deb-ships/1 : papercut {
+    title "The DEB verifier assumed cargo-deb ships Launcher1/Settings1 XML…"
+    state verified
+    statement """
+        The DEB verifier assumed cargo-deb ships Launcher1/Settings1 XML because debian/*.install does. Sessiond cargo-deb declares only Wallpaper1 XML; runtime APIs are compiled and build-set signatures carry the rest. Correcting the verifier to check declared assets and manifest signatures.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.the-delete-key-means-two-unrelated-things-in/1 : papercut {
     title "The Delete key means two unrelated things in one product: on the Home…"
     state verified
@@ -5706,6 +6069,17 @@ record legeos.papercut.the-documented-rg-first-discovery-pattern-used/1 : paperc
     about "PowerShell repository setup"
     author "codex-gpt-6"
     created_at 2026-09-07
+}
+
+record legeos.papercut.the-escaped-packaged-self-check-then-failed-sun/1 : papercut {
+    title "The escaped packaged self-check then failed SUN_LEN because its owned…"
+    state verified
+    statement """
+        The escaped packaged self-check then failed SUN_LEN because its owned XDG_RUNTIME_DIR inherited the long target/package-build-tmp prefix. Switched only the verifier temporary directory to a short /tmp/pkgverify-* path; build scratch remains on disk.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.the-existing-private-nested-session-fixture/1 : papercut {
@@ -6087,6 +6461,18 @@ record legeos.papercut.the-installed-legeos-set-on-the-development/2 : papercut 
     created_at 2026-08-26
 }
 
+record legeos.papercut.the-installed-local-bin-akr-built-2026-09-17/1 : papercut {
+    title "The installed ~/.local/bin/akr (built 2026-09-17) predated papercut…"
+    state verified
+    statement """
+        The installed ~/.local/bin/akr (built 2026-09-17) predated papercut closed_at (AKR 0878556), so 115 closed papercuts read as T002+R051 and the whole ledger failed, blocking akr start. Fixed by installing the current AKR release-final build; check akr's build date before suspecting the ledger.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    about "akr"
+    author "claude"
+    created_at 2026-10-13
+}
+
 record legeos.papercut.the-integration-pack-uses-symbolic-source/1 : papercut {
     title "The integration pack uses symbolic source labels (PixelKit) but the…"
     state superseded
@@ -6367,6 +6753,17 @@ record legeos.papercut.the-native-image-has-cjpeg-jpegtran-djpeg-but/1 : papercu
     created_at 2026-10-06
 }
 
+record legeos.papercut.the-native-rebuild-wrapper-expected-a-previous/1 : papercut {
+    title "The native rebuild wrapper expected a previous…"
+    state verified
+    statement """
+        The native rebuild wrapper expected a previous target/debian/build-set.json, but this checkout no longer has one. Made that archival step conditional; generating a fresh set remains the normal path.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.the-native-sleep-watch-source-fixture-needed/1 : papercut {
     title "The native sleep-watch source fixture needed serde explicitly because…"
     state verified
@@ -6431,6 +6828,17 @@ record legeos.papercut.the-nm-tray-fork-rebuilt-natively-and-its-ctest/1 : paper
     observed_at git:2bc8f741f3c21759c3e7c728d9c211868035aa18
     author "codex"
     created_at 2026-10-05
+}
+
+record legeos.papercut.the-oldest-iso-handoff-context-at-budget-5000/1 : papercut {
+    title "The oldest ISO handoff context at budget 5000 failed AKR-X021 because…"
+    state verified
+    statement """
+        The oldest ISO handoff context at budget 5000 failed AKR-X021 because mandatory sections require 5046 tokens. Retried at 6000 and retained the complete emitted bundle for bounded reads.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.the-output-suggested-a-ready-made-context/1 : papercut {
@@ -7059,6 +7467,17 @@ record legeos.papercut.wayland-scanner-0-31-panics-on-any-xml-entity/2 : papercu
     created_at 2026-09-10
 }
 
+record legeos.papercut.when-loading-fullscreen-window-tab-context/1 : papercut {
+    title "When loading fullscreen window-tab context, --budget 7000 failed with…"
+    state verified
+    statement """
+        When loading fullscreen window-tab context, --budget 7000 failed with AKR-X021 because mandatory context requires 7596 tokens. The retry must allow the complete bundle.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.while-activating-the-wp12-work-proposal-i-tried/1 : papercut {
     title "While activating the WP12 work proposal I tried akr transition --help;…"
     state verified
@@ -7272,6 +7691,17 @@ record legeos.papercut.while-interpreting-churn-acceptance-i-found-the/1 : paper
     created_at 2026-10-08
 }
 
+record legeos.papercut.while-loading-oldest-handoff-context-akr/1 : papercut {
+    title "While loading oldest-handoff context, akr context --budget 14000…"
+    state verified
+    statement """
+        While loading oldest-handoff context, akr context --budget 14000 emitted about 37692 tool tokens and truncated output. I am saving the bundle and reading bounded chunks so contradictions and staleness are not lost.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.while-loading-terminal-workload-context-budget/1 : papercut {
     title "While loading terminal-workload context, --budget 7000 still emitted…"
     state superseded
@@ -7319,6 +7749,17 @@ record legeos.papercut.while-locating-home-action-hit-targets-i/1 : papercut {
     created_at 2026-10-08
 }
 
+record legeos.papercut.while-locating-render-cli-flags-i-guessed-shell/1 : papercut {
+    title "While locating render CLI flags I guessed shell/src/cli.rs, but this…"
+    state verified
+    statement """
+        While locating render CLI flags I guessed shell/src/cli.rs, but this project keeps the Clap structure in src/main.rs; the named-file read failed and main.rs provided the flags.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.while-locating-retained-wp9-scratch-artifacts-i/1 : papercut {
     title "While locating retained WP9 scratch artifacts I queried…"
     state verified
@@ -7362,6 +7803,28 @@ record legeos.papercut.while-mapping-wp11-search-maintenance-my/1 : papercut {
     observed_at git:12295f351ab14e649f900573190060cd88a7251e
     author "codex"
     created_at 2026-10-08
+}
+
+record legeos.papercut.while-measuring-installed-filed-cpu-ps-c/1 : papercut {
+    title "While measuring installed filed CPU, ps -C templar-filed -L excluded…"
+    state verified
+    statement """
+        While measuring installed filed CPU, ps -C templar-filed -L excluded worker threads with renamed comm values and reported the idle main thread. Select the known daemon PID with ps -p PID -L instead. perf sampling was blocked by kernel perf_event_paranoid=4; no host settings were changed.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "index_load"
+    created_at 2026-10-11
+}
+
+record legeos.papercut.while-orienting-a-filed-cpu-investigation-akr/1 : papercut {
+    title "While orienting a filed CPU investigation, akr start rejected --task…"
+    state verified
+    statement """
+        While orienting a filed CPU investigation, akr start rejected --task and akr help start was unavailable; start expects the task as positional input. A context --budget 12000 still emitted 49,380 tokens, requiring a narrower retry.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "index_load"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.while-preparing-delivery-evidence-akr-evidence/1 : papercut {
@@ -7556,6 +8019,17 @@ record legeos.papercut.while-scoping-the-gesture-rail-a-guessed/1 : papercut {
     created_at 2026-10-09
 }
 
+record legeos.papercut.while-tracing-bottom-row-rail-geometry-the-rail/1 : papercut {
+    title "While tracing bottom-row rail geometry, the rail protocol opening…"
+    state verified
+    statement """
+        While tracing bottom-row rail geometry, the rail protocol opening cleared its pointer and the first position could arrive in a later dispatch; deriving reveal behavior only in open_rail would miss that opening, so first-pointer handling belongs in RailReveal.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
+}
+
 record legeos.papercut.while-tracing-home-file-panes-multi-grep-with/1 : papercut {
     title "While tracing Home file panes, multi_grep with several directory…"
     state verified
@@ -7566,6 +8040,17 @@ record legeos.papercut.while-tracing-home-file-panes-multi-grep-with/1 : papercu
     about "FFF"
     author "gpt-5-codex"
     created_at 2026-08-24
+}
+
+record legeos.papercut.while-tracing-notification-activation-guessed/1 : papercut {
+    title "While tracing notification activation, guessed CLI/proxy/schema paths…"
+    state verified
+    statement """
+        While tracing notification activation, guessed CLI/proxy/schema paths missed because crate layouts use binaries/, proxies/ and migrations/ instead of single source files. rg --files supplies the correct locations.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    author "codex"
+    created_at 2026-10-11
 }
 
 record legeos.papercut.while-tracing-silvaview-clipboard-feedback-an/1 : papercut {
@@ -7658,6 +8143,18 @@ record legeos.papercut.working-the-portal-lane-the-generated-docs/2 : papercut {
     supersedes [ @legeos.papercut.working-the-portal-lane-the-generated-docs/1 ]
     author "claude"
     created_at 2026-09-03
+}
+
+record legeos.papercut.workspace-clippy-d-warnings-is-blocked-by/1 : papercut {
+    title "Workspace clippy -D warnings is blocked by committed lints in…"
+    state verified
+    statement """
+        Workspace clippy -D warnings is blocked by committed lints in templar-wallpaper (semicolon_if_nothing_returned) and templar-field (too_many_lines in desktop_dock.rs and ops.rs), so per-crate clippy on dependents cannot run green.
+        """
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    about "clippy"
+    author "claude"
+    created_at 2026-10-13
 }
 
 record legeos.papercut.wp0-assumes-chmod000-parent-is-a-before-fix/1 : papercut {

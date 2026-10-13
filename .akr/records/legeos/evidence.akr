@@ -1284,6 +1284,67 @@ record legeos.evidence.desktop-order-authority-regressions-20261007/1 : evidence
     author "dk"
 }
 
+record legeos.evidence.desktop-polish-index-20261011/1 : evidence {
+    title "legeos.evidence.desktop-polish-index-20261011"
+    state superseded
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "cargo test --offline -p templar-file-index -p templar-filed; cargo test --offline -p templar-filed index_background; cargo clippy --offline -p templar-file-index -p templar-filed -p templar-client --all-targets -- -D warnings"
+    artifact "docs/measurements/desktop-polish-2026-10-11.json"
+    summary "Index library134passed3ignored; integration fixtures82passed5ignored; filed185library+1binary+8private-runtime/consumer passed,2hardware/crash fixtures ignored. Directory expansion used indexed entry path bounds; cold many-range/nested-root SQL and array results matched. Endless SQL cancelled at the injected interactive deadline, reader/cursor released, same worker/connection reusable. Calling thread priorities stayed unchanged while background worker had nice>=10 and idle I/O. Final Index1 strict Clippy passed. Read-only installed measurement found99.56% query-worker CPU after completed startup reconciliation and an old reader/WAL; exact active SQL remained unavailable."
+    author "dk"
+}
+
+record legeos.evidence.desktop-polish-index-20261011/2 : evidence {
+    title "legeos.evidence.desktop-polish-index-20261011"
+    state verified
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "cargo test --offline -p templar-file-index -p templar-filed; cargo test --offline -p templar-filed index_background; cargo clippy --offline -p templar-file-index -p templar-filed -p templar-client --all-targets -- -D warnings"
+    artifact "docs/measurements/desktop-polish-2026-10-11.json"
+    summary "Index library134passed3ignored; integration fixtures68passed5ignored; filed185library+1binary+8private-runtime/consumer passed,2hardware/crash fixtures ignored. Directory expansion used indexed entry path bounds; cold many-range/nested-root SQL and array results matched. Endless SQL cancelled at the injected interactive deadline, reader/cursor released, same worker/connection reusable. Calling thread priorities stayed unchanged while background worker had nice>=10 and idle I/O. Final Index1 strict Clippy passed. Read-only installed measurement found99.56% query-worker CPU after completed startup reconciliation and an old reader/WAL; exact active SQL remained unavailable."
+    supersedes [ @legeos.evidence.desktop-polish-index-20261011/1 ]
+    author "dk"
+}
+
+record legeos.evidence.desktop-polish-native-20261011/1 : evidence {
+    title "legeos.evidence.desktop-polish-native-20261011"
+    state verified
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "Private dbus-run-session cargo test --offline -p templar-comp -p templar-comp-integration -p templar-file-index -p templar-filed -p templar-shell -p templar-window -p templar-session-core -p templar-types; final shell/core/sessiond/state suite; templar-comp --check"
+    artifact "docs/measurements/desktop-polish-2026-10-11.json"
+    summary "Native initial batch1658passed11ignored; final notification/rail batch890passed2ignored. Compositor239, integration18 and window225 passed; final shell580library+5binary and core151 passed. Fixtures exercised public Wayland Video-hint commit/pause/surface teardown, private ScreenSaver sender/cookie/disconnect/name ownership, fullscreen visibility/lock transitions, bottom-row directions/rearm/exceptions, tab suppression/default placement, and remote rail reachability. Headless compositor check passed on private runtime/bus. Installed desktop unchanged; live browser playback not exercised."
+    author "dk"
+}
+
+record legeos.evidence.desktop-polish-notifications-20261011/1 : evidence {
+    title "legeos.evidence.desktop-polish-notifications-20261011"
+    state verified
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "Private dbus-run-session cargo test --offline -p templar-shell -p templar-session-core -p templar-sessiond -p templar-state; cargo test --offline -p templar notify"
+    artifact "docs/measurements/desktop-polish-2026-10-11.json"
+    summary "Final affected suite890passed2ignored: core151, sessiond137+3private-audio, shell580+5, state11+3migration. CLI notification21passed. Body click fixtures excluded dismiss/action controls, selected declared default or existing managed source/parked terminal, rejected stale/malformed instance fallback, and exercised unique catalogue/unmanaged desktop claims and Home rows. Real private-bus forged source hints did not create managed identity; duplicate catalogue claims remained unattributed. Source association persisted through new readers; replacement and old-writer event changes retired it. Positive managed-cgroup attribution was not exercised end-to-end; kernel helper rejection and pure exact-instance selection passed."
+    author "dk"
+}
+
+record legeos.evidence.desktop-polish-visual-20261011/1 : evidence {
+    title "legeos.evidence.desktop-polish-visual-20261011"
+    state verified
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "templar-shell --render-bar; templar-shell --render-rails; visual inspection of bar@2x and Apps rail"
+    artifact "docs/measurements/desktop-polish-2026-10-11.json"
+    summary "Offscreen bottom bar at1x/2x and Apps/System rails half/full rendered successfully. Visual inspection showed a font-independent drawn magnifying glass on the launcher button. PNGs and hashes retained in docs/measurements/desktop-polish-20261011. Native build, workspace formatting/diff check, interfaces309members45interfaces, Wayland4interfaces50members, ownership, proxies, actions and assets passed. Broader desktop strict Clippy retained existing lint debt; new patch diagnostics corrected."
+    author "dk"
+}
+
 record legeos.evidence.desktop-reinstall-helper-20260824/1 : evidence {
     title "Desktop reinstall helper validation"
     state verified
@@ -1637,6 +1698,19 @@ record legeos.evidence.file-video-preview-three-percent-20260824/1 : evidence {
     summary """
         The unit test passed with a 1000-second duration producing an ffmpeg -ss value of 30.000000, and a real MP4 rendered a 256x144 PNG through the ffmpeg video-at-3% route.
         """
+}
+
+record legeos.evidence.filed-live-load-20261011/1 : evidence {
+    title "Read-only native sampling found filed PID71444 query TID71477 at99.56% CPU over5.002s after completed1.05M-entry initial reconciliation; watcher/maintenance0.4% each, one interactive query, oldest reader1708819ms, WAL1294462832bytes. Installed EXPLAIN scans entries before directory ranges; forced range-first plan performs entries_path bounds. Exact active SQL/stack unavailable; attributing active query to expansion remains inference."
+    state verified
+    result pass
+    method observation
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    artifact "docs/measurements/desktop-polish-2026-10-11.json"
+    summary """
+        Read-only native sampling found filed PID71444 query TID71477 at99.56% CPU over5.002s after completed1.05M-entry initial reconciliation; watcher/maintenance0.4% each, one interactive query, oldest reader1708819ms, WAL1294462832bytes. Installed EXPLAIN scans entries before directory ranges; forced range-first plan performs entries_path bounds. Exact active SQL/stack unavailable; attributing active query to expansion remains inference.
+        """
+    author "dk"
 }
 
 record legeos.evidence.files-windows-bookmarks-home-objects-gate-20260907/1 : evidence {
@@ -5425,6 +5499,48 @@ record legeos.evidence.native-nested-pointer-transform-20261006/1 : evidence {
     author "dk"
 }
 
+record legeos.evidence.native-package-inspection-20261011/1 : evidence {
+    title "All 24 DEB versions/sizes/SHA256 hashes match cohort; seven packaged stamped binaries contain its ID and 634 recorded source hashes match. nm-tray pin and original edits preserved; packaged hostd postinst exactly matches the legacy-PAM guard source. Actual extracted compositor --check and preview-codecs --self-check pass with isolated HOME/XDG and nonexistent private buses; socket sandbox EPERM and long SUN_LEN fixture path were corrected before the successful run. Nine native xtask gates and 15-package reinstall dry run exit zero. No installation, GPU backend, physical HDMI or installed-day claim."
+    state verified
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "python3 .agent/scratch/package-rebuild-20261011/verify.py; bash scripts/reinstall-templaros-desktop.sh --skip-build --dry-run"
+    artifact ".agent/scratch/package-rebuild-20261011/verification.json"
+    summary """
+        All 24 DEB versions/sizes/SHA256 hashes match cohort; seven packaged stamped binaries contain its ID and 634 recorded source hashes match. nm-tray pin and original edits preserved; packaged hostd postinst exactly matches the legacy-PAM guard source. Actual extracted compositor --check and preview-codecs --self-check pass with isolated HOME/XDG and nonexistent private buses; socket sandbox EPERM and long SUN_LEN fixture path were corrected before the successful run. Nine native xtask gates and 15-package reinstall dry run exit zero. No installation, GPU backend, physical HDMI or installed-day claim.
+        """
+    author "dk"
+}
+
+record legeos.evidence.native-package-ledger-20261011/1 : evidence {
+    title "AKR build and validation exit zero after package receipts and retained evidence registration. Parse, type, links, resolution and sealed hashes pass; zero errors and ten historical AKR-G023 unmatched-scope warnings remain. Owner USB boot, installed-day/PAM signoff and physical HDMI qualification remain open; this rebuild does not claim them."
+    state verified
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "akr build; akr validate"
+    artifact ".agent/scratch/package-rebuild-20261011/akr-validate-final-pre-completion.log"
+    summary """
+        AKR build and validation exit zero after package receipts and retained evidence registration. Parse, type, links, resolution and sealed hashes pass; zero errors and ten historical AKR-G023 unmatched-scope warnings remain. Owner USB boot, installed-day/PAM signoff and physical HDMI qualification remain open; this rebuild does not claim them.
+        """
+    author "dk"
+}
+
+record legeos.evidence.native-package-rebuild-20261011/1 : evidence {
+    title "Native offline two-job build finished version 0.1.0~dev1791700018+g1d81374.dirty: 14 component packages, eight metapackages, closed-archive LiminalView and separately built clean pinned nm-tray (24 DEBs). Original fork edits retained. No installation, live service operation or physical qualification."
+    state verified
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "bash .agent/scratch/package-rebuild-20261011/build.sh"
+    artifact ".agent/scratch/package-rebuild-20261011/build.log"
+    summary """
+        Native offline two-job build finished version 0.1.0~dev1791700018+g1d81374.dirty: 14 component packages, eight metapackages, closed-archive LiminalView and separately built clean pinned nm-tray (24 DEBs). Original fork edits retained. No installation, live service operation or physical qualification.
+        """
+    author "dk"
+}
+
 record legeos.evidence.native-pcmanfm-bookmark-interop-20261006/1 : evidence {
     title "Actual private PCManFM FileManager1 selected and revealed the owned alpha file; native GTK Places showed foreign labels and the exported folder. SetBookmark did not auto-export, explicit export preserved original backup bytes, unbookmark did not delete exported GTK rows, and an external native GTK label edit survived subsequent export without a duplicate URI."
     state verified
@@ -6252,6 +6368,62 @@ record legeos.evidence.refinement-integration-smoke-20260824/1 : evidence {
         """
 }
 
+record legeos.evidence.reinstall-doctor-ledger-20261011/1 : evidence {
+    title "After package/test evidence registration, AKR build and validate exit0 with no errors and11warnings:10historical unmatched scopes plus AKR-G004 for3uncommitted watched Rust paths. git diff --check exits0. Code changes remain uncommitted; all installation/activation and physical/installed-session qualification stay owner-run."
+    state verified
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "akr build; akr validate --format json; git diff --check"
+    artifact ".agent/scratch/reinstall-doctor-20261011/akr-validate-before-complete.json"
+    summary """
+        After package/test evidence registration, AKR build and validate exit0 with no errors and11warnings:10historical unmatched scopes plus AKR-G004 for3uncommitted watched Rust paths. git diff --check exits0. Code changes remain uncommitted; all installation/activation and physical/installed-session qualification stay owner-run.
+        """
+    author "dk"
+}
+
+record legeos.evidence.reinstall-doctor-packages-20261011/1 : evidence {
+    title "Native 24-package cohort0.1.0~dev1791703179+g1d81374.dirty built; controls/hashes/7runtime stamps/634source inputs inspected. Actual packaged doctor accepts the actual v2-only compositor payload (exit0), rejects missing v2 (exit1/error), and prints missing-app warning with JSON outcome fail/severity warning/exit2. Packaged comp --check and helper --self-check exit0 in isolated XDG/HOME and absent buses, with approved private-socket escalation. Original pinned nm-tray edits unchanged and LiminalView archive76853c57 preserved. Dry-run selects15 matching desktop packages; Liminal apt simulation1new/0upgrades/0removals. No install, activation, logout or physical/installed-day qualification."
+    state verified
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "bash .agent/scratch/reinstall-doctor-20261011/build.sh; python3 .agent/scratch/reinstall-doctor-20261011/verify.py; bash scripts/reinstall-templaros-desktop.sh --skip-build --dry-run; apt-get -s install ./target/debian/liminalview_0.1.0~dev1791703179+g1d81374.dirty_amd64.deb"
+    artifact ".agent/scratch/reinstall-doctor-20261011/verification.json"
+    summary """
+        Native 24-package cohort0.1.0~dev1791703179+g1d81374.dirty built; controls/hashes/7runtime stamps/634source inputs inspected. Actual packaged doctor accepts the actual v2-only compositor payload (exit0), rejects missing v2 (exit1/error), and prints missing-app warning with JSON outcome fail/severity warning/exit2. Packaged comp --check and helper --self-check exit0 in isolated XDG/HOME and absent buses, with approved private-socket escalation. Original pinned nm-tray edits unchanged and LiminalView archive76853c57 preserved. Dry-run selects15 matching desktop packages; Liminal apt simulation1new/0upgrades/0removals. No install, activation, logout or physical/installed-day qualification.
+        """
+    author "dk"
+}
+
+record legeos.evidence.reinstall-doctor-regression-20261011/1 : evidence {
+    title "Native doctor module tests: 59 passed, 0 failed. Current v2-only compositor fixture passes; legacy-v1-only fails naming the missing v2 path. Warning/error terminal labels and grouped summary distinguish severities while exit statuses remain warning2/error1. rustfmt --check passes for all three changed Rust files. No service activation or package installation."
+    state verified
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "env CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 CARGO_NET_OFFLINE=true XDG_STATE_HOME=/tmp/templar-doctor-test-state XDG_CACHE_HOME=/tmp/templar-doctor-test-cache DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/templar-doctor-tests-no-session DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/templar-doctor-tests-no-system scripts/cargo-native.sh test -p templar doctor::"
+    artifact ".agent/scratch/reinstall-doctor-20261011/doctor-tests.log"
+    summary """
+        Native doctor module tests: 59 passed, 0 failed. Current v2-only compositor fixture passes; legacy-v1-only fails naming the missing v2 path. Warning/error terminal labels and grouped summary distinguish severities while exit statuses remain warning2/error1. rustfmt --check passes for all three changed Rust files. No service activation or package installation.
+        """
+    author "dk"
+}
+
+record legeos.evidence.reinstall-doctor-regression-final-20261011/1 : evidence {
+    title "Final native doctor module run: 59 passed, 0 failed. The current compositor fixture reads the independent cargo-deb assets declaration and passes; legacy-v1-only fails naming missing v2. Severity terminal rows/grouped summaries and warning2/error1 exit statuses pass. Changed Rust files pass rustfmt --check; native xtask check-packaging reports all14 components,9unit binaries,8service lifetimes,15seeds/8metapackages consistent. Child tests use absent private bus addresses; no live activation or installation."
+    state verified
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "env CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 CARGO_NET_OFFLINE=true XDG_STATE_HOME=/tmp/templar-doctor-test-state XDG_CACHE_HOME=/tmp/templar-doctor-test-cache DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/templar-doctor-tests-no-session DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/templar-doctor-tests-no-system scripts/cargo-native.sh test -p templar doctor::"
+    artifact ".agent/scratch/reinstall-doctor-20261011/doctor-tests-final.log"
+    summary """
+        Final native doctor module run: 59 passed, 0 failed. The current compositor fixture reads the independent cargo-deb assets declaration and passes; legacy-v1-only fails naming missing v2. Severity terminal rows/grouped summaries and warning2/error1 exit statuses pass. Changed Rust files pass rustfmt --check; native xtask check-packaging reports all14 components,9unit binaries,8service lifetimes,15seeds/8metapackages consistent. Child tests use absent private bus addresses; no live activation or installation.
+        """
+    author "dk"
+}
+
 record legeos.evidence.remaining-doc-authority-audit-20260907/1 : evidence {
     title "Remaining docs were classified against the ledger and their live role"
     state verified
@@ -6465,6 +6637,19 @@ record legeos.evidence.service-lifetime-declarations-are-checked-against-descrip
     summary """
         46 xtask tests pass, including the two that separate Type=dbus readiness from activation: a session-bound service may be Type=dbus, and a dbus-activated one is a failure without a descriptor naming its unit or while legeos-session.target eagerly wants it. check-packaging accepts the matrix with filed session-bound and hostd's new descriptor.
         """
+}
+
+record legeos.evidence.service-resource-hotspots-tests-20261013/1 : evidence {
+    title "Working tree on 1d81374 plus this change: templar-file-index all suites pass including the new generations::a_rescan_that_finds_nothing_changed_writes_nothing_and_still_collects (an unchanged rescan writes at most the root row, a removed file is still tombstoned, subtree entry_count equals a recount); templar-filed 194 passed, templar-sessiond 140 passed; file-index clippy -D warnings clean; workspace check exit 0. Workspace clippy is blocked by pre-existing templar-wallpaper and templar-field lints. Lubuntu host only: no installed TemplarOS measurement."
+    state verified
+    result pass
+    method command
+    observed_at git:1d81374717e0fea2bcf5d2eb3d321d82d937b8d8
+    command "cargo test -p templar-file-index -p templar-filed -p templar-sessiond; cargo clippy -p templar-file-index --all-targets -- -D warnings; cargo check --workspace --all-targets"
+    summary """
+        Working tree on 1d81374 plus this change: templar-file-index all suites pass including the new generations::a_rescan_that_finds_nothing_changed_writes_nothing_and_still_collects (an unchanged rescan writes at most the root row, a removed file is still tombstoned, subtree entry_count equals a recount); templar-filed 194 passed, templar-sessiond 140 passed; file-index clippy -D warnings clean; workspace check exit 0. Workspace clippy is blocked by pre-existing templar-wallpaper and templar-field lints. Lubuntu host only: no installed TemplarOS measurement.
+        """
+    author "dk"
 }
 
 record legeos.evidence.session-boundary-regressions-20261007/1 : evidence {
