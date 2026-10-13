@@ -1308,7 +1308,7 @@ fn doctor_command(
             abbreviated |= detail != finding.detail;
             println!(
                 "{:<12} {:<20} {}{}",
-                finding.outcome.label(),
+                finding.terminal_label(),
                 finding.id,
                 finding.summary,
                 if detail.is_empty() {

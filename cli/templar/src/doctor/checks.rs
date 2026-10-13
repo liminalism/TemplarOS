@@ -710,7 +710,7 @@ impl Check for CompositorUsable {
         }
         let mut warnings = Vec::new();
         for protocol in [
-            "/usr/share/templaros/protocols/templar-shell-v1.xml",
+            "/usr/share/templaros/protocols/templar-shell-v2.xml",
             "/usr/share/templaros/protocols/templar-recovery-v1.xml",
         ] {
             if !exists(&context.root, protocol) {
@@ -1827,9 +1827,53 @@ mod tests {
             .unwrap();
         assert_eq!(compositor.outcome, Outcome::Fail);
         assert!(compositor.detail.contains("Xwayland"));
-        assert!(compositor.detail.contains("templar-shell-v1.xml"));
+        assert!(compositor.detail.contains("templar-shell-v2.xml"));
         // The binary is there, so it must not claim the compositor is uninstalled.
         assert!(!compositor.summary.contains("not installed"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn compositor_check_requires_the_current_packaged_shell_protocol() {
+        let root = fixture_root("compositor-current-protocol");
+        let protocols = root.join("usr/share/templaros/protocols");
+        fs::create_dir_all(root.join("usr/bin")).unwrap();
+        fs::create_dir_all(&protocols).unwrap();
+        for name in ["templar-comp", "Xwayland"] {
+            fs::write(root.join("usr/bin").join(name), "").unwrap();
+        }
+        fs::write(protocols.join("templar-recovery-v1.xml"), "").unwrap();
+        fs::write(protocols.join("templar-shell-v1.xml"), "").unwrap();
+        let context = Context {
+            root: root.clone(),
+            hardware: false,
+        };
+        let legacy_only = CompositorUsable.run(&context);
+        assert_eq!(legacy_only.outcome, Outcome::Fail);
+        assert_eq!(
+            legacy_only.detail,
+            "/usr/share/templaros/protocols/templar-shell-v2.xml"
+        );
+
+        fs::remove_file(protocols.join("templar-shell-v1.xml")).unwrap();
+        // Use the independent cargo-deb declaration so a future packaging rename
+        // cannot leave doctor and its fixture agreeing on an obsolete filename.
+        let package: toml::Value = toml::from_str(include_str!(
+            "../../../../compositor/templar-comp/Cargo.toml"
+        ))
+        .unwrap();
+        for asset in package["package"]["metadata"]["deb"]["assets"]
+            .as_array()
+            .unwrap()
+        {
+            let target = asset[1].as_str().unwrap();
+            if target.starts_with("usr/share/templaros/protocols/") {
+                fs::write(root.join(target), "").unwrap();
+            }
+        }
+        let current = CompositorUsable.run(&context);
+        assert_eq!(current.outcome, Outcome::Pass);
+        assert!(current.detail.is_empty());
         let _ = fs::remove_dir_all(&root);
     }
 

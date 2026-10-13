@@ -56,6 +56,18 @@ pub struct Finding {
     pub detail: String,
 }
 
+impl Finding {
+    /// Keep warning failures distinct from blocking errors in terminal output.
+    /// The JSON outcome remains `fail`; severity still controls the exit status.
+    pub fn terminal_label(&self) -> &'static str {
+        match (self.outcome, self.severity) {
+            (Outcome::Fail, Severity::Warning) => "warning",
+            (Outcome::Fail, Severity::Error) => "error",
+            _ => self.outcome.label(),
+        }
+    }
+}
+
 /// Where and what to check.
 #[derive(Clone, Debug)]
 pub struct Context {
@@ -176,11 +188,22 @@ pub fn summarise(findings: &[Finding]) -> String {
         count(Outcome::Skipped),
         count(Outcome::NotExecuted),
     );
-    if failed.is_empty() {
-        tally
-    } else {
-        format!("{tally}\nfailed: {}", failed.join(", "))
+    let mut summary = tally;
+    for (severity, label) in [
+        (Severity::Error, "errors"),
+        (Severity::Warning, "warnings"),
+        (Severity::Info, "failed information checks"),
+    ] {
+        let ids: Vec<_> = findings
+            .iter()
+            .filter(|f| f.outcome == Outcome::Fail && f.severity == severity)
+            .map(|f| f.id)
+            .collect();
+        if !ids.is_empty() {
+            summary.push_str(&format!("\n{label}: {}", ids.join(", ")));
+        }
     }
+    summary
 }
 
 pub(crate) fn finding(
@@ -260,7 +283,7 @@ mod tests {
         ];
         assert_eq!(
             summarise(&findings),
-            "4 checks: 1 passed, 1 failed, 1 skipped, 1 not executed\nfailed: mime-handlers"
+            "4 checks: 1 passed, 1 failed, 1 skipped, 1 not executed\nerrors: mime-handlers"
         );
 
         let clean = vec![finding_of("session-units", Outcome::Pass, "")];
@@ -268,5 +291,25 @@ mod tests {
             summarise(&clean),
             "1 checks: 1 passed, 0 failed, 0 skipped, 0 not executed"
         );
+    }
+
+    #[test]
+    fn warning_failures_are_distinct_from_blocking_errors() {
+        let error = finding_of("compositor-usable", Outcome::Fail, "");
+        let mut warning = finding_of("running-build", Outcome::Fail, "");
+        warning.severity = Severity::Warning;
+        assert_eq!(error.terminal_label(), "error");
+        assert_eq!(warning.terminal_label(), "warning");
+        assert_eq!(exit_code(std::slice::from_ref(&warning)), 2);
+        let findings = [error, warning];
+        assert_eq!(exit_code(&findings), 1);
+        assert_eq!(
+            summarise(&findings),
+            "2 checks: 0 passed, 2 failed, 0 skipped, 0 not executed\nerrors: compositor-usable\nwarnings: running-build"
+        );
+        let mut passing = findings[1].clone();
+        passing.outcome = Outcome::Pass;
+        assert_eq!(passing.terminal_label(), "pass");
+        assert_eq!(exit_code(&[passing]), 0);
     }
 }
