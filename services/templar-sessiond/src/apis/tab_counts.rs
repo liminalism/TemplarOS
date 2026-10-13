@@ -266,10 +266,13 @@ impl TabCountsApi {
         }
     }
     async fn feed(self, mut updates: watch::Receiver<u64>) {
+        let mut delay = Duration::from_secs(1);
         loop {
+            let mut connected = false;
             let result: anyhow::Result<()> = async {
                 let control = CompositorControl::from_runtime()?;
                 let mut stream = control.subscribe_tab_windows().await?;
+                connected = true;
                 loop {
                     tokio::select! {
                         next = stream.next() => {
@@ -297,8 +300,13 @@ impl TabCountsApi {
             if let Err(error) = result {
                 tracing::debug!(%error, "native tab metadata feed unavailable; counts unknown");
             }
-            // Reconnect only when authority is unavailable; healthy feeds are event-driven.
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            // Reconnect only when authority is unavailable; healthy feeds are event-driven. An
+            // authority that stays away is retried less and less often, not every second forever.
+            if connected {
+                delay = Duration::from_secs(1);
+            }
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_secs(60));
         }
     }
 }

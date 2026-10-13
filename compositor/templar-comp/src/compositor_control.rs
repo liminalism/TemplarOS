@@ -237,13 +237,16 @@ fn install_listener<B: Backend + 'static>(
         })
         .map_err(|error| anyhow::anyhow!("inserting compositor control requests: {error}"))?;
     let task = runtime.spawn(async move {
-        let permits = Arc::new(tokio::sync::Semaphore::new(4));
+        // Subscriptions hold their permit for the life of the session: sessiond alone keeps six
+        // (input, displays, power and wallpaper activity, wallpaper, tab windows). A cap of four
+        // silently refused two of them for good, and every one-shot request raced for the rest.
+        let permits = Arc::new(tokio::sync::Semaphore::new(16));
         let mut clients = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
                 accepted = listener.accept() => {
                     let (socket, _) = match accepted { Ok(socket) => socket, Err(error) => { tracing::warn!(%error, "accepting native compositor control"); break; } };
-                    let Ok(permit) = permits.clone().try_acquire_owned() else { drop(socket); continue; };
+                    let Ok(permit) = permits.clone().try_acquire_owned() else { tracing::warn!("refusing a compositor control connection: every permit is held"); drop(socket); continue; };
                     let sender = sender.clone();
                     clients.spawn(async move { let _permit = permit; if let Err(error) = serve(socket, sender, authentication).await { tracing::debug!(%error, "compositor control connection ended"); } });
                 },

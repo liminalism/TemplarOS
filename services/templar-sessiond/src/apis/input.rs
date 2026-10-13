@@ -366,28 +366,44 @@ impl InputApi {
 
 pub fn spawn_watch(connection: zbus::Connection) {
     tokio::spawn(async move {
+        // Losing a working stream is one transition, however many reconnects it then refuses:
+        // signalling every retry woke every consumer every two seconds for a whole session.
+        let mut down = false;
+        let mut delay = Duration::from_secs(2);
         loop {
-            if let Err(error) = watch_once(&connection).await {
-                tracing::warn!(%error, "native input observation disconnected");
-                if let Ok(interface) = connection
-                    .object_server()
-                    .interface::<_, InputApi>(PATH)
-                    .await
-                {
-                    let _ = InputApi::changed(interface.signal_emitter()).await;
+            let mut connected = false;
+            if let Err(error) = watch_once(&connection, &mut connected).await {
+                if connected {
+                    down = false;
+                    delay = Duration::from_secs(2);
+                }
+                if down {
+                    tracing::debug!(%error, "native input observation still unavailable");
+                } else {
+                    down = true;
+                    tracing::warn!(%error, "native input observation disconnected");
+                    if let Ok(interface) = connection
+                        .object_server()
+                        .interface::<_, InputApi>(PATH)
+                        .await
+                    {
+                        let _ = InputApi::changed(interface.signal_emitter()).await;
+                    }
                 }
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_secs(60));
         }
     });
 }
-async fn watch_once(connection: &zbus::Connection) -> Result<()> {
+async fn watch_once(connection: &zbus::Connection, connected: &mut bool) -> Result<()> {
     let interface = connection
         .object_server()
         .interface::<_, InputApi>(PATH)
         .await?;
     let api = interface.get().await.clone();
     let mut stream = api.control.subscribe_activity().await?;
+    *connected = true;
     let mut previous = None;
     let mut known = BTreeSet::new();
     while let Some(activity) = stream.next().await {
