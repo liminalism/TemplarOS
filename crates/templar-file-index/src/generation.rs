@@ -576,6 +576,30 @@ impl ScanSession {
         let generation = crate::publish_generation(&transaction)?;
         let generation_id = generation.0 as i64;
 
+        // A subtree commit maintains the count arithmetically, like a mutation does: recounting
+        // every live row of a million-entry root on each small repair is what made a burst of
+        // build-directory repairs cost a full index scan apiece. A whole-root pass still recounts,
+        // so any drift is settled by the next one.
+        let subtree_count = if matches!(scope, ScanScope::Subtree(_)) {
+            let prior: i64 = transaction.query_row(
+                "SELECT entry_count FROM roots WHERE root_id = ?1",
+                [root.0],
+                |row| row.get(0),
+            )?;
+            let added: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM entries_staging s
+                  WHERE s.generation = ?1 AND s.root_id = ?2
+                    AND NOT EXISTS (SELECT 1 FROM entries e
+                                     WHERE e.root_id = s.root_id AND e.path_bytes = s.path_bytes
+                                       AND e.deleted_generation IS NULL)",
+                rusqlite::params![staged_id, root.0],
+                |row| row.get(0),
+            )?;
+            Some(prior + added)
+        } else {
+            None
+        };
+
         merge_staging_into_entries(&transaction, root, staged_id, generation_id)?;
         crate::aggregate::write_pending(&transaction, root, generation, &self.pending_aggregates)?;
 
@@ -608,11 +632,14 @@ impl ScanSession {
 
         prune_tombstones(&transaction, generation, retention, oldest_cursor)?;
 
-        let entries: i64 = transaction.query_row(
-            "SELECT COUNT(*) FROM entries WHERE root_id = ?1 AND deleted_generation IS NULL",
-            [root.0],
-            |row| row.get(0),
-        )?;
+        let entries: i64 = match subtree_count {
+            Some(count) => (count - collected as i64).max(0),
+            None => transaction.query_row(
+                "SELECT COUNT(*) FROM entries WHERE root_id = ?1 AND deleted_generation IS NULL",
+                [root.0],
+                |row| row.get(0),
+            )?,
+        };
 
         let (state, state_reason, root_complete) = self.committed_root_state(complete);
 
@@ -934,6 +961,12 @@ pub(crate) fn fts_present(connection: &rusqlite::Connection) -> bool {
 /// other — collection tombstones what a pass did not see, `last_seen < start` — so it keeps the
 /// start: a mutation that published while this pass ran stamped its own rows later than that and
 /// is never collected as unseen.
+///
+/// A staged row identical to its live row, parent link included, is not written at all. Most of
+/// a reconcile is proof that nothing moved, and rewriting those rows rewrote every index, the FTS
+/// table, every parent link and the whole WAL on each pass — gigabytes for a million-entry home —
+/// while telling every cursor and overlay that the entire root had changed. Such a row keeps its
+/// older `last_seen_generation`; [`collect_tombstones`] reads its staging row as the sighting.
 fn merge_staging_into_entries(
     transaction: &Transaction<'_>,
     root: RootId,
@@ -949,7 +982,23 @@ fn merge_staging_into_entries(
          SELECT root_id, NULL, name_bytes, name_display, name_fold, path_bytes,
                 path_display, kind, size_bytes, alloc_bytes, mtime_ns, ctime_ns, mode,
                 hidden, dev, inode, nlink, mime, coverage, ?3, ?1, NULL
-           FROM entries_staging WHERE generation = ?1 AND root_id = ?2
+           FROM entries_staging s WHERE s.generation = ?1 AND s.root_id = ?2
+            AND NOT EXISTS (
+                SELECT 1 FROM entries e
+                 WHERE e.root_id = s.root_id AND e.path_bytes = s.path_bytes
+                   AND e.deleted_generation IS NULL
+                   AND e.name_bytes IS s.name_bytes AND e.name_display IS s.name_display
+                   AND e.name_fold IS s.name_fold AND e.kind IS s.kind
+                   AND e.size_bytes IS s.size_bytes AND e.alloc_bytes IS s.alloc_bytes
+                   AND e.mtime_ns IS s.mtime_ns AND e.ctime_ns IS s.ctime_ns
+                   AND e.mode IS s.mode AND e.hidden IS s.hidden AND e.dev IS s.dev
+                   AND e.inode IS s.inode AND e.nlink IS s.nlink AND e.mime IS s.mime
+                   AND e.coverage IS s.coverage
+                   AND (s.parent_bytes IS NULL
+                        OR EXISTS (SELECT 1 FROM entries p
+                                    WHERE p.entry_id = e.parent_id
+                                      AND p.deleted_generation IS NULL
+                                      AND p.path_bytes = s.parent_bytes)))
          ON CONFLICT (root_id, path_bytes) DO UPDATE SET
             name_bytes = excluded.name_bytes,
             name_display = excluded.name_display,
@@ -988,10 +1037,19 @@ fn merge_staging_into_entries(
     Ok(())
 }
 
+/// Staging is dropped only at the end of the commit, so it still names every row this pass saw.
+const NOT_STAGED: &str = "NOT EXISTS (SELECT 1 FROM entries_staging s
+                                      WHERE s.root_id = entries.root_id
+                                        AND s.path_bytes = entries.path_bytes
+                                        AND s.generation = ?1)";
+
 /// The body of [`ScanSession::commit_transaction`]'s collection step: tombstones every row **not**
 /// seen by this pass (`last_seen_generation` below the pass's start), scoped to whatever the
 /// session actually covered — a subtree repair must never garbage-collect the rest of the root.
 /// The tombstones carry the published generation, like every other row the commit changes.
+///
+/// A row the merge left untouched because it was unchanged still has its staging row, and that
+/// is what marks it seen.
 fn collect_tombstones(
     transaction: &Transaction<'_>,
     root: RootId,
@@ -1001,18 +1059,22 @@ fn collect_tombstones(
 ) -> Result<usize> {
     Ok(match scope {
         ScanScope::Root => transaction.execute(
-            "UPDATE entries SET deleted_generation = ?3
-              WHERE root_id = ?2 AND deleted_generation IS NULL
-                AND last_seen_generation < ?1",
+            &format!(
+                "UPDATE entries SET deleted_generation = ?3
+                  WHERE root_id = ?2 AND deleted_generation IS NULL
+                    AND last_seen_generation < ?1 AND {NOT_STAGED}"
+            ),
             rusqlite::params![staged_id, root.0, published_id],
         )?,
         ScanScope::Subtree(prefix) => {
             let (low, high) = prefix.subtree_bounds();
             transaction.execute(
-                "UPDATE entries SET deleted_generation = ?5
-                  WHERE root_id = ?2 AND deleted_generation IS NULL
-                    AND last_seen_generation < ?1
-                    AND path_bytes >= ?3 AND path_bytes < ?4",
+                &format!(
+                    "UPDATE entries SET deleted_generation = ?5
+                      WHERE root_id = ?2 AND deleted_generation IS NULL
+                        AND last_seen_generation < ?1
+                        AND path_bytes >= ?3 AND path_bytes < ?4 AND {NOT_STAGED}"
+                ),
                 rusqlite::params![staged_id, root.0, low, high, published_id],
             )?
         }

@@ -261,3 +261,55 @@ proptest! {
         prop_assert_eq!(commits, 1000);
     }
 }
+
+#[test]
+fn a_rescan_that_finds_nothing_changed_writes_nothing_and_still_collects() {
+    let dir = tempfile::tempdir().unwrap();
+    let tree = dir.path().join("tree");
+    let index = open(dir.path(), false);
+    std::fs::create_dir_all(tree.join("sub")).unwrap();
+    write(&tree.join("a"), b"a");
+    write(&tree.join("sub/b"), b"b");
+    write(&tree.join("sub/c"), b"c");
+    let root = scanned_root(&index, &tree);
+    let written_at = |generation: Generation| -> i64 {
+        rusqlite::Connection::open(dir.path().join("index.sqlite3"))
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM entries WHERE written_generation = ?1",
+                [generation.0 as i64],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+
+    let quiet = index.scan_root(root, ScanOptions::default()).unwrap();
+    // Only the root directory itself, whose parent lies outside the index, is rewritten.
+    assert!(
+        written_at(quiet.generation) <= 1,
+        "an unchanged rescan rewrote rows"
+    );
+    assert_eq!(quiet.entries, index.entry_count(root).unwrap());
+
+    std::fs::remove_file(tree.join("sub/c")).unwrap();
+    write(&tree.join("sub/d"), b"d");
+    let subtree = index
+        .scan_subtree(
+            root,
+            &NativePath::from_path(&tree.join("sub")),
+            ScanOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(subtree.entries, index.entry_count(root).unwrap());
+    assert_eq!(
+        index.root_status(root).unwrap().entry_count,
+        subtree.entries
+    );
+    let (found, _) = names(&index, "c");
+    assert!(
+        !found.contains(&b"c".to_vec()),
+        "an unseen row survived a complete pass"
+    );
+    let (found, _) = names(&index, "d");
+    assert!(found.contains(&b"d".to_vec()));
+}
