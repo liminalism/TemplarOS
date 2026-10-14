@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.2"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:dd3215b6cfce2777b8704a572a6d9209ef9a1d2f342ef3acc4164c764291fa54"
+    source_graph "sha256:b0037075c88c05a2c96a9e667cff73cc01f86a0fc1766d0890a96c5444af9cdf"
 }
 
 source ".akr/project.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:36967478b315220e75fb0b29628f06b97c75f9a34736bee1fd997561de7317d3"
-    records 757
+    hash "sha256:7171d303016f868f8ac2aee7d051cd942cb047f70a2b05df5960137a8d35c9bb"
+    records 759
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -12404,6 +12404,16 @@ seal @legeos.papercut.after-cargo-test-clippy-passed-target-debug/1 {
 seal @legeos.papercut.after-cargo-test-p-lege-filed-browse-passed/1 {
     state verified
     hash "sha256:c0da9b4751bab0c7f74bedc82a71c26ce721dc6b4297e2265b7019167ff5b3c9"
+}
+
+seal @legeos.papercut.after-committing-the-lxqt-task-as45b3a19/1 {
+    state superseded
+    hash "sha256:34fba7ca570a901e9786bad90b86c6ebf4df1ccf45f0222ebbbcfc4896a8f4ba"
+}
+
+seal @legeos.papercut.after-committing-the-lxqt-task-as45b3a19/2 {
+    state verified
+    hash "sha256:2ced46228661977927bc6950cca58fc068eb2c63065dd0d0ceb105a6d83b60a8"
 }
 
 seal @legeos.papercut.after-creating2m-entries-the2gib-kvm-scale/1 {

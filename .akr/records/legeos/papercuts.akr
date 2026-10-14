@@ -752,6 +752,30 @@ record legeos.papercut.after-cargo-test-p-lege-filed-browse-passed/1 : papercut 
     created_at 2026-08-24
 }
 
+record legeos.papercut.after-committing-the-lxqt-task-as45b3a19/1 : papercut {
+    title "After committing the LXQt task as45b3a19, knowledge.validate expanded…"
+    state superseded
+    statement """
+        After committing the LXQt task as45b3a19, knowledge.validate expanded from15 pre-commit warnings to51 diagnostics, including historical evidence commands flagged for missing current-tree test names (G024) and obsolete package names (G022). The LXQt change removed none of those older tests; this needs historical-evidence/source-index reconciliation rather than rewriting the captured commands during unrelated work.
+        """
+    observed_at git:45b3a19db1ceb7fa3fde0fdbce17ab07d9a27768
+    about "akr"
+    author "codex"
+    created_at 2026-10-14
+}
+
+record legeos.papercut.after-committing-the-lxqt-task-as45b3a19/2 : papercut {
+    title "Post-commit AKR validation surfaces legacy command diagnostics"
+    state verified
+    statement """
+        After the LXQt commit 45b3a19, knowledge.validate increased from 15 pre-commit warnings to 51 diagnostics: obsolete scopes (G023), historical commands with symbols missing from the current tree (G024), and command-shape checks (G025). None of those older tests changed in this commit; reconcile historical evidence and source-index behavior separately.
+        """
+    observed_at git:45b3a19db1ceb7fa3fde0fdbce17ab07d9a27768
+    about "akr"
+    supersedes [ @legeos.papercut.after-committing-the-lxqt-task-as45b3a19/1 ]
+    author "dk"
+}
+
 record legeos.papercut.after-creating2m-entries-the2gib-kvm-scale/1 : papercut {
     title "After creating2M entries, the2GiB KVM scale monitor failed importing…"
     state verified
