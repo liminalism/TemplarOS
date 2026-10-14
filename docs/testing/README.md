@@ -1,5 +1,9 @@
 # Testing TemplarOS
 
+For a planned comparison of daily-use performance and memory use with LXQt on
+both distributions, see the [Lubuntu and TemplarOS performance comparison protocol](lubuntu-templaros-lxqt-performance-comparison.md).
+It defines future benchmarks and reporting criteria; it contains no benchmark results.
+
 There are four ways to run this, and they differ by how much you have to commit to. Start at the
 top; only go down when the thing you need to test requires it.
 

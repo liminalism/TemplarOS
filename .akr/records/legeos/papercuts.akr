@@ -2214,6 +2214,18 @@ record legeos.papercut.during-continuation-several-handoff-path/1 : papercut {
     created_at 2026-10-08
 }
 
+record legeos.papercut.during-document-qa-a-multi-hunk-patch-failed/1 : papercut {
+    title "During document QA, a multi-hunk patch failed atomically because one…"
+    state verified
+    statement """
+        During document QA, a multi-hunk patch failed atomically because one context string began mid-paragraph rather than at the actual line boundary. Retrying with the full line context applied the intended refinements; no partial document edit was left behind.
+        """
+    observed_at git:d0b2d5db139adc8fa417626583902ce2d0337c34
+    about "apply_patch"
+    author "codex"
+    created_at 2026-10-14
+}
+
 record legeos.papercut.during-final-continuation-i-searched-compositor/1 : papercut {
     title "During final continuation I searched compositor/src/backend, which does…"
     state verified
@@ -7626,6 +7638,18 @@ record legeos.papercut.while-checking-all-silvaview-loadedtree/1 : papercut {
     observed_at git:12295f351ab14e649f900573190060cd88a7251e
     author "codex"
     created_at 2026-10-08
+}
+
+record legeos.papercut.while-checking-boot-time-measurement-semantics/1 : papercut {
+    title "While checking boot-time measurement semantics for the LXQt comparison…"
+    state verified
+    statement """
+        While checking boot-time measurement semantics for the LXQt comparison protocol, both official freedesktop systemd-analyze documentation URLs returned internal errors through the web tool. The upstream systemd GitHub manpage source was readable and supplies the same timing limitations.
+        """
+    observed_at git:d0b2d5db139adc8fa417626583902ce2d0337c34
+    about "web"
+    author "codex"
+    created_at 2026-10-14
 }
 
 record legeos.papercut.while-checking-silvaview-source-actions-and/1 : papercut {

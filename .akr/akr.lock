@@ -5,7 +5,7 @@ build {
     tool "akr 0.5.2"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:b0037075c88c05a2c96a9e667cff73cc01f86a0fc1766d0890a96c5444af9cdf"
+    source_graph "sha256:14e400734d736855116d804b205bd696883fe325342ad60c392ebfaf9478e88a"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:a11c01f4ef3dd675bba5a76f69581b2f435900c324848fa864627290be229bf9"
-    records 623
+    hash "sha256:96832189791d3ad58c90b5890a8267b8673deab07174585aa740c36c7b8a57fc"
+    records 624
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:7171d303016f868f8ac2aee7d051cd942cb047f70a2b05df5960137a8d35c9bb"
-    records 759
+    hash "sha256:150b9b60659f27aef3e9bab3c0f1cb4bb219571428d17ee59473918f549b1a26"
+    records 761
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -59,8 +59,8 @@ source ".akr/records/legeos/requirements.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:6051a8b6b8f56e9723504ddca70b903edbcb7f7a14f0bde697e8fcf8cc7d8402"
-    records 406
+    hash "sha256:8ca1c8fda9491bb991ffb5e656fbaf651e70ab4bae29ce9287439825a2b484f1"
+    records 407
 }
 
 resolution @legeos.assessment.astra-memory-polling-indexing-review-20260909/1 {
@@ -10226,6 +10226,11 @@ seal @legeos.evidence.lxqt-installed-owned-desktop-20261014/1 {
     hash "sha256:b304e8a59ad6a250119d53e4595af72d5608c22716bc524f55b6c1557dc725b0"
 }
 
+seal @legeos.evidence.lxqt-os-comparison-protocol-authored-20261014/1 {
+    state verified
+    hash "sha256:60be7c901c22966aaf9082cc15634a85af454c8103a2dbb29356e197ff3919d6"
+}
+
 seal @legeos.evidence.m0-adrs-present/1 {
     state verified
     hash "sha256:347200c38e7e2d7041c339cc628101037c1cbd062f172b3d55bf191e7849fb49"
@@ -13041,6 +13046,11 @@ seal @legeos.papercut.during-continuation-several-handoff-path/1 {
     hash "sha256:0e6f67d96e92a0c28a188d260e0639109d932725b7fb74444ea942219f09229e"
 }
 
+seal @legeos.papercut.during-document-qa-a-multi-hunk-patch-failed/1 {
+    state verified
+    hash "sha256:78418d862d1b7050c5fa86fc86d6c18dbf660a459f61cb95ed92e706954cfa51"
+}
+
 seal @legeos.papercut.during-final-continuation-i-searched-compositor/1 {
     state verified
     hash "sha256:9a92e8c643fedc5ca30e694ce00194920dfd2bec84172248dfd89e08ffd76b97"
@@ -15401,6 +15411,11 @@ seal @legeos.papercut.while-checking-all-silvaview-loadedtree/1 {
     hash "sha256:79cac9be3322b613588fda42d7b5b39c3123fa9c5ff38ba2c13a08b941af2987"
 }
 
+seal @legeos.papercut.while-checking-boot-time-measurement-semantics/1 {
+    state verified
+    hash "sha256:e69ece4bae0ce8ed8a4cb239238e274c694acd849ca0d8de19e972c6324fdf0c"
+}
+
 seal @legeos.papercut.while-checking-silvaview-source-actions-and/1 {
     state verified
     hash "sha256:25386cbad23bf1bdcc4fb027961fe1f2b875d5339d0dbcda5655d718f0aa22e0"
@@ -17289,6 +17304,11 @@ seal @legeos.work.lxqt-alternative-desktop-20261014/3 {
 seal @legeos.work.lxqt-alternative-desktop-20261014/4 {
     state active
     hash "sha256:aef1b74bbb418b7befc830ca5a25363dfc4f2d4adc9950f760d598c4045964f3"
+}
+
+seal @legeos.work.lxqt-os-comparison-protocol-20261014/1 {
+    state completed
+    hash "sha256:c0cb34ec65b5b18bba63b09f648086ecc0616c69cdd29d8e81ca01e9db90dde5"
 }
 
 seal @legeos.work.memory-polling-indexing-effectiveness-20260909/1 {

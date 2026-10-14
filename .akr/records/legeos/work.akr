@@ -16105,6 +16105,36 @@ record legeos.work.lxqt-filechooser-restoration-20261007/1 : work {
     author "dk"
 }
 
+record legeos.work.lxqt-os-comparison-protocol-20261014/1 : work {
+    title "Author a fair LXQt performance comparison protocol"
+    state completed
+    scope [
+        path "docs/testing/README.md",
+        path "docs/testing/lubuntu-templaros-lxqt-performance-comparison.md"
+    ]
+    intent """
+        Author an executable measurement protocol for Lubuntu versus TemplarOS using LXQt on the same hardware. Define fair practical and matched-stack comparisons, workloads, memory accounting, repetition, objective decision rules, and reporting. The user explicitly requests documentation only: do not execute tests, benchmarks, or live-session changes.
+        """
+    acceptance {
+        check comparison-protocol {
+            statement """
+                A linked repository document specifies controls, concrete benchmark workloads, memory and performance metrics, repetition and statistical decision rules, and a results template.
+                """
+            method manual
+            verified_by [ @legeos.evidence.lxqt-os-comparison-protocol-authored-20261014/1 ]
+        }
+        check documentation-only {
+            statement """
+                The document distinguishes proposed measurements from results, accounts for LXQt service differences, and no performance tests or benchmark workloads were executed for this task.
+                """
+            method manual
+            verified_by [ @legeos.evidence.lxqt-os-comparison-protocol-authored-20261014/1 ]
+        }
+    }
+    derived_from [ @legeos.work.lxqt-alternative-desktop-20261014/4 ]
+    author "dk"
+}
+
 record legeos.work.memory-polling-indexing-effectiveness-20260909/1 : work {
     title "Memory governor, watcher host and file-index effectiveness — the Astra-ranked fix set"
     state superseded

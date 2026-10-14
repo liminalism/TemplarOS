@@ -5140,6 +5140,19 @@ record legeos.evidence.lxqt-installed-owned-desktop-20261014/1 : evidence {
     author "dk"
 }
 
+record legeos.evidence.lxqt-os-comparison-protocol-authored-20261014/1 : evidence {
+    title "LXQt comparison protocol authored and manually reviewed"
+    state verified
+    result pass
+    method manual
+    observed_at git:d0b2d5db139adc8fa417626583902ce2d0337c34
+    artifact "docs/testing/lubuntu-templaros-lxqt-performance-comparison.md"
+    summary """
+        Manually read the protocol and testing-index link. The document specifies practical and matched-stack comparisons, service/function inventory, hardware/cache/power controls, twelve future cases, concrete fixtures and mixed-load schedule, memory/PSS/cgroup/PSI accounting, paired repeats, uncertainty and practical margins, failure reporting, and blank result tables. Its primary technical sources were checked. Only document/ledger operations and source reads were performed; no performance tests, benchmarks, or live-session changes were executed.
+        """
+    author "dk"
+}
+
 record legeos.evidence.m0-adrs-present/1 : evidence {
     title "M0: ADRs 0001-0011 present and mirrored as decision records"
     state verified
