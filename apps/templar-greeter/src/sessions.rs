@@ -2,7 +2,7 @@
 //! `/usr/share/xsessions/*.desktop` — the same two directories every other greeter reads, and
 //! where `templaros.desktop` (`session/units/wayland-sessions/templaros.desktop`) is installed
 //! (`debian/templaros-session.install`). Minimal freedesktop.org Desktop Entry parsing: only the
-//! `[Desktop Entry]` group, only the unlocalized `Name=`/`Exec=`/`Hidden=`/`NoDisplay=` keys — a
+//! `[Desktop Entry]` group, only unlocalized session keys including `DesktopNames` — a
 //! login picker has no locale negotiated yet and needs nothing else these files carry.
 //!
 //! Pure functions throughout (`parse_desktop_file`, `split_exec`, `default_index`); the only
@@ -31,9 +31,35 @@ pub struct SessionEntry {
     /// not a shell string.
     pub exec: Vec<String>,
     pub kind: SessionKind,
-    /// Where this came from, for diagnostics only — never shown to the user, never fed back into
-    /// anything that runs.
+    /// DesktopNames controls desktop-specific autostart and portal selection.
+    pub desktop_names: Vec<String>,
+    /// The installed session file; its stem supplies XDG_SESSION_DESKTOP.
     pub source: PathBuf,
+}
+
+impl SessionEntry {
+    /// greetd launches commands on a VT; X11 entries need an X server of their own.
+    pub fn launch(&self) -> (Vec<String>, Vec<String>) {
+        let (cmd, session_type) = match self.kind {
+            SessionKind::Wayland => (self.exec.clone(), "wayland"),
+            SessionKind::X11 => {
+                let mut cmd = vec!["/usr/libexec/templar-x11-session".to_owned()];
+                cmd.extend(self.exec.iter().cloned());
+                (cmd, "x11")
+            }
+        };
+        let mut env = vec![format!("XDG_SESSION_TYPE={session_type}")];
+        if !self.desktop_names.is_empty() {
+            env.push(format!(
+                "XDG_CURRENT_DESKTOP={}",
+                self.desktop_names.join(":")
+            ));
+        }
+        if let Some(desktop) = self.source.file_stem().and_then(|stem| stem.to_str()) {
+            env.push(format!("XDG_SESSION_DESKTOP={desktop}"));
+        }
+        (cmd, env)
+    }
 }
 
 /// The two directories every greeter reads sessions from, paired with what starting one of them
@@ -96,6 +122,7 @@ pub fn parse_desktop_file(text: &str, kind: SessionKind, source: &Path) -> Optio
     let mut exec = None;
     let mut hidden = false;
     let mut no_display = false;
+    let mut desktop_names = Vec::new();
 
     for line in text.lines() {
         let line = line.trim_end();
@@ -117,6 +144,14 @@ pub fn parse_desktop_file(text: &str, kind: SessionKind, source: &Path) -> Optio
             "Exec" => exec = Some(value.trim().to_owned()),
             "Hidden" => hidden = value.trim().eq_ignore_ascii_case("true"),
             "NoDisplay" => no_display = value.trim().eq_ignore_ascii_case("true"),
+            "DesktopNames" => {
+                desktop_names = value
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+            }
             _ => {}
         }
     }
@@ -133,6 +168,7 @@ pub fn parse_desktop_file(text: &str, kind: SessionKind, source: &Path) -> Optio
         name,
         exec,
         kind,
+        desktop_names,
         source: source.to_owned(),
     })
 }
@@ -213,6 +249,45 @@ mod tests {
 
     fn path() -> PathBuf {
         PathBuf::from("/usr/share/wayland-sessions/test.desktop")
+    }
+
+    #[test]
+    fn lxqt_x11_launch_starts_a_server_and_exports_its_desktop_identity() {
+        let entry = parse_desktop_file(
+            "[Desktop Entry]\nName=LXQt Desktop\nExec=startlxqt\nDesktopNames=LXQt;\n",
+            SessionKind::X11,
+            Path::new("/usr/share/xsessions/lxqt.desktop"),
+        )
+        .unwrap();
+        let (cmd, env) = entry.launch();
+        assert_eq!(cmd, ["/usr/libexec/templar-x11-session", "startlxqt"]);
+        assert_eq!(
+            env,
+            [
+                "XDG_SESSION_TYPE=x11",
+                "XDG_CURRENT_DESKTOP=LXQt",
+                "XDG_SESSION_DESKTOP=lxqt"
+            ]
+        );
+    }
+
+    #[test]
+    fn wayland_launch_preserves_argv_and_multiple_desktop_names() {
+        let entry = parse_desktop_file(
+            "[Desktop Entry]\nName=TemplarOS\nExec=templar-session --flag\nDesktopNames=TemplarOS;Example;\n",
+            SessionKind::Wayland,
+            Path::new("/usr/share/wayland-sessions/templaros.desktop"),
+        ).unwrap();
+        let (cmd, env) = entry.launch();
+        assert_eq!(cmd, ["templar-session", "--flag"]);
+        assert_eq!(
+            env,
+            [
+                "XDG_SESSION_TYPE=wayland",
+                "XDG_CURRENT_DESKTOP=TemplarOS:Example",
+                "XDG_SESSION_DESKTOP=templaros"
+            ]
+        );
     }
 
     #[test]
@@ -377,12 +452,14 @@ Name[de]=LXQt Arbeitsumgebung\n";
                 name: "COSMIC".to_owned(),
                 exec: vec!["start-cosmic".to_owned()],
                 kind: SessionKind::Wayland,
+                desktop_names: vec![],
                 source: path(),
             },
             SessionEntry {
                 name: "TemplarOS".to_owned(),
                 exec: vec!["templar-session".to_owned()],
                 kind: SessionKind::Wayland,
+                desktop_names: vec![],
                 source: path(),
             },
         ];
@@ -395,6 +472,7 @@ Name[de]=LXQt Arbeitsumgebung\n";
             name: "COSMIC".to_owned(),
             exec: vec!["start-cosmic".to_owned()],
             kind: SessionKind::Wayland,
+            desktop_names: vec![],
             source: path(),
         }];
         assert_eq!(default_index(&entries), 0);

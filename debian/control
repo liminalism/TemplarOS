@@ -66,7 +66,7 @@ Description: TemplarOS compositor
 
 Package: templaros-greeter
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, greetd, templaros-comp, fprintd, libpam-fprintd
+Depends: ${shlibs:Depends}, ${misc:Depends}, greetd, templaros-comp, fprintd, libpam-fprintd, xinit, xserver-xorg, xauth
 Description: TemplarOS greeter
  The graphical login surface, on the same toolkit as the shell. It speaks greetd's JSON IPC over
  its socket, so greetd performs the authentication and this package links no PAM, no shadow and

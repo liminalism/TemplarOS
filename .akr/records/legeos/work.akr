@@ -15819,6 +15819,250 @@ record legeos.work.low-memory-wallpaper-switcher/1 : work {
     }
 }
 
+record legeos.work.lxqt-alternative-desktop-20261014/1 : work {
+    title "Provide current LXQt as a selectable alternative to the native TemplarOS desktop"
+    state superseded
+    scope [
+        path "apps/templar-greeter/**",
+        path "debian/**",
+        path "distro/**",
+        path "scripts/**",
+        path "session/**"
+    ]
+    intent """
+        Owner requested latest upstream LXQt as a usable login-screen alternative because Homegarden is inconsistent. Work runs on native Lubuntu 25.10; installed TemplarOS is an offline mounted Resolute 26.04.1 root. Preserve the live Lubuntu desktop; do not start or stop installed desktop services. Diagnose pointer selection and session launch, package integration reproducibly, install to the offline target when possible, and state physical-seat validation limits.
+        """
+    acceptance {
+        check latest {
+            statement """
+                Latest verified upstream LXQt components and a window manager are packaged and installed in the offline TemplarOS target with matching session entry.
+                """
+            method observation
+        }
+        check launch {
+            statement """
+                Discovered X11 sessions receive an X server launcher and correct desktop/session environment; Wayland sessions keep their own compositor.
+                """
+            method command
+            command "cargo test -p templar-greeter"
+        }
+        check picker {
+            statement """
+                The greeter session popup supports pointer selection of LXQt without submitting authentication.
+                """
+            method command
+            command "cargo test -p templar-greeter"
+        }
+        check seat {
+            statement """
+                Owner can select LXQt at TemplarOS login, reach a complete desktop, log out, and return to the native session.
+                """
+            method manual
+        }
+    }
+    author "dk"
+}
+
+record legeos.work.lxqt-alternative-desktop-20261014/2 : work {
+    title "Provide current LXQt as a selectable alternative to the native TemplarOS desktop"
+    state superseded
+    scope [
+        path "apps/templar-greeter/**",
+        path "debian/**",
+        path "distro/**",
+        path "scripts/**",
+        path "session/**"
+    ]
+    intent """
+        Owner requested latest upstream LXQt as a usable login-screen alternative because Homegarden is inconsistent. Work runs on native Lubuntu 25.10; installed TemplarOS is an offline mounted Resolute 26.04.1 root. Preserve the live Lubuntu desktop; do not start or stop installed desktop services. Diagnose pointer selection and session launch, package integration reproducibly, install to the offline target when possible, and state physical-seat validation limits.
+        """
+    note """
+        Implemented and installed offline from native Lubuntu. Existing LXQt entry was supplied by lxqt-session, a dependency of native lxqt-policykit; popup rows overlapped Sign in and background input consumed LXQt clicks. The greeter now isolates modal input, forwards DesktopNames/session identity, and wraps X11 Exec with startx on the login VT. Rebuilt26 pinned source packages for LXQt2.4.0 (panel/PCManFM2.4.1, portal1.4.0) with Resolute Qt6.10.2, installed full desktop/Openbox/Xorg with templaros-lxqt and updated greeter. Defaults use installed Papirus icons; XScreenSaver is explicit. Runtime/package evidence is scoped: actual private GUI selection and LXQt startup/application rendering pass, but owner physical-seat login/logout/native-return acceptance remains required. Current source changes are uncommitted. Greeter clippy, fmt, seed generation and packaging checks pass; combined xtask clippy has six pre-existing idle-wakeups/index_load diagnostics, not new LXQt diagnostics.
+        """
+    acceptance {
+        check latest {
+            statement """
+                Latest verified upstream LXQt components and a window manager are packaged and installed in the offline TemplarOS target with matching session entry.
+                """
+            method observation
+            verified_by [
+                @legeos.evidence.lxqt-backport-offline-install-20261014,
+                @legeos.evidence.lxqt-installed-owned-desktop-20261014
+            ]
+        }
+        check launch {
+            statement """
+                Discovered X11 sessions receive an X server launcher and correct desktop/session environment; Wayland sessions keep their own compositor.
+                """
+            method command
+            command "cargo test -p templar-greeter"
+            verified_by [ @legeos.evidence.lxqt-greeter-selection-and-launch-20261014 ]
+        }
+        check picker {
+            statement """
+                The greeter session popup supports pointer selection of LXQt without submitting authentication.
+                """
+            method command
+            command "cargo test -p templar-greeter"
+            verified_by [ @legeos.evidence.lxqt-greeter-selection-and-launch-20261014 ]
+        }
+        check seat {
+            statement """
+                Owner can select LXQt at TemplarOS login, reach a complete desktop, log out, and return to the native session.
+                """
+            method manual
+        }
+    }
+    supersedes [ @legeos.work.lxqt-alternative-desktop-20261014/1 ]
+    author "dk"
+    source {
+        kind external
+        role origin
+        url "https://lxqt-project.org/releases/"
+        use """
+            Upstream LXQt2.4.0 and current panel/PCManFM point-release inventory.
+            """
+    }
+}
+
+record legeos.work.lxqt-alternative-desktop-20261014/3 : work {
+    title "Provide current LXQt as a selectable alternative to the native TemplarOS desktop"
+    state superseded
+    scope [
+        path "apps/templar-greeter/**",
+        path "debian/control",
+        path "debian/templaros-greeter.install",
+        path "distro/lxqt/**",
+        path "distro/metapackages/**",
+        path "distro/seeds/desktop.seed",
+        path "distro/seeds/selection.toml",
+        path "scripts/build-lxqt-backport.py",
+        path "scripts/install-lxqt-offline.py",
+        path "session/units/greetd/**",
+        path "tests/integration/x11-session.py",
+        path "tools/xtask/src/build_set.rs"
+    ]
+    intent """
+        Owner requested latest upstream LXQt as a usable login-screen alternative because Homegarden is inconsistent. Work runs on native Lubuntu 25.10; installed TemplarOS is an offline mounted Resolute 26.04.1 root. Preserve the live Lubuntu desktop; do not start or stop installed desktop services. Diagnose pointer selection and session launch, package integration reproducibly, install to the offline target when possible, and state physical-seat validation limits.
+        """
+    note """
+        Implemented and installed offline from native Lubuntu. Existing LXQt entry was supplied by lxqt-session, a dependency of native lxqt-policykit; popup rows overlapped Sign in and background input consumed LXQt clicks. The greeter now isolates modal input, forwards DesktopNames/session identity, and wraps X11 Exec with startx on the login VT. Rebuilt26 pinned source packages for LXQt2.4.0 (panel/PCManFM2.4.1, portal1.4.0) with Resolute Qt6.10.2, installed full desktop/Openbox/Xorg with templaros-lxqt and updated greeter. Defaults use installed Papirus icons; XScreenSaver is explicit. Runtime/package evidence is scoped: actual private GUI selection and LXQt startup/application rendering pass, but owner physical-seat login/logout/native-return acceptance remains required. Current source changes are uncommitted. Greeter clippy, fmt, seed generation and packaging checks pass; combined xtask clippy has six pre-existing idle-wakeups/index_load diagnostics, not new LXQt diagnostics.
+        """
+    acceptance {
+        check latest {
+            statement """
+                Latest verified upstream LXQt components and a window manager are packaged and installed in the offline TemplarOS target with matching session entry.
+                """
+            method observation
+            verified_by [
+                @legeos.evidence.lxqt-final-defaults-and-install-20261014,
+                @legeos.evidence.lxqt-installed-owned-desktop-20261014
+            ]
+        }
+        check launch {
+            statement """
+                Discovered X11 sessions receive an X server launcher and correct desktop/session environment; Wayland sessions keep their own compositor.
+                """
+            method command
+            command "cargo test -p templar-greeter"
+            verified_by [ @legeos.evidence.lxqt-greeter-selection-and-launch-20261014 ]
+        }
+        check picker {
+            statement """
+                The greeter session popup supports pointer selection of LXQt without submitting authentication.
+                """
+            method command
+            command "cargo test -p templar-greeter"
+            verified_by [ @legeos.evidence.lxqt-greeter-selection-and-launch-20261014 ]
+        }
+        check seat {
+            statement """
+                Owner can select LXQt at TemplarOS login, reach a complete desktop, log out, and return to the native session.
+                """
+            method manual
+        }
+    }
+    supersedes [ @legeos.work.lxqt-alternative-desktop-20261014/2 ]
+    author "dk"
+    source {
+        kind external
+        role origin
+        url "https://lxqt-project.org/releases/"
+        use """
+            Upstream LXQt2.4.0 and current panel/PCManFM point-release inventory.
+            """
+    }
+}
+
+record legeos.work.lxqt-alternative-desktop-20261014/4 : work {
+    title "Provide current LXQt as a selectable alternative to the native TemplarOS desktop"
+    state active
+    scope [
+        path "apps/templar-greeter/**",
+        path "debian/control",
+        path "debian/templaros-greeter.install",
+        path "distro/lxqt/**",
+        path "distro/metapackages/**",
+        path "distro/seeds/desktop.seed",
+        path "distro/seeds/selection.toml",
+        path "scripts/build-lxqt-backport.py",
+        path "scripts/install-lxqt-offline.py",
+        path "session/units/greetd/**",
+        path "tests/integration/x11-session.py",
+        path "tools/xtask/src/build_set.rs"
+    ]
+    intent """
+        Owner requested latest upstream LXQt as a usable login-screen alternative because Homegarden is inconsistent. Work runs on native Lubuntu 25.10; installed TemplarOS is an offline mounted Resolute 26.04.1 root. Preserve the live Lubuntu desktop; do not start or stop installed desktop services. Diagnose pointer selection and session launch, package integration reproducibly, install to the offline target when possible, and state physical-seat validation limits.
+        """
+    note """
+        Implemented and installed offline from native Lubuntu. Existing LXQt entry was supplied by lxqt-session, a dependency of native lxqt-policykit; popup rows overlapped Sign in and background input consumed LXQt clicks. The greeter now isolates modal input, forwards DesktopNames/session identity, and wraps X11 Exec with startx on the login VT. Rebuilt26 pinned source packages for LXQt2.4.0 (panel/PCManFM2.4.1, portal1.4.0) with Resolute Qt6.10.2, installed full desktop/Openbox/Xorg with templaros-lxqt and updated greeter. Defaults use installed Papirus icons; XScreenSaver is explicit. Runtime/package evidence is scoped: actual private GUI selection and LXQt startup/application rendering pass, but owner physical-seat login/logout/native-return acceptance remains required. Greeter clippy, fmt, seed generation and packaging checks pass; combined xtask clippy has six pre-existing idle-wakeups/index_load diagnostics, not new LXQt diagnostics.
+        """
+    acceptance {
+        check latest {
+            statement """
+                Latest verified upstream LXQt components and a window manager are packaged and installed in the offline TemplarOS target with matching session entry.
+                """
+            method observation
+            verified_by [
+                @legeos.evidence.lxqt-final-defaults-and-install-20261014,
+                @legeos.evidence.lxqt-installed-owned-desktop-20261014
+            ]
+        }
+        check launch {
+            statement """
+                Discovered X11 sessions receive an X server launcher and correct desktop/session environment; Wayland sessions keep their own compositor.
+                """
+            method command
+            command "cargo test -p templar-greeter"
+            verified_by [ @legeos.evidence.lxqt-greeter-selection-and-launch-20261014 ]
+        }
+        check picker {
+            statement """
+                The greeter session popup supports pointer selection of LXQt without submitting authentication.
+                """
+            method command
+            command "cargo test -p templar-greeter"
+            verified_by [ @legeos.evidence.lxqt-greeter-selection-and-launch-20261014 ]
+        }
+        check seat {
+            statement """
+                Owner can select LXQt at TemplarOS login, reach a complete desktop, log out, and return to the native session.
+                """
+            method manual
+        }
+    }
+    supersedes [ @legeos.work.lxqt-alternative-desktop-20261014/3 ]
+    author "dk"
+    source {
+        kind external
+        role origin
+        url "https://lxqt-project.org/releases/"
+        use """
+            Upstream LXQt2.4.0 and current panel/PCManFM point-release inventory.
+            """
+    }
+}
+
 record legeos.work.lxqt-filechooser-restoration-20261007/1 : work {
     title "Restore supported LXQt FileChooser and defer native PixelKit picker"
     state proposed

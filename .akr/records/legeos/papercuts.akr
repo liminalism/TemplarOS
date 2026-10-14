@@ -1457,6 +1457,17 @@ record legeos.papercut.build-monitoring-with-ps-inside-an-exec-sandbox/1 : paper
     created_at 2026-10-11
 }
 
+record legeos.papercut.building-the-lxqt-backport-from-an-offline/1 : papercut {
+    title "Building the LXQt backport from an offline split root required copying…"
+    state verified
+    statement """
+        Building the LXQt backport from an offline split root required copying debconf from /var/cache/debconf, creating /var/log/apt and private devpts, and assigning the output directory to the caller. The first package built, but apt logging and later unprivileged packaging exposed these setup omissions; the reusable builder now covers them.
+        """
+    observed_at git:d98eebd196244a1943c611a963a8f9595b621df6
+    author "codex"
+    created_at 2026-10-14
+}
+
 record legeos.papercut.building-the-metapackages-with-dpkg-deb-from-a/1 : papercut {
     title "Building the metapackages with dpkg-deb from a staging tree under…"
     state superseded
@@ -4383,6 +4394,17 @@ record legeos.papercut.owned-vm-setup-lsinitramfs-is-absent-on-this/1 : papercut
     created_at 2026-10-07
 }
 
+record legeos.papercut.owned-xvfb-gui-testing-against-the-offline-root/1 : papercut {
+    title "Owned Xvfb GUI testing against the offline root initially crashed in…"
+    state verified
+    statement """
+        Owned Xvfb GUI testing against the offline root initially crashed in NVIDIA EGL initialization with no host GPU devices exposed. Restricting EGL to Mesa and disabling the unnecessary GLX extension made the raster greeter fixture run; the actual pointer selection and fake-greetd launch request then passed.
+        """
+    observed_at git:d98eebd196244a1943c611a963a8f9595b621df6
+    author "codex"
+    created_at 2026-10-14
+}
+
 record legeos.papercut.ownership-smoke-fixture-first-omitted-the/1 : papercut {
     title "Ownership smoke fixture first omitted the required ownership.updater…"
     state verified
@@ -7306,6 +7328,18 @@ record legeos.papercut.ubuntu-proot5-1-0-seccomp-acceleration-on-this/1 : paperc
     created_at 2026-10-08
 }
 
+record legeos.papercut.unconstrained-lxqt-grep-returned-akr-records/1 : papercut {
+    title "Unconstrained LXQt grep returned .akr/records and docs/generated…"
+    state verified
+    statement """
+        Unconstrained LXQt grep returned .akr/records and docs/generated despite the project prohibiting those discovery surfaces. Retried with explicit !.akr/ !docs/generated/ exclusions.
+        """
+    observed_at git:d98eebd196244a1943c611a963a8f9595b621df6
+    about "fff"
+    author "codex"
+    created_at 2026-10-14
+}
+
 record legeos.papercut.unifying-launcher-context-with-budget-10000/1 : papercut {
     title "Unifying launcher context with --budget 10000 still produced a…"
     state verified
@@ -7892,6 +7926,18 @@ record legeos.papercut.while-reading-the-wp14-remote-backend-apis-a/1 : papercut
     observed_at git:12295f351ab14e649f900573190060cd88a7251e
     author "codex"
     created_at 2026-10-08
+}
+
+record legeos.papercut.while-recording-the-lxqt-task-propose-required/1 : papercut {
+    title "While recording the LXQt task, propose required work slots.intent…"
+    state verified
+    statement """
+        While recording the LXQt task, propose required work slots.intent although an intent claim was supplied. Retried with slots.intent; broad context paths also exceeded the hard output limit and needed a narrowed greeter path.
+        """
+    observed_at git:d98eebd196244a1943c611a963a8f9595b621df6
+    about "akr"
+    author "codex"
+    created_at 2026-10-14
 }
 
 record legeos.papercut.while-registering-continuation-work-akr-explain/1 : papercut {

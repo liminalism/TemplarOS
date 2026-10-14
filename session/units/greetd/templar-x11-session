@@ -1,0 +1,25 @@
+#!/bin/sh
+# greetd supplies a login VT, not an X server. startx owns Xorg's lifetime and
+# authentication cookie; exiting the selected desktop returns to the greeter.
+set -eu
+[ "$#" -gt 0 ] || { echo 'No X11 desktop command supplied' >&2; exit 1; }
+desktop=$(command -v -- "$1") || { echo "X11 desktop command unavailable: $1" >&2; exit 1; }
+case "$desktop" in
+    /*) ;;
+    *) echo 'X11 desktop command must resolve to an absolute path' >&2; exit 1 ;;
+esac
+shift
+vt=${XDG_VTNR:-}
+if [ -z "$vt" ]; then
+    terminal=$(tty)
+    case "$terminal" in
+        /dev/tty[0-9]*) vt=${terminal#/dev/tty} ;;
+        *) echo 'X11 login requires a virtual terminal' >&2; exit 1 ;;
+    esac
+fi
+case "$vt" in
+    ''|*[!0-9]*|0) echo 'Invalid X11 login VT' >&2; exit 1 ;;
+esac
+unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET XAUTHORITY QT_QPA_PLATFORM
+export XDG_SESSION_TYPE=x11
+exec /usr/bin/startx "$desktop" "$@" -- "vt$vt" -keeptty -nolisten tcp

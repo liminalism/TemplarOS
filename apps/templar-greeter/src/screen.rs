@@ -26,7 +26,7 @@
 //! the popup cancels authentication.
 
 use pixelkit_raster::Rect;
-use pixelkit_shell::KeyInput;
+use pixelkit_shell::{Input, KeyInput};
 use pixelkit_text::Align;
 use pixelkit_ui::{Dropdown, Focus, TextFieldState, Ui};
 
@@ -130,6 +130,14 @@ impl GreeterScreen {
         let enter = keys.contains(&KeyInput::Enter) && !popup_open;
         let escape = keys.contains(&KeyInput::Escape) && !popup_open && !picker_opens_before_escape;
 
+        // The popup is painted last, but must receive input before the form beneath it.
+        // Its second row overlaps Sign in. Draw the background with inert input while
+        // preserving all real pointer, keyboard and accessibility events for the popup.
+        let mut background_input = Input::new();
+        if popup_open {
+            std::mem::swap(ui.input, &mut background_input);
+        }
+
         let card = Rect::new(
             area.x + (area.w - ui.px(CARD_WIDTH)).max(0) / 2,
             area.y + (area.h - ui.px(CARD_HEIGHT)).max(0) / 2,
@@ -152,6 +160,10 @@ impl GreeterScreen {
         let button_action = self.draw_submit_button(ui, &mut cursor, inner, data, enter);
 
         self.draw_status_line(ui, cursor, inner, data);
+
+        if popup_open {
+            std::mem::swap(ui.input, &mut background_input);
+        }
 
         if escape {
             self.session_dropdown.close();
@@ -400,6 +412,7 @@ mod tests {
             name: "TemplarOS".to_owned(),
             exec: vec!["templar-session".to_owned()],
             kind: crate::sessions::SessionKind::Wayland,
+            desktop_names: vec![],
             source: "/usr/share/wayland-sessions/templaros.desktop".into(),
         }
     }
@@ -409,6 +422,7 @@ mod tests {
             name: "COSMIC".to_owned(),
             exec: vec!["/usr/bin/start-cosmic".to_owned()],
             kind: crate::sessions::SessionKind::Wayland,
+            desktop_names: vec![],
             source: "/usr/share/wayland-sessions/cosmic.desktop".into(),
         }
     }
@@ -675,6 +689,65 @@ mod tests {
         h.input.mouse(MouseButton::Left, true);
         let action = h.frame(|ui| screen.draw(ui, area(), &data));
         assert_eq!(action, GreeterAction::SubmitUsername("bob".to_owned()));
+    }
+
+    #[test]
+    fn pointer_can_select_lxqt_over_the_sign_in_button() {
+        let mut h = Harness::new();
+        let mut screen = GreeterScreen::default();
+        screen.username.set_text("alice");
+        let mut lxqt = cosmic_session();
+        lxqt.name = "LXQt Desktop".to_owned();
+        lxqt.exec = vec!["startlxqt".to_owned()];
+        lxqt.kind = crate::sessions::SessionKind::X11;
+        let sessions = vec![templaros_session(), lxqt];
+        let flow = LoginFlow::idle();
+        let data = GreeterData {
+            flow: &flow,
+            sessions: &sessions,
+        };
+        let theme = templar_ui::theme_for(&templar_types::appearance::LIGHT);
+        let picker_y = (600 - CARD_HEIGHT) / 2
+            + theme.padding
+            + HEADING_HEIGHT
+            + ROW_GAP
+            + FIELD_HEIGHT
+            + ROW_GAP;
+        h.input
+            .cursor_moved(400.0, (picker_y + FIELD_HEIGHT / 2) as f32);
+        h.input.mouse(MouseButton::Left, true);
+        let action = h.frame(|ui| {
+            let action = screen.draw(ui, area(), &data);
+            screen.draw_session_popup(ui, area());
+            action
+        });
+        assert_eq!(action, GreeterAction::None);
+        assert!(screen.session_dropdown.is_open());
+        h.input.mouse(MouseButton::Left, false);
+        h.frame(|ui| {
+            screen.draw(ui, area(), &data);
+            screen.draw_session_popup(ui, area());
+        });
+        h.input.cursor_moved(
+            400.0,
+            (picker_y + FIELD_HEIGHT + theme.row_height * 3 / 2) as f32,
+        );
+        h.input.mouse(MouseButton::Left, true);
+        let action = h.frame(|ui| {
+            let action = screen.draw(ui, area(), &data);
+            screen.draw_session_popup(ui, area());
+            action
+        });
+        assert_eq!(
+            action,
+            GreeterAction::None,
+            "popup must own the click over sign-in"
+        );
+        assert_eq!(
+            screen.selected_session, 1,
+            "LXQt must be selected by pointer"
+        );
+        assert!(!screen.session_dropdown.is_open());
     }
 
     #[test]

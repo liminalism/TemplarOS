@@ -424,7 +424,7 @@ fn metapackage_dirs(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// The metapackages: each `control.in` (rendered by `cargo xtask seeds`) becomes one `.deb` at the
-/// set's version, built with `dpkg-deb`. They carry no files except the archive pins, so there is
+/// set's version, built with `dpkg-deb`. They carry archive pins or LXQt session defaults, so there is
 /// no debhelper run here: `${misc:Depends}` is dropped and the `@…@` templates are filled from
 /// `distro/base.toml`, which is the one place the resolved kernel and driver versions live.
 fn build_metapackages(
@@ -467,6 +467,21 @@ fn build_metapackages(
             fs::set_permissions(dir, fs::Permissions::from_mode(0o755))?;
         }
         fs::write(stage.join("DEBIAN/control"), &control)?;
+        if package == "templaros-lxqt" {
+            let config = stage.join("etc/xdg/lxqt");
+            fs::create_dir_all(&config)?;
+            for file in ["session.conf", "lxqt.conf"] {
+                fs::copy(root.join("distro/lxqt").join(file), config.join(file))?;
+                fs::set_permissions(config.join(file), fs::Permissions::from_mode(0o644))?;
+            }
+            fs::write(
+                stage.join("DEBIAN/conffiles"),
+                "/etc/xdg/lxqt/session.conf\n/etc/xdg/lxqt/lxqt.conf\n",
+            )?;
+            for dir in [stage.join("etc"), stage.join("etc/xdg"), config.clone()] {
+                fs::set_permissions(dir, fs::Permissions::from_mode(0o755))?;
+            }
+        }
         if package == "templaros-archive-keyring" {
             // The archive pins ship with the keyring package; the key itself and the source stanza
             // are written by the provisioner from the archive it installs from.

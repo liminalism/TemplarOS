@@ -2,10 +2,10 @@ akr-lock 0.1
 project legeos
 
 build {
-    tool "akr 0.5.1"
+    tool "akr 0.5.2"
     grammar "0.1"
     vocabulary "0.2"
-    source_graph "sha256:95d9d0dc730d751bbba8747fb8c30799ba8ed5493a0442994350a88e9c572129"
+    source_graph "sha256:dd3215b6cfce2777b8704a572a6d9209ef9a1d2f342ef3acc4164c764291fa54"
 }
 
 source ".akr/project.akr" {
@@ -29,8 +29,8 @@ source ".akr/records/legeos/decisions.akr" {
 }
 
 source ".akr/records/legeos/evidence.akr" {
-    hash "sha256:da4501f191b4f868a1c50df1401f097d241e978ce765886efcdcdaca33a2f9be"
-    records 618
+    hash "sha256:a11c01f4ef3dd675bba5a76f69581b2f435900c324848fa864627290be229bf9"
+    records 623
 }
 
 source ".akr/records/legeos/milestones.akr" {
@@ -44,8 +44,8 @@ source ".akr/records/legeos/observations.akr" {
 }
 
 source ".akr/records/legeos/papercuts.akr" {
-    hash "sha256:61ad5528455fc418200fdab152c3271bff0edf2f7398c457fe6442e069dc4e49"
-    records 753
+    hash "sha256:36967478b315220e75fb0b29628f06b97c75f9a34736bee1fd997561de7317d3"
+    records 757
 }
 
 source ".akr/records/legeos/questions.akr" {
@@ -59,8 +59,8 @@ source ".akr/records/legeos/requirements.akr" {
 }
 
 source ".akr/records/legeos/work.akr" {
-    hash "sha256:684e3e44c07bbf1a4889809445df21d261b8be0bfd6f448195820cf491b09683"
-    records 402
+    hash "sha256:6051a8b6b8f56e9723504ddca70b903edbcb7f7a14f0bde697e8fcf8cc7d8402"
+    records 406
 }
 
 resolution @legeos.assessment.astra-memory-polling-indexing-review-20260909/1 {
@@ -5973,6 +5973,60 @@ resolution @legeos.work.low-memory-wallpaper-switcher/1 {
     hash "sha256:b81f2065ce29137e6dd82b9d3cc441951bd6126d6bff7d5c84c1f86b673e4717"
 }
 
+resolution @legeos.work.lxqt-alternative-desktop-20261014/2 {
+    slot verified_by
+    to @legeos.evidence.lxqt-backport-offline-install-20261014/2
+    hash "sha256:bd2bc7ae7f36f52e7d66f9b90ae92e7a25ec74ead60e2e93c7b1ca55513d939e"
+}
+
+resolution @legeos.work.lxqt-alternative-desktop-20261014/2 {
+    slot verified_by
+    to @legeos.evidence.lxqt-greeter-selection-and-launch-20261014/1
+    hash "sha256:56ff796be807eb54cb99462c4afee16389bb9fd7685e7dd2e44641db8c0ec0fd"
+}
+
+resolution @legeos.work.lxqt-alternative-desktop-20261014/2 {
+    slot verified_by
+    to @legeos.evidence.lxqt-installed-owned-desktop-20261014/1
+    hash "sha256:b304e8a59ad6a250119d53e4595af72d5608c22716bc524f55b6c1557dc725b0"
+}
+
+resolution @legeos.work.lxqt-alternative-desktop-20261014/3 {
+    slot verified_by
+    to @legeos.evidence.lxqt-final-defaults-and-install-20261014/1
+    hash "sha256:618eb7441309734f2eb8f281da1f180c325d239150ef5aaec2145e03c2fa7a7b"
+}
+
+resolution @legeos.work.lxqt-alternative-desktop-20261014/3 {
+    slot verified_by
+    to @legeos.evidence.lxqt-greeter-selection-and-launch-20261014/1
+    hash "sha256:56ff796be807eb54cb99462c4afee16389bb9fd7685e7dd2e44641db8c0ec0fd"
+}
+
+resolution @legeos.work.lxqt-alternative-desktop-20261014/3 {
+    slot verified_by
+    to @legeos.evidence.lxqt-installed-owned-desktop-20261014/1
+    hash "sha256:b304e8a59ad6a250119d53e4595af72d5608c22716bc524f55b6c1557dc725b0"
+}
+
+resolution @legeos.work.lxqt-alternative-desktop-20261014/4 {
+    slot verified_by
+    to @legeos.evidence.lxqt-final-defaults-and-install-20261014/1
+    hash "sha256:618eb7441309734f2eb8f281da1f180c325d239150ef5aaec2145e03c2fa7a7b"
+}
+
+resolution @legeos.work.lxqt-alternative-desktop-20261014/4 {
+    slot verified_by
+    to @legeos.evidence.lxqt-greeter-selection-and-launch-20261014/1
+    hash "sha256:56ff796be807eb54cb99462c4afee16389bb9fd7685e7dd2e44641db8c0ec0fd"
+}
+
+resolution @legeos.work.lxqt-alternative-desktop-20261014/4 {
+    slot verified_by
+    to @legeos.evidence.lxqt-installed-owned-desktop-20261014/1
+    hash "sha256:b304e8a59ad6a250119d53e4595af72d5608c22716bc524f55b6c1557dc725b0"
+}
+
 resolution @legeos.work.lxqt-filechooser-restoration-20261007/1 {
     slot part_of
     to @legeos.work.developer-edition-daily-driver/2
@@ -10147,6 +10201,31 @@ seal @legeos.evidence.logout-watchdog-oom-20261007/1 {
     hash "sha256:014ddbea4ecea1b9fbcf5c679c731725cdaae0938016eac1e69942258a2e7ead"
 }
 
+seal @legeos.evidence.lxqt-backport-offline-install-20261014/1 {
+    state superseded
+    hash "sha256:ebdbb6333e09646738c90bd6d714d66928680eadb49fd5017ce2949b94e36c84"
+}
+
+seal @legeos.evidence.lxqt-backport-offline-install-20261014/2 {
+    state verified
+    hash "sha256:bd2bc7ae7f36f52e7d66f9b90ae92e7a25ec74ead60e2e93c7b1ca55513d939e"
+}
+
+seal @legeos.evidence.lxqt-final-defaults-and-install-20261014/1 {
+    state verified
+    hash "sha256:618eb7441309734f2eb8f281da1f180c325d239150ef5aaec2145e03c2fa7a7b"
+}
+
+seal @legeos.evidence.lxqt-greeter-selection-and-launch-20261014/1 {
+    state verified
+    hash "sha256:56ff796be807eb54cb99462c4afee16389bb9fd7685e7dd2e44641db8c0ec0fd"
+}
+
+seal @legeos.evidence.lxqt-installed-owned-desktop-20261014/1 {
+    state verified
+    hash "sha256:b304e8a59ad6a250119d53e4595af72d5608c22716bc524f55b6c1557dc725b0"
+}
+
 seal @legeos.evidence.m0-adrs-present/1 {
     state verified
     hash "sha256:347200c38e7e2d7041c339cc628101037c1cbd062f172b3d55bf191e7849fb49"
@@ -12637,6 +12716,11 @@ seal @legeos.papercut.build-monitoring-with-ps-inside-an-exec-sandbox/1 {
     hash "sha256:334307984b51f985605a91f524a25e254629ca01e6fb2b4eae55a24c696ca321"
 }
 
+seal @legeos.papercut.building-the-lxqt-backport-from-an-offline/1 {
+    state verified
+    hash "sha256:882b0e5353beb2b96d7ce6a6e2e79315fc3825e5b7f52c54d14d4ba7e6d246f8"
+}
+
 seal @legeos.papercut.building-the-metapackages-with-dpkg-deb-from-a/1 {
     state superseded
     hash "sha256:dd92cad358101667fc814be6a2d332e23d421bd121496e9a279e6a68257cd960"
@@ -13905,6 +13989,11 @@ seal @legeos.papercut.owned-tcg-xtest-initially-held-keys-across/1 {
 seal @legeos.papercut.owned-vm-setup-lsinitramfs-is-absent-on-this/1 {
     state verified
     hash "sha256:acfef049a885a790ef223d8a73782addfb7723c3184c405e076b6da8e21ff10a"
+}
+
+seal @legeos.papercut.owned-xvfb-gui-testing-against-the-offline-root/1 {
+    state verified
+    hash "sha256:9be6127cfe80841fc166e5effe9da5d49edd90d6a9e2b6c886360d801bb23b85"
 }
 
 seal @legeos.papercut.ownership-smoke-fixture-first-omitted-the/1 {
@@ -15182,6 +15271,11 @@ seal @legeos.papercut.ubuntu-proot5-1-0-seccomp-acceleration-on-this/1 {
     hash "sha256:9a4114fd03c8d2578bec96964c9599bdb302f2247049ac2646636d6982ac410e"
 }
 
+seal @legeos.papercut.unconstrained-lxqt-grep-returned-akr-records/1 {
+    state verified
+    hash "sha256:8614e5f084fa929ec7dd981e1e423736592fa9e08a00dc14893bc6d13a696939"
+}
+
 seal @legeos.papercut.unifying-launcher-context-with-budget-10000/1 {
     state verified
     hash "sha256:d1c078a1ec2dac5576e205cfdbcfbe3aa1345c227dcc1e7b7cc67bf2e0a69a26"
@@ -15440,6 +15534,11 @@ seal @legeos.papercut.while-reading-the-completed-installer-advisor/1 {
 seal @legeos.papercut.while-reading-the-wp14-remote-backend-apis-a/1 {
     state verified
     hash "sha256:a921e8ddfa6e975d62f54851b06db896024d9618b7ff1ed2fb513a4ba980b29c"
+}
+
+seal @legeos.papercut.while-recording-the-lxqt-task-propose-required/1 {
+    state verified
+    hash "sha256:da971a089439ee00c0e3280b8fe814878ea1ab72d53e1ff007266fad18a30b00"
 }
 
 seal @legeos.papercut.while-registering-continuation-work-akr-explain/1 {
@@ -17160,6 +17259,26 @@ seal @legeos.work.logical-app-and-variant-identity/2 {
 seal @legeos.work.logical-app-and-variant-identity/3 {
     state active
     hash "sha256:2f7e6e508da080e21b741be3d13bf2952807698de2c2e343ebde72eb45bd1d9e"
+}
+
+seal @legeos.work.lxqt-alternative-desktop-20261014/1 {
+    state superseded
+    hash "sha256:9ef5fa0dcd24d3ad4fb571d04949bf475f07c5f642d5b56a59186eac54545257"
+}
+
+seal @legeos.work.lxqt-alternative-desktop-20261014/2 {
+    state superseded
+    hash "sha256:7b0fbd74c2a86badc0ea57085866394f75f92710de8e10b1a54761341d26f378"
+}
+
+seal @legeos.work.lxqt-alternative-desktop-20261014/3 {
+    state superseded
+    hash "sha256:91d0e4bf45c2733e91384ab5de2864ec36f63d5cd5655e6c0e184627b9bdee1f"
+}
+
+seal @legeos.work.lxqt-alternative-desktop-20261014/4 {
+    state active
+    hash "sha256:aef1b74bbb418b7befc830ca5a25363dfc4f2d4adc9950f760d598c4045964f3"
 }
 
 seal @legeos.work.memory-polling-indexing-effectiveness-20260909/1 {

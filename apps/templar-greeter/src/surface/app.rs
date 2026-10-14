@@ -22,7 +22,7 @@ use winit::window::{Fullscreen, Window, WindowId as WinitWindowId};
 use crate::client::GreetdClient;
 use crate::login::{LoginController, LoginFlow};
 use crate::screen::{GreeterAction, GreeterData, GreeterScreen};
-use crate::sessions::{SessionEntry, SessionKind};
+use crate::sessions::SessionEntry;
 use crate::surface::fonts;
 use crate::surface::window::{
     HostedWindow, key_pressed, modifiers_of, scroll_pixels, translate_button, translate_keys,
@@ -307,20 +307,8 @@ impl GreeterApp {
             };
             return;
         };
-        // `create_session`/`post_auth_message_response` answered by PAM say nothing about display
-        // type; only the greeter, which just read this entry out of `wayland-sessions/` or
-        // `xsessions/`, knows which one is about to run.
-        let env = match entry.kind {
-            SessionKind::Wayland => vec!["XDG_SESSION_TYPE=wayland".to_owned()],
-            SessionKind::X11 => vec!["XDG_SESSION_TYPE=x11".to_owned()],
-        };
-        self.pending = self
-            .commands
-            .send(AuthCommand::Start {
-                cmd: entry.exec,
-                env,
-            })
-            .is_ok();
+        let (cmd, env) = entry.launch();
+        self.pending = self.commands.send(AuthCommand::Start { cmd, env }).is_ok();
     }
 
     fn handle_input_event(&mut self, event: WindowEvent) {

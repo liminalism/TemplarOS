@@ -1,0 +1,711 @@
+{
+  "release": "2.4.0",
+  "target": "resolute",
+  "binary_snapshot": "https://snapshot.ubuntu.com/ubuntu/20260905T011226Z",
+  "source_index": "https://archive.ubuntu.com/ubuntu/dists/stonking/universe/source/Sources.xz",
+  "source_index_sha256": "0037daacaa283f3eb91aadf54f3aee43c543cf8e222611e61568d5f95c2e4f82",
+  "sources": [
+    {
+      "name": "lxqt-build-tools",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-build-tools",
+      "files": [
+        {
+          "sha512": "18b6e6e418eb3a6b64005af68cf628490f33b0249f3b54edd41cc1aa09d7e1a799ae28bad1d7bfd8b54a4aa51ed08df794743d472b505f96bc05f7269b9385f0",
+          "size": "26924",
+          "name": "lxqt-build-tools_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "a3afa66ff4c09d1c0aa9c81266a0393908d34402935b24c5c480bedaac5ecd4aebb6af0b03b4b07ff866d3bf96bb6f73ed17444e46ede3c78de7de4346c7bafc",
+          "size": "659",
+          "name": "lxqt-build-tools_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "ecc106e3cc2467e67045d1bf2fd0375878c3d028a2faf78ab6792a36b2384eb64db0b4f95e0a12f654851c6ab1b17c5b1796c672a2b45a4c65dc744afad2f65a",
+          "size": "13028",
+          "name": "lxqt-build-tools_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "b56bd55e4afb4e8bf832fd64de0019e46f7c80d2202168facf8bdc597198aa00e2095c20cdc9ccb075c50ad13f22d4f6f6962c57cca0fb636e093dd4324cb694",
+          "size": "1839",
+          "name": "lxqt-build-tools_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "libdbusmenu-lxqt",
+      "version": "0.4.0-0ubuntu1",
+      "directory": "pool/universe/libd/libdbusmenu-lxqt",
+      "files": [
+        {
+          "sha512": "c51653485fbd0c203f6b2bbcbd6a237fa65589bc5c4410c50d9487691f230bd6ff9b6615f22429de219c8afbf6c29b05706b9de56520a09de52bf9b4f565659e",
+          "size": "40380",
+          "name": "libdbusmenu-lxqt_0.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "7f1c79c6a0832b5e5b4a7b5820c335694bf7983eecf23aef91de697110a17f89d603b89a610db1eed3431e7d224db127b01f6a07a8eb315c2283e15c59a842b3",
+          "size": "659",
+          "name": "libdbusmenu-lxqt_0.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "26b1c52df387fac6263fefb1b4bbc643b9ec7eb90181b2a0633a64fcde0850f70659f617fe38f315715b9466b1a28322ec5b7d6de4b5af3d8e4cc015d9942728",
+          "size": "8068",
+          "name": "libdbusmenu-lxqt_0.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "46b88f6eb43d4bf416a853f8ef53a68107759882695876ce583f1c07ea68cf1d0c0d3552d60e6ee108a69f7784a8abc17d709eff0698229c3959b3cf1cc4ebec",
+          "size": "1861",
+          "name": "libdbusmenu-lxqt_0.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "libqtxdg",
+      "version": "4.4.0-0ubuntu2",
+      "directory": "pool/universe/libq/libqtxdg",
+      "files": [
+        {
+          "sha512": "22806f5a9a4156ae5f1a0ec3b9818d03a63180c2da9420c919b86b76cb67b8f360b90740afa2d8d8ef58e6f48470960a054e1e71e689be4bead6cf4e21cb2df1",
+          "size": "75152",
+          "name": "libqtxdg_4.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "29b61effd589857dd832b7a6e46d90629fadf4fe46c8c249e73947cfa56f6e9d4fcee82b4674247ed6c7ec1bfb67d50dafe71248447413a3ac4d1c93ddf998cb",
+          "size": "659",
+          "name": "libqtxdg_4.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "556dbc5338035dcc4b9970d7d0873343bde26845b924e7e5c76437ac59702ac1623cba7fe5b1e7dc01188318e7650384373e4500903e0bbdd94aa97d3a310e14",
+          "size": "14632",
+          "name": "libqtxdg_4.4.0-0ubuntu2.debian.tar.xz"
+        },
+        {
+          "sha512": "98700878b3d6cc3cdbddeccc2258049639d60636c666dc6af76f14423c636f70eab636600882f2678dcf67141d5437c97666d9809071b46b565d1c9cf8cabac4",
+          "size": "2737",
+          "name": "libqtxdg_4.4.0-0ubuntu2.dsc"
+        }
+      ]
+    },
+    {
+      "name": "qtxdg-tools",
+      "version": "4.4.0-0ubuntu1",
+      "directory": "pool/universe/q/qtxdg-tools",
+      "files": [
+        {
+          "sha512": "7e5802a4322cd82704fb50776275951bb2dbc5ecf365d5fd914fca88b35829eddeee9b2c8d4a41c7516ecbc7c5df837c55d4ece7f54a566256fe4cc24c95ae82",
+          "size": "16948",
+          "name": "qtxdg-tools_4.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "03767b0befd6e9f38d5fb62263d134619e793c771369abf30a23e510c9eed2a97771a1d75bf4a48ac8a94d201c83df5693bd85f30f43c46c44cd621d237e4f9a",
+          "size": "659",
+          "name": "qtxdg-tools_4.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "af105b837139163f8bec900995aefb36bed8721a272a328c369bb765e5d0873971df93d490df4b13448f787e7c837bcff2abdb820ab192ee28c74b3646c34e7a",
+          "size": "7312",
+          "name": "qtxdg-tools_4.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "f9efae6c89f13bf717d7a6b35fb9417aa6d6f905aa3bb8a840b928dd48df1043a4c32515096c785cdc8ae7241fb563b48d97b7b2e53d6e22097737cdf081d5b6",
+          "size": "1735",
+          "name": "qtxdg-tools_4.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "liblxqt",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/libl/liblxqt",
+      "files": [
+        {
+          "sha512": "4abd46f92cb8dc725200e3e7879332db077dbe5b64518c847bea8841aa929f7ebdbb7483d96e204315b6784c348c094b2e153ec444ea83e98ca32f2639027556",
+          "size": "90676",
+          "name": "liblxqt_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "b27c82fc6821ce17c547775f69ec904ad09e8f4e3dd4ff4ea9bda594c5acd783b93b10694a50e2270d309cc56bf1b1c8d602ef5ff30371a3c6f8d7d1d4f6109d",
+          "size": "659",
+          "name": "liblxqt_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "6fda2d1f485da661f7c276b715fa24e0d8b3871a12a893012fe96ae096fb21839db7f7f9f27bf31d946a7764f8859d68dabf7a5e863483e1a0ac46d47686f947",
+          "size": "13840",
+          "name": "liblxqt_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "67854043e34519c53749c4a2d9abd327eda0f1b8a06b5245bc0cfb4fefd6e4de2e1c19120ce38168ec569221afb846db10fb285138146e73fd6b54311dec4e86",
+          "size": "2007",
+          "name": "liblxqt_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-menu-data",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-menu-data",
+      "files": [
+        {
+          "sha512": "a3227024584b23b4149cba1d33072486464c203d4d2f489348f15ec67bdabbd23fbdddc81735348a6d85ed5c3c9c5dee847d15789038bf9688a662eab9a18f1b",
+          "size": "55904",
+          "name": "lxqt-menu-data_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "3a3da93a0f77ff974e58182642bb3c8da6784239a40266068f6ca9c0e27bcaf86ff1196a990a3eff79e60f34c82a0ad75342da22967c8123dc589067d662d089",
+          "size": "659",
+          "name": "lxqt-menu-data_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "847551a80ee1f95a0df2618b0737e4515dfe993d232abeda9a13c8d92270c3d672db3940427df578a20f669d054679c3f12ede3b1c829bbe7395f25806d96184",
+          "size": "7344",
+          "name": "lxqt-menu-data_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "a14046b8fabf624d006307af7a2f4a02e9d400283788e736156e3139b9ab540cbce46378be5cf6c6eeb8a97037a2c2381e1445dbc5b94041e0fcc5d21c6ebacf",
+          "size": "1735",
+          "name": "lxqt-menu-data_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "libfm-qt",
+      "version": "2.4.0-0ubuntu2",
+      "directory": "pool/universe/libf/libfm-qt",
+      "files": [
+        {
+          "sha512": "10bac2515311665b05589a4ffab31119d0842aaf25a00a64f56ab5848a12cd6766af1e52537b367fa03a1117ef4608d9eabfdd8e8ed9ddc80177212a7b3a9277",
+          "size": "439504",
+          "name": "libfm-qt_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "652acba0ae5f452f1c46918f5edb2f8f35ef27f39554830fa7d796397c55ee118bdb9323be9779dd2927658d494fcb6cd609551aa0548da347c9e81d8e056cf4",
+          "size": "659",
+          "name": "libfm-qt_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "641ab8ccac43a48d2e42f842325487a294d56f87dcab72af8eb3958592316e1477e9253c6ec2634e77b32821043cd7d952ea9ff53367390b8d28133e15945908",
+          "size": "24752",
+          "name": "libfm-qt_2.4.0-0ubuntu2.debian.tar.xz"
+        },
+        {
+          "sha512": "1bbc798a1562da6e549de390c60547051f146a39b00bac7ba47225de0f625c63968c37d01d8b067e2ef07e41c161d1ef83b626c951173071248aa2da8e1dea32",
+          "size": "3359",
+          "name": "libfm-qt_2.4.0-0ubuntu2.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-globalkeys",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-globalkeys",
+      "files": [
+        {
+          "sha512": "8d2ff6c8a9b66136429dc44711b5b74bb7ca07d6a86e99df6045cbc1846bdd6ca8bc65de1d2e9d01acd3c48d75c579ec661c43ba61db0c72134c8b9a09fc79f3",
+          "size": "81164",
+          "name": "lxqt-globalkeys_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "18f513d806acd533ecaa2aae2faa40271f5b5ba7a5cc0484719aed4aae163735f8df6d663953ebc7c16acc3f1f87a105f667a915bccb5380f052b0aa3d2ece99",
+          "size": "659",
+          "name": "lxqt-globalkeys_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "ce9567f6e73735f9faae9285702edfc7a65eb0fd7c669209ce9f10fcc1e788622b451e32f62b086efac40c6adc309f296584727b34a101e773294ffaa291d0d0",
+          "size": "10456",
+          "name": "lxqt-globalkeys_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "013de0fdc1ac925dab516a20085492654287f1fe1c043a77d835e5756ac3220b265f97e23cdce2d8c55977f25371090aca9edb6104cf3e341bf86d40e69e4219",
+          "size": "2383",
+          "name": "lxqt-globalkeys_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-qtplugin",
+      "version": "2.4.0-0ubuntu3",
+      "directory": "pool/universe/l/lxqt-qtplugin",
+      "files": [
+        {
+          "sha512": "b5671f4d975449d768152c08287733a63e3f64d8868bebe11ffa11f8b5336adcd257fcf738c9196f7de217b099e356886a539279dd6ff2c3657afd3961ff2933",
+          "size": "25100",
+          "name": "lxqt-qtplugin_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "afc82afac1b119308ca7aacf26318076118560a0944f6be67ee936b7db672fb35c73f1f737dd381b0a96bebc1739505db7c4b9e88cf5913beafef390cb90071e",
+          "size": "659",
+          "name": "lxqt-qtplugin_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "3033c10345efc7078435af455fd49f4861efe5f920b1e0f5c94fb04c6eb964501e2ae48ce09b4e5515890079109aa2bab0d785a66abb9016dbfe42ffc68ada3c",
+          "size": "9260",
+          "name": "lxqt-qtplugin_2.4.0-0ubuntu3.debian.tar.xz"
+        },
+        {
+          "sha512": "9cba7ac0e1261a77165287ce5a25f6d1451c66612d0278de7e003669816c56569a48624ebaa6d29fce1dad1a129ac298795265aee0c25702f892f3f746050469",
+          "size": "2720",
+          "name": "lxqt-qtplugin_2.4.0-0ubuntu3.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-session",
+      "version": "2.4.0-0ubuntu2",
+      "directory": "pool/universe/l/lxqt-session",
+      "files": [
+        {
+          "sha512": "ab016a09cae36cbcf223187cf94b2d1c46d281c665a4709bc60f50024aa51046f61f4685993960d8bfcdc7a2f15d9700814ec577a9b73e54409aab670a3e1c39",
+          "size": "224600",
+          "name": "lxqt-session_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "80d7fe10ea164642395a4b124d95090bb63624afb56be66a380761e792400aab1e2aa752ec6f555bcb11b80e41c0e73cdaba5c24a6ea0b5133d085d64fa2380c",
+          "size": "659",
+          "name": "lxqt-session_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "3f746a13fd4f024d6329714818a38abbed85a5e2e4fe5f0bc4808469f2cee6b536d15ec7055057743aad060fd2e57753b62af1422906a263d41f19c9800a31e2",
+          "size": "13612",
+          "name": "lxqt-session_2.4.0-0ubuntu2.debian.tar.xz"
+        },
+        {
+          "sha512": "c1a7dfcdc8ea2eaca44de6a94703b12e9ba9707ccbcc8d6c59afd6d1f6e724984164a627230aac6fa8ea26d9b901ac886ce9675c34a0980d9056060de3d09070",
+          "size": "2675",
+          "name": "lxqt-session_2.4.0-0ubuntu2.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-themes",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-themes",
+      "files": [
+        {
+          "sha512": "7ad46258d4cc15c91a30a9a79df3494dd5ae09894251b15f53c8f40bacfeff889a8b6464cd2cc43603340a8198e8381670d806655ab53fe8f88a0d2902eb203f",
+          "size": "27241588",
+          "name": "lxqt-themes_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "4687e46296844204bd619bf77c7a33893f2b7ad23d62ef7252178be681b1cb6d6dfdf334e6ff28c7ba65cfedfa5f0f367c6759a9854c75330d59c711ac24f5de",
+          "size": "659",
+          "name": "lxqt-themes_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "6b898783043a86270650a6a99b052f411b6dfd1ecee54c87a6aafbc891f245f8c1b533b15d30aba06861eb6c6d60d54cfa78199e8c414f31ed82e88b930d4bae",
+          "size": "14436",
+          "name": "lxqt-themes_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "2d19e37c31be25d4c27104721814313d62b288e1bd011a56c72ac8ef1b9f1078c09068995be4cbc636b8082ad126fc3b53c9614148efaa644bd916ff51265564",
+          "size": "1853",
+          "name": "lxqt-themes_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-panel",
+      "version": "2.4.1-0ubuntu2",
+      "directory": "pool/universe/l/lxqt-panel",
+      "files": [
+        {
+          "sha512": "de440431d69237d542ab713011e59850359c5942128e5fd72159fac8368e5c78bdf8fbae885f082237ea2f81a7638480921a6e565913f1c100eb5599de1b8298",
+          "size": "832828",
+          "name": "lxqt-panel_2.4.1.orig.tar.xz"
+        },
+        {
+          "sha512": "4e53bc3592e220f2c1c75a6637b48dfe416df5b6e791f4d4259a139d75ba9ca01cbab4246731115dec6d7abaa764ae08d56fef31eba67b40e5842c1beef9ffa7",
+          "size": "862",
+          "name": "lxqt-panel_2.4.1.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "00e3493b9359020d0feb24e56e5629ae5862239a9eb3add9d947578e17a89151e85d0f242883f32b38e4c48248c97f6c2a30a7f8f74aca62b1b59661eafaabd3",
+          "size": "12272",
+          "name": "lxqt-panel_2.4.1-0ubuntu2.debian.tar.xz"
+        },
+        {
+          "sha512": "b35f693e2ddbdb7d2184eeca2df3aa9215993e66a7661f4ea3dfd52aab7a2af64ae71db447dfd3b645b1d4526e41180849bda87f0aa2e6b8cb34f2086be2afdf",
+          "size": "3163",
+          "name": "lxqt-panel_2.4.1-0ubuntu2.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-config",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-config",
+      "files": [
+        {
+          "sha512": "ba4c653c74fa87bc5fb957e454388399ee1a7d1f21b22f9fe0b62112f1d81254fec9d66070304737001412b56e7388a0a4b3615ddba6bcdecc74e9e59560d25c",
+          "size": "416440",
+          "name": "lxqt-config_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "b2db81001d46eea324bab1f6a0425784d25287e5570dc0ab9a3602f988ef841e93bf41bf733f8e6a047551423f28409664cf6596552e76081ab63233a8cdd38a",
+          "size": "659",
+          "name": "lxqt-config_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "ab8f37e0080f404f9d696bb18fa7b0243172bd2f8f7965a4e13a91f17de7c1fa0a9954afb1e2728df299df2de8df6af4a303fb81851a0732c94e62f5ee3587e7",
+          "size": "12864",
+          "name": "lxqt-config_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "090d1460ea8b2dc77741d565ab807dab494a69e99bb0a17468cf0c8bc9424e330a6d746fc2a9c78f4c981d6c49a31269087ec8220594536f3da2ea0a7854ae0e",
+          "size": "1983",
+          "name": "lxqt-config_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-notificationd",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-notificationd",
+      "files": [
+        {
+          "sha512": "de621f9e04e3ccc36fa13f479a45500960065b4f77a5f4af7b282a7c01f38ad93a52bcd0cb473a8fb2a27216cc9f24e66c323d918fd5a2f51b3add158c4c5cad",
+          "size": "70600",
+          "name": "lxqt-notificationd_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "d9c8a82529fec5b006d34e92db25ab9ecc1eecf238175d747800dfb81889594da145a560a7dd671eaa797e4fa10001231591c9ec5bad44ebcaf42f7e01ef1654",
+          "size": "659",
+          "name": "lxqt-notificationd_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "b6d7055cab04ad16e6312f8caac45668c26833f3a46c6f6d66aae91fcf60cfea74632dfa8d5c041ad7a9d22ec20c4e231cabeeb5f112b874237976830fd64e12",
+          "size": "9468",
+          "name": "lxqt-notificationd_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "4a559892aa22219b271247e0f56800cb517ab9d590a45de05781bf7bd892942ad906bca7e9db0446d821aad8a1d07d1127c72ba8135c9414cc7ebd8b7e480d1e",
+          "size": "2110",
+          "name": "lxqt-notificationd_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-runner",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-runner",
+      "files": [
+        {
+          "sha512": "6a16fe4cc4e8269b3a727cff1cef478d617909d3f54ebdb09c2bd59b09a9b7f31fb660f0431b40dd5b5f98d567cd47db58a8bc9849f01782707b875c37ee7042",
+          "size": "235852",
+          "name": "lxqt-runner_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "109de43a5d88908085ac6d03b9142519bf66e8e887e8d4609552dcae744088a26d180282f256ccd9c67de65a0e51b2a36d86bd0be2b7478be737dc2b60d1241f",
+          "size": "659",
+          "name": "lxqt-runner_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "72c05509add85dbffbde5e7a19376ad3f96eec314bafca08cda8a86c94da86e9d01b466fd253a6df6fdca3df413893a8e6c42c5f0097fb8543d845556762327c",
+          "size": "9724",
+          "name": "lxqt-runner_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "8ac11afd6c58119231a66a68c023dfc02912a546cb30b5c0f575c6033ae8f90aafeaa9a4e1c0be162ec1832ccf847948e4944086849966af6df6eecf8727bc40",
+          "size": "2064",
+          "name": "lxqt-runner_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-policykit",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-policykit",
+      "files": [
+        {
+          "sha512": "f814691b83901873bf54862c00d5439de633878ba9bb33a69e51930de031d04c1c3a2d2e433ad642488601fa3bd0b39f6eb1cf1ae174743362a3a95857add3cc",
+          "size": "41548",
+          "name": "lxqt-policykit_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "a5d6158a02d979a0b26aaee0abf103315c925a910b64438f4f9daf92eaf94b3623da170ae9d9a74027178c479956c1f6efbf717e514e4dea2deba92e5b01bd14",
+          "size": "659",
+          "name": "lxqt-policykit_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "c92396b8f8187f17ca3a93e0bff8b727b4722c04437ec1e974a7e1fd54365a3e1ee6a0156ebac4ffc06d2eab9b2414349f7540c5b30cac104a36a984ae82ffe4",
+          "size": "9100",
+          "name": "lxqt-policykit_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "c9a7997aa9eb3a96f082b2a33e2b07cd2a0cc1b71425dd24281c438fa0a8aa9fea09baf8919b6cc1ded4f4d422370b3f538eac43745442fc56f0a40d87b172b1",
+          "size": "1995",
+          "name": "lxqt-policykit_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-powermanagement",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-powermanagement",
+      "files": [
+        {
+          "sha512": "59a3e979a5656b12fca83cd6006da4105903a3c7024ea05b20e0cf9abf6f85e6b300e6baaeffabf452c04adc0cbe09b476e6f7d74ef45276d64d8dcf14cc1d24",
+          "size": "114936",
+          "name": "lxqt-powermanagement_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "12d5bbae646d102a095c16eeb1d2706f9f4b920c385035088a97b80e48755448647bbf0a782e5012421d555ef72b57d7bd5fdfcb33d7c652ea39cda7fa5d0552",
+          "size": "659",
+          "name": "lxqt-powermanagement_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "8274059ee2a7dd431a433a19d523a51141e8010af3752e58e197085366bf55ddcb2a7bd0037eadb2f96471acd2d53520d8923b629caf2e8a6cd168276b4aee3c",
+          "size": "12324",
+          "name": "lxqt-powermanagement_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "79ba2d9b5cb5e4e800e943e290f32c971bd5a347101ac9d196b8b295781b45d1f451b75127988c6056b97fe865d4917c136d7a3ae1a9a72375d0357e5f4c4b21",
+          "size": "2209",
+          "name": "lxqt-powermanagement_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-sudo",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-sudo",
+      "files": [
+        {
+          "sha512": "f9cab5b5a443dfc2d9beb7c8af55e33d34208e5e0fa0bb73e283d4d97cafb4184a3424debbfda4e184872c94a1baf5d055a95a62f27b50d609a5032ee193b454",
+          "size": "42768",
+          "name": "lxqt-sudo_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "ebe0fdc7e027c376159b081767b6e4a4485f8c2b1ebfc083997c164aaef4066615e894938e414574c78be1cf74f67bc9df637200b4706f00305e58009ef9a138",
+          "size": "659",
+          "name": "lxqt-sudo_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "b4ee2dd5d1fed4213f8a7905cb0990c063347d9508aa62b137e465ec45920c85d604a382e8f3e162c8ed0a5f0a0142fe5d921a5db19a4181650038e62c8dda40",
+          "size": "9180",
+          "name": "lxqt-sudo_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "43e5b948e000e67bc33e332af4f1339c8a28ba8362626c11bf885044aea1762fba370e6ab000a621290a92e55d7653956ad68b7f452b69929c53d5ea67c735f6",
+          "size": "1904",
+          "name": "lxqt-sudo_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-about",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-about",
+      "files": [
+        {
+          "sha512": "bcc38242b607f04fff2147c6bec32e1bfc154fa18705bdf99a3f3461c532e66d9be0c4abcac6035514e52f05ee83b1c0bf7d6c53325fdeb3458d15da867e9cf7",
+          "size": "51016",
+          "name": "lxqt-about_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "6750f8330bac06b24f6dea8758a02a4ab848d122098277aeea580cea6c21db3d41d9c3b9b558500c1f68ba50914eca8e156f10396b741a7328eddeba4c4a8e0f",
+          "size": "659",
+          "name": "lxqt-about_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "ecc10326eff00a195f0b1e97ab5f261cea5b83ec4c12946685fa07a6ccc6a59783651593eff7c3bfb68e49a75000bf4be47ed9b996294fcd5d322be038900abf",
+          "size": "9208",
+          "name": "lxqt-about_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "77ca884098a1e3b2fe3e414dfee14a2200fb11ab34f5da36532a8ebbf71de03282a568579f443438d750160bf86ae966f3df36e4d0627d4a84029cc6793102c2",
+          "size": "1834",
+          "name": "lxqt-about_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-admin",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-admin",
+      "files": [
+        {
+          "sha512": "b872de5917eba44a2203c7db7adbd1bb10230fb3ceffba8c3d5d7c5824097a7281048bd394d925fbb2d37dfd8b520ba7c9bf550eef5916d0343f3587884776d3",
+          "size": "159896",
+          "name": "lxqt-admin_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "ee84340cba2149a5d9a1959eabafec54a25d355af13eebacd19a4aa75f805e178eccce08c92c0981c72da52bfe08246f31cdc7c67dc6695fd97fa709c3a0d192",
+          "size": "659",
+          "name": "lxqt-admin_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "fccdac813ac19385a26d8ae4fe6d52406d6eadda38fddd281ada3ca90eeba43bb304f03aa028de303b76c13bf3d54c59a4c61d0860d803a1eee61897f5e29a08",
+          "size": "9260",
+          "name": "lxqt-admin_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "5e2f7875f35918ddfe8cbc98d1132531bed023bcd6ee3ce4b78b15c62dde62153bea2d323177258f58a65f486d4aa2e35bbf70bf57656bebba7d44cc6fadf825",
+          "size": "1961",
+          "name": "lxqt-admin_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "lxqt-openssh-askpass",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/l/lxqt-openssh-askpass",
+      "files": [
+        {
+          "sha512": "6dbc68638026631aaf31c1533e08acc20feb9b5f04e6bf88cad175261f32efe960dfcbde1e9b90ba846a9a69bb6b8409afa7a332c6753bb27d5ffa6f33f8725e",
+          "size": "19208",
+          "name": "lxqt-openssh-askpass_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "862db8462736e1903be87f34993e3e938b18c6d042b0036b8e63bddf439ebb48793deb9f60c564c2be60196c7769e660ac1b48ad586402af0ff0906d4f349268",
+          "size": "659",
+          "name": "lxqt-openssh-askpass_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "83e3ec270ab47c5b6b763a19813f413a5b6b63f3a910e026a3460db41d3453dcbc4ddb98d2fe80f9cc2c1649eda1eefa2d549cdc6ed2a6dc1e118fa74c74fef8",
+          "size": "9716",
+          "name": "lxqt-openssh-askpass_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "d0aa12d5c2af170a2b9d0010b7f8f4d0b6bbb4a079a9b1f390dfae4a833817b9feb1522c0cbf8355db6cb2bc091ea2591032a743d4a10d2e7822d3035c8e54ed",
+          "size": "2085",
+          "name": "lxqt-openssh-askpass_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "pcmanfm-qt",
+      "version": "2.4.1-0ubuntu1",
+      "directory": "pool/universe/p/pcmanfm-qt",
+      "files": [
+        {
+          "sha512": "1b95b86206476424d16715e840cad1206806d5b85e9a78074d4163bfbee78305ba2fd15b2e6a06679d24b94657c3d43ee44e26103f57d878ca2fbc20ccd5aac1",
+          "size": "435484",
+          "name": "pcmanfm-qt_2.4.1.orig.tar.xz"
+        },
+        {
+          "sha512": "b52c9943fb9bbd088ecbacf8a32952160a171fb5ef06e7acb05320db4f4983b93f08e3a2f68c479310a701745210aac02b5019839717a80278b3e93fc18068d5",
+          "size": "862",
+          "name": "pcmanfm-qt_2.4.1.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "533e726c2449b38fe407e10cb6c93f2e4fdb983616d2f1312737979b8dfb36f9c5494d44758c68e6378eb48e1836ee6541a6fbb39aeb415bc54f5412021e0c33",
+          "size": "21716",
+          "name": "pcmanfm-qt_2.4.1-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "973f44f04283659fb41c5fc2eb7099af1f2a1ffb33b997d99a7075bb8c6a54ea3d44c88f3ff1ad3972f9ae6011340082a18f51759c0badc8f9ed79b548554684",
+          "size": "2608",
+          "name": "pcmanfm-qt_2.4.1-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "qtermwidget",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/q/qtermwidget",
+      "files": [
+        {
+          "sha512": "bfb4a4b670e9b6ec70656f5ff860bae99dc1e02014a179518b044df32fc6e9d7fbba524d18e257a1bc37531533a34edc457e1f38a116cce7ba385178a5b38c2a",
+          "size": "202592",
+          "name": "qtermwidget_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "7f9c41078310d35b35296f27e66f67ceba8f9555d83ce8e7bdcac231fa7b081ac02ec1bd3d37806e2f83c2e7c26a5805a969287e110144e4d1689e9923935262",
+          "size": "659",
+          "name": "qtermwidget_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "fb5301c0d6af98ab3b9026210170d5373662ba6a9d8c995665c306f6403d44fce0b4d3049a98846afebaefee924cf44361c5b10336d7c132c820334261af8805",
+          "size": "15476",
+          "name": "qtermwidget_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "38d83baa2b039c872706395e98a6766b762d9382784942a5522aad90260a8d98523f72c0272b9ff79059611d31cb8f76329ea75befe6d1f037ec3771114aff19",
+          "size": "2013",
+          "name": "qtermwidget_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "qterminal",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/q/qterminal",
+      "files": [
+        {
+          "sha512": "75c6a622976afd7fb3578f7535dad6b86458fa549fc31ef5fcba88fb71c597ed5768544c83a0fb91c27605cb4c3b3262ca82ef7776e9b42c042ce8f395c13822",
+          "size": "417816",
+          "name": "qterminal_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "81f1185497f1b2d5cd6b468af99c61aa2aed0e717428c09fcd187bfba231349873499a094e1093e327672112f9c017f16775fafd36a8cc124cf070b3ab06f4b5",
+          "size": "659",
+          "name": "qterminal_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "395029732360e2de75991578b6beb50dc283232a9fc04da651d90c3d7deb321a9ad98e604559d6cc140f3afe8b324aa48668e6806de46f5f17c6669db1ed5a49",
+          "size": "17016",
+          "name": "qterminal_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "664dd51377a30c79cbacee4a9c60470fbf2409f86afa88fee087ff2574765083d2173a193f2b3bc323ff49c11a2b8b0a81bf0e7d361962eee076ff6b440deb31",
+          "size": "2097",
+          "name": "qterminal_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "pavucontrol-qt",
+      "version": "2.4.0-0ubuntu1",
+      "directory": "pool/universe/p/pavucontrol-qt",
+      "files": [
+        {
+          "sha512": "2ca1bd0d0cdf6e5a4376b1afaaf28c6e832e97fbe71579150c331f87cf1e925866df66b5affec9777ce59017a0aaec63cbb4ca75bda4582241d13a06d326f800",
+          "size": "123576",
+          "name": "pavucontrol-qt_2.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "22ef2d3d2baf79f463014ec38c695c821eb3ac0af75090f24df392b67e2a9f69dac2611eb1817c1f1c102a22c1c0efbe4f3dec9e2fbdb08c1a7cfdf23149a0ac",
+          "size": "659",
+          "name": "pavucontrol-qt_2.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "5b8033d1c133c7386928ad33267f41c85d43c874116bf8ce46a4b00ebc01dfd149940be87e606dcca00a4a8aff71de668d486fefb7d40c02f10d6ef9f6ae00b4",
+          "size": "8784",
+          "name": "pavucontrol-qt_2.4.0-0ubuntu1.debian.tar.xz"
+        },
+        {
+          "sha512": "920693c8d352b86a2be54854cae6be5aed0f1bb25df134971328e986be1df5bd1283b619c0e2496e14c7f9bdf7eaff5460d15273f38956d4f3a7752b7e658319",
+          "size": "2015",
+          "name": "pavucontrol-qt_2.4.0-0ubuntu1.dsc"
+        }
+      ]
+    },
+    {
+      "name": "xdg-desktop-portal-lxqt",
+      "version": "1.4.0-0ubuntu2",
+      "directory": "pool/universe/x/xdg-desktop-portal-lxqt",
+      "files": [
+        {
+          "sha512": "00969717dcac9351df3e9f43d3c585db90f940ecb28a5c4a208eb363d16c1edd146429b60bffba73a0660a8a1ff101b95b7865fe5638239ca964a0bc4084bcde",
+          "size": "17812",
+          "name": "xdg-desktop-portal-lxqt_1.4.0.orig.tar.xz"
+        },
+        {
+          "sha512": "f4cf5582dca19d1f75ec1af010938f60e1625b43979cfb9265a220e0fb04dc0f6c5ffad997488e6b38888ea45418395857c089ce24a901e541a8a3042301bba7",
+          "size": "659",
+          "name": "xdg-desktop-portal-lxqt_1.4.0.orig.tar.xz.asc"
+        },
+        {
+          "sha512": "6d5feb1cd7e0610b575bd29219331e32b4b655e9e19c1f13fbd5a3e5763b4d8267b2bb033a8a982788f5dfbcd8b6e21de6516cbedf8ce013188d3903a867ed02",
+          "size": "8132",
+          "name": "xdg-desktop-portal-lxqt_1.4.0-0ubuntu2.debian.tar.xz"
+        },
+        {
+          "sha512": "8c3999b11b62d82d32e3d03b597f4896b37ce925eacc2ad95ab1a1bd18276abc9b8def64c6b89b74ddabadd1b45b52a592f18ce38f418a58ffe4b2bb5bd59c9a",
+          "size": "3089",
+          "name": "xdg-desktop-portal-lxqt_1.4.0-0ubuntu2.dsc"
+        }
+      ]
+    }
+  ]
+}

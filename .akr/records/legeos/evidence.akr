@@ -5067,6 +5067,79 @@ record legeos.evidence.logout-watchdog-oom-20261007/1 : evidence {
     author "dk"
 }
 
+record legeos.evidence.lxqt-backport-offline-install-20261014/1 : evidence {
+    title "Built26 SHA512-pinned Ubuntu Stonking LXQt sources against Resolute Qt6.10.2 in a disposable overlay, including LXQt2.4.0, panel2.4.1, PCManFM2.4.1 and portal1.4.0. The60 retained deb artifacts include updated greeter/integration packages at0.1.0~dev1791959590+gd98eebd.dirty;51 selected runtime package versions match offline installed state. Apt simulation/install removed no packages; dpkg audit empty and four desktop/greeter ELF dependency sets resolve. Openbox/Xinit/Xorg and /etc/xdg/lxqt/session.conf are installed; existing greetd/native session entries preserved. Paired read-only root/state snapshots lxqt-before-20261014T064414Z retained. No physical login or live desktop activation performed."
+    state superseded
+    result pass
+    method command
+    observed_at git:d98eebd196244a1943c611a963a8f9595b621df6
+    command "scripts/build-lxqt-backport.py --root /media/dk/templaros-root/@ --state /media/dk/templaros-root/@var; scripts/install-lxqt-offline.py --root /media/dk/templaros-root/@ --state /media/dk/templaros-root/@var --debs /media/dk/templaros-root/@home/dk/rust-projects/LegeOS/target/lxqt-2.4/debs"
+    artifact "target/lxqt-2.4/install-result.json"
+    summary """
+        Built26 SHA512-pinned Ubuntu Stonking LXQt sources against Resolute Qt6.10.2 in a disposable overlay, including LXQt2.4.0, panel2.4.1, PCManFM2.4.1 and portal1.4.0. The60 retained deb artifacts include updated greeter/integration packages at0.1.0~dev1791959590+gd98eebd.dirty;51 selected runtime package versions match offline installed state. Apt simulation/install removed no packages; dpkg audit empty and four desktop/greeter ELF dependency sets resolve. Openbox/Xinit/Xorg and /etc/xdg/lxqt/session.conf are installed; existing greetd/native session entries preserved. Paired read-only root/state snapshots lxqt-before-20261014T064414Z retained. No physical login or live desktop activation performed.
+        """
+    author "dk"
+}
+
+record legeos.evidence.lxqt-backport-offline-install-20261014/2 : evidence {
+    title "Built26 SHA512-pinned Ubuntu Stonking LXQt sources against Resolute Qt6.10.2 in a disposable overlay, including LXQt2.4.0, panel2.4.1, PCManFM2.4.1 and portal1.4.0. The60 retained deb artifacts include updated greeter/integration packages at0.1.0~dev1791959590+gd98eebd.dirty;51 selected runtime package versions match offline installed state. Apt simulation/install removed no packages; dpkg audit empty and four desktop/greeter ELF dependency sets resolve. Openbox/Xinit/Xorg and /etc/xdg/lxqt/session.conf are installed; existing greetd/native session entries preserved. Paired read-only root/state snapshots lxqt-before-20261014T064414Z retained. No physical login or live desktop activation performed."
+    state verified
+    result pass
+    method command
+    observed_at git:d98eebd196244a1943c611a963a8f9595b621df6
+    command """
+        scripts/build-lxqt-backport.py --root /media/dk/templaros-root/@ --state /media/dk/templaros-root/@var; scripts/install-lxqt-offline.py --root /media/dk/templaros-root/@ --state /media/dk/templaros-root/@var --debs /media/dk/templaros-root/@home/dk/rust-projects/LegeOS/target/lxqt-2.4/debs
+        """
+    artifact "target/lxqt-2.4/initial-install-result.json"
+    summary """
+        Built26 SHA512-pinned Ubuntu Stonking LXQt sources against Resolute Qt6.10.2 in a disposable overlay, including LXQt2.4.0, panel2.4.1, PCManFM2.4.1 and portal1.4.0. The60 retained deb artifacts include updated greeter/integration packages at0.1.0~dev1791959590+gd98eebd.dirty;51 selected runtime package versions match offline installed state. Apt simulation/install removed no packages; dpkg audit empty and four desktop/greeter ELF dependency sets resolve. Openbox/Xinit/Xorg and /etc/xdg/lxqt/session.conf are installed; existing greetd/native session entries preserved. Paired read-only root/state snapshots lxqt-before-20261014T064414Z retained. No physical login or live desktop activation performed.
+        """
+    supersedes [ @legeos.evidence.lxqt-backport-offline-install-20261014/1 ]
+    author "dk"
+}
+
+record legeos.evidence.lxqt-final-defaults-and-install-20261014/1 : evidence {
+    title "Final offline greeter and templaros-lxqt packages both0.1.0~dev1791960828+gd98eebd.dirty installed;51 explicit runtime versions match, dpkg audit empty, desktop/greeter linkage complete and apt removes none. LXQt defaults now select Openbox and existing Papirus; XScreenSaver is an explicit metapackage dependency. Fresh owned LXQt desktop screenshot shows visible Computer/Home/Network/Trash and panel icons; QTerminal maps. Final read-only root/state snapshot pair lxqt-before-20261014T065458Z retained alongside original pre-LXQt pair. Source/seed/package/fmt checks pass; physical login/logout/native-return remains untested."
+    state verified
+    result pass
+    method command
+    observed_at git:d98eebd196244a1943c611a963a8f9595b621df6
+    command "scripts/install-lxqt-offline.py --root /media/dk/templaros-root/@ --state /media/dk/templaros-root/@var --debs /media/dk/templaros-root/@home/dk/rust-projects/LegeOS/target/lxqt-2.4/debs; owned Xvfb LXQt startup/render fixture with fresh private HOME"
+    artifact "target/lxqt-2.4/validation.json"
+    summary """
+        Final offline greeter and templaros-lxqt packages both0.1.0~dev1791960828+gd98eebd.dirty installed;51 explicit runtime versions match, dpkg audit empty, desktop/greeter linkage complete and apt removes none. LXQt defaults now select Openbox and existing Papirus; XScreenSaver is an explicit metapackage dependency. Fresh owned LXQt desktop screenshot shows visible Computer/Home/Network/Trash and panel icons; QTerminal maps. Final read-only root/state snapshot pair lxqt-before-20261014T065458Z retained alongside original pre-LXQt pair. Source/seed/package/fmt checks pass; physical login/logout/native-return remains untested.
+        """
+    author "dk"
+}
+
+record legeos.evidence.lxqt-greeter-selection-and-launch-20261014/1 : evidence {
+    title "The new pointer regression first failed with SubmitUsername(alice) when clicking LXQt over Sign in, then passed. All79 greeter tests pass on Lubuntu and against offline Resolute libraries;3 X11 launcher tests pass. Actual packaged greeter on an owned Xvfb/private bus selected LXQt by pointer without authentication traffic and sent cmd=[/usr/libexec/templar-x11-session,startlxqt] with x11/LXQt/lxqt environment to a non-launching fake greetd."
+    state verified
+    result pass
+    method command
+    observed_at git:d98eebd196244a1943c611a963a8f9595b621df6
+    command "scripts/cargo-native.sh test -p templar-greeter; python3 tests/integration/x11-session.py; owned Xvfb real-greeter pointer fixture"
+    artifact "target/lxqt-2.4/greeter-ui/result.json"
+    summary """
+        The new pointer regression first failed with SubmitUsername(alice) when clicking LXQt over Sign in, then passed. All79 greeter tests pass on Lubuntu and against offline Resolute libraries;3 X11 launcher tests pass. Actual packaged greeter on an owned Xvfb/private bus selected LXQt by pointer without authentication traffic and sent cmd=[/usr/libexec/templar-x11-session,startlxqt] with x11/LXQt/lxqt environment to a non-launching fake greetd.
+        """
+    author "dk"
+}
+
+record legeos.evidence.lxqt-installed-owned-desktop-20261014/1 : evidence {
+    title "Actual newly installed LXQt2.4 startup on a private800x600 Xvfb mapped panel/desktop and started lxqt-session,Openbox,lxqt-panel,PCManFM-Qt,lxqt-globalkeysd,lxqt-runner,lxqt-notificationd and XScreenSaver. QTerminal2.4 mapped with Openbox decorations; desktop/terminal screenshots retained. The PID/network/mount namespaces had private HOME/runtime/session bus, no live system/user bus or physical devices; Mesa/GLX/Qt portal settings isolated unavailable hardware/service boundaries. This observes desktop startup/application rendering, not physical-seat/PAM/login/logout or browser-portal acceptance; owned processes were reaped."
+    state verified
+    result pass
+    method command
+    observed_at git:d98eebd196244a1943c611a963a8f9595b621df6
+    command "owned bwrap/Xvfb/private-bus fixture against /media/dk/templaros-root/@ running /usr/bin/startlxqt and /usr/bin/qterminal"
+    artifact "target/lxqt-2.4/lxqt-ui/result.json"
+    summary """
+        Actual newly installed LXQt2.4 startup on a private800x600 Xvfb mapped panel/desktop and started lxqt-session,Openbox,lxqt-panel,PCManFM-Qt,lxqt-globalkeysd,lxqt-runner,lxqt-notificationd and XScreenSaver. QTerminal2.4 mapped with Openbox decorations; desktop/terminal screenshots retained. The PID/network/mount namespaces had private HOME/runtime/session bus, no live system/user bus or physical devices; Mesa/GLX/Qt portal settings isolated unavailable hardware/service boundaries. This observes desktop startup/application rendering, not physical-seat/PAM/login/logout or browser-portal acceptance; owned processes were reaped.
+        """
+    author "dk"
+}
+
 record legeos.evidence.m0-adrs-present/1 : evidence {
     title "M0: ADRs 0001-0011 present and mirrored as decision records"
     state verified

@@ -197,6 +197,20 @@ A broken greeter means no graphical login at all, on the one VT it occupies. Non
 
 ## Keyboard session picker
 
+The picker discovers installed entries in both `/usr/share/wayland-sessions` and
+`/usr/share/xsessions`. Installing `lxqt-policykit` for the native desktop also
+installs `lxqt-session`, which is why LXQt could appear before a complete alternative
+desktop was present. `templaros-lxqt` supplies that complete desktop, including
+LXQt's panel, runner, global shortcuts, notifications, settings and file manager,
+with Openbox as its default window manager.
+
+The popup owns input while open, including rows painted over the sign-in button.
+Selecting a session does not submit authentication. X11 entries run through
+`/usr/libexec/templar-x11-session`, which resolves the desktop command and runs
+`startx` on the authenticated login VT. Xorg exits when that desktop ends. Wayland
+entries run their own commands directly. Both receive the entry's desktop identity
+for autostart and portal selection; the native session remains the initial default.
+
 Tab/Shift-Tab traverse the primary field, session picker and sign-in button. On the closed picker,
 arrow keys cycle sessions and Enter/Space opens its popup. Inside that popup, Up/Down select a row,
 Enter commits it, and Escape or Tab dismisses it. Those popup keys do not submit or cancel

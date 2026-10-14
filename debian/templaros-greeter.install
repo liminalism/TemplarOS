@@ -1,5 +1,6 @@
 target/release/templar-greeter usr/bin/
 session/units/greetd/config.toml usr/share/templaros/greetd/
 session/units/greetd/pam-login usr/share/templaros/greetd/
+session/units/greetd/templar-x11-session usr/libexec/
 distro/policy/sysusers.d/templaros-greeter.conf usr/lib/sysusers.d/
 distro/policy/tmpfiles.d/templaros-greeter.conf usr/lib/tmpfiles.d/

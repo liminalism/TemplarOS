@@ -6,7 +6,7 @@ Depends: templaros-session, templaros-sessiond, templaros-resourced, templaros-f
  templaros-comp, templaros-portal, templaros-cli, liminalview, templaros-greeter, greetd,
  fprintd, libpam-fprintd, xdg-desktop-portal, xdg-desktop-portal-lxqt,
  xdg-desktop-portal-gtk, xwayland, polkitd, lxqt-policykit, udiskie, dbus-broker,
- templaros-settings, pcmanfm-qt, qt6-wayland, qt5-gtk-platformtheme,
+ templaros-lxqt, templaros-settings, pcmanfm-qt, qt6-wayland, qt5-gtk-platformtheme,
  qt6-gtk-platformtheme, gnome-themes-extra-data, fonts-dejavu-core, kitty, gsimplecal,
  flatpak, papirus-icon-theme, hicolor-icon-theme, adwaita-icon-theme, fonts-noto,
  fonts-noto-color-emoji, xdg-utils, shared-mime-info, desktop-file-utils, gnome-keyring,

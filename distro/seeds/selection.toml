@@ -373,6 +373,10 @@ image = true
 stage = "seeds"
 
 [[layer.package]]
+name = "templaros-lxqt"
+reason = "complete LXQt 2.4 alternative at login, with its own Xorg/Openbox desktop; distro/lxqt/backport.json pins Resolute rebuilds"
+
+[[layer.package]]
 name = "templaros-settings"
 reason = "the settings surface for the policy templaros-sessiond owns"
 
@@ -732,6 +736,26 @@ architecture = "all"
 layers = ["session"]
 description = "TemplarOS session only (Stage 1: replacement session on an existing Lubuntu 26.04)"
 description_body = "The session and its daemons, without the default applications or the hardware stack."
+
+[[metapackage]]
+package = "templaros-lxqt"
+directory = "templaros-lxqt"
+architecture = "all"
+extra_depends = [
+  "templaros-greeter", "lxqt-about (>= 2.4.0)", "lxqt-admin (>= 2.4.0)",
+  "lxqt-config (>= 2.4.0)", "lxqt-globalkeys (>= 2.4.0)",
+  "lxqt-menu-data (>= 2.4.0)", "lxqt-notificationd (>= 2.4.0)",
+  "lxqt-openssh-askpass (>= 2.4.0)", "lxqt-panel (>= 2.4.1)",
+  "lxqt-policykit (>= 2.4.0)", "lxqt-powermanagement (>= 2.4.0)",
+  "lxqt-qtplugin (>= 2.4.0)", "lxqt-runner (>= 2.4.0)",
+  "lxqt-session (>= 2.4.0)", "lxqt-sudo (>= 2.4.0)", "lxqt-themes (>= 2.4.0)",
+  "pcmanfm-qt (>= 2.4.1)", "qterminal (>= 2.4.0)", "pavucontrol-qt (>= 2.4.0)",
+  "xdg-desktop-portal-lxqt (>= 1.4.0)", "xdg-desktop-portal-gtk",
+  "openbox", "xinit", "xserver-xorg", "xauth", "dbus-x11", "xdg-user-dirs", "xscreensaver",
+  "papirus-icon-theme", "qt6-wayland",
+]
+description = "TemplarOS LXQt alternative desktop"
+description_body = "Complete LXQt 2.4 desktop using Xorg and Openbox, selectable alongside the native TemplarOS session."
 
 [[metapackage]]
 package = "templaros-kernel"
