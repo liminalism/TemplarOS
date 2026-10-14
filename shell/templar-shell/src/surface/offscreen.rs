@@ -1396,11 +1396,23 @@ impl HomeWorkFixture {
             Some("/home/fixture/Documents/draft.md".to_owned()),
             Some(root.display().to_string()),
         ];
-        // What `recent::feed_json` derives from those entries: the editor saved the draft, so
-        // its application last worked in the draft's folder.
-        recent.folders = vec![
-            (Some("org.fixture.Editor".to_owned()), root.clone()),
-            (Some("org.fixture.Files".to_owned()), root.clone()),
+        // The structured rows behind those lines, as `recent::feed_json` carries them: the
+        // editor saved the draft, and the file manager opened the project folder itself.
+        recent.recents = vec![
+            crate::drawers::recent::RecentEntry {
+                path: PathBuf::from("/home/fixture/Documents/draft.md"),
+                app_id: Some("org.fixture.Editor".to_owned()),
+                at_ms: 20,
+                mime: Some("text/markdown".to_owned()),
+                action: crate::drawers::recent::RecentAction::Saved,
+            },
+            crate::drawers::recent::RecentEntry {
+                path: root.clone(),
+                app_id: Some("org.fixture.Files".to_owned()),
+                at_ms: 10,
+                mime: Some("inode/directory".to_owned()),
+                action: crate::drawers::recent::RecentAction::Opened,
+            },
         ];
         let feeds = HashMap::from([(crate::home_surface::Drawer::Recent, recent)]);
         let sources = crate::file_browser::BrowserSources {

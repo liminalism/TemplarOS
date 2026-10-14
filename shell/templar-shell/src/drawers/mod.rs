@@ -51,12 +51,6 @@ pub struct DrawerFeed {
     /// A running operation's label and percent, when anything is still in flight. Structured so
     /// the Files object does not have to recover progress from rendered text.
     pub progress: Option<(String, u8)>,
-    /// The Recent drawer only: each recent entry's application and the folder it happened in —
-    /// the entry's own path for a directory, its parent otherwise — newest first. Empty for every
-    /// other drawer. Structured for the same reason as `row_targets`: Home places a window near
-    /// the folder its application last worked in, and that must never be parsed back out of a
-    /// rendered line.
-    pub folders: Vec<(Option<String>, std::path::PathBuf)>,
 }
 
 impl DrawerFeed {
@@ -69,7 +63,6 @@ impl DrawerFeed {
             available: true,
             empty: false,
             progress: None,
-            folders: Vec::new(),
         }
     }
 
@@ -84,7 +77,6 @@ impl DrawerFeed {
             available: true,
             empty: true,
             progress: None,
-            folders: Vec::new(),
         }
     }
 
@@ -114,7 +106,6 @@ impl DrawerFeed {
             available: false,
             empty: false,
             progress: None,
-            folders: Vec::new(),
         }
     }
 
@@ -134,7 +125,6 @@ impl DrawerFeed {
             available: false,
             empty: false,
             progress: None,
-            folders: Vec::new(),
         }
     }
 

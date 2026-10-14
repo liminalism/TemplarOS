@@ -800,9 +800,9 @@ mod tests {
         let _ = fs::remove_dir_all(&out);
         fs::create_dir_all(&out).unwrap();
         let dirs = metapackage_dirs(&root).unwrap();
-        assert_eq!(dirs.len(), 8, "eight metapackages are declared");
+        assert_eq!(dirs.len(), 9, "nine metapackages are declared");
         let built = build_metapackages(&root, &out, &dirs, "0.0.0~test").unwrap();
-        assert_eq!(built.len(), 8);
+        assert_eq!(built.len(), 9);
         for package in &built {
             assert!(out.join(&package.file).is_file(), "{}", package.file);
             assert_eq!(package.version, "0.0.0~test");

@@ -6227,8 +6227,8 @@ struct WorkItem {
     /// The garden Place this window is explicitly associated with — the only folder the
     /// context menu's Place actions ever act on.
     place: Option<PathBuf>,
-    /// Where the window's card gathers: `place` when there is one, otherwise the folder its
-    /// application most recently worked in according to the Recent feed. Never a window title.
+    /// Where the window's card gathers: the garden Place association, and nothing else. Recent
+    /// files and window titles never grant placement, however precisely they name a folder.
     folder: Option<PathBuf>,
     cluster: crate::work_layout::ClusterKey,
 }
@@ -8128,12 +8128,21 @@ mod tests {
         }
         h.toplevels.push(toplevel(3, "org.other.Elsewhere", false));
         let mut feed = crate::drawers::DrawerFeed::new("2 items", Vec::new());
-        feed.folders = vec![
-            (Some("org.example.Editor".to_owned()), root.clone()),
-            (
-                Some("org.example.Editor".to_owned()),
-                PathBuf::from("/older"),
-            ),
+        feed.recents = vec![
+            crate::drawers::recent::RecentEntry {
+                path: root.join("notes.md"),
+                app_id: Some("org.example.Editor".to_owned()),
+                at_ms: 30,
+                mime: Some("text/markdown".to_owned()),
+                action: crate::drawers::recent::RecentAction::Saved,
+            },
+            crate::drawers::recent::RecentEntry {
+                path: PathBuf::from("/older/sketch.png"),
+                app_id: Some("org.example.Editor".to_owned()),
+                at_ms: 10,
+                mime: Some("image/png".to_owned()),
+                action: crate::drawers::recent::RecentAction::Opened,
+            },
         ];
         h.drawer_feeds.insert(Drawer::Recent, feed);
         h.frame();
